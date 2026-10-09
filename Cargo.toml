@@ -1,0 +1,11 @@
+[workspace]
+resolver = "3"
+members = ["shell", "common", "compositor"]
+
+# Debug info and incremental caches cost gigabytes of disk for this dependency tree.
+[profile.dev]
+debug = false
+incremental = false
+
+[profile.release]
+strip = true
