@@ -21,6 +21,9 @@ enum Action {
     MoveDisplay,
     Launcher,
     Settings,
+    Lock,
+    /// Super with a key that is no shortcut: swallowed, so that it types nothing.
+    Ignore,
     Split,
     Fullscreen,
     /// Give the keyboard to the left (false) or right (true) half of a split.
@@ -154,6 +157,7 @@ impl EdexComp {
                 let time = Event::time_msec(&event);
 
                 let pressed = event.state() == KeyState::Pressed;
+                let locked = self.locked;
                 let action = self.seat.get_keyboard().unwrap().input(
                     self,
                     event.key_code(),
@@ -175,7 +179,9 @@ impl EdexComp {
                         if let Some(media) = Media::from_keysym(sym) {
                             return FilterResult::Intercept(Action::Media(media));
                         }
-                        if !held {
+                        // Locked, every other key goes to the lock screen: no shortcut
+                        // reaches what is behind it, and the session cannot be ended.
+                        if !held || locked {
                             return FilterResult::Forward;
                         }
                         match sym {
@@ -185,6 +191,7 @@ impl EdexComp {
                             Keysym::Tab => FilterResult::Intercept(Action::Cycle),
                             Keysym::space => FilterResult::Intercept(Action::Launcher),
                             Keysym::comma => FilterResult::Intercept(Action::Settings),
+                            Keysym::l | Keysym::L => FilterResult::Intercept(Action::Lock),
                             Keysym::o | Keysym::O => FilterResult::Intercept(Action::MoveDisplay),
                             Keysym::R if modifiers.shift => FilterResult::Intercept(Action::RestartShell),
                             Keysym::s | Keysym::S => FilterResult::Intercept(Action::Split),
@@ -201,6 +208,10 @@ impl EdexComp {
                                 FilterResult::Intercept(Action::Panel(edex_common::Panel::Bottom))
                             }
                             Keysym::q | Keysym::Q => FilterResult::Intercept(Action::Close),
+                            // Not a shortcut, but not a letter for the application either.
+                            other if modifiers.logo && other.key_char().is_some_and(|c| !c.is_control()) => {
+                                FilterResult::Intercept(Action::Ignore)
+                            }
                             _ => FilterResult::Forward,
                         }
                     },
@@ -211,6 +222,8 @@ impl EdexComp {
                     Some(Action::MoveDisplay) => self.move_active(),
                     Some(Action::Launcher) => self.open_launcher(),
                     Some(Action::Settings) => self.open_settings(),
+                    Some(Action::Lock) => self.request_lock(),
+                    Some(Action::Ignore) => {}
                     Some(Action::RestartShell) => self.restart_shell(),
                     Some(Action::Split) => self.toggle_split(),
                     Some(Action::Fullscreen) => self.toggle_fullscreen(),

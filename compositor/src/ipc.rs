@@ -18,6 +18,8 @@ pub struct IpcServer {
     last: String,
     /// Likewise for the displays line.
     last_displays: String,
+    /// Likewise for whether the screen is locked.
+    last_locked: String,
 }
 
 impl IpcServer {
@@ -31,6 +33,7 @@ impl IpcServer {
             clients: Vec::new(),
             last: DesktopState::default().encode(),
             last_displays: String::new(),
+            last_locked: edex_common::ipc::Event::locked(false),
         })
     }
 
@@ -45,6 +48,7 @@ impl IpcServer {
             if stream.set_nonblocking(true).is_ok()
                 && stream.write_all(self.last.as_bytes()).is_ok()
                 && stream.write_all(self.last_displays.as_bytes()).is_ok()
+                && stream.write_all(self.last_locked.as_bytes()).is_ok()
             {
                 self.clients.push(Client {
                     stream,
@@ -94,6 +98,16 @@ impl IpcServer {
 }
 
 impl IpcServer {
+    /// Tells every client whether the screen is locked, when that changes. A shell
+    /// started while it is locked is told as it connects.
+    pub fn publish_locked(&mut self, locked: bool) {
+        let line = edex_common::ipc::Event::locked(locked);
+        if line != self.last_locked {
+            self.send(&line);
+            self.last_locked = line;
+        }
+    }
+
     /// Sends the monitors to every client, unless nothing about them changed.
     pub fn publish_displays(&mut self, displays: &edex_common::ipc::Displays) {
         let line = displays.encode();
@@ -138,8 +152,15 @@ mod tests {
             ..Default::default()
         };
         server.publish(&state);
-        line.clear();
-        reader.read_line(&mut line).unwrap();
+        // Other things a new client is told, such as the lock, come in between.
+        loop {
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            if line.starts_with("state ") {
+                break;
+            }
+            assert_eq!(line, "locked 0\n");
+        }
         assert_eq!(DesktopState::decode(&line), Some(state));
 
         // A split write and a junk line must still yield exactly the valid commands.

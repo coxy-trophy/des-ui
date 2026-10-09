@@ -41,6 +41,7 @@ Options:
 Keys (hold Super, or Ctrl+Alt):
   Space                Open the application launcher
   ,                    Open the settings
+  L                    Lock the screen
   Tab                  Switch between the terminal and open applications
   O                    Move the current application to the next display
   S                    Split the workspace between two windows, or undo that

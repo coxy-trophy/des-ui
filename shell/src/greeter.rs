@@ -162,6 +162,97 @@ pub fn sign_in(socket: &std::path::Path, user: &str, password: &str, session: &S
     }
 }
 
+/// Loads the picture kept for a user, if there is one.
+pub fn load_picture(ctx: &egui::Context, user: &str) -> Option<TextureHandle> {
+    let candidates = [
+        PathBuf::from(AVATAR_DIR).join(user),
+        PathBuf::from("/var/lib/AccountsService/icons").join(user),
+    ];
+    let image = candidates.iter().find_map(|path| image::open(path).ok())?;
+    let image = image.thumbnail(320, 320).to_rgba8();
+    let size = [image.width() as usize, image.height() as usize];
+    let pixels = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
+    Some(ctx.load_texture(format!("avatar-{user}"), pixels, egui::TextureOptions::LINEAR))
+}
+
+
+/// The middle of the login and lock screens: a picture in corner marks, a name, and a
+/// password line that shows one square per character typed.
+pub struct Identity<'a> {
+    pub user: &'a str,
+    /// The user's own picture; without one, a pattern made from the name is drawn.
+    pub picture: Option<&'a TextureHandle>,
+    /// The colour of the corner marks, the line and the cursor, which says how things
+    /// stand.
+    pub edge: Color32,
+    pub message: &'a str,
+    pub message_ink: Color32,
+    /// How many characters have been typed.
+    pub typed: usize,
+    /// True while the password is being checked: the cursor rests.
+    pub busy: bool,
+    pub hint: &'a str,
+}
+
+impl Identity<'_> {
+    /// Draws it centred on the screen and returns where the name is.
+    pub fn draw(&self, ui: &mut Ui, theme: &Theme) -> Rect {
+        let screen = ui.max_rect();
+        let painter = ui.painter().clone();
+        let center = pos2(screen.center().x, screen.center().y - 120.0);
+        let frame = Rect::from_center_size(center, vec2(208.0, 208.0));
+        ui::corners(&painter, frame, 22.0, Stroke::new(2.0, self.edge));
+        let face = Rect::from_center_size(center, vec2(160.0, 160.0));
+        painter.rect_filled(face, 0.0, ui::PANEL);
+        match self.picture {
+            Some(texture) => {
+                let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+                painter.image(texture.id(), face, uv, Color32::WHITE);
+            }
+            None => {
+                let cell = face.width() / 5.0;
+                for (row, cells) in sigil(self.user).iter().enumerate() {
+                    for (column, kind) in cells.iter().enumerate() {
+                        let color = match kind {
+                            1 => theme.main,
+                            2 => theme.muted(),
+                            _ => continue,
+                        };
+                        let at = face.min + vec2(column as f32 * cell, row as f32 * cell);
+                        painter.rect_filled(Rect::from_min_size(at, vec2(cell, cell)), 0.0, color);
+                    }
+                }
+            }
+        }
+
+        let name = ui::galley(ui, self.user, ui::display_bold(34.0), ui::TEXT, 1.0);
+        let name_rect = Rect::from_center_size(pos2(center.x, frame.bottom() + 46.0), name.size());
+        painter.galley(name_rect.min, name, ui::TEXT);
+        painter.text(pos2(center.x, name_rect.bottom() + 14.0), Align2::CENTER_CENTER, self.message, ui::mono(12.0), self.message_ink);
+
+        // The password: one square per character, on a line.
+        let label = ui::galley(ui, "PASSWORD", ui::display_bold(12.0), ui::LABEL, 3.0);
+        let field_top = name_rect.bottom() + 48.0;
+        painter.galley(pos2(center.x - label.size().x / 2.0, field_top), label, ui::LABEL);
+        let line_y = field_top + 62.0;
+        let count = self.typed.min(24);
+        let (square, gap) = (11.0, 9.0);
+        let width = count as f32 * (square + gap) + 12.0;
+        let mut x = center.x - width / 2.0;
+        for _ in 0..count {
+            painter.rect_filled(Rect::from_min_size(pos2(x, line_y - 28.0), vec2(square, square)), 0.0, ui::TEXT);
+            x += square + gap;
+        }
+        let blink_on = ui.input(|i| i.time).rem_euclid(1.0) < 0.5;
+        if blink_on && !self.busy {
+            painter.rect_filled(Rect::from_min_size(pos2(x, line_y - 36.0), vec2(12.0, 26.0)), 0.0, self.edge);
+        }
+        painter.hline((center.x - 180.0)..=(center.x + 180.0), line_y, Stroke::new(2.0, self.edge));
+        painter.text(pos2(center.x, line_y + 22.0), Align2::CENTER_CENTER, self.hint, ui::mono(12.0), ui::LABEL);
+        name_rect
+    }
+}
+
 enum State {
     Ready,
     Checking,
@@ -240,19 +331,6 @@ impl Greeter {
         });
     }
 
-    /// Loads the picture kept for a user, if there is one.
-    fn load_picture(ctx: &egui::Context, user: &str) -> Option<TextureHandle> {
-        let candidates = [
-            PathBuf::from(AVATAR_DIR).join(user),
-            PathBuf::from("/var/lib/AccountsService/icons").join(user),
-        ];
-        let image = candidates.iter().find_map(|path| image::open(path).ok())?;
-        let image = image.thumbnail(320, 320).to_rgba8();
-        let size = [image.width() as usize, image.height() as usize];
-        let pixels = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
-        Some(ctx.load_texture(format!("avatar-{user}"), pixels, egui::TextureOptions::LINEAR))
-    }
-
     fn draw(&mut self, ui: &mut Ui) {
         let screen = ui.max_rect();
         let theme = self.theme.clone();
@@ -280,70 +358,30 @@ impl Greeter {
             ui::TEXT,
         );
 
-        // The avatar, in its corner marks.
-        let center = pos2(screen.center().x, screen.center().y - 120.0);
-        let frame = Rect::from_center_size(center, vec2(208.0, 208.0));
-        ui::corners(&painter, frame, 22.0, Stroke::new(2.0, edge));
-        let face = Rect::from_center_size(center, vec2(160.0, 160.0));
-        painter.rect_filled(face, 0.0, ui::PANEL);
         let user = self.users[self.user].clone();
         if self.picture.as_ref().is_none_or(|(index, _)| *index != self.user) {
-            self.picture = Some((self.user, Self::load_picture(ui.ctx(), &user)));
-        }
-        match self.picture.as_ref().and_then(|(_, texture)| texture.as_ref()) {
-            Some(texture) => {
-                let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-                painter.image(texture.id(), face, uv, Color32::WHITE);
-            }
-            None => {
-                let cell = face.width() / 5.0;
-                for (row, cells) in sigil(&user).iter().enumerate() {
-                    for (column, kind) in cells.iter().enumerate() {
-                        let color = match kind {
-                            1 => theme.main,
-                            2 => theme.muted(),
-                            _ => continue,
-                        };
-                        let at = face.min + vec2(column as f32 * cell, row as f32 * cell);
-                        painter.rect_filled(Rect::from_min_size(at, vec2(cell, cell)), 0.0, color);
-                    }
-                }
-            }
-        }
-
-        // The name; with several accounts, clicking it moves to the next.
-        let name = ui::galley(ui, &user, ui::display_bold(34.0), ui::TEXT, 1.0);
-        let name_rect = Rect::from_center_size(pos2(center.x, frame.bottom() + 46.0), name.size());
-        painter.galley(name_rect.min, name, ui::TEXT);
-        if self.users.len() > 1 && ui.allocate_rect(name_rect.expand(8.0), Sense::click()).on_hover_text("Another account (Tab)").clicked() {
-            self.next_user();
+            self.picture = Some((self.user, load_picture(ui.ctx(), &user)));
         }
         let (message, ink) = match &self.state {
             State::Ready => (String::new(), ui::SECONDARY),
             State::Checking => ("Checking…".to_string(), ui::SECONDARY),
             State::Denied(why) => (why.clone(), ui::CAUTION),
         };
-        painter.text(pos2(center.x, name_rect.bottom() + 14.0), Align2::CENTER_CENTER, message, ui::mono(12.0), ink);
-
-        // The password: one square per character, on a line.
-        let label = ui::galley(ui, "PASSWORD", ui::display_bold(12.0), ui::LABEL, 3.0);
-        let field_top = name_rect.bottom() + 48.0;
-        painter.galley(pos2(center.x - label.size().x / 2.0, field_top), label, ui::LABEL);
-        let line_y = field_top + 62.0;
-        let count = self.password.chars().count().min(24);
-        let (square, gap) = (11.0, 9.0);
-        let width = count as f32 * (square + gap) + 12.0;
-        let mut x = center.x - width / 2.0;
-        for _ in 0..count {
-            painter.rect_filled(Rect::from_min_size(pos2(x, line_y - 28.0), vec2(square, square)), 0.0, ui::TEXT);
-            x += square + gap;
+        let identity = Identity {
+            user: &user,
+            picture: self.picture.as_ref().and_then(|(_, texture)| texture.as_ref()),
+            edge,
+            message: &message,
+            message_ink: ink,
+            typed: self.password.chars().count(),
+            busy: matches!(self.state, State::Checking),
+            hint: "ENTER to sign in",
+        };
+        let name_rect = identity.draw(ui, &theme);
+        // With several accounts, clicking the name moves to the next.
+        if self.users.len() > 1 && ui.allocate_rect(name_rect.expand(8.0), Sense::click()).on_hover_text("Another account (Tab)").clicked() {
+            self.next_user();
         }
-        let blink_on = ui.input(|i| i.time).rem_euclid(1.0) < 0.5;
-        if blink_on && !matches!(self.state, State::Checking) {
-            painter.rect_filled(Rect::from_min_size(pos2(x, line_y - 36.0), vec2(12.0, 26.0)), 0.0, edge);
-        }
-        painter.hline((center.x - 180.0)..=(center.x + 180.0), line_y, Stroke::new(2.0, edge));
-        painter.text(pos2(center.x, line_y + 22.0), Align2::CENTER_CENTER, "ENTER to sign in", ui::mono(12.0), ui::LABEL);
 
         // Bottom left: which desktop starts next.
         let session_name = self.sessions.get(self.session).map_or("NONE INSTALLED", |session| session.name.as_str());

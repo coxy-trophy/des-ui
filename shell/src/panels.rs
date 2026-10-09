@@ -318,6 +318,7 @@ pub fn right(
     for (action, key) in [
         ("Launcher", "SPACE"),
         ("Settings", ","),
+        ("Lock", "L"),
         ("Next application", "TAB"),
         ("Split the workspace", "S"),
         ("Full screen", "F"),

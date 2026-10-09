@@ -237,7 +237,7 @@ impl EdexComp {
             let split = self.apps.iter().any(|app| app.screen == screen && app.place == Place::Side);
             mode.side_focused &= split;
         }
-        let focus_app = self.focused_on(self.focus_screen);
+        let focus_app = self.focused_on(self.focus_screen).filter(|_| !self.locked);
 
         if let Some(shell) = self.shell.clone() {
             configure(&shell, primary, true, focus_app.is_none());
@@ -255,7 +255,9 @@ impl EdexComp {
         for i in 0..self.apps.len() {
             let (window, screen, place) = {
                 let app = &self.apps[i];
-                (app.window.clone(), app.screen, app.place)
+                // Locked, nothing but the shell is shown, wherever it was.
+                let place = if self.locked { Place::Hidden } else { app.place };
+                (app.window.clone(), app.screen, place)
             };
             let (main, side) = self.slots(screen);
             let area = if place == Place::Side { side } else { main };
@@ -273,7 +275,11 @@ impl EdexComp {
 
         // X11 menus stay above the windows that were just raised.
         for popup in &self.x_popups {
-            self.space.raise_element(popup, false);
+            if self.locked {
+                self.space.unmap_elem(popup);
+            } else {
+                self.space.raise_element(popup, false);
+            }
         }
 
         let focus = focus_app
@@ -470,6 +476,26 @@ impl EdexComp {
         self.arrange();
     }
 
+    /// Asks the shell to lock the screen. It answers when it can show the lock screen,
+    /// so that a shell unable to unlock is never locked.
+    pub fn request_lock(&mut self) {
+        if let Some(ipc) = self.ipc.as_mut() {
+            ipc.send(Event::LOCK_REQUESTED);
+        }
+    }
+
+    /// Hides everything but the shell and gives it the keyboard, or undoes that.
+    pub fn set_locked(&mut self, locked: bool) {
+        if self.locked != locked {
+            tracing::info!(locked, "screen lock");
+            self.locked = locked;
+            if locked {
+                self.focus_screen = 0;
+            }
+            self.arrange();
+        }
+    }
+
     /// Asks the shell to show its application launcher.
     pub fn open_launcher(&mut self) {
         self.ask_shell(Event::LAUNCHER);
@@ -482,7 +508,7 @@ impl EdexComp {
 
     /// Uncovers the shell's workspace, where it shows such things, and sends `event`.
     fn ask_shell(&mut self, event: &str) {
-        if self.modes.is_empty() {
+        if self.modes.is_empty() || self.locked {
             return;
         }
         self.show_terminal();
@@ -525,6 +551,10 @@ impl EdexComp {
             if self.modes.is_empty() {
                 break;
             }
+            // Locked, the shell may only unlock: nothing else changes behind the lock.
+            if self.locked && !matches!(command, Command::Unlock | Command::ReloadInput) {
+                continue;
+            }
             match command {
                 // The window may have closed while the request was on its way.
                 Command::Activate(index) if index < self.apps.len() => {
@@ -542,6 +572,8 @@ impl EdexComp {
                 Command::KeepDisplays => self.keep_displays(),
                 Command::RevertDisplays => self.revert_displays(),
                 Command::ReloadInput => self.reload_input(),
+                Command::Lock => self.set_locked(true),
+                Command::Unlock => self.set_locked(false),
             }
         }
         let last_screen = self.screens.len().saturating_sub(1);
@@ -561,6 +593,7 @@ impl EdexComp {
                 .collect(),
         });
         ipc.publish_displays(&self.display_report());
+        ipc.publish_locked(self.locked);
         self.ipc = Some(ipc);
     }
 }

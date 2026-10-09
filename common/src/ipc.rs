@@ -8,12 +8,15 @@
 //!   any of that changes. A place is `0` hidden, `1` shown, `2` shown in the right half;
 //! - `launcher` when the user asks for the application launcher;
 //! - `settings` when the user asks for the settings;
+//! - `lock` when the user asks for the screen to be locked, which the shell answers
+//!   with its own `lock` once it is ready to show the lock screen;
+//! - `locked <0|1>` whenever the screen becomes locked or unlocked;
 //! - `displays <seconds left to confirm a change, or 0>` followed by one tab-separated
 //!   field per monitor, left to right, each `<name> <0|1 main> <x> <y> <mode in use>
 //!   <modes it offers, comma-separated>`. A mode is `<width>x<height>@<millihertz>`.
 //!
 //! The shell sends `activate <n>`, `close <n>`, `move <n>`, `terminal`, `split`,
-//! `fullscreen`, `panel <left|right|bottom>`, `reload-input` (the input settings in the
+//! `fullscreen`, `lock`, `unlock`, `panel <left|right|bottom>`, `reload-input` (the input settings in the
 //! configuration file changed), `displays-keep`, `displays-revert`, or
 //! `displays-apply` followed by one `<name>=<mode>` per monitor, left to right, with a
 //! `*` after the one that is to be the main display.
@@ -262,17 +265,29 @@ pub enum Event {
     Launcher,
     /// The settings shortcut was pressed.
     Settings,
+    /// The lock shortcut was pressed.
+    LockRequested,
+    /// The screen is now locked, or no longer.
+    Locked(bool),
     Displays(Displays),
 }
 
 impl Event {
     pub const LAUNCHER: &str = "launcher\n";
     pub const SETTINGS: &str = "settings\n";
+    pub const LOCK_REQUESTED: &str = "lock\n";
+
+    pub fn locked(locked: bool) -> String {
+        format!("locked {}\n", locked as u8)
+    }
 
     pub fn decode(line: &str) -> Option<Event> {
         match line.trim_end_matches('\n') {
             "launcher" => return Some(Event::Launcher),
             "settings" => return Some(Event::Settings),
+            "lock" => return Some(Event::LockRequested),
+            "locked 0" => return Some(Event::Locked(false)),
+            "locked 1" => return Some(Event::Locked(true)),
             _ => {}
         }
         if line.starts_with("displays ") {
@@ -306,6 +321,10 @@ pub enum Command {
     RevertDisplays,
     /// The keyboard, mouse or touchpad settings were changed: read them again.
     ReloadInput,
+    /// Hide everything but the shell, which is showing the lock screen.
+    Lock,
+    /// The password was given: bring everything back.
+    Unlock,
 }
 
 impl Command {
@@ -323,6 +342,8 @@ impl Command {
             Command::KeepDisplays => "displays-keep\n".to_string(),
             Command::RevertDisplays => "displays-revert\n".to_string(),
             Command::ReloadInput => "reload-input\n".to_string(),
+            Command::Lock => "lock\n".to_string(),
+            Command::Unlock => "unlock\n".to_string(),
             Command::ApplyDisplays(choices) => {
                 let mut line = "displays-apply".to_string();
                 for choice in choices {
@@ -368,6 +389,8 @@ impl Command {
             ("displays-keep", None) => Command::KeepDisplays,
             ("displays-revert", None) => Command::RevertDisplays,
             ("reload-input", None) => Command::ReloadInput,
+            ("lock", None) => Command::Lock,
+            ("unlock", None) => Command::Unlock,
             _ => return None,
         };
         words.next().is_none().then_some(command)
@@ -488,6 +511,10 @@ mod tests {
     fn events_and_commands_round_trip() {
         assert_eq!(Event::decode(Event::LAUNCHER), Some(Event::Launcher));
         assert_eq!(Event::decode(Event::SETTINGS), Some(Event::Settings));
+        assert_eq!(Event::decode(Event::LOCK_REQUESTED), Some(Event::LockRequested));
+        assert_eq!(Event::decode(&Event::locked(true)), Some(Event::Locked(true)));
+        assert_eq!(Event::decode(&Event::locked(false)), Some(Event::Locked(false)));
+        assert_eq!(Event::decode("locked 2"), None);
         for command in [
             Command::Activate(3),
             Command::Close(0),
@@ -506,6 +533,8 @@ mod tests {
             Command::KeepDisplays,
             Command::RevertDisplays,
             Command::ReloadInput,
+            Command::Lock,
+            Command::Unlock,
             Command::ApplyDisplays(vec![
                 DisplayChoice { name: "eDP-1".into(), mode: mode(1920, 1080, 60052), main: false },
                 DisplayChoice { name: "HDMI-A-1".into(), mode: mode(3840, 2160, 30000), main: true },

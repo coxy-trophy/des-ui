@@ -39,6 +39,7 @@ pub enum Change {
     ApplyDisplays(Vec<DisplayChoice>),
     KeepDisplays,
     RevertDisplays,
+    Lock,
     LogOut,
 }
 
@@ -757,6 +758,13 @@ impl Settings {
         }
         ui.add_space(22.0);
         note(ui, "Super+Shift+R restarts the shell on a newly installed build. Applications stay open; terminal tabs close.");
+        ui.add_space(22.0);
+
+        if ui::button(ui, theme, "LOCK NOW", Some("SUPER L"), false).clicked() {
+            changes.push(Change::Lock);
+        }
+        ui.add_space(8.0);
+        note(ui, "Locking hides everything behind your password. Everything keeps running.");
         ui.add_space(22.0);
 
         let armed = self.log_out_armed.is_some_and(|at| at.elapsed() < Duration::from_secs(5));

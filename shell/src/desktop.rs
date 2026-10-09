@@ -15,6 +15,10 @@ pub struct Desktop {
     pub launcher_requested: bool,
     /// Likewise for the settings shortcut.
     pub settings_requested: bool,
+    /// Set when the compositor's lock shortcut was pressed.
+    pub lock_requested: bool,
+    /// Whether the compositor has the screen locked.
+    pub locked: bool,
     /// The monitors, as last reported.
     pub displays: Displays,
     heard: bool,
@@ -50,6 +54,8 @@ impl Desktop {
             state: DesktopState::default(),
             launcher_requested: false,
             settings_requested: false,
+            lock_requested: false,
+            locked: false,
             displays: Displays::default(),
             heard: false,
         })
@@ -66,6 +72,8 @@ impl Desktop {
                 Event::Launcher => self.launcher_requested = true,
                 Event::Settings => self.settings_requested = true,
                 Event::Displays(displays) => self.displays = displays,
+                Event::LockRequested => self.lock_requested = true,
+                Event::Locked(locked) => self.locked = locked,
             }
         }
     }

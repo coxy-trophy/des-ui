@@ -118,6 +118,9 @@ pub struct EdexComp {
     pub input_settings: edex_common::input::InputSettings,
     /// The keyboard layout and variant last given to the keymap compiler.
     pub keymap_applied: Option<(String, String)>,
+    /// While locked, only the shell is on screen, showing the lock screen, and the
+    /// keyboard is its alone.
+    pub locked: bool,
     pub display_override: Option<Vec<crate::monitors::Saved>>,
     /// Set while a new layout waits to be confirmed: what to go back to, and since when.
     pub display_pending: Option<(Option<Vec<crate::monitors::Saved>>, Instant)>,
@@ -193,6 +196,7 @@ impl EdexComp {
             fatal: None,
             input_settings: edex_common::input::InputSettings::default(),
             keymap_applied: None,
+            locked: false,
             display_override: None,
             display_pending: None,
             screenshot: None,

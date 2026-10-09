@@ -7,6 +7,7 @@ mod geo;
 mod globe;
 mod greeter;
 mod launcher;
+mod lock;
 mod panels;
 mod radio;
 mod settings;
@@ -43,10 +44,14 @@ Options:
   --font <FILE>        Font for prompt symbols (default: an installed Nerd Font, if any)
   --windowed           Run in a window instead of fullscreen
   --launcher           Start with the application launcher open
+  --split-terminal[=below]
+                       Start with the terminal split in two
   --settings[=SECTION] Start with the settings open, optionally on a section
                        (appearance, terminal, frame, displays, network, bluetooth,
                        keyboard, mouse, globe, sound, session)
   --list-apps          Print the applications the launcher would offer, and exit
+  --unlock             Unlock a locked screen from outside it, such as from a text
+                       console you have signed in on
   --greeter            Run as the login screen (under greetd; alone, as a preview)
   --set-avatar <FILE>  Use this picture on the login screen
   --set-location <LAT,LON[,NAME]>
@@ -62,13 +67,23 @@ struct App {
     theme: Theme,
     shell: String,
     tabs: Vec<TermTab>,
+    /// The tab in view; with the terminal split, the one on the left or on top.
     active: usize,
+    /// The tab in the second pane of a split terminal.
+    side: Option<usize>,
+    /// Whether that second pane has the keyboard.
+    side_focused: bool,
+    /// Whether the panes are one above the other rather than side by side.
+    stacked: bool,
     mon: SysMon,
     fs: FsView,
     /// The compositor connection; `None` when running as an ordinary window.
     desktop: Option<Desktop>,
     launcher: Launcher,
     settings: settings::Settings,
+    lock: lock::Lock,
+    /// Whether the compositor has confirmed the lock now showing.
+    lock_confirmed: bool,
     config: config::Config,
     /// The keyboard, mouse and touchpad settings, as last saved.
     input: edex_common::input::InputSettings,
@@ -105,11 +120,16 @@ impl App {
             shell,
             tabs: vec![first],
             active: 0,
+            side: None,
+            side_focused: false,
+            stacked: false,
             mon: SysMon::new(),
             fs: FsView::new(),
             desktop,
             launcher: Launcher::default(),
             settings: settings::Settings::default(),
+            lock: lock::Lock::new(),
+            lock_confirmed: false,
             geo: geo::Geo::start(config.lookups, config.location.clone()),
             local_panels: config.panels,
             config,
@@ -129,15 +149,65 @@ impl App {
         }
         let cwd = self
             .tabs
-            .get(self.active)
+            .get(self.focus_tab())
             .and_then(|t| t.cwd())
             .unwrap_or_else(|| PathBuf::from("/"));
         match TermTab::spawn(&self.shell, &cwd, self.ctx.clone(), self.config.scrollback) {
             Ok(tab) => {
                 self.tabs.push(tab);
-                self.active = self.tabs.len() - 1;
+                self.show_tab(self.tabs.len() - 1);
             }
             Err(e) => eprintln!("edex-rs: cannot open tab: {e}"),
+        }
+    }
+
+    /// The tab that has the keyboard.
+    fn focus_tab(&self) -> usize {
+        match self.side {
+            Some(side) if self.side_focused => side,
+            _ => self.active,
+        }
+    }
+
+    /// Brings a tab into view: in the pane it is already in, or else the pane in use.
+    fn show_tab(&mut self, index: usize) {
+        if self.side == Some(index) {
+            self.side_focused = true;
+        } else if index == self.active {
+            self.side_focused = false;
+        } else if self.side_focused {
+            self.side = Some(index);
+        } else {
+            self.active = index;
+        }
+    }
+
+    /// Splits the terminal in two, side by side or one above the other, with a new
+    /// tab in the second pane; or, when it is split, makes it whole again around the
+    /// pane in use. Both tabs stay open either way.
+    fn split_terminal(&mut self, stacked: bool) {
+        if let Some(side) = self.side.take() {
+            if self.side_focused {
+                self.active = side;
+            }
+            self.side_focused = false;
+            return;
+        }
+        let before = self.tabs.len();
+        self.side_focused = false;
+        let left = self.active;
+        self.new_tab();
+        // Out of tabs: put one that is already open in the second pane instead.
+        let second = if self.tabs.len() > before {
+            Some(self.tabs.len() - 1)
+        } else {
+            (0..self.tabs.len()).find(|index| *index != left)
+        };
+        self.active = left;
+        if let Some(second) = second {
+            self.side = Some(second);
+            self.side_focused = true;
+            self.stacked = stacked;
         }
     }
 
@@ -152,6 +222,19 @@ impl App {
         if let Some(desktop) = &mut self.desktop {
             desktop.send(Command::Terminal);
         }
+    }
+
+    /// Locks the screen, if a password can be checked to unlock it again.
+    fn lock_now(&mut self) {
+        if !lock::can_check() {
+            eprintln!("edex-rs: not locking: this system has no way to check the password");
+            return;
+        }
+        self.launcher.open = false;
+        self.settings.open = false;
+        self.lock.engage();
+        self.lock_confirmed = false;
+        self.send(Command::Lock);
     }
 
     fn send(&mut self, command: Command) {
@@ -232,6 +315,7 @@ impl App {
             Change::ApplyDisplays(choices) => self.send(Command::ApplyDisplays(choices)),
             Change::KeepDisplays => self.send(Command::KeepDisplays),
             Change::RevertDisplays => self.send(Command::RevertDisplays),
+            Change::Lock => self.lock_now(),
             Change::LogOut => ctx.send_viewport_cmd(ViewportCommand::Close),
         }
     }
@@ -254,7 +338,8 @@ impl App {
         self.new_tab();
         let words: Vec<String> = entry.exec.iter().map(|word| panels::shell_quote(word)).collect();
         let line = format!("{}\n", words.join(" "));
-        self.tabs[self.active].write(line.as_bytes());
+        let tab = self.focus_tab();
+        self.tabs[tab].write(line.as_bytes());
     }
 
     /// Implements `--screenshot`: captures one frame, writes it as a PPM, then quits.
@@ -312,18 +397,54 @@ impl App {
                     ctx.send_viewport_cmd(ViewportCommand::Close);
                     continue;
                 }
+                if modifiers.ctrl && modifiers.shift && matches!(key, Key::E | Key::O) {
+                    self.split_terminal(*key == Key::O);
+                    continue;
+                }
+                // With the terminal split, Ctrl+Shift and an arrow moves between panes.
+                let arrow = matches!(key, Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown);
+                if modifiers.ctrl && modifiers.shift && arrow && self.side.is_some() {
+                    self.side_focused = matches!(key, Key::ArrowRight | Key::ArrowDown);
+                    continue;
+                }
                 if modifiers.ctrl && *key == Key::Tab {
-                    self.active = if modifiers.shift {
-                        (self.active + count - 1) % count
-                    } else {
-                        (self.active + 1) % count
-                    };
+                    // The next tab for the pane in use, passing over the other pane's.
+                    let other = if self.side_focused { Some(self.active) } else { self.side };
+                    let step = if modifiers.shift { count - 1 } else { 1 };
+                    let mut next = self.focus_tab();
+                    for _ in 0..count {
+                        next = (next + step) % count;
+                        if Some(next) != other {
+                            break;
+                        }
+                    }
+                    if Some(next) != other {
+                        self.show_tab(next);
+                    }
                     continue;
                 }
             }
             rest.push(event);
         }
         rest
+    }
+}
+
+/// Where the tabs in view end up once tabs whose shells exited are removed. `alive`
+/// says which tabs remain. Returns the new first-pane tab and second-pane tab; the
+/// split ends if either of its tabs is gone.
+fn remap_panes(alive: &[bool], active: usize, side: Option<usize>) -> (usize, Option<usize>) {
+    let moved = |old: usize| alive.get(old).copied().unwrap_or(false).then(|| alive[..old].iter().filter(|a| **a).count());
+    let remaining = alive.iter().filter(|a| **a).count();
+    match (moved(active), side.and_then(moved)) {
+        (Some(active), side) => (active, side),
+        // The first pane's tab is gone: the second pane's takes over.
+        (None, Some(side)) => (side, None),
+        // Neither is left: the tab that was next to the one in view.
+        (None, None) => {
+            let before = alive[..active.min(alive.len())].iter().filter(|a| **a).count();
+            (before.min(remaining.saturating_sub(1)), None)
+        }
     }
 }
 
@@ -347,6 +468,7 @@ fn region<R>(
 struct BarActions {
     command: Option<Command>,
     open_tab: bool,
+    split_terminal: bool,
     toggle_launcher: bool,
 }
 
@@ -431,10 +553,10 @@ impl App {
                 name: if i == 0 { "main" } else { "term" },
                 detail: Some(&process),
                 badge: None,
-                selected: i == self.active && terminal_in_use,
+                selected: (i == self.active || Some(i) == self.side) && terminal_in_use,
             };
             if tab(ui, theme, look).clicked() {
-                self.active = i;
+                self.show_tab(i);
                 self.launcher.open = false;
                 self.settings.open = false;
                 actions.command = Some(Command::Terminal);
@@ -449,6 +571,21 @@ impl App {
                 self.launcher.open = false;
                 actions.command = Some(Command::Terminal);
             }
+        }
+
+        let split_hint = if self.side.is_some() {
+            "Make the terminal whole again (Ctrl+Shift+E)"
+        } else {
+            "Split the terminal: Ctrl+Shift+E side by side, Ctrl+Shift+O one above the other"
+        };
+        if ui::icon_button(ui, theme, Icon::SplitPane, 28.0, self.side.is_some())
+            .on_hover_text(split_hint)
+            .clicked()
+        {
+            actions.split_terminal = true;
+            self.launcher.open = false;
+            self.settings.open = false;
+            actions.command = Some(Command::Terminal);
         }
 
         if let Some(state) = state.filter(|state| !state.apps.is_empty()) {
@@ -551,23 +688,45 @@ impl eframe::App for App {
         for tab in &mut self.tabs {
             tab.pump();
         }
-        // Closing a tab to the left of the active one must not change which tab is shown.
-        let mut index = 0;
-        let mut active = self.active;
-        self.tabs.retain(|tab| {
-            if tab.exited && index < self.active {
-                active -= 1;
-            }
-            index += 1;
-            !tab.exited
-        });
+        // Tabs whose shell has exited go; the ones in view keep their places, and a
+        // split whose pane lost its tab becomes whole again.
+        let alive: Vec<bool> = self.tabs.iter().map(|tab| !tab.exited).collect();
+        let (active, side) = remap_panes(&alive, self.active, self.side);
+        self.tabs.retain(|tab| !tab.exited);
         if self.tabs.is_empty() {
             ctx.send_viewport_cmd(ViewportCommand::Close);
             return;
         }
-        self.active = active.min(self.tabs.len() - 1);
+        self.active = active;
+        self.side = side;
+        self.side_focused &= side.is_some();
 
         self.handle_screenshot(ctx);
+
+        // The lock screen comes before everything else, and while it is up nothing
+        // else is drawn or given any input.
+        let (asked, compositor_locked) = match &mut self.desktop {
+            Some(desktop) => (std::mem::take(&mut desktop.lock_requested), Some(desktop.locked)),
+            None => (false, None),
+        };
+        if asked && !self.lock.locked {
+            self.lock_now();
+        }
+        match compositor_locked {
+            // A shell started while the screen is locked takes the lock over.
+            Some(true) if !self.lock.locked => self.lock.engage(),
+            Some(true) => self.lock_confirmed = true,
+            // Unlocked from outside, with `edex-rs --unlock`.
+            Some(false) if self.lock.locked && self.lock_confirmed => self.lock.release(),
+            _ => {}
+        }
+        if self.lock.locked {
+            let theme = self.theme.clone();
+            if self.lock.show(ctx, &theme) {
+                self.send(Command::Unlock);
+            }
+            return;
+        }
         let events = self.take_shortcuts(ctx);
         let theme = self.theme.clone();
         let screen = ctx.screen_rect();
@@ -633,7 +792,7 @@ impl eframe::App for App {
                 if open.bottom {
                     let rect = Rect::from_min_max(workspace.left_bottom(), pos2(workspace.right(), status_top));
                     typed = region(ui, rect, vec2(24.0, 16.0), Layout::top_down(Align::Min), |ui| {
-                        let cwd = self.tabs[self.active].cwd();
+                        let cwd = self.tabs[self.focus_tab()].cwd();
                         self.fs.show(ui, &theme, cwd.as_deref())
                     });
                 }
@@ -646,6 +805,9 @@ impl eframe::App for App {
                 });
                 if actions.open_tab {
                     self.new_tab();
+                }
+                if actions.split_terminal {
+                    self.split_terminal(false);
                 }
                 if actions.toggle_launcher {
                     self.toggle_launcher();
@@ -660,7 +822,6 @@ impl eframe::App for App {
                 }
                 let inner = mine.shrink2(vec2(24.0, 18.0));
                 let inner = Rect::from_min_max(inner.min, inner.max.max(inner.min));
-                let response = ui.allocate_rect(inner, Sense::click_and_drag());
 
                 if self.settings.open {
                     let changes = region(ui, mine, vec2(0.0, 0.0), Layout::top_down(Align::Min), |ui| {
@@ -682,6 +843,51 @@ impl eframe::App for App {
                     return;
                 }
 
+                // One pane, or two with a gap and a rule between them.
+                let panes: Vec<(usize, Rect)> = match self.side {
+                    None => vec![(self.active, inner)],
+                    Some(side) => {
+                        let gap = 25.0;
+                        let (first, second) = if self.stacked {
+                            let height = ((inner.height() - gap) / 2.0).floor().max(1.0);
+                            let rule = inner.top() + height + gap / 2.0;
+                            ui.painter().hline(inner.x_range(), rule, Stroke::new(1.0, ui::LINE));
+                            (
+                                Rect::from_min_size(inner.min, vec2(inner.width(), height)),
+                                Rect::from_min_max(pos2(inner.left(), inner.top() + height + gap), inner.max),
+                            )
+                        } else {
+                            let width = ((inner.width() - gap) / 2.0).floor().max(1.0);
+                            let rule = inner.left() + width + gap / 2.0;
+                            ui.painter().vline(rule, inner.y_range(), Stroke::new(1.0, ui::LINE));
+                            (
+                                Rect::from_min_size(inner.min, vec2(width, inner.height())),
+                                Rect::from_min_max(pos2(inner.left() + width + gap, inner.top()), inner.max),
+                            )
+                        };
+                        vec![(self.active, first), (side, second)]
+                    }
+                };
+                let responses: Vec<Response> = panes
+                    .iter()
+                    .enumerate()
+                    .map(|(n, (_, rect))| ui.interact(*rect, ui.id().with(("terminal-pane", n)), Sense::click_and_drag()))
+                    .collect();
+                // A click in a pane gives it the keyboard.
+                for (n, response) in responses.iter().enumerate() {
+                    if panes.len() > 1 && (response.clicked() || response.drag_started()) {
+                        self.side_focused = n == 1;
+                    }
+                }
+                let focused = if self.side_focused && panes.len() > 1 { 1 } else { 0 };
+                if panes.len() > 1 {
+                    // A mark over the pane in use.
+                    let rect = panes[focused].1;
+                    let mark = Rect::from_min_size(pos2(rect.left(), rect.top() - 10.0), vec2(36.0, 2.0));
+                    ui.painter().rect_filled(mark, 0.0, theme.main);
+                }
+                let response = &responses[focused];
+
                 // The terminal owns the keyboard: keep focus on it and stop egui from
                 // using Tab, arrows and Escape for its own widget navigation.
                 ui.memory_mut(|m| {
@@ -698,12 +904,15 @@ impl eframe::App for App {
                 });
 
                 let (alt_held, shift_held) = ui.input(|i| (i.modifiers.alt, i.modifiers.shift));
-                let tab = &mut self.tabs[self.active];
+                let tab = &mut self.tabs[panes[focused].0];
                 tab.handle_events(&events, alt_held, shift_held, ctx);
                 if let Some(text) = typed.take() {
                     tab.write(text.as_bytes());
                 }
-                tab.show(ui, inner, &theme, &response, &self.config.term_look());
+                let look = self.config.term_look();
+                for (n, (index, rect)) in panes.iter().enumerate() {
+                    self.tabs[*index].show(ui, *rect, &theme, &responses[n], &look, n == focused);
+                }
             });
         if let (Some(command), Some(desktop)) = (command, self.desktop.as_mut()) {
             desktop.send(command);
@@ -846,6 +1055,8 @@ fn main() -> eframe::Result {
     let mut font = None;
     let mut launcher = false;
     let mut greeter = false;
+    let mut locked = false;
+    let mut split = None;
     let mut settings: Option<String> = None;
     let mut config = config::Config::load();
     let mut args = std::env::args().skip(1);
@@ -854,6 +1065,31 @@ fn main() -> eframe::Result {
             "--windowed" => windowed = true,
             "--launcher" => launcher = true,
             "--greeter" => greeter = true,
+            "--locked" => locked = true,
+            "--split-terminal" => split = Some(false),
+            "--split-terminal=below" => split = Some(true),
+            "--unlock" => {
+                // Every compositor of this user's: there is normally one.
+                let dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_default();
+                let mut reached = 0;
+                for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if name.starts_with("edex-comp-") && name.ends_with(".sock") {
+                        if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(entry.path()) {
+                            use std::io::Write;
+                            if stream.write_all(Command::Unlock.encode().as_bytes()).is_ok() {
+                                reached += 1;
+                            }
+                        }
+                    }
+                }
+                if reached == 0 {
+                    eprintln!("edex-rs: found no running desktop to unlock in {}", dir.display());
+                    std::process::exit(1);
+                }
+                println!("Unlocked.");
+                return Ok(());
+            }
             "--set-avatar" => {
                 let outcome = match args.next() {
                     Some(file) => greeter::set_avatar(std::path::Path::new(&file)),
@@ -969,6 +1205,12 @@ fn main() -> eframe::Result {
             let symbols = font.or_else(find_nerd_font);
             ui::install_fonts(&cc.egui_ctx, symbols.as_deref(), config.terminal_font.as_deref());
             let mut app = App::new(cc.egui_ctx.clone(), theme, config, symbols, screenshot)?;
+            if locked {
+                app.lock.engage();
+            }
+            if let Some(stacked) = split {
+                app.split_terminal(stacked);
+            }
             if let Some(section) = &settings {
                 app.settings.open_at(&app.config.clone(), section);
             }
@@ -978,4 +1220,37 @@ fn main() -> eframe::Result {
             Ok(Box::new(app))
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::remap_panes;
+
+    #[test]
+    fn tabs_in_view_keep_their_places_when_others_close() {
+        // Nothing closed.
+        assert_eq!(remap_panes(&[true, true, true], 1, Some(2)), (1, Some(2)));
+        // A tab to the left closes: both shift down.
+        assert_eq!(remap_panes(&[false, true, true], 1, Some(2)), (0, Some(1)));
+        // A tab between them closes.
+        assert_eq!(remap_panes(&[true, false, true], 0, Some(2)), (0, Some(1)));
+    }
+
+    #[test]
+    fn a_split_ends_when_one_of_its_tabs_closes() {
+        // The second pane's tab closes: whole again, on the first.
+        assert_eq!(remap_panes(&[true, true, false], 1, Some(2)), (1, None));
+        // The first pane's tab closes: the second pane's tab takes over.
+        assert_eq!(remap_panes(&[true, false, true], 1, Some(2)), (1, None));
+        // Both close: the nearest tab left.
+        assert_eq!(remap_panes(&[true, false, false], 1, Some(2)), (0, None));
+        assert_eq!(remap_panes(&[false, false, true], 0, Some(1)), (0, None));
+    }
+
+    #[test]
+    fn without_a_split_the_tab_in_view_follows_its_neighbours() {
+        assert_eq!(remap_panes(&[true, false, true], 1, None), (1, None));
+        assert_eq!(remap_panes(&[true, true, false], 2, None), (1, None));
+        assert_eq!(remap_panes(&[false, true], 1, None), (0, None));
+    }
 }

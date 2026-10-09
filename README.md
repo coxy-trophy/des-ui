@@ -24,6 +24,7 @@ Super (or Ctrl+Alt, which works when running in a window):
 
 - **Space** — open the launcher: type to search, Enter to open, Esc to cancel
 - **,** — open the settings
+- **L** — lock the screen
 - **Tab** — switch between the terminal and the applications on this display
 - **S** — split the workspace between two windows, or make it whole again
 - **Left / Right** — give the keyboard to that half of a split
@@ -55,6 +56,21 @@ come from looking addresses up at get.geojs.io, which tells that service the pub
 addresses this machine talks to; each is asked about once and kept in
 `~/.cache/edex-rs/places.tsv`. Your own position is guessed from your address
 unless you set it.
+
+## The terminal
+
+Ctrl+Shift+T opens a tab and Ctrl+Tab moves between them. The terminal can also be
+split in two, each half showing a tab of its own:
+
+- **Ctrl+Shift+E** — split side by side; again to make it whole
+- **Ctrl+Shift+O** — split one above the other
+- **Ctrl+Shift+arrow** — give the keyboard to the pane in that direction, as does a
+  click in it
+- **Ctrl+Tab** — change the tab in the pane in use
+
+The small divided-frame button beside `+` does the same as Ctrl+Shift+E. Both tabs
+stay open when the split ends. This is separate from Super+S, which shares the
+workspace with an application.
 
 ## Settings
 
@@ -113,6 +129,16 @@ from the launcher print goes to `apps.log` next to it.
 Ways out if something goes wrong: **Ctrl+Alt+Backspace** ends the session, and
 **Ctrl+Alt+F1…F12** switch virtual terminals.
 
+## Locking
+
+**Super+L**, or `LOCK NOW` under Session in the settings, hides everything behind
+your password; what was running keeps running. While locked the compositor shows
+nothing but the lock screen and sends it every key, so no shortcut reaches what is
+behind it. The password is checked with the system's own helper, `unix_chkpwd`.
+
+If the lock screen ever cannot be unlocked, press Ctrl+Alt+F3, sign in on the text
+console, and run `edex-rs --unlock`.
+
 ## Its own login screen
 
 Optional, and separate from the above, because it changes how the machine boots:
@@ -157,7 +183,7 @@ run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`
 - `shell/src/globe.rs`, `geo.rs` — the rotating globe and the places on it
 - `shell/src/settings.rs`, `config.rs` — the settings screen and the file behind it
 - `shell/src/radio.rs` — Wi-Fi and Bluetooth
-- `shell/src/greeter.rs` — the login screen
+- `shell/src/greeter.rs`, `lock.rs` — the login screen and the lock screen
 - `common/src/input.rs` — keyboard, mouse and touchpad settings
 - `shell/src/apps.rs`, `launcher.rs` — installed applications and the launcher
 - `shell/src/theme.rs` — eDEX-UI theme loader
@@ -176,8 +202,8 @@ run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`
 - Dialogs at their natural size; sharing the middle-click selection with X11 applications
 - Turning a display off; placing displays above one another; scaling
 - Wired and VPN connections in the settings; Bluetooth devices that need a code
-- On the login screen: unlocking the keyring, and accounts that need more than
-  a password
+- Locking by itself after a while, or when the lid closes
+- On the login screen: accounts that need more than a password
 - From the original: on-screen keyboard, sound effects, mouse reporting to
   terminal apps
 
