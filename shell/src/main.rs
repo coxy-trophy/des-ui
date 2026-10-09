@@ -5,6 +5,7 @@ mod config;
 mod desktop;
 mod geo;
 mod globe;
+mod greeter;
 mod launcher;
 mod panels;
 mod radio;
@@ -46,6 +47,8 @@ Options:
                        (appearance, terminal, frame, displays, network, bluetooth,
                        keyboard, mouse, globe, sound, session)
   --list-apps          Print the applications the launcher would offer, and exit
+  --greeter            Run as the login screen (under greetd; alone, as a preview)
+  --set-avatar <FILE>  Use this picture on the login screen
   --set-location <LAT,LON[,NAME]>
                        Mark this place as yours on the globe, instead of the one
                        guessed from your address; 'auto' goes back to guessing
@@ -842,6 +845,7 @@ fn main() -> eframe::Result {
     let mut screenshot = None;
     let mut font = None;
     let mut launcher = false;
+    let mut greeter = false;
     let mut settings: Option<String> = None;
     let mut config = config::Config::load();
     let mut args = std::env::args().skip(1);
@@ -849,6 +853,21 @@ fn main() -> eframe::Result {
         match arg.as_str() {
             "--windowed" => windowed = true,
             "--launcher" => launcher = true,
+            "--greeter" => greeter = true,
+            "--set-avatar" => {
+                let outcome = match args.next() {
+                    Some(file) => greeter::set_avatar(std::path::Path::new(&file)),
+                    None => Err("--set-avatar needs a picture file".to_string()),
+                };
+                match outcome {
+                    Ok(path) => println!("Saved to {}. The login screen shows it from now on.", path.display()),
+                    Err(e) => {
+                        eprintln!("edex-rs: {e}");
+                        std::process::exit(1);
+                    }
+                }
+                return Ok(());
+            }
             "--settings" => settings = Some(String::new()),
             section if section.starts_with("--settings=") => {
                 settings = Some(section["--settings=".len()..].to_string());
@@ -915,6 +934,25 @@ fn main() -> eframe::Result {
     }
 
     let theme = Theme::load(&config.theme);
+    if greeter {
+        let options = eframe::NativeOptions {
+            viewport: ViewportBuilder::default()
+                .with_title("DEs-UI login")
+                .with_app_id("edex-rs-greeter")
+                .with_inner_size([1280.0, 760.0])
+                .with_fullscreen(!windowed),
+            ..Default::default()
+        };
+        return eframe::run_native(
+            "edex-rs-greeter",
+            options,
+            Box::new(move |cc| {
+                apply_style(&cc.egui_ctx, &theme);
+                ui::install_fonts(&cc.egui_ctx, None, None);
+                Ok(Box::new(greeter::Greeter::new(theme, screenshot)))
+            }),
+        );
+    }
     let options = eframe::NativeOptions {
         viewport: ViewportBuilder::default()
             .with_title("edex-rs")

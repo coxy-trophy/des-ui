@@ -113,6 +113,27 @@ from the launcher print goes to `apps.log` next to it.
 Ways out if something goes wrong: **Ctrl+Alt+Backspace** ends the session, and
 **Ctrl+Alt+F1…F12** switch virtual terminals.
 
+## Its own login screen
+
+Optional, and separate from the above, because it changes how the machine boots:
+
+    ./install-login.sh
+
+That installs greetd, a small login manager, and makes the DEs-UI login screen the
+machine's own in place of GDM, from the next boot. `./uninstall-login.sh` puts GDM
+back. To see the screen without any of that: `edex-rs --greeter --windowed`.
+
+The screen shows a picture, a name and a password line. The picture is a pattern
+made from the name unless you give it one: `edex-rs --set-avatar <file>`. F1 changes
+the session, Tab the account when there are several, and the three marks at the
+bottom right suspend, restart and shut down, each on a second click.
+
+The screen is shown by `edex-comp` itself; its log is
+`/var/lib/edex-rs/greeter/login.log`. If it cannot start, a text login takes its
+place. If the machine ever comes
+up with no usable login at all, press Ctrl+Alt+F3, sign in on the text console, and
+run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`.
+
 ## Working inside it while changing it
 
 - `./dev.sh` builds the working copy and runs it in a window inside the running
@@ -136,6 +157,7 @@ Ways out if something goes wrong: **Ctrl+Alt+Backspace** ends the session, and
 - `shell/src/globe.rs`, `geo.rs` — the rotating globe and the places on it
 - `shell/src/settings.rs`, `config.rs` — the settings screen and the file behind it
 - `shell/src/radio.rs` — Wi-Fi and Bluetooth
+- `shell/src/greeter.rs` — the login screen
 - `common/src/input.rs` — keyboard, mouse and touchpad settings
 - `shell/src/apps.rs`, `launcher.rs` — installed applications and the launcher
 - `shell/src/theme.rs` — eDEX-UI theme loader
@@ -154,7 +176,8 @@ Ways out if something goes wrong: **Ctrl+Alt+Backspace** ends the session, and
 - Dialogs at their natural size; sharing the middle-click selection with X11 applications
 - Turning a display off; placing displays above one another; scaling
 - Wired and VPN connections in the settings; Bluetooth devices that need a code
-- A login screen of its own (designed, not built: it still uses the system's)
+- On the login screen: unlocking the keyring, and accounts that need more than
+  a password
 - From the original: on-screen keyboard, sound effects, mouse reporting to
   terminal apps
 

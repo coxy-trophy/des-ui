@@ -631,6 +631,7 @@ dependencies = [
  "chrono",
  "edex-common",
  "eframe",
+ "image",
  "portable-pty",
  "serde",
  "serde_json",
@@ -1313,6 +1314,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
