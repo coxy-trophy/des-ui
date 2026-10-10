@@ -9,6 +9,7 @@
 //! - `launcher` when the user asks for the application launcher;
 //! - `settings` when the user asks for the settings;
 //! - `music` when the user asks for the music player;
+//! - `notifications` when the user asks for the list of notifications;
 //! - `lock` when the user asks for the screen to be locked, which the shell answers
 //!   with its own `lock` once it is ready to show the lock screen;
 //! - `locked <0|1>` whenever the screen becomes locked or unlocked;
@@ -17,7 +18,7 @@
 //!   <modes it offers, comma-separated>`. A mode is `<width>x<height>@<millihertz>`.
 //!
 //! The shell sends `activate <n>`, `close <n>`, `move <n>`, `terminal`, `split`,
-//! `fullscreen`, `lock`, `unlock`, `panel <left|right|bottom>`, `reload-input` (the input settings in the
+//! `toast <x y w h|none>`, `fullscreen`, `lock`, `unlock`, `panel <left|right|bottom>`, `reload-input` (the input settings in the
 //! configuration file changed), `displays-keep`, `displays-revert`, or
 //! `displays-apply` followed by one `<name>=<mode>` per monitor, left to right, with a
 //! `*` after the one that is to be the main display.
@@ -268,6 +269,8 @@ pub enum Event {
     Settings,
     /// The music shortcut was pressed.
     Music,
+    /// The notifications shortcut was pressed.
+    Notifications,
     /// The lock shortcut was pressed.
     LockRequested,
     /// The screen is now locked, or no longer.
@@ -279,6 +282,7 @@ impl Event {
     pub const LAUNCHER: &str = "launcher\n";
     pub const SETTINGS: &str = "settings\n";
     pub const MUSIC: &str = "music\n";
+    pub const NOTIFICATIONS: &str = "notifications\n";
     pub const LOCK_REQUESTED: &str = "lock\n";
 
     pub fn locked(locked: bool) -> String {
@@ -290,6 +294,7 @@ impl Event {
             "launcher" => return Some(Event::Launcher),
             "settings" => return Some(Event::Settings),
             "music" => return Some(Event::Music),
+            "notifications" => return Some(Event::Notifications),
             "lock" => return Some(Event::LockRequested),
             "locked 0" => return Some(Event::Locked(false)),
             "locked 1" => return Some(Event::Locked(true)),
@@ -330,6 +335,9 @@ pub enum Command {
     Lock,
     /// The password was given: bring everything back.
     Unlock,
+    /// The shell is showing notifications in this part of its window (x, y, width,
+    /// height), which is to be seen above any application; or is showing none.
+    Toast(Option<(i32, i32, i32, i32)>),
 }
 
 impl Command {
@@ -349,6 +357,8 @@ impl Command {
             Command::ReloadInput => "reload-input\n".to_string(),
             Command::Lock => "lock\n".to_string(),
             Command::Unlock => "unlock\n".to_string(),
+            Command::Toast(None) => "toast none\n".to_string(),
+            Command::Toast(Some((x, y, w, h))) => format!("toast {x} {y} {w} {h}\n"),
             Command::ApplyDisplays(choices) => {
                 let mut line = "displays-apply".to_string();
                 for choice in choices {
@@ -380,6 +390,14 @@ impl Command {
                 })
                 .collect();
             return choices.filter(|choices| !choices.is_empty()).map(Command::ApplyDisplays);
+        }
+        if let Some(area) = line.trim_end().strip_prefix("toast ") {
+            if area == "none" {
+                return Some(Command::Toast(None));
+            }
+            let numbers: Vec<i32> = area.split(' ').map(str::parse).collect::<Result<_, _>>().ok()?;
+            let [x, y, w, h] = numbers[..] else { return None };
+            return Some(Command::Toast(Some((x, y, w, h))));
         }
         let command = match (words.next()?, words.next()) {
             ("activate", Some(index)) => Command::Activate(index.parse().ok()?),
@@ -517,6 +535,7 @@ mod tests {
         assert_eq!(Event::decode(Event::LAUNCHER), Some(Event::Launcher));
         assert_eq!(Event::decode(Event::SETTINGS), Some(Event::Settings));
         assert_eq!(Event::decode(Event::MUSIC), Some(Event::Music));
+        assert_eq!(Event::decode(Event::NOTIFICATIONS), Some(Event::Notifications));
         assert_eq!(Event::decode(Event::LOCK_REQUESTED), Some(Event::LockRequested));
         assert_eq!(Event::decode(&Event::locked(true)), Some(Event::Locked(true)));
         assert_eq!(Event::decode(&Event::locked(false)), Some(Event::Locked(false)));
@@ -541,6 +560,8 @@ mod tests {
             Command::ReloadInput,
             Command::Lock,
             Command::Unlock,
+            Command::Toast(None),
+            Command::Toast(Some((1500, 52, 380, 240))),
             Command::ApplyDisplays(vec![
                 DisplayChoice { name: "eDP-1".into(), mode: mode(1920, 1080, 60052), main: false },
                 DisplayChoice { name: "HDMI-A-1".into(), mode: mode(3840, 2160, 30000), main: true },

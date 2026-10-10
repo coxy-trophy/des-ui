@@ -35,6 +35,8 @@ pub struct Config {
     pub lookups: bool,
     /// This machine's position, when set by hand.
     pub location: Option<Place>,
+    /// Whether notifications are kept off the screen as they arrive.
+    pub do_not_disturb: bool,
     /// Which panels are open when the desktop starts.
     pub panels: Panels,
 }
@@ -54,6 +56,7 @@ impl Default for Config {
             globe_rotation: true,
             lookups: true,
             location: None,
+            do_not_disturb: false,
             panels: Panels::default(),
         }
     }
@@ -102,6 +105,7 @@ impl Config {
                     }
                 }
                 "globe_rotation" => config.globe_rotation = value != "off",
+                "do_not_disturb" => config.do_not_disturb = value == "on",
                 "geo" => config.lookups = value != "off",
                 "location" => config.location = parse_location(value),
                 "panels" => {

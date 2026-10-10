@@ -22,6 +22,7 @@ enum Action {
     Launcher,
     Settings,
     Music,
+    Notifications,
     Lock,
     /// Super with a key that is no shortcut: swallowed, so that it types nothing.
     Ignore,
@@ -210,6 +211,7 @@ impl DesComp {
                             Keysym::space => FilterResult::Intercept(Action::Launcher),
                             Keysym::comma => FilterResult::Intercept(Action::Settings),
                             Keysym::m | Keysym::M => FilterResult::Intercept(Action::Music),
+                            Keysym::n | Keysym::N => FilterResult::Intercept(Action::Notifications),
                             Keysym::l | Keysym::L => FilterResult::Intercept(Action::Lock),
                             Keysym::o | Keysym::O => FilterResult::Intercept(Action::MoveDisplay),
                             Keysym::R if modifiers.shift => FilterResult::Intercept(Action::RestartShell),
@@ -242,6 +244,7 @@ impl DesComp {
                     Some(Action::Launcher) => self.open_launcher(),
                     Some(Action::Settings) => self.open_settings(),
                     Some(Action::Music) => self.open_music(),
+                    Some(Action::Notifications) => self.ask_notifications(),
                     Some(Action::Lock) => self.request_lock(),
                     Some(Action::Ignore) => {}
                     Some(Action::RestartShell) => self.restart_shell(),
@@ -313,7 +316,9 @@ impl DesComp {
                 let button_state = event.state();
 
                 // Click to focus: the keyboard follows the display that was clicked.
-                if ButtonState::Pressed == button_state && !pointer.is_grabbed() {
+                // A click on a toast is for the toast alone.
+                let on_toast = self.toast_area().is_some_and(|area| area.to_f64().contains(pointer.current_location()));
+                if ButtonState::Pressed == button_state && !pointer.is_grabbed() && !on_toast {
                     self.focus_at(pointer.current_location());
                 };
 

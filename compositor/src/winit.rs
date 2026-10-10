@@ -6,7 +6,7 @@ use smithay::{
         egl::EGLDevice,
         renderer::{
             ExportMem, ImportDma, damage::OutputDamageTracker,
-            element::surface::WaylandSurfaceRenderElement, gles::GlesRenderer,
+            gles::GlesRenderer,
         },
         winit::{self, WinitEvent},
     },
@@ -112,25 +112,23 @@ pub fn init_winit(
                 }
 
                 let capture = state.screenshot.is_some() && state.start_time.elapsed() > Duration::from_secs(5);
+                let toast_area = state.toast_area();
+                let primary = state.screens.first().map(|screen| screen.loc);
                 let backend = state.backend.as_mut().unwrap();
                 let size = backend.window_size();
                 let damage = Rectangle::from_size(size);
 
                 {
                     let (renderer, mut framebuffer) = backend.bind().unwrap();
-                    smithay::desktop::space::render_output::<
-                        _,
-                        WaylandSurfaceRenderElement<GlesRenderer>,
-                        _,
-                        _,
-                    >(
+                    let toasts = crate::toast::elements(renderer, state.shell.as_ref(), toast_area, primary, &state.toast_id, (0, 0).into());
+                    smithay::desktop::space::render_output::<_, crate::toast::ToastElement, _, _>(
                         &output,
                         renderer,
                         &mut framebuffer,
                         1.0,
                         0,
                         [&state.space],
-                        &[],
+                        &toasts,
                         &mut damage_tracker,
                         [0.0, 0.0, 0.0, 1.0],
                     )

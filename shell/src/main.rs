@@ -9,6 +9,7 @@ mod greeter;
 mod launcher;
 mod lock;
 mod music;
+mod notify;
 mod panels;
 mod radio;
 mod settings;
@@ -84,6 +85,11 @@ struct App {
     launcher: Launcher,
     settings: settings::Settings,
     music: music::Music,
+    notices: notify::Center,
+    /// What the desktop itself gives notice of, as last seen.
+    watch: notify::Watch,
+    /// Where the compositor was last told the toasts are.
+    toast_area: Option<Option<(i32, i32, i32, i32)>>,
     lock: lock::Lock,
     /// Whether the compositor has confirmed the lock now showing.
     lock_confirmed: bool,
@@ -118,6 +124,7 @@ impl App {
         let first = TermTab::spawn(&shell, &home, ctx.clone(), config.scrollback)?;
         let desktop = Desktop::connect(ctx.clone());
         let music = music::Music::new(ctx.clone());
+        let notices = notify::Center::new(ctx.clone(), config.do_not_disturb, true);
         Ok(App {
             ctx,
             theme,
@@ -133,6 +140,9 @@ impl App {
             launcher: Launcher::default(),
             settings: settings::Settings::default(),
             music,
+            notices,
+            watch: notify::Watch::default(),
+            toast_area: None,
             lock: lock::Lock::new(),
             lock_confirmed: false,
             geo: geo::Geo::start(config.lookups, config.location.clone()),
@@ -221,10 +231,12 @@ impl App {
         if self.settings.open {
             self.settings.open = false;
             self.music.open = false;
+            self.notices.open = false;
             return;
         }
         self.launcher.open = false;
         self.music.open = false;
+        self.notices.open = false;
         self.settings.open(&self.config);
         if let Some(desktop) = &mut self.desktop {
             desktop.send(Command::Terminal);
@@ -235,9 +247,33 @@ impl App {
     fn toggle_music(&mut self) {
         self.launcher.open = false;
         self.settings.open = false;
+        self.notices.open = false;
         self.music.toggle();
         if self.music.open {
             self.send(Command::Terminal);
+        }
+    }
+
+    /// Opens or closes the list of notifications, which also takes the terminal's place.
+    fn toggle_notices(&mut self) {
+        self.launcher.open = false;
+        self.settings.open = false;
+        self.music.open = false;
+        self.notices.toggle();
+        if self.notices.open {
+            self.send(Command::Terminal);
+        }
+    }
+
+    /// Brings into view the application a notification came from, if it has a window.
+    fn follow(&mut self, chosen: notify::Chosen) {
+        let name = chosen.app.to_lowercase();
+        let index = self.desktop.as_ref().and_then(|desktop| {
+            desktop.state.apps.iter().position(|app| !name.is_empty() && app.title.to_lowercase().contains(&name))
+        });
+        if let Some(index) = index {
+            self.notices.open = false;
+            self.send(Command::Activate(index));
         }
     }
 
@@ -250,6 +286,7 @@ impl App {
         self.launcher.open = false;
         self.settings.open = false;
         self.music.open = false;
+        self.notices.open = false;
         self.lock.engage();
         self.lock_confirmed = false;
         self.send(Command::Lock);
@@ -343,6 +380,7 @@ impl App {
     fn toggle_launcher(&mut self) {
         self.settings.open = false;
         self.music.open = false;
+        self.notices.open = false;
         self.launcher.toggle();
         if self.launcher.open {
             if let Some(desktop) = &mut self.desktop {
@@ -414,6 +452,10 @@ impl App {
                 }
                 if modifiers.ctrl && modifiers.shift && *key == Key::M {
                     self.toggle_music();
+                    continue;
+                }
+                if modifiers.ctrl && modifiers.shift && *key == Key::N {
+                    self.toggle_notices();
                     continue;
                 }
                 if modifiers.ctrl && modifiers.shift && *key == Key::Q {
@@ -565,7 +607,7 @@ impl App {
         let mut actions = BarActions::default();
         ui.spacing_mut().item_spacing.x = 4.0;
         let covered = state.and_then(|s| s.covering()).is_some();
-        let terminal_in_use = !covered && !self.launcher.open && !self.settings.open && !self.music.open;
+        let terminal_in_use = !covered && !self.launcher.open && !self.settings.open && !self.music.open && !self.notices.open;
 
         for i in 0..self.tabs.len() {
             let process = self.tabs[i]
@@ -583,6 +625,7 @@ impl App {
                 self.launcher.open = false;
                 self.settings.open = false;
                 self.music.open = false;
+                self.notices.open = false;
                 actions.command = Some(Command::Terminal);
             }
         }
@@ -610,6 +653,7 @@ impl App {
             self.launcher.open = false;
             self.settings.open = false;
             self.music.open = false;
+            self.notices.open = false;
             actions.command = Some(Command::Terminal);
         }
 
@@ -624,12 +668,13 @@ impl App {
                     detail: None,
                     badge: (state.screens > 1).then(|| (app.screen + 1).to_string()),
                     selected: app.place != Place::Hidden
-                        && !((self.launcher.open || self.settings.open || self.music.open) && app.screen == 0),
+                        && !((self.launcher.open || self.settings.open || self.music.open || self.notices.open) && app.screen == 0),
                 };
                 if tab(ui, theme, look).clicked() {
                     self.launcher.open = false;
                     self.settings.open = false;
                     self.music.open = false;
+                    self.notices.open = false;
                     actions.command = Some(Command::Activate(i));
                 }
                 // The application in use carries its own controls.
@@ -690,17 +735,26 @@ impl eframe::App for App {
             if std::mem::take(&mut desktop.launcher_requested) && !self.launcher.open {
                 self.settings.open = false;
                 self.music.open = false;
+                self.notices.open = false;
                 self.launcher.open();
             }
             if std::mem::take(&mut desktop.settings_requested) && !self.settings.open {
                 self.launcher.open = false;
                 self.music.open = false;
+                self.notices.open = false;
                 self.settings.open(&self.config);
             }
             if std::mem::take(&mut desktop.music_requested) && !self.music.open {
                 self.launcher.open = false;
                 self.settings.open = false;
+                self.notices.open = false;
                 self.music.open = true;
+            }
+            if std::mem::take(&mut desktop.notifications_requested) && !self.notices.open {
+                self.launcher.open = false;
+                self.settings.open = false;
+                self.music.open = false;
+                self.notices.open = true;
             }
             // Bring the frame in line with the saved choice of panels: once at the
             // start, and again whenever that choice is changed in the settings.
@@ -753,7 +807,15 @@ impl eframe::App for App {
             Some(false) if self.lock.locked && self.lock_confirmed => self.lock.release(),
             _ => {}
         }
+        self.notices.pump();
+        let screens = self.desktop.as_ref().filter(|desktop| desktop.connected()).map(|desktop| desktop.state.screens);
+        self.watch.check(&mut self.notices, self.mon.battery, !self.mon.ip.is_empty(), screens);
         if self.lock.locked {
+            // Nothing is shown over the lock; what arrives waits in the list.
+            if self.toast_area != Some(None) {
+                self.toast_area = Some(None);
+                self.send(Command::Toast(None));
+            }
             let theme = self.theme.clone();
             if self.lock.show(ctx, &theme) {
                 self.send(Command::Unlock);
@@ -779,6 +841,8 @@ impl eframe::App for App {
             Some("SETTINGS")
         } else if self.music.open {
             Some("MUSIC")
+        } else if self.notices.open {
+            Some("NOTIFICATIONS")
         } else {
             None
         };
@@ -797,9 +861,12 @@ impl eframe::App for App {
             .show(ctx, |ui| {
                 let status = Rect::from_min_max(pos2(screen.left(), status_top), screen.max);
                 let toggled = region(ui, status, vec2(24.0, 0.0), Layout::left_to_right(Align::Center), |ui| {
-                    panels::status(ui, &theme, &self.mon, state.as_ref(), open, overlay)
+                    panels::status(ui, &theme, &self.mon, state.as_ref(), open, overlay, self.notices.count())
                 });
-                let (toggled, settings_clicked, music_clicked) = toggled;
+                let (toggled, settings_clicked, music_clicked, notices_clicked) = toggled;
+                if notices_clicked {
+                    self.toggle_notices();
+                }
                 if settings_clicked {
                     self.toggle_settings();
                 }
@@ -881,6 +948,20 @@ impl eframe::App for App {
                     region(ui, mine, vec2(0.0, 0.0), Layout::top_down(Align::Min), |ui| {
                         self.music.show(ui, mine, &theme)
                     });
+                    return;
+                }
+                if self.notices.open {
+                    let (chosen, quiet) = region(ui, mine, vec2(0.0, 0.0), Layout::top_down(Align::Min), |ui| {
+                        self.notices.show(ui, mine, &theme)
+                    });
+                    if let Some(quiet) = quiet {
+                        if let Err(e) = config::set("do_not_disturb", quiet.then_some("on")) {
+                            eprintln!("des-ui: cannot save the setting: {e}");
+                        }
+                    }
+                    if let Some(chosen) = chosen {
+                        self.follow(chosen);
+                    }
                     return;
                 }
                 if self.launcher.open {
@@ -983,6 +1064,20 @@ impl eframe::App for App {
             if open.bottom {
                 lines.hline(workspace.x_range(), workspace.bottom(), line);
             }
+        }
+
+        // Toasts hang from the top right corner of the workspace. The compositor is
+        // told where, so that it shows them above whatever application is open.
+        let (covered, chosen) = self.notices.toasts(ctx, &theme, workspace.right_top() + vec2(-16.0, 12.0));
+        let area = covered.map(|rect| {
+            (rect.left().floor() as i32, rect.top().floor() as i32, rect.width().ceil() as i32 + 1, rect.height().ceil() as i32 + 1)
+        });
+        if self.toast_area != Some(area) {
+            self.toast_area = Some(area);
+            self.send(Command::Toast(area));
+        }
+        if let Some(chosen) = chosen {
+            self.follow(chosen);
         }
 
         // Every further display gets a window of its own, which the compositor puts

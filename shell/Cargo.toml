@@ -7,6 +7,7 @@ description = "The DEs-UI shell: a sci-fi terminal desktop"
 
 [dependencies]
 anyhow = "1.0.104"
+zbus = "5"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 eframe = { version = "0.31", default-features = false, features = ["glow", "wayland", "x11", "default_fonts"] }
 portable-pty = "0.9.0"

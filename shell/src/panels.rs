@@ -322,6 +322,7 @@ pub fn right(
         ("Launcher", "SPACE"),
         ("Settings", ","),
         ("Music", "M"),
+        ("Notifications", "N"),
         ("Lock", "L"),
         ("Next application", "TAB"),
         ("Split the workspace", "S"),
@@ -350,7 +351,8 @@ pub fn status(
     desktop: Option<&DesktopState>,
     panels: Panels,
     overlay: Option<&str>,
-) -> (Option<Panel>, bool, bool) {
+    notices: usize,
+) -> (Option<Panel>, bool, bool, bool) {
     let mut toggled = None;
     ui.spacing_mut().item_spacing.x = 20.0;
     ui::tracked(ui, "DEs-UI", ui::display_bold(11.0), theme.main, 3.0);
@@ -370,6 +372,12 @@ pub fn status(
     };
     let settings_clicked = way_in(ui, "SETTINGS", "Settings (Super+,)");
     let music_clicked = way_in(ui, "MUSIC", "Music (Super+M)");
+    let notices_clicked = way_in(ui, "NOTIFICATIONS", "Notifications (Super+N)");
+    if notices > 0 {
+        // Close up to the word it counts.
+        ui.add_space(-14.0);
+        ui::text(ui, &notices.to_string(), ui::mono(11.0), theme.main);
+    }
 
     let holder = match (overlay, desktop.and_then(|d| d.focus.and_then(|index| d.apps.get(index)))) {
         (Some(overlay), _) => overlay.to_string(),
@@ -415,7 +423,7 @@ pub fn status(
             }
         }
     });
-    (toggled, settings_clicked, music_clicked)
+    (toggled, settings_clicked, music_clicked, notices_clicked)
 }
 
 /// What a further display shows while no application is on it.

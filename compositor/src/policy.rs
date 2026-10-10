@@ -321,6 +321,7 @@ impl DesComp {
         if self.shell.as_ref().is_some_and(|w| is_toplevel(w, surface)) {
             // Whether this ends the session is decided when the shell's process exits.
             tracing::info!("shell window closed");
+            self.toast = None;
             if let Some(window) = self.shell.take() {
                 self.space.unmap_elem(&window);
             }
@@ -511,6 +512,11 @@ impl DesComp {
         self.ask_shell(Event::MUSIC);
     }
 
+    /// Asks the shell to show the list of notifications.
+    pub fn ask_notifications(&mut self) {
+        self.ask_shell(Event::NOTIFICATIONS);
+    }
+
     /// Uncovers the shell's workspace, where it shows such things, and sends `event`.
     fn ask_shell(&mut self, event: &str) {
         if self.modes.is_empty() || self.locked {
@@ -579,6 +585,9 @@ impl DesComp {
                 Command::ReloadInput => self.reload_input(),
                 Command::Lock => self.set_locked(true),
                 Command::Unlock => self.set_locked(false),
+                Command::Toast(area) => {
+                    self.toast = area.map(|(x, y, w, h)| Rectangle::new((x, y).into(), (w.max(0), h.max(0)).into()));
+                }
             }
         }
         let last_screen = self.screens.len().saturating_sub(1);

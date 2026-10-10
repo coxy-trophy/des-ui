@@ -11,6 +11,7 @@ mod ipc;
 mod monitors;
 mod policy;
 mod state;
+mod toast;
 mod udev;
 mod winit;
 mod displays;
@@ -42,6 +43,7 @@ Keys (hold Super, or Ctrl+Alt):
   Space                Open the application launcher
   ,                    Open the settings
   M                    Open the music player
+  N                    Open the notifications
   L                    Lock the screen
   Tab                  Switch between the terminal and open applications
   O                    Move the current application to the next display

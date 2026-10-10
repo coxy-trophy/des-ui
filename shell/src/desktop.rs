@@ -17,6 +17,8 @@ pub struct Desktop {
     pub settings_requested: bool,
     /// Likewise for the music shortcut.
     pub music_requested: bool,
+    /// Likewise for the notifications shortcut.
+    pub notifications_requested: bool,
     /// Set when the compositor's lock shortcut was pressed.
     pub lock_requested: bool,
     /// Whether the compositor has the screen locked.
@@ -57,6 +59,7 @@ impl Desktop {
             launcher_requested: false,
             settings_requested: false,
             music_requested: false,
+            notifications_requested: false,
             lock_requested: false,
             locked: false,
             displays: Displays::default(),
@@ -75,6 +78,7 @@ impl Desktop {
                 Event::Launcher => self.launcher_requested = true,
                 Event::Settings => self.settings_requested = true,
                 Event::Music => self.music_requested = true,
+                Event::Notifications => self.notifications_requested = true,
                 Event::Displays(displays) => self.displays = displays,
                 Event::LockRequested => self.lock_requested = true,
                 Event::Locked(locked) => self.locked = locked,

@@ -92,6 +92,10 @@ pub struct DesComp {
     pub shell_pid: Option<u32>,
     /// The des-ui shell window: always fullscreen, always at the bottom.
     pub shell: Option<Window>,
+    /// Where in the shell's window its toasts are, to be shown above everything.
+    pub toast: Option<Rectangle<i32, Logical>>,
+    /// The name the toasts go by when drawn.
+    pub toast_id: smithay::backend::renderer::element::Id,
     /// The shell's backdrop windows: the nth covers display n + 1 behind its applications.
     pub backdrops: Vec<Window>,
     /// Application windows, in the order they were opened.
@@ -183,6 +187,8 @@ impl DesComp {
             shell_restarting: false,
             shell_pid: None,
             shell: None,
+            toast: None,
+            toast_id: smithay::backend::renderer::element::Id::new(),
             backdrops: Vec::new(),
             apps: Vec::new(),
             screens: Vec::new(),
@@ -240,6 +246,15 @@ impl DesComp {
     }
 
     pub fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
+        // A toast is the shell's, whatever window lies under it.
+        if let (Some(area), Some(shell), Some(primary)) = (self.toast_area(), &self.shell, self.screens.first()) {
+            if area.to_f64().contains(pos) {
+                let origin = primary.loc.to_f64();
+                return shell
+                    .surface_under(pos - origin, WindowSurfaceType::ALL)
+                    .map(|(surface, at)| (surface, (at.to_f64() + origin)));
+            }
+        }
         self.space.element_under(pos).and_then(|(window, location)| {
             window
                 .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)

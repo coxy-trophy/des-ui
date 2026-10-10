@@ -70,6 +70,7 @@ render_elements! {
     Space=SpaceRenderElements<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>,
     Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
     ClientCursor=WaylandSurfaceRenderElement<GlesRenderer>,
+    Toast=crate::toast::ToastElement,
 }
 
 /// One monitor and the means to draw on it.
@@ -634,6 +635,8 @@ impl DesComp {
     }
 
     fn render_udev(&mut self) {
+        let toast_area = self.toast_area();
+        let primary = self.screens.first().map(|screen| screen.loc);
         let Some(udev) = self.udev.as_mut() else {
             return;
         };
@@ -701,6 +704,11 @@ impl DesComp {
                     }
                 }
             }
+            elements.extend(
+                crate::toast::elements(renderer, self.shell.as_ref(), toast_area, primary, &self.toast_id, geometry.loc)
+                    .into_iter()
+                    .map(OutputElements::Toast),
+            );
             match space_render_elements(renderer, [&self.space], &monitor.output, 1.0) {
                 Ok(space) => elements.extend(space.into_iter().map(OutputElements::Space)),
                 Err(e) => tracing::error!("cannot collect windows to draw: {e:?}"),

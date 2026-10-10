@@ -165,6 +165,21 @@ The playing is done by `des-music`, built on
 device list as "DEs-UI", so a phone can control it as well, and it keeps playing
 while the shell restarts. Sound goes out through PipeWire (`pw-cat`).
 
+## Notifications
+
+The shell is the session's notification service, so what applications announce (a
+message in the browser, a finished download) shows as a toast at the top right of
+the workspace, above whatever is open, and is kept in a list. The desktop adds its
+own: battery low, network lost and found, a display connected or removed.
+
+A toast stays a few seconds, longer under the pointer; an urgent one stays until
+seen to. Clicking it does what its sender offered (usually: show the application),
+and the cross puts it away for good.
+
+**Super+N**, or `NOTIFICATIONS` in the status strip, opens the list. `DO NOT
+DISTURB` there keeps all but the urgent ones off the screen; they still reach the
+list. Nothing is shown over the lock screen.
+
 ## Its own login screen
 
 Optional, and separate from the above, because it changes how the machine boots:
@@ -214,6 +229,8 @@ run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`
 - `shell/src/apps.rs`, `launcher.rs` — installed applications and the launcher
 - `shell/src/theme.rs` — eDEX-UI theme loader
 - `shell/src/music.rs` — the music view and what is playing
+- `shell/src/notify.rs`, `compositor/src/toast.rs` — notifications, and how their
+  toasts get above the applications
 - `music/src/main.rs`, `web.rs`, `protocol.rs` — the Spotify player, the library
   lookups, and the lines it exchanges with the shell
 - `compositor/src/policy.rs` — which window is shown on which display
@@ -233,6 +250,7 @@ run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`
 - Wired and VPN connections in the settings; Bluetooth devices that need a code
 - In the music player: removing from or reordering the queue (Spotify offers outside
   apps no way to), albums and artists, more than the first page of a long playlist
+- In notifications: pictures and application icons, sounds
 - Locking by itself after a while, or when the lid closes
 - On the login screen: accounts that need more than a password
 - From the original: on-screen keyboard, sound effects, mouse reporting to
