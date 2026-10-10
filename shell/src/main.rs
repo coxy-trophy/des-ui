@@ -11,6 +11,7 @@ mod lock;
 mod music;
 mod notify;
 mod panels;
+mod power;
 mod radio;
 mod settings;
 mod sysmon;
@@ -86,6 +87,10 @@ struct App {
     settings: settings::Settings,
     music: music::Music,
     notices: notify::Center,
+    /// Sleep, and what holds off the lock.
+    power: power::Power,
+    /// Whether the compositor was last told that something is being watched.
+    idle_held: bool,
     /// What the desktop itself gives notice of, as last seen.
     watch: notify::Watch,
     /// Where the compositor was last told the toasts are.
@@ -124,6 +129,7 @@ impl App {
         let first = TermTab::spawn(&shell, &home, ctx.clone(), config.scrollback)?;
         let desktop = Desktop::connect(ctx.clone());
         let music = music::Music::new(ctx.clone());
+        let power = power::Power::start(ctx.clone());
         let notices = notify::Center::new(ctx.clone(), config.do_not_disturb, true);
         Ok(App {
             ctx,
@@ -141,6 +147,8 @@ impl App {
             settings: settings::Settings::default(),
             music,
             notices,
+            power,
+            idle_held: false,
             watch: notify::Watch::default(),
             toast_area: None,
             lock: lock::Lock::new(),
@@ -358,7 +366,7 @@ impl App {
                     ui::install_fonts(ctx, self.symbols.as_deref(), self.config.terminal_font.as_deref());
                 }
                 // The compositor owns the devices these are about.
-                if ["keyboard_", "mouse_", "touchpad_"].iter().any(|prefix| key.starts_with(prefix)) {
+                if ["keyboard_", "mouse_", "touchpad_", "lock_after"].iter().any(|prefix| key.starts_with(prefix)) {
                     self.send(Command::ReloadInput);
                 }
             }
@@ -808,6 +816,28 @@ impl eframe::App for App {
             _ => {}
         }
         self.notices.pump();
+        // Sleep is on its way, or the session was told to lock.
+        if self.power.lock_wanted() && !self.lock.locked {
+            let for_sleep = self.power.sleep_waiting();
+            if !for_sleep || self.config.lock_on_sleep {
+                self.lock_now();
+            }
+        }
+        if self.power.sleep_waiting() {
+            // The machine may sleep once the lock is what is on screen, or at once if
+            // there is to be no lock.
+            let up = self.lock.locked && (self.lock_confirmed || self.desktop.is_none());
+            if up || !self.lock.locked {
+                self.power.let_sleep();
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(30));
+            }
+        }
+        let held = self.power.holding();
+        if held != self.idle_held {
+            self.idle_held = held;
+            self.send(Command::HoldIdle(held));
+        }
         let screens = self.desktop.as_ref().filter(|desktop| desktop.connected()).map(|desktop| desktop.state.screens);
         self.watch.check(&mut self.notices, self.mon.battery, !self.mon.ip.is_empty(), screens);
         if self.lock.locked {

@@ -92,6 +92,14 @@ pub struct DesComp {
     pub shell_pid: Option<u32>,
     /// The des-ui shell window: always fullscreen, always at the bottom.
     pub shell: Option<Window>,
+    /// When a key, button or pointer was last used.
+    pub last_input: Instant,
+    /// Whether the lock was already asked for since then.
+    pub idle_lock_asked: bool,
+    /// Whether the shell says an application is showing something to watch.
+    pub idle_held: bool,
+    /// Windows that asked, themselves, that the screen be left alone.
+    pub idle_inhibitors: Vec<WlSurface>,
     /// Where in the shell's window its toasts are, to be shown above everything.
     pub toast: Option<Rectangle<i32, Logical>>,
     /// The name the toasts go by when drawn.
@@ -139,6 +147,7 @@ impl DesComp {
 
         let compositor_state = CompositorState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
+        smithay::wayland::idle_inhibit::IdleInhibitManagerState::new::<Self>(&dh);
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
@@ -187,6 +196,10 @@ impl DesComp {
             shell_restarting: false,
             shell_pid: None,
             shell: None,
+            last_input: Instant::now(),
+            idle_lock_asked: false,
+            idle_held: false,
+            idle_inhibitors: Vec::new(),
             toast: None,
             toast_id: smithay::backend::renderer::element::Id::new(),
             backdrops: Vec::new(),
@@ -227,6 +240,17 @@ impl DesComp {
                     .unwrap();
             })
             .expect("Failed to init the wayland event source.");
+
+        // Left alone for long enough, the screen locks.
+        loop_handle
+            .insert_source(
+                smithay::reexports::calloop::timer::Timer::from_duration(Duration::from_secs(5)),
+                |_, _, state| {
+                    state.check_idle();
+                    smithay::reexports::calloop::timer::TimeoutAction::ToDuration(Duration::from_secs(5))
+                },
+            )
+            .expect("Failed to start the idle timer.");
 
         // The display itself is an event source, so that client requests get dispatched.
         loop_handle

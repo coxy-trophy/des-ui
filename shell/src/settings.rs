@@ -274,7 +274,7 @@ impl Settings {
                             Section::Displays => self.displays(ui, theme, displays, &mut changes),
                             Section::Globe => self.globe(ui, theme, config, geo, &mut changes),
                             Section::Sound => self.sound(ui, theme, mon, &mut changes),
-                            Section::Session => self.session(ui, theme, &mut changes),
+                            Section::Session => self.session(ui, theme, config, input, &mut changes),
                         }
                     });
                 });
@@ -742,7 +742,7 @@ impl Settings {
         }
     }
 
-    fn session(&mut self, ui: &mut Ui, theme: &Theme, changes: &mut Vec<Change>) {
+    fn session(&mut self, ui: &mut Ui, theme: &Theme, config: &Config, input: &InputSettings, changes: &mut Vec<Change>) {
         heading(ui, "SESSION", "");
         for (name, value) in [
             ("Version", env!("CARGO_PKG_VERSION")),
@@ -765,6 +765,26 @@ impl Settings {
         }
         ui.add_space(8.0);
         note(ui, "Locking hides everything behind your password. Everything keeps running.");
+        ui.add_space(14.0);
+        ui::text(ui, "Lock by itself when the machine is left alone for", ui::mono(12.0), ui::SECONDARY);
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            for minutes in [Some(1), Some(5), Some(10), Some(30), Some(60), None] {
+                let chosen = input.lock_after == minutes;
+                let label = minutes.map_or("NEVER".to_string(), |minutes| format!("{minutes} MIN"));
+                if ui::chip(ui, theme, &label, None, chosen).clicked() && !chosen {
+                    let value = minutes.map_or("never".to_string(), |minutes| minutes.to_string());
+                    changes.push(Change::Set("lock_after", Some(value)));
+                }
+            }
+        });
+        ui.add_space(8.0);
+        note(ui, "Not while an application is playing something to watch.");
+        ui.add_space(8.0);
+        if switch_row(ui, theme, "Lock before sleep", "When the lid closes or the machine is put to sleep, it wakes to the lock screen", config.lock_on_sleep) {
+            changes.push(Change::Set("lock_on_sleep", config.lock_on_sleep.then(|| "off".to_string())));
+        }
         ui.add_space(22.0);
 
         let armed = self.log_out_armed.is_some_and(|at| at.elapsed() < Duration::from_secs(5));

@@ -170,6 +170,8 @@ impl DesComp {
     }
 
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
+        self.last_input = std::time::Instant::now();
+        self.idle_lock_asked = false;
         match event {
             InputEvent::Keyboard { event, .. } => {
                 let serial = SERIAL_COUNTER.next_serial();

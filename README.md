@@ -136,6 +136,15 @@ your password; what was running keeps running. While locked the compositor shows
 nothing but the lock screen and sends it every key, so no shortcut reaches what is
 behind it. The password is checked with the system's own helper, `unix_chkpwd`.
 
+It also locks by itself:
+
+- after ten minutes without a key or the pointer being touched (Session in the
+  settings changes how long, or turns it off), though not while an application is
+  playing something to watch;
+- before the machine sleeps, so that closing the lid and opening it again shows the
+  lock screen (this too can be turned off there);
+- when the system asks, as `loginctl lock-session` does.
+
 If the lock screen ever cannot be unlocked, press Ctrl+Alt+F3, sign in on the text
 console, and run `des-ui --unlock`.
 
@@ -225,6 +234,7 @@ run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`
 - `shell/src/settings.rs`, `config.rs` — the settings screen and the file behind it
 - `shell/src/radio.rs` — Wi-Fi and Bluetooth
 - `shell/src/greeter.rs`, `lock.rs` — the login screen and the lock screen
+- `shell/src/power.rs` — locking before sleep, and what holds off the idle lock
 - `common/src/input.rs` — keyboard, mouse and touchpad settings
 - `shell/src/apps.rs`, `launcher.rs` — installed applications and the launcher
 - `shell/src/theme.rs` — eDEX-UI theme loader
@@ -251,7 +261,7 @@ run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`
 - In the music player: removing from or reordering the queue (Spotify offers outside
   apps no way to), albums and artists, more than the first page of a long playlist
 - In notifications: pictures and application icons, sounds
-- Locking by itself after a while, or when the lid closes
+- Turning the screen off after a while
 - On the login screen: accounts that need more than a password
 - From the original: on-screen keyboard, sound effects, mouse reporting to
   terminal apps

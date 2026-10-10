@@ -338,6 +338,9 @@ pub enum Command {
     /// The shell is showing notifications in this part of its window (x, y, width,
     /// height), which is to be seen above any application; or is showing none.
     Toast(Option<(i32, i32, i32, i32)>),
+    /// An application is showing something to watch (or no longer): do not lock the
+    /// screen for want of input meanwhile.
+    HoldIdle(bool),
 }
 
 impl Command {
@@ -358,6 +361,8 @@ impl Command {
             Command::Lock => "lock\n".to_string(),
             Command::Unlock => "unlock\n".to_string(),
             Command::Toast(None) => "toast none\n".to_string(),
+            Command::HoldIdle(true) => "hold-idle on\n".to_string(),
+            Command::HoldIdle(false) => "hold-idle off\n".to_string(),
             Command::Toast(Some((x, y, w, h))) => format!("toast {x} {y} {w} {h}\n"),
             Command::ApplyDisplays(choices) => {
                 let mut line = "displays-apply".to_string();
@@ -403,6 +408,8 @@ impl Command {
             ("activate", Some(index)) => Command::Activate(index.parse().ok()?),
             ("close", Some(index)) => Command::Close(index.parse().ok()?),
             ("move", Some(index)) => Command::Move(index.parse().ok()?),
+            ("hold-idle", Some("on")) => Command::HoldIdle(true),
+            ("hold-idle", Some("off")) => Command::HoldIdle(false),
             ("panel", Some("left")) => Command::TogglePanel(Panel::Left),
             ("panel", Some("right")) => Command::TogglePanel(Panel::Right),
             ("panel", Some("bottom")) => Command::TogglePanel(Panel::Bottom),
@@ -561,6 +568,8 @@ mod tests {
             Command::Lock,
             Command::Unlock,
             Command::Toast(None),
+            Command::HoldIdle(true),
+            Command::HoldIdle(false),
             Command::Toast(Some((1500, 52, 380, 240))),
             Command::ApplyDisplays(vec![
                 DisplayChoice { name: "eDP-1".into(), mode: mode(1920, 1080, 60052), main: false },

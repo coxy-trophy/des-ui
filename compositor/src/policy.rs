@@ -485,6 +485,27 @@ impl DesComp {
         }
     }
 
+    /// Asks for the lock once the machine has been left alone for as long as the
+    /// settings say, unless something on screen is being watched.
+    pub fn check_idle(&mut self) {
+        let Some(minutes) = self.input_settings.lock_after else {
+            return;
+        };
+        self.idle_inhibitors.retain(smithay::utils::IsAlive::alive);
+        let watched = self.idle_held || !self.idle_inhibitors.is_empty();
+        if watched {
+            // The wait starts over when the watching ends.
+            self.last_input = std::time::Instant::now();
+            return;
+        }
+        let waited = self.last_input.elapsed() >= std::time::Duration::from_secs(minutes as u64 * 60);
+        if waited && !self.locked && !self.idle_lock_asked && self.shell.is_some() {
+            tracing::info!(minutes, "left alone: asking for the lock");
+            self.idle_lock_asked = true;
+            self.request_lock();
+        }
+    }
+
     /// Hides everything but the shell and gives it the keyboard, or undoes that.
     pub fn set_locked(&mut self, locked: bool) {
         if self.locked != locked {
@@ -585,6 +606,10 @@ impl DesComp {
                 Command::ReloadInput => self.reload_input(),
                 Command::Lock => self.set_locked(true),
                 Command::Unlock => self.set_locked(false),
+                Command::HoldIdle(held) => {
+                    tracing::info!(held, "an application is asking that the screen be left alone");
+                    self.idle_held = held;
+                }
                 Command::Toast(area) => {
                     self.toast = area.map(|(x, y, w, h)| Rectangle::new((x, y).into(), (w.max(0), h.max(0)).into()));
                 }
