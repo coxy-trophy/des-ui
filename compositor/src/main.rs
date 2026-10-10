@@ -1,6 +1,6 @@
-//! edex-comp: the Wayland compositor of the edex-rs desktop.
+//! des-comp: the Wayland compositor of the des-ui desktop.
 //!
-//! It starts the edex-rs shell as a fullscreen backdrop and places every other
+//! It starts the des-ui shell as a fullscreen backdrop and places every other
 //! application window in the workspace area in the middle of the shell's frame.
 //!
 //! Based on Smithay's "smallvil" example compositor (MIT licence).
@@ -22,13 +22,13 @@ use smithay::reexports::{
     wayland_server::Display,
 };
 use std::path::PathBuf;
-pub use state::EdexComp;
+pub use state::DesComp;
 
 const USAGE: &str = "\
-Usage: edex-comp [OPTIONS] [-- SHELL_ARGS...]
+Usage: des-comp [OPTIONS] [-- SHELL_ARGS...]
 
 Options:
-  --shell <PATH>       Shell program to run (default: edex-rs next to this binary)
+  --shell <PATH>       Shell program to run (default: des-ui next to this binary)
   --backend <KIND>     'winit' to run in a window, 'drm' to run on the hardware
                        (default: winit inside another desktop, otherwise drm)
   --session            Run as the login session: tell the user's background services
@@ -41,6 +41,7 @@ Options:
 Keys (hold Super, or Ctrl+Alt):
   Space                Open the application launcher
   ,                    Open the settings
+  M                    Open the music player
   L                    Lock the screen
   Tab                  Switch between the terminal and open applications
   O                    Move the current application to the next display
@@ -58,13 +59,13 @@ Ctrl+Alt+Backspace ends the session; Ctrl+Alt+F1..F12 switch virtual terminals."
 fn default_shell() -> PathBuf {
     std::env::current_exe()
         .ok()
-        .and_then(|exe| Some(exe.parent()?.join("edex-rs")))
+        .and_then(|exe| Some(exe.parent()?.join("des-ui")))
         .filter(|path| path.exists())
-        .unwrap_or_else(|| PathBuf::from("edex-rs"))
+        .unwrap_or_else(|| PathBuf::from("des-ui"))
 }
 
 fn usage_error(message: &str) -> ! {
-    eprintln!("edex-comp: {message}\n\n{USAGE}");
+    eprintln!("des-comp: {message}\n\n{USAGE}");
     std::process::exit(2);
 }
 
@@ -84,7 +85,7 @@ fn announce_session(socket_name: &std::ffi::OsStr, x_display: Option<u32>) {
     let mut variables = vec![
         "--systemd".to_string(),
         format!("WAYLAND_DISPLAY={}", socket_name.to_string_lossy()),
-        "XDG_CURRENT_DESKTOP=edex-rs".to_string(),
+        "XDG_CURRENT_DESKTOP=des-ui".to_string(),
         "XDG_SESSION_TYPE=wayland".to_string(),
     ];
     if let Some(number) = x_display {
@@ -138,10 +139,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing_subscriber::fmt().init();
     }
 
-    let mut event_loop: EventLoop<'static, EdexComp> = EventLoop::try_new()?;
+    let mut event_loop: EventLoop<'static, DesComp> = EventLoop::try_new()?;
 
-    let display: Display<EdexComp> = Display::new()?;
-    let mut data = EdexComp::new(&mut event_loop, display);
+    let display: Display<DesComp> = Display::new()?;
+    let mut data = DesComp::new(&mut event_loop, display);
     data.screenshot = screenshot;
     data.split = split;
 
@@ -167,7 +168,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
     let ipc_path = runtime_dir.join(format!(
-        "edex-comp-{}.sock",
+        "des-comp-{}.sock",
         data.socket_name.to_string_lossy()
     ));
     match ipc::IpcServer::bind(ipc_path) {

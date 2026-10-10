@@ -1,7 +1,7 @@
 //! The shell's link to the compositor: which applications are open, and requests to
 //! switch between them. Absent when the shell runs on its own.
 
-use edex_common::ipc::{Command, DesktopState, Displays, Event, SOCKET_ENV};
+use des_common::ipc::{Command, DesktopState, Displays, Event, SOCKET_ENV};
 use eframe::egui;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -15,6 +15,8 @@ pub struct Desktop {
     pub launcher_requested: bool,
     /// Likewise for the settings shortcut.
     pub settings_requested: bool,
+    /// Likewise for the music shortcut.
+    pub music_requested: bool,
     /// Set when the compositor's lock shortcut was pressed.
     pub lock_requested: bool,
     /// Whether the compositor has the screen locked.
@@ -31,7 +33,7 @@ impl Desktop {
         let writer = match UnixStream::connect(&path) {
             Ok(stream) => stream,
             Err(e) => {
-                eprintln!("edex-rs: cannot reach compositor at {}: {e}", path.display());
+                eprintln!("des-ui: cannot reach compositor at {}: {e}", path.display());
                 return None;
             }
         };
@@ -54,6 +56,7 @@ impl Desktop {
             state: DesktopState::default(),
             launcher_requested: false,
             settings_requested: false,
+            music_requested: false,
             lock_requested: false,
             locked: false,
             displays: Displays::default(),
@@ -71,6 +74,7 @@ impl Desktop {
                 }
                 Event::Launcher => self.launcher_requested = true,
                 Event::Settings => self.settings_requested = true,
+                Event::Music => self.music_requested = true,
                 Event::Displays(displays) => self.displays = displays,
                 Event::LockRequested => self.lock_requested = true,
                 Event::Locked(locked) => self.locked = locked,

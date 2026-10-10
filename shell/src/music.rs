@@ -1,0 +1,976 @@
+//! The music player: what is playing in the right column, and a full view of the
+//! user's Spotify library in the workspace.
+//!
+//! The playing is done by `des-music`, a service of its own; this is its remote
+//! control. The shell starts the service when it is not running, and offers the
+//! sign-in when the service says nobody is signed in.
+
+use crate::theme::Theme;
+use crate::ui;
+use eframe::egui::{
+    self, Align, Align2, Key, Layout, Modifiers, Rect, Response, ScrollArea, Sense, Shape, Stroke,
+    StrokeKind, TextEdit, TextureHandle, Ui, UiBuilder, pos2, vec2,
+};
+use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Track {
+    pub uri: String,
+    pub name: String,
+    pub artists: String,
+    pub album: String,
+    pub duration_ms: u32,
+    pub cover: Option<String>,
+}
+
+/// What the service last said is playing, and when it said so.
+#[derive(Debug, Clone, Default)]
+pub struct Now {
+    pub track: Option<Track>,
+    pub playing: bool,
+    position_ms: u32,
+    pub volume: u8,
+    pub shuffle: bool,
+    at: Option<Instant>,
+}
+
+impl Now {
+    /// Where in the track playback is at this moment.
+    pub fn position_ms(&self) -> u32 {
+        let length = self.track.as_ref().map_or(0, |track| track.duration_ms);
+        let moved = match (self.playing, self.at) {
+            (true, Some(at)) => at.elapsed().as_millis() as u32,
+            _ => 0,
+        };
+        self.position_ms.saturating_add(moved).min(length)
+    }
+
+    pub fn parse(value: &Value) -> Now {
+        let track = &value["track"];
+        Now {
+            track: track["uri"].as_str().map(|uri| Track {
+                uri: uri.to_string(),
+                name: track["name"].as_str().unwrap_or_default().to_string(),
+                artists: track["artists"].as_str().unwrap_or_default().to_string(),
+                album: track["album"].as_str().unwrap_or_default().to_string(),
+                duration_ms: track["duration_ms"].as_u64().unwrap_or(0) as u32,
+                cover: track["cover"].as_str().map(str::to_string),
+            }),
+            playing: value["playing"].as_bool().unwrap_or(false),
+            position_ms: value["position_ms"].as_u64().unwrap_or(0) as u32,
+            volume: value["volume"].as_u64().unwrap_or(0).min(100) as u8,
+            shuffle: value["shuffle"].as_bool().unwrap_or(false),
+            at: Some(Instant::now()),
+        }
+    }
+}
+
+/// A row in a list: a track, or a playlist to open.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Item {
+    pub playlist: bool,
+    pub uri: String,
+    /// A playlist's id, for asking for its tracks.
+    pub id: String,
+    pub name: String,
+    /// A track's artists, or a playlist's owner.
+    pub by: String,
+    pub album: String,
+    pub duration_ms: u32,
+}
+
+pub fn parse_items(value: &Value) -> Vec<Item> {
+    value["items"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let playlist = item["kind"] == "playlist";
+                    let text = |key: &str| item[key].as_str().unwrap_or_default().to_string();
+                    Some(Item {
+                        playlist,
+                        uri: item["uri"].as_str()?.to_string(),
+                        id: text("id"),
+                        name: text("name"),
+                        by: if playlist { text("owner") } else { text("artists") },
+                        album: text("album"),
+                        duration_ms: item["duration_ms"].as_u64().unwrap_or(0) as u32,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Minutes and seconds, as on a track listing.
+pub fn clock(ms: u32) -> String {
+    format!("{}:{:02}", ms / 60_000, (ms / 1000) % 60)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Link {
+    Starting,
+    Connected,
+    NotSignedIn,
+    SigningIn,
+    /// The service cannot be run at all, and why.
+    Unavailable(String),
+}
+
+struct Shared {
+    link: Link,
+    now: Now,
+    /// Lists received, by `kind:key`, each with the reason it is empty if it failed.
+    lists: HashMap<String, (Vec<Item>, Option<String>)>,
+    /// Set to ask the connection thread to run a sign-in: the service's arguments.
+    sign_in: Option<Vec<String>>,
+    /// Set when a sign-in went through, so that lists are asked for afresh.
+    refresh: bool,
+    /// Set to call off a sign-in that is waiting on the browser.
+    cancel: bool,
+}
+
+fn socket_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("DES_MUSIC_SOCKET") {
+        return PathBuf::from(path);
+    }
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("des-music.sock")
+}
+
+/// The service's program: the one installed beside this one.
+fn service_program() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join("des-music")))
+        .filter(|path| path.exists())
+        .unwrap_or_else(|| PathBuf::from("des-music"))
+}
+
+/// Keeps a connection to the service for as long as the shell runs: starts the
+/// service when it is not there, reads what it says, and passes on what `commands`
+/// brings.
+fn connection(shared: Arc<Mutex<Shared>>, commands: Receiver<String>, ctx: egui::Context) {
+    let set = |link: Link| {
+        shared.lock().unwrap().link = link;
+        ctx.request_repaint();
+    };
+    loop {
+        let wants_sign_in = shared.lock().unwrap().sign_in.take();
+        if let Some(arguments) = wants_sign_in {
+            set(Link::SigningIn);
+            // The sign-in waits on the browser for as long as it takes, so it can be
+            // called off from here.
+            let mut signed_in = false;
+            if let Ok(mut child) = Command::new(service_program()).args(&arguments).stdin(Stdio::null()).spawn() {
+                signed_in = loop {
+                    match child.try_wait() {
+                        Ok(None) if std::mem::take(&mut shared.lock().unwrap().cancel) => {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            break false;
+                        }
+                        Ok(None) => std::thread::sleep(Duration::from_millis(200)),
+                        Ok(Some(status)) => break status.success(),
+                        Err(_) => break false,
+                    }
+                };
+            }
+            if signed_in {
+                let mut shared = shared.lock().unwrap();
+                shared.lists.clear();
+                shared.refresh = true;
+            }
+            // Connecting the library fails without undoing the sign-in itself.
+            set(if signed_in || arguments[0] != "login" { Link::Starting } else { Link::NotSignedIn });
+            continue;
+        }
+        if shared.lock().unwrap().link == Link::NotSignedIn {
+            std::thread::sleep(Duration::from_millis(300));
+            continue;
+        }
+
+        let Ok(stream) = UnixStream::connect(socket_path()) else {
+            // Not running: start it, in a group of its own so that it outlives the shell.
+            let spawned = Command::new(service_program())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .process_group(0)
+                .spawn();
+            match spawned {
+                Err(e) => {
+                    set(Link::Unavailable(format!("The music service could not be started: {e}")));
+                    std::thread::sleep(Duration::from_secs(10));
+                }
+                Ok(mut child) => {
+                    // It says at once if nobody is signed in; otherwise it takes a
+                    // while to reach Spotify and start listening. Wait for whichever
+                    // comes, rather than starting a second one beside it.
+                    let started = Instant::now();
+                    while started.elapsed() < Duration::from_secs(30)
+                        && matches!(child.try_wait(), Ok(None))
+                        && UnixStream::connect(socket_path()).is_err()
+                    {
+                        std::thread::sleep(Duration::from_millis(250));
+                    }
+                    match child.try_wait() {
+                        Ok(Some(status)) if status.code() == Some(3) => set(Link::NotSignedIn),
+                        Ok(Some(_)) => {
+                            set(Link::Unavailable("The music service stopped as soon as it started. Is this machine online?".to_string()));
+                            std::thread::sleep(Duration::from_secs(10));
+                            set(Link::Starting);
+                        }
+                        _ => {
+                            std::thread::spawn(move || {
+                                let _ = child.wait();
+                            });
+                        }
+                    }
+                }
+            }
+            continue;
+        };
+
+        set(Link::Connected);
+        let Ok(mut writer) = stream.try_clone() else {
+            continue;
+        };
+        let reading = shared.clone();
+        let repaint = ctx.clone();
+        let reader = std::thread::spawn(move || {
+            for line in BufReader::new(stream).lines() {
+                let Ok(line) = line else { break };
+                let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                let mut shared = reading.lock().unwrap();
+                match value["type"].as_str() {
+                    Some("state") => shared.now = Now::parse(&value),
+                    Some("list") => {
+                        let key = format!("{}:{}", value["kind"].as_str().unwrap_or_default(), value["key"].as_str().unwrap_or_default());
+                        let error = value["error"].as_str().map(str::to_string);
+                        shared.lists.insert(key, (parse_items(&value), error));
+                    }
+                    _ => {}
+                }
+                drop(shared);
+                repaint.request_repaint();
+            }
+        });
+        // Pass commands on until the service goes away.
+        while !reader.is_finished() {
+            match commands.recv_timeout(Duration::from_millis(250)) {
+                Ok(command) => {
+                    if writer.write_all(command.as_bytes()).is_err() {
+                        break;
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if shared.lock().unwrap().sign_in.is_some() {
+                        break;
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+        }
+        let _ = writer.shutdown(std::net::Shutdown::Both);
+        let _ = reader.join();
+        set(Link::Starting);
+        std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
+/// Which list the view is showing.
+#[derive(Debug, Clone, PartialEq)]
+enum Source {
+    Liked,
+    /// What plays next.
+    Queue,
+    Playlist { id: String, name: String, uri: String },
+    Search(String),
+}
+
+impl Source {
+    fn key(&self) -> String {
+        match self {
+            Source::Liked => "liked:".to_string(),
+            Source::Queue => "queue:".to_string(),
+            Source::Playlist { id, .. } => format!("tracks:{id}"),
+            Source::Search(query) => format!("search:{query}"),
+        }
+    }
+
+    fn request(&self) -> Value {
+        match self {
+            Source::Liked => json!({ "cmd": "liked" }),
+            Source::Queue => json!({ "cmd": "queue" }),
+            Source::Playlist { id, .. } => json!({ "cmd": "tracks", "playlist": id }),
+            Source::Search(query) => json!({ "cmd": "search", "q": query }),
+        }
+    }
+
+    /// What to tell the service so that a track plays as part of this list.
+    fn context(&self) -> Option<String> {
+        match self {
+            Source::Liked => Some("liked".to_string()),
+            Source::Playlist { uri, .. } => Some(uri.clone()),
+            Source::Search(_) | Source::Queue => None,
+        }
+    }
+}
+
+/// A transport control, drawn rather than lettered.
+#[derive(Clone, Copy, PartialEq)]
+enum Control {
+    Previous,
+    Play,
+    Pause,
+    Next,
+}
+
+fn control(ui: &mut Ui, theme: &Theme, which: Control, size: f32, lit: bool) -> Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(size, size), Sense::click());
+    let ink = if lit { theme.main } else if response.hovered() { ui::TEXT } else { ui::SECONDARY };
+    let painter = ui.painter();
+    let c = rect.center();
+    let unit = size / 6.0;
+    let triangle = |tip_x: f32, back_x: f32| {
+        Shape::convex_polygon(
+            vec![pos2(c.x + back_x, c.y - unit * 1.4), pos2(c.x + tip_x, c.y), pos2(c.x + back_x, c.y + unit * 1.4)],
+            ink,
+            Stroke::NONE,
+        )
+    };
+    let bar = |x: f32| Rect::from_center_size(pos2(c.x + x, c.y), vec2(unit * 0.5, unit * 2.8));
+    match which {
+        Control::Play => {
+            painter.add(triangle(unit * 1.3, -unit * 0.9));
+        }
+        Control::Pause => {
+            painter.rect_filled(bar(-unit * 0.7), 0.0, ink);
+            painter.rect_filled(bar(unit * 0.7), 0.0, ink);
+        }
+        Control::Next => {
+            painter.add(triangle(unit * 0.8, -unit * 1.2));
+            painter.rect_filled(bar(unit * 1.2), 0.0, ink);
+        }
+        Control::Previous => {
+            painter.add(triangle(-unit * 0.8, unit * 1.2));
+            painter.rect_filled(bar(-unit * 1.2), 0.0, ink);
+        }
+    }
+    response
+}
+
+pub struct Music {
+    pub open: bool,
+    shared: Arc<Mutex<Shared>>,
+    commands: Sender<String>,
+    source: Source,
+    query: String,
+    /// The track that was playing when the queue was last asked for.
+    queue_as_of: Option<String>,
+    /// The track last added to the queue, and when: to say so on its row for a moment.
+    queued: Option<(String, Instant)>,
+    /// The client ID being typed, while the library is not connected.
+    client_id: String,
+    /// Lists already asked for, so that each is asked for once.
+    asked: Vec<String>,
+    /// The cover being shown: its address, and the picture once fetched.
+    cover: Option<(String, Arc<Mutex<Option<PathBuf>>>, Option<TextureHandle>)>,
+}
+
+impl Music {
+    pub fn new(ctx: egui::Context) -> Music {
+        let shared = Arc::new(Mutex::new(Shared {
+            link: Link::Starting,
+            now: Now::default(),
+            lists: HashMap::new(),
+            sign_in: None,
+            refresh: false,
+            cancel: false,
+        }));
+        let (commands, receiver) = channel();
+        let for_thread = shared.clone();
+        std::thread::spawn(move || connection(for_thread, receiver, ctx));
+        Music {
+            open: false,
+            shared,
+            commands,
+            source: Source::Liked,
+            query: String::new(),
+            client_id: String::new(),
+            queue_as_of: None,
+            queued: None,
+            asked: Vec::new(),
+            cover: None,
+        }
+    }
+
+    fn sign_in(&self, arguments: Vec<String>) {
+        let mut shared = self.shared.lock().unwrap();
+        shared.cancel = false;
+        shared.sign_in = Some(arguments);
+    }
+
+    fn send(&self, request: Value) {
+        let _ = self.commands.send(format!("{request}\n"));
+    }
+
+    pub fn now(&self) -> Now {
+        self.shared.lock().unwrap().now.clone()
+    }
+
+    pub fn toggle(&mut self) {
+        self.open = !self.open;
+    }
+
+    /// Asks for a list unless it was asked for already.
+    fn want(&mut self, key: String, request: Value) {
+        if !self.asked.contains(&key) {
+            self.asked.push(key);
+            self.send(request);
+        }
+    }
+
+    /// The picture for the track playing, fetched in the background the first time.
+    fn cover_texture(&mut self, ctx: &egui::Context, url: Option<&str>) -> Option<TextureHandle> {
+        let url = url?;
+        if self.cover.as_ref().is_none_or(|(shown, _, _)| shown != url) {
+            let slot: Arc<Mutex<Option<PathBuf>>> = Arc::default();
+            self.cover = Some((url.to_string(), slot.clone(), None));
+            let (url, ctx) = (url.to_string(), ctx.clone());
+            std::thread::spawn(move || {
+                // Kept on disk under a name made from the address, so that each cover
+                // is downloaded once.
+                let name: String = url.chars().rev().take(48).filter(|c| c.is_ascii_alphanumeric()).collect();
+                let dir = std::env::var_os("XDG_CACHE_HOME")
+                    .map(PathBuf::from)
+                    .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+                    .unwrap_or_else(std::env::temp_dir)
+                    .join("des-ui/music/covers");
+                let path = dir.join(name);
+                let fetched = path.exists()
+                    || (std::fs::create_dir_all(&dir).is_ok()
+                        && url.starts_with("https://")
+                        && Command::new("curl")
+                            .args(["-fsS", "-m", "10", "--proto", "=https", "-o"])
+                            .arg(&path)
+                            .arg(&url)
+                            .stderr(Stdio::null())
+                            .status()
+                            .is_ok_and(|status| status.success()));
+                if fetched {
+                    *slot.lock().unwrap() = Some(path);
+                    ctx.request_repaint();
+                }
+            });
+        }
+        let (url, slot, texture) = self.cover.as_mut()?;
+        if texture.is_none() {
+            if let Some(path) = slot.lock().unwrap().take() {
+                // The file's name says nothing of its kind, so that is read from its contents.
+                let opened = image::ImageReader::open(&path)
+                    .and_then(|reader| reader.with_guessed_format())
+                    .ok()
+                    .and_then(|reader| reader.decode().ok());
+                if let Some(image) = opened {
+                    let image = image.thumbnail(320, 320).to_rgba8();
+                    let size = [image.width() as usize, image.height() as usize];
+                    let pixels = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
+                    *texture = Some(ctx.load_texture(format!("cover-{url}"), pixels, egui::TextureOptions::LINEAR));
+                }
+            }
+        }
+        texture.clone()
+    }
+
+    /// Draws a square for the cover: the picture, or a quiet placeholder.
+    fn draw_cover(&mut self, ui: &mut Ui, size: f32, url: Option<&str>) {
+        let texture = self.cover_texture(ui.ctx(), url);
+        let (rect, _) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
+        ui.painter().rect_filled(rect, 0.0, ui::PANEL);
+        match texture {
+            Some(texture) => {
+                let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+                ui.painter().image(texture.id(), rect, uv, egui::Color32::WHITE);
+            }
+            None => {
+                ui.painter().rect_stroke(rect, 0.0, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
+            }
+        }
+    }
+
+    /// The right column's section: what is playing, and the three controls. Returns
+    /// true when the title was clicked, to open the full view.
+    pub fn panel(&mut self, ui: &mut Ui, theme: &Theme) -> bool {
+        let now = self.now();
+        let Some(track) = now.track.clone() else {
+            return false;
+        };
+        let mut open = false;
+        ui.add_space(22.0);
+        ui::section(ui, "NOW PLAYING", |ui| {
+            if now.playing {
+                ui::meta(ui, "SPOTIFY", theme.main);
+            } else {
+                ui::meta(ui, "PAUSED", ui::LABEL);
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            self.draw_cover(ui, 56.0, track.cover.as_deref());
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 4.0;
+                let fit = (ui.available_width() / 8.5) as usize;
+                let title = ui::text(ui, &crate::panels::truncate(&track.name, fit), ui::display_bold(14.0), ui::TEXT);
+                open = ui.interact(title.rect, ui.id().with("now-playing-title"), Sense::click()).clicked();
+                ui::text(ui, &crate::panels::truncate(&track.artists, fit + 3), ui::mono(11.0), ui::SECONDARY);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    if control(ui, theme, Control::Previous, 22.0, false).clicked() {
+                        self.send(json!({ "cmd": "prev" }));
+                    }
+                    let which = if now.playing { Control::Pause } else { Control::Play };
+                    if control(ui, theme, which, 22.0, true).clicked() {
+                        self.send(json!({ "cmd": "toggle" }));
+                    }
+                    if control(ui, theme, Control::Next, 22.0, false).clicked() {
+                        self.send(json!({ "cmd": "next" }));
+                    }
+                });
+            });
+        });
+        let frac = now.position_ms() as f32 / track.duration_ms.max(1) as f32;
+        ui::bar(ui, theme, 3.0, frac.min(CAUTION_FREE), 0.0);
+        open
+    }
+
+    /// The full view, in place of the terminal.
+    pub fn show(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme) {
+        if ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape)) {
+            self.open = false;
+            return;
+        }
+        let (link, now) = {
+            let shared = self.shared.lock().unwrap();
+            (shared.link.clone(), shared.now.clone())
+        };
+        let margin = (rect.width() * 0.05).clamp(16.0, 56.0);
+        let area = Rect::from_min_max(rect.min + vec2(margin, 28.0), rect.max - vec2(margin, 14.0));
+        ui.allocate_new_ui(UiBuilder::new().max_rect(area), |ui| {
+            ui.horizontal(|ui| {
+                ui::tracked(ui, "MUSIC", ui::display_bold(22.0), ui::TEXT, 3.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui::button(ui, theme, "DONE", Some("ESC"), false).clicked() {
+                        self.open = false;
+                    }
+                });
+            });
+            ui.add_space(16.0);
+
+            match link {
+                Link::Connected => self.library(ui, theme, &now),
+                Link::Starting => {
+                    ui::text(ui, "Starting the music service…", ui::mono(13.0), ui::SECONDARY);
+                }
+                Link::SigningIn => {
+                    ui::text(ui, "Spotify's page is open in your browser. Finish there and come back.", ui::mono(13.0), ui::TEXT);
+                    ui.add_space(18.0);
+                    if ui::button(ui, theme, "CANCEL", None, false).clicked() {
+                        self.shared.lock().unwrap().cancel = true;
+                    }
+                }
+                Link::Unavailable(why) => {
+                    ui::text(ui, &why, ui::mono(13.0), ui::CAUTION);
+                }
+                Link::NotSignedIn => {
+                    ui::text(ui, "Play your Spotify library here, without opening Spotify.", ui::display(18.0), ui::TEXT);
+                    ui.add_space(8.0);
+                    ui::text(ui, "Signing in happens once, on Spotify's own page in your browser. It needs Spotify Premium.", ui::mono(12.0), ui::SECONDARY);
+                    ui.add_space(18.0);
+                    if ui::button(ui, theme, "SIGN IN TO SPOTIFY", None, true).clicked() {
+                        self.sign_in(vec!["login".to_string()]);
+                    }
+                }
+            }
+        });
+    }
+
+    /// Shown in place of the library until it is connected: what to do, and where
+    /// to put the client ID.
+    fn connect_library(&mut self, ui: &mut Ui, theme: &Theme) {
+        ui::text(ui, "One more step: connect your library.", ui::display(18.0), ui::TEXT);
+        ui.add_space(8.0);
+        for line in [
+            "You are signed in. Spotify only lets an app of your own read your playlists,",
+            "liked songs and search, so it takes a free one, made once:",
+            "",
+            "1  Open developer.spotify.com/dashboard and choose Create app.",
+            "2  Give it any name. As its Redirect URI enter exactly:  http://127.0.0.1:8898/login",
+            "3  Tick Web API, save, and copy the app's Client ID here.",
+        ] {
+            ui::text(ui, line, ui::mono(12.0), if line.starts_with(char::is_numeric) { ui::TEXT } else { ui::SECONDARY });
+        }
+        ui.add_space(14.0);
+        let (field, _) = ui.allocate_exact_size(vec2(340.0, 36.0), Sense::hover());
+        ui.painter().rect_filled(field, 0.0, ui::PANEL);
+        ui.painter().rect_stroke(field, 0.0, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
+        ui.put(
+            field.shrink2(vec2(10.0, 7.0)),
+            TextEdit::singleline(&mut self.client_id).frame(false).font(ui::mono(13.0)).text_color(ui::TEXT).hint_text("client ID"),
+        );
+        ui.add_space(10.0);
+        let id = self.client_id.trim().to_string();
+        let valid = id.len() == 32 && id.chars().all(|c| c.is_ascii_hexdigit());
+        if !id.is_empty() && !valid {
+            ui::text(ui, "A client ID is 32 letters and digits.", ui::mono(11.0), ui::CAUTION);
+        }
+        if ui::button(ui, theme, "CONNECT LIBRARY", None, valid).clicked() && valid {
+            self.sign_in(vec!["library".to_string(), id]);
+        }
+    }
+
+    fn library(&mut self, ui: &mut Ui, theme: &Theme, now: &Now) {
+        if std::mem::take(&mut self.shared.lock().unwrap().refresh) {
+            self.asked.clear();
+        }
+        self.want("playlists:".to_string(), json!({ "cmd": "playlists" }));
+        let source = self.source.clone();
+        self.want(source.key(), source.request());
+        // The queue moves on with every track, so it is asked for again each time.
+        let playing_uri = now.track.as_ref().map(|track| track.uri.clone());
+        if source == Source::Queue && self.queue_as_of != playing_uri {
+            self.queue_as_of = playing_uri;
+            self.send(json!({ "cmd": "queue" }));
+        }
+        let (playlists, list) = {
+            let shared = self.shared.lock().unwrap();
+            (shared.lists.get("playlists:").cloned(), shared.lists.get(&source.key()).cloned())
+        };
+
+        let transport_height = 84.0;
+        let body_height = (ui.available_height() - transport_height - 12.0).max(80.0);
+        let unconnected = matches!(&playlists, Some((_, Some(why))) if why.starts_with("Your library is not connected"));
+        if unconnected {
+            ui.allocate_ui_with_layout(vec2(ui.available_width(), body_height), Layout::top_down(Align::Min), |ui| {
+                self.connect_library(ui, theme);
+            });
+            ui.add_space(12.0);
+            self.transport(ui, theme, now, transport_height);
+            return;
+        }
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 28.0;
+            // Left: search, then the library.
+            ui.allocate_ui_with_layout(vec2(240.0, body_height), Layout::top_down(Align::Min), |ui| {
+                ui.spacing_mut().item_spacing.y = 4.0;
+                let (field, _) = ui.allocate_exact_size(vec2(240.0, 36.0), Sense::hover());
+                ui.painter().rect_filled(field, 0.0, ui::PANEL);
+                ui.painter().rect_stroke(field, 0.0, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
+                let edit = ui.put(
+                    field.shrink2(vec2(10.0, 7.0)),
+                    TextEdit::singleline(&mut self.query)
+                        .frame(false)
+                        .font(ui::mono(13.0))
+                        .text_color(ui::TEXT)
+                        .hint_text("search Spotify"),
+                );
+                if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !self.query.trim().is_empty() {
+                    self.source = Source::Search(self.query.trim().to_string());
+                }
+                ui.add_space(10.0);
+                if side_row(ui, theme, "LIKED SONGS", self.source == Source::Liked) {
+                    self.source = Source::Liked;
+                }
+                if side_row(ui, theme, "UP NEXT", self.source == Source::Queue) {
+                    self.source = Source::Queue;
+                    self.queue_as_of = None;
+                }
+                ui.add_space(8.0);
+                ui::tracked(ui, "PLAYLISTS", ui::display_bold(11.0), ui::LABEL, 3.0);
+                match playlists {
+                    None => {
+                        ui::text(ui, "Loading…", ui::mono(12.0), ui::LABEL);
+                    }
+                    Some((_, Some(why))) => {
+                        ui::text(ui, &why, ui::mono(11.0), ui::CAUTION);
+                    }
+                    Some((items, None)) => {
+                        ScrollArea::vertical().id_salt("playlists").auto_shrink([false, false]).show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            for playlist in &items {
+                                let chosen = matches!(&self.source, Source::Playlist { id, .. } if *id == playlist.id);
+                                if side_row(ui, theme, &playlist.name, chosen) {
+                                    self.source = Source::Playlist {
+                                        id: playlist.id.clone(),
+                                        name: playlist.name.clone(),
+                                        uri: playlist.uri.clone(),
+                                    };
+                                }
+                            }
+                        });
+                    }
+                }
+            });
+
+            // Right: the list chosen.
+            ui.allocate_ui_with_layout(vec2(ui.available_width(), body_height), Layout::top_down(Align::Min), |ui| {
+                let title = match &source {
+                    Source::Liked => "LIKED SONGS".to_string(),
+                    Source::Queue => "UP NEXT".to_string(),
+                    Source::Playlist { name, .. } => name.to_uppercase(),
+                    Source::Search(query) => format!("RESULTS FOR “{}”", query.to_uppercase()),
+                };
+                ui::section(ui, &crate::panels::truncate(&title, 48), |ui| {
+                    if let Some((items, None)) = &list {
+                        ui::meta(ui, &format!("{} SHOWN", items.len()), ui::LABEL);
+                    }
+                });
+                match list {
+                    None => {
+                        ui::text(ui, "Loading…", ui::mono(12.0), ui::LABEL);
+                    }
+                    Some((_, Some(why))) if why.starts_with("The queue needs") => {
+                        ui::text(ui, "The queue needs one more approval from Spotify, on its page in your browser.", ui::mono(12.0), ui::TEXT);
+                        ui.add_space(12.0);
+                        if ui::button(ui, theme, "APPROVE", None, true).clicked() {
+                            self.sign_in(vec!["library".to_string()]);
+                        }
+                    }
+                    Some((_, Some(why))) => {
+                        ui::text(ui, &why, ui::mono(12.0), ui::CAUTION);
+                    }
+                    Some((items, None)) if items.is_empty() => {
+                        let empty = if source == Source::Queue { "Nothing is waiting to play." } else { "Nothing here." };
+                        ui::text(ui, empty, ui::mono(12.0), ui::LABEL);
+                    }
+                    Some((items, None)) => {
+                        let playing = now.track.as_ref().map(|track| track.uri.as_str());
+                        ScrollArea::vertical().id_salt("tracks").auto_shrink([false, false]).show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            let in_queue = source == Source::Queue;
+                            for (index, item) in items.iter().enumerate() {
+                                let just_queued = self.queued.as_ref().is_some_and(|(uri, at)| *uri == item.uri && at.elapsed() < Duration::from_secs(2));
+                                // In the queue a track may come up twice, and none of them is the one playing.
+                                let lit = !in_queue && playing == Some(item.uri.as_str());
+                                let picked = ui.push_id(index, |ui| track_row(ui, theme, item, lit, !in_queue, just_queued)).inner;
+                                if picked == Picked::Queue {
+                                    self.queued = Some((item.uri.clone(), Instant::now()));
+                                    self.send(json!({ "cmd": "enqueue", "track": item.uri }));
+                                    ui.ctx().request_repaint_after(Duration::from_secs(2));
+                                }
+                                if picked != Picked::Row {
+                                    continue;
+                                }
+                                if in_queue {
+                                    // Spotify offers no way to jump into the queue but one step at a time.
+                                    for _ in 0..=index {
+                                        self.send(json!({ "cmd": "next" }));
+                                    }
+                                } else if item.playlist {
+                                    self.source = Source::Playlist {
+                                        id: item.id.clone(),
+                                        name: item.name.clone(),
+                                        uri: item.uri.clone(),
+                                    };
+                                } else {
+                                    self.send(json!({ "cmd": "play", "context": source.context(), "track": item.uri }));
+                                }
+                            }
+                        });
+                    }
+                }
+            });
+        });
+
+        ui.add_space(12.0);
+        self.transport(ui, theme, now, transport_height);
+    }
+
+    /// The strip along the bottom of the view: the track, the controls, the position.
+    fn transport(&mut self, ui: &mut Ui, theme: &Theme, now: &Now, height: f32) {
+        let (strip, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+        ui.painter().rect_filled(strip, 0.0, ui::PANEL);
+        ui.painter().rect_stroke(strip, 0.0, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
+        let mut inner = ui.new_child(UiBuilder::new().max_rect(strip.shrink(14.0)).layout(Layout::left_to_right(Align::Center)));
+        let ui = &mut inner;
+        ui.spacing_mut().item_spacing.x = 14.0;
+        let Some(track) = &now.track else {
+            ui::text(ui, "Nothing is playing. Pick a track above.", ui::mono(12.0), ui::LABEL);
+            return;
+        };
+        self.draw_cover(ui, 56.0, track.cover.as_deref());
+        let names = (strip.width() * 0.22).clamp(120.0, 260.0);
+        ui.allocate_ui_with_layout(vec2(names, 56.0), Layout::top_down(Align::Min), |ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.add_space(6.0);
+            let fit = (names / 8.5) as usize;
+            ui::text(ui, &crate::panels::truncate(&track.name, fit), ui::display_bold(15.0), ui::TEXT);
+            ui::text(ui, &crate::panels::truncate(&track.artists, fit + 4), ui::mono(11.0), ui::SECONDARY);
+        });
+        ui.spacing_mut().item_spacing.x = 4.0;
+        if control(ui, theme, Control::Previous, 32.0, false).clicked() {
+            self.send(json!({ "cmd": "prev" }));
+        }
+        let which = if now.playing { Control::Pause } else { Control::Play };
+        if control(ui, theme, which, 40.0, true).clicked() {
+            self.send(json!({ "cmd": "toggle" }));
+        }
+        if control(ui, theme, Control::Next, 32.0, false).clicked() {
+            self.send(json!({ "cmd": "next" }));
+        }
+        ui.add_space(10.0);
+        ui.spacing_mut().item_spacing.x = 10.0;
+        let position = now.position_ms();
+        ui::text(ui, &clock(position), ui::mono(12.0), ui::TEXT);
+        // What is left over, after the readings and controls to the right, is the bar.
+        let bar_width = (ui.available_width() - 330.0).max(60.0);
+        let frac = position as f32 / track.duration_ms.max(1) as f32;
+        if let Some(to) = ui::slider(ui, theme, bar_width, frac) {
+            // Only on release: asking for every step of a drag would stutter.
+            if ui.input(|i| i.pointer.any_released()) || !ui.input(|i| i.pointer.any_down()) {
+                self.send(json!({ "cmd": "seek", "ms": (to * track.duration_ms as f32) as u32 }));
+            }
+        }
+        ui::text(ui, &clock(track.duration_ms), ui::mono(12.0), ui::SECONDARY);
+        ui.add_space(8.0);
+        if ui::chip(ui, theme, "SHUFFLE", None, now.shuffle).clicked() {
+            self.send(json!({ "cmd": "shuffle", "on": !now.shuffle }));
+        }
+        ui::text(ui, "VOL", ui::mono(11.0), ui::LABEL);
+        if let Some(to) = ui::slider(ui, theme, 90.0, now.volume as f32 / 100.0) {
+            let percent = (to * 100.0).round() as u8;
+            if percent != now.volume {
+                self.send(json!({ "cmd": "volume", "percent": percent }));
+            }
+        }
+    }
+}
+
+/// The progress bar never shows the caution colour: a track near its end is no warning.
+const CAUTION_FREE: f32 = ui::CAUTION_ABOVE;
+
+/// A row in the left list. Returns true when clicked.
+fn side_row(ui: &mut Ui, theme: &Theme, name: &str, chosen: bool) -> bool {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
+    let painter = ui.painter_at(rect);
+    if chosen {
+        painter.rect_filled(rect, 0.0, theme.main);
+    } else if response.hovered() {
+        painter.rect_filled(rect, 0.0, ui::PANEL);
+    }
+    let (font, ink) = if chosen { (ui::display_bold(13.0), ui::GROUND) } else { (ui::display(13.0), ui::TEXT) };
+    painter.text(rect.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, crate::panels::truncate(name, 26), font, ink);
+    response.clicked()
+}
+
+/// What was clicked on a row: the row itself, or its way into the queue.
+#[derive(Clone, Copy, PartialEq)]
+enum Picked {
+    Nothing,
+    Row,
+    Queue,
+}
+
+/// A track, or a playlist among search results. `queueable` rows carry a way to add
+/// them to what plays next, and say `queued` for a moment after.
+fn track_row(ui: &mut Ui, theme: &Theme, item: &Item, playing: bool, queueable: bool, queued: bool) -> Picked {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0), Sense::click());
+    // Under the pointer, the row offers to queue the track where its length is.
+    let mut add = None;
+    if queueable && !item.playlist && (queued || ui.rect_contains_pointer(rect)) {
+        let spot = Rect::from_min_max(pos2(rect.right() - 92.0, rect.top()), rect.right_bottom());
+        add = Some((spot, ui.interact(spot, ui.id().with("queue"), Sense::click())));
+    }
+    let painter = ui.painter_at(rect);
+    if response.hovered() {
+        painter.rect_filled(rect, 0.0, ui::PANEL);
+    }
+    painter.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, ui::TRACK));
+    let ink = if playing { theme.main } else { ui::TEXT };
+    let mark = Rect::from_center_size(rect.left_center() + vec2(10.0, 0.0), vec2(6.0, 6.0));
+    if playing {
+        painter.rect_filled(mark, 0.0, theme.main);
+    }
+    let width = rect.width();
+    // How many characters fit in a column this many points wide.
+    let chars = |points: f32| ((points - 14.0).max(0.0) / 8.0) as usize;
+    let with_album = width > 620.0;
+    let by_width = if with_album { width * 0.26 } else { width * 0.54 - 64.0 };
+    painter.text(rect.left_center() + vec2(26.0, 0.0), Align2::LEFT_CENTER, crate::panels::truncate(&item.name, chars(width * 0.46 - 26.0)), ui::mono(13.0), ink);
+    let by = if item.playlist && !item.by.is_empty() { format!("playlist by {}", item.by) } else if item.playlist { "playlist".to_string() } else { item.by.clone() };
+    painter.text(rect.left_center() + vec2(width * 0.46, 0.0), Align2::LEFT_CENTER, crate::panels::truncate(&by, chars(by_width)), ui::mono(12.0), ui::SECONDARY);
+    if with_album {
+        painter.text(rect.left_center() + vec2(width * 0.72, 0.0), Align2::LEFT_CENTER, crate::panels::truncate(&item.album, chars(width * 0.28 - 64.0)), ui::mono(12.0), ui::LABEL);
+    }
+    if let Some((spot, adding)) = add {
+        let (label, ink) = match (queued, adding.hovered()) {
+            (true, _) => ("QUEUED", theme.main),
+            (false, true) => ("+ QUEUE", ui::TEXT),
+            (false, false) => ("+ QUEUE", ui::SECONDARY),
+        };
+        painter.text(spot.right_center() - vec2(10.0, 0.0), Align2::RIGHT_CENTER, label, ui::display_bold(11.0), ink);
+        if adding.clicked() {
+            return Picked::Queue;
+        }
+        return if response.clicked() { Picked::Row } else { Picked::Nothing };
+    }
+    let end = if item.playlist { "OPEN".to_string() } else { clock(item.duration_ms) };
+    painter.text(rect.right_center() - vec2(10.0, 0.0), Align2::RIGHT_CENTER, end, ui::mono(12.0), ui::SECONDARY);
+    if response.clicked() { Picked::Row } else { Picked::Nothing }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_what_the_service_says() {
+        let now = Now::parse(&json!({"type": "state", "playing": false, "position_ms": 61000, "volume": 80, "shuffle": true,
+            "track": {"uri": "spotify:track:1", "name": "So What", "artists": "Miles Davis", "album": "Kind of Blue", "duration_ms": 562000, "cover": null}}));
+        assert_eq!(now.track.as_ref().unwrap().name, "So What");
+        assert_eq!(now.position_ms(), 61000, "paused: the position stands still");
+        assert!(now.shuffle);
+        assert_eq!(Now::parse(&json!({"type": "state", "track": null})).track, None);
+
+        let items = parse_items(&json!({"items": [
+            {"kind": "track", "uri": "spotify:track:1", "name": "So What", "artists": "Miles Davis", "album": "Kind of Blue", "duration_ms": 562000},
+            {"kind": "playlist", "uri": "spotify:playlist:p", "id": "p", "name": "Focus", "owner": "ada"},
+            {"kind": "track", "name": "no address"}]}));
+        assert_eq!(items.len(), 2);
+        assert!(!items[0].playlist && items[0].by == "Miles Davis");
+        assert!(items[1].playlist && items[1].by == "ada" && items[1].id == "p");
+    }
+
+    #[test]
+    fn a_playing_track_moves_on_but_not_past_its_end() {
+        let mut now = Now::parse(&json!({"playing": true, "position_ms": 1000,
+            "track": {"uri": "u", "name": "n", "duration_ms": 1200}}));
+        now.at = Some(Instant::now() - Duration::from_secs(5));
+        assert_eq!(now.position_ms(), 1200);
+    }
+
+    #[test]
+    fn formats_times_and_names_lists() {
+        assert_eq!(clock(0), "0:00");
+        assert_eq!(clock(61_000), "1:01");
+        assert_eq!(clock(562_000), "9:22");
+        assert_eq!(Source::Liked.context().as_deref(), Some("liked"));
+        assert_eq!(Source::Search("x".into()).context(), None);
+        assert_eq!(Source::Playlist { id: "p".into(), name: "n".into(), uri: "spotify:playlist:p".into() }.key(), "tracks:p");
+    }
+}

@@ -8,6 +8,7 @@
 //!   any of that changes. A place is `0` hidden, `1` shown, `2` shown in the right half;
 //! - `launcher` when the user asks for the application launcher;
 //! - `settings` when the user asks for the settings;
+//! - `music` when the user asks for the music player;
 //! - `lock` when the user asks for the screen to be locked, which the shell answers
 //!   with its own `lock` once it is ready to show the lock screen;
 //! - `locked <0|1>` whenever the screen becomes locked or unlocked;
@@ -23,7 +24,7 @@
 
 use crate::{Panel, Panels};
 
-pub const SOCKET_ENV: &str = "EDEX_COMP_SOCKET";
+pub const SOCKET_ENV: &str = "DES_COMP_SOCKET";
 
 /// Where an application is on its display.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -265,6 +266,8 @@ pub enum Event {
     Launcher,
     /// The settings shortcut was pressed.
     Settings,
+    /// The music shortcut was pressed.
+    Music,
     /// The lock shortcut was pressed.
     LockRequested,
     /// The screen is now locked, or no longer.
@@ -275,6 +278,7 @@ pub enum Event {
 impl Event {
     pub const LAUNCHER: &str = "launcher\n";
     pub const SETTINGS: &str = "settings\n";
+    pub const MUSIC: &str = "music\n";
     pub const LOCK_REQUESTED: &str = "lock\n";
 
     pub fn locked(locked: bool) -> String {
@@ -285,6 +289,7 @@ impl Event {
         match line.trim_end_matches('\n') {
             "launcher" => return Some(Event::Launcher),
             "settings" => return Some(Event::Settings),
+            "music" => return Some(Event::Music),
             "lock" => return Some(Event::LockRequested),
             "locked 0" => return Some(Event::Locked(false)),
             "locked 1" => return Some(Event::Locked(true)),
@@ -511,6 +516,7 @@ mod tests {
     fn events_and_commands_round_trip() {
         assert_eq!(Event::decode(Event::LAUNCHER), Some(Event::Launcher));
         assert_eq!(Event::decode(Event::SETTINGS), Some(Event::Settings));
+        assert_eq!(Event::decode(Event::MUSIC), Some(Event::Music));
         assert_eq!(Event::decode(Event::LOCK_REQUESTED), Some(Event::LockRequested));
         assert_eq!(Event::decode(&Event::locked(true)), Some(Event::Locked(true)));
         assert_eq!(Event::decode(&Event::locked(false)), Some(Event::Locked(false)));

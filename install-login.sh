@@ -11,12 +11,12 @@
 set -eu
 cd "$(dirname "$0")"
 
-if ! /usr/local/bin/edex-rs --help 2>/dev/null | grep -q -- --greeter; then
-    echo "The installed edex-rs has no login screen yet. Run ./install.sh first." >&2
+if ! /usr/local/bin/des-ui --help 2>/dev/null | grep -q -- --greeter; then
+    echo "The installed des-ui has no login screen yet. Run ./install.sh first." >&2
     exit 1
 fi
-if ! /usr/local/bin/edex-comp --help 2>/dev/null | grep -q -- --no-xwayland; then
-    echo "The installed edex-comp is too old to show the login screen. Run ./install.sh first." >&2
+if ! /usr/local/bin/des-comp --help 2>/dev/null | grep -q -- --no-xwayland; then
+    echo "The installed des-comp is too old to show the login screen. Run ./install.sh first." >&2
     exit 1
 fi
 
@@ -34,11 +34,24 @@ if ! id "$greeter_user" >/dev/null 2>&1; then
     exit 1
 fi
 
-sudo install -Dm755 session/edex-rs-greeter /usr/local/bin/edex-rs-greeter
+# This desktop was called edex-rs before: bring its pictures along, and leave the old
+# names pointing at the new ones for a login screen still running under them.
+if [ -d /var/lib/edex-rs ] && [ ! -L /var/lib/edex-rs ] && [ ! -e /var/lib/des-ui ]; then
+    sudo mv /var/lib/edex-rs /var/lib/des-ui
+    sudo ln -s des-ui /var/lib/edex-rs
+fi
+if [ -e /usr/local/bin/edex-rs-greeter ]; then
+    sudo ln -sfn des-ui-greeter /usr/local/bin/edex-rs-greeter
+fi
+if [ -f "$config.before-edex-rs" ] && [ ! -f "$config.before-des-ui" ]; then
+    sudo mv "$config.before-edex-rs" "$config.before-des-ui"
+fi
+
+sudo install -Dm755 session/des-ui-greeter /usr/local/bin/des-ui-greeter
 # Pictures for the login screen: each user can add their own, none can remove another's.
-sudo install -d -m 1777 /var/lib/edex-rs/avatars
+sudo install -d -m 1777 /var/lib/des-ui/avatars
 # Where the login screen keeps its log, for when it misbehaves.
-sudo install -d -o "$greeter_user" -m 755 /var/lib/edex-rs/greeter
+sudo install -d -o "$greeter_user" -m 755 /var/lib/des-ui/greeter
 
 if [ -f "$config" ] && [ ! -f "$config.before-des-ui" ]; then
     sudo cp "$config" "$config.before-des-ui"
@@ -49,7 +62,7 @@ sudo tee "$config" >/dev/null <<CONFIG
 vt = $vt
 
 [default_session]
-command = "/usr/local/bin/edex-rs-greeter"
+command = "/usr/local/bin/des-ui-greeter"
 user = "$greeter_user"
 CONFIG
 
@@ -60,10 +73,10 @@ cat <<'DONE'
 
 Done. The DEs-UI login screen appears from the next boot; nothing has changed yet.
 
-  See it now, without signing in:   edex-rs --greeter --windowed
-  Use your own picture:             edex-rs --set-avatar ~/Pictures/me.jpg
+  See it now, without signing in:   des-ui --greeter --windowed
+  Use your own picture:             des-ui --set-avatar ~/Pictures/me.jpg
   Go back to GDM:                   ./uninstall-login.sh
-  Its log, if it misbehaves:        /var/lib/edex-rs/greeter/login.log
+  Its log, if it misbehaves:        /var/lib/des-ui/greeter/login.log
 
 If the machine comes up without a usable login: Ctrl+Alt+F3, sign in, then
     sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot

@@ -11,7 +11,7 @@ use smithay::{
     utils::SERIAL_COUNTER,
 };
 
-use crate::state::EdexComp;
+use crate::state::DesComp;
 
 /// A compositor shortcut, as opposed to a key press that belongs to the focused client.
 enum Action {
@@ -21,6 +21,7 @@ enum Action {
     MoveDisplay,
     Launcher,
     Settings,
+    Music,
     Lock,
     /// Super with a key that is no shortcut: swallowed, so that it types nothing.
     Ignore,
@@ -28,7 +29,7 @@ enum Action {
     Fullscreen,
     /// Give the keyboard to the left (false) or right (true) half of a split.
     FocusHalf(bool),
-    Panel(edex_common::Panel),
+    Panel(des_common::Panel),
     RestartShell,
     /// A volume or brightness key.
     Media(Media),
@@ -45,6 +46,17 @@ enum Media {
     Mute,
     BrightnessUp,
     BrightnessDown,
+    PlayPause,
+    NextTrack,
+    PreviousTrack,
+}
+
+/// Passes a playback key on to the music service, which is installed beside this
+/// program. Nothing happens when the service is not running.
+fn music(command: &str) {
+    let beside = std::env::current_exe().ok().and_then(|exe| Some(exe.parent()?.join("des-music")));
+    let program = beside.filter(|path| path.exists()).unwrap_or_else(|| "des-music".into());
+    run(&program.to_string_lossy(), &["send", command]);
 }
 
 /// Runs a helper program without waiting for it.
@@ -101,6 +113,9 @@ impl Media {
             Keysym::XF86_AudioMute => Media::Mute,
             Keysym::XF86_MonBrightnessUp => Media::BrightnessUp,
             Keysym::XF86_MonBrightnessDown => Media::BrightnessDown,
+            Keysym::XF86_AudioPlay | Keysym::XF86_AudioPause => Media::PlayPause,
+            Keysym::XF86_AudioNext => Media::NextTrack,
+            Keysym::XF86_AudioPrev => Media::PreviousTrack,
             _ => return None,
         })
     }
@@ -113,6 +128,9 @@ impl Media {
             Media::Mute => run("wpctl", &["set-mute", SINK, "toggle"]),
             Media::BrightnessUp => step_brightness(true),
             Media::BrightnessDown => step_brightness(false),
+            Media::PlayPause => music("toggle"),
+            Media::NextTrack => music("next"),
+            Media::PreviousTrack => music("prev"),
         }
     }
 }
@@ -121,11 +139,11 @@ impl Media {
 const SWITCH_VT_1: u32 = 0x1008_FE01;
 const SWITCH_VT_12: u32 = 0x1008_FE0C;
 
-impl EdexComp {
+impl DesComp {
     /// Reads the input settings again and applies them to the keyboard and to every
     /// pointing device.
     pub fn reload_input(&mut self) {
-        self.input_settings = edex_common::input::InputSettings::load();
+        self.input_settings = des_common::input::InputSettings::load();
         let settings = self.input_settings.clone();
         let keyboard = self.seat.get_keyboard().unwrap();
         keyboard.change_repeat_info(settings.repeat_rate as i32, settings.repeat_delay as i32);
@@ -191,6 +209,7 @@ impl EdexComp {
                             Keysym::Tab => FilterResult::Intercept(Action::Cycle),
                             Keysym::space => FilterResult::Intercept(Action::Launcher),
                             Keysym::comma => FilterResult::Intercept(Action::Settings),
+                            Keysym::m | Keysym::M => FilterResult::Intercept(Action::Music),
                             Keysym::l | Keysym::L => FilterResult::Intercept(Action::Lock),
                             Keysym::o | Keysym::O => FilterResult::Intercept(Action::MoveDisplay),
                             Keysym::R if modifiers.shift => FilterResult::Intercept(Action::RestartShell),
@@ -199,13 +218,13 @@ impl EdexComp {
                             Keysym::Left => FilterResult::Intercept(Action::FocusHalf(false)),
                             Keysym::Right => FilterResult::Intercept(Action::FocusHalf(true)),
                             Keysym::bracketleft => {
-                                FilterResult::Intercept(Action::Panel(edex_common::Panel::Left))
+                                FilterResult::Intercept(Action::Panel(des_common::Panel::Left))
                             }
                             Keysym::bracketright => {
-                                FilterResult::Intercept(Action::Panel(edex_common::Panel::Right))
+                                FilterResult::Intercept(Action::Panel(des_common::Panel::Right))
                             }
                             Keysym::backslash => {
-                                FilterResult::Intercept(Action::Panel(edex_common::Panel::Bottom))
+                                FilterResult::Intercept(Action::Panel(des_common::Panel::Bottom))
                             }
                             Keysym::q | Keysym::Q => FilterResult::Intercept(Action::Close),
                             // Not a shortcut, but not a letter for the application either.
@@ -222,6 +241,7 @@ impl EdexComp {
                     Some(Action::MoveDisplay) => self.move_active(),
                     Some(Action::Launcher) => self.open_launcher(),
                     Some(Action::Settings) => self.open_settings(),
+                    Some(Action::Music) => self.open_music(),
                     Some(Action::Lock) => self.request_lock(),
                     Some(Action::Ignore) => {}
                     Some(Action::RestartShell) => self.restart_shell(),

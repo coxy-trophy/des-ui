@@ -4,12 +4,12 @@
 use crate::config::{Config, LINE_HEIGHT_RANGE, MAX_FONT_SIZE, MIN_FONT_SIZE, SCROLLBACK_CHOICES};
 use crate::radio::Radio;
 use crate::term::CursorShape;
-use edex_common::input::{InputSettings, REPEAT_DELAY_RANGE, REPEAT_RATE_RANGE};
+use des_common::input::{InputSettings, REPEAT_DELAY_RANGE, REPEAT_RATE_RANGE};
 use crate::geo::{Place, Snapshot, parse_location};
 use crate::sysmon::SysMon;
 use crate::theme::{self, Theme};
 use crate::ui;
-use edex_common::{
+use des_common::{
     Panel, Panels,
     ipc::{DisplayChoice, DisplayInfo, Displays, Mode},
 };
@@ -497,7 +497,7 @@ impl Settings {
     fn displays(&mut self, ui: &mut Ui, theme: &Theme, displays: Option<&Displays>, changes: &mut Vec<Change>) {
         let Some(displays) = displays.filter(|displays| !displays.monitors.is_empty()) else {
             heading(ui, "DISPLAYS", "");
-            note(ui, "Displays can be set when edex-rs runs as your login session.");
+            note(ui, "Displays can be set when des-ui runs as your login session.");
             return;
         };
         // Start over from what is real whenever that changes underneath the draft.
@@ -746,9 +746,9 @@ impl Settings {
         heading(ui, "SESSION", "");
         for (name, value) in [
             ("Version", env!("CARGO_PKG_VERSION")),
-            ("Settings file", "~/.config/edex-rs/config"),
-            ("Session log", "~/.local/state/edex-rs/session.log"),
-            ("Application output", "~/.local/state/edex-rs/apps.log"),
+            ("Settings file", "~/.config/des-ui/config"),
+            ("Session log", "~/.local/state/des-ui/session.log"),
+            ("Application output", "~/.local/state/des-ui/apps.log"),
         ] {
             ui.horizontal(|ui| {
                 let (label, _) = ui.allocate_exact_size(vec2(180.0, 26.0), Sense::hover());

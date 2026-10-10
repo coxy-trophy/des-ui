@@ -1,0 +1,179 @@
+//! The lines of JSON the music service and its clients exchange.
+//!
+//! A client sends `{"cmd": ...}`. The service sends `{"type":"state", ...}` whenever
+//! what is playing changes, and `{"type":"list", ...}` in answer to a request for one.
+
+use serde_json::{Value, json};
+use std::path::PathBuf;
+
+/// Where the service listens. `DES_MUSIC_SOCKET` names another place, for trying
+/// things out beside a service that is in use.
+pub fn socket_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("DES_MUSIC_SOCKET") {
+        return PathBuf::from(path);
+    }
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("des-music.sock")
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Track {
+    pub uri: String,
+    pub name: String,
+    pub artists: String,
+    pub album: String,
+    pub duration_ms: u32,
+    /// Address of the cover picture.
+    pub cover: Option<String>,
+}
+
+impl Track {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "uri": self.uri,
+            "name": self.name,
+            "artists": self.artists,
+            "album": self.album,
+            "duration_ms": self.duration_ms,
+            "cover": self.cover,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct State {
+    pub track: Option<Track>,
+    pub playing: bool,
+    pub position_ms: u32,
+    /// Percent.
+    pub volume: u8,
+    pub shuffle: bool,
+}
+
+impl State {
+    pub fn to_line(&self) -> String {
+        let state = json!({
+            "type": "state",
+            "track": self.track.as_ref().map(Track::to_json),
+            "playing": self.playing,
+            "position_ms": self.position_ms,
+            "volume": self.volume,
+            "shuffle": self.shuffle,
+        });
+        format!("{state}\n")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Request {
+    State,
+    Toggle,
+    Next,
+    Previous,
+    Seek(u32),
+    Volume(u8),
+    Shuffle(bool),
+    /// Play a list (a playlist's address, or `liked`) from a track, or one track alone.
+    Play { context: Option<String>, track: Option<String> },
+    Search(String),
+    Playlists,
+    /// The tracks of the playlist with this id.
+    Tracks(String),
+    Liked,
+    /// What plays next.
+    Queue,
+    /// Add the track with this address to what plays next.
+    Enqueue(String),
+}
+
+impl Request {
+    pub fn parse(line: &str) -> Option<Request> {
+        let value: Value = serde_json::from_str(line).ok()?;
+        let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_string);
+        Some(match value.get("cmd")?.as_str()? {
+            "state" => Request::State,
+            "toggle" => Request::Toggle,
+            "next" => Request::Next,
+            "prev" => Request::Previous,
+            "seek" => Request::Seek(value.get("ms")?.as_u64()?.try_into().ok()?),
+            "volume" => Request::Volume(value.get("percent")?.as_u64()?.min(100) as u8),
+            "shuffle" => Request::Shuffle(value.get("on")?.as_bool()?),
+            "play" => {
+                let (context, track) = (text("context"), text("track"));
+                if context.is_none() && track.is_none() {
+                    return None;
+                }
+                Request::Play { context, track }
+            }
+            "search" => Request::Search(text("q").filter(|q| !q.trim().is_empty())?),
+            "playlists" => Request::Playlists,
+            "tracks" => Request::Tracks(text("playlist")?),
+            "liked" => Request::Liked,
+            "queue" => Request::Queue,
+            "enqueue" => Request::Enqueue(text("track").filter(|uri| uri.starts_with("spotify:track:"))?),
+            _ => return None,
+        })
+    }
+}
+
+/// A list answered to a client: `kind` says of what, `key` which one (the search text
+/// or the playlist's id), and `error` why it is empty when something went wrong.
+pub fn list_line(kind: &str, key: &str, items: Vec<Value>, error: Option<String>) -> String {
+    format!("{}\n", json!({ "type": "list", "kind": kind, "key": key, "items": items, "error": error }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_requests() {
+        assert_eq!(Request::parse(r#"{"cmd":"toggle"}"#), Some(Request::Toggle));
+        assert_eq!(Request::parse(r#"{"cmd":"seek","ms":61000}"#), Some(Request::Seek(61000)));
+        assert_eq!(Request::parse(r#"{"cmd":"volume","percent":250}"#), Some(Request::Volume(100)));
+        assert_eq!(Request::parse(r#"{"cmd":"shuffle","on":true}"#), Some(Request::Shuffle(true)));
+        assert_eq!(
+            Request::parse(r#"{"cmd":"play","context":"spotify:playlist:abc","track":"spotify:track:x"}"#),
+            Some(Request::Play { context: Some("spotify:playlist:abc".into()), track: Some("spotify:track:x".into()) })
+        );
+        assert_eq!(Request::parse(r#"{"cmd":"search","q":"miles davis"}"#), Some(Request::Search("miles davis".into())));
+        assert_eq!(Request::parse(r#"{"cmd":"tracks","playlist":"abc"}"#), Some(Request::Tracks("abc".into())));
+        assert_eq!(Request::parse(r#"{"cmd":"queue"}"#), Some(Request::Queue));
+        assert_eq!(Request::parse(r#"{"cmd":"enqueue","track":"spotify:track:x"}"#), Some(Request::Enqueue("spotify:track:x".into())));
+        assert_eq!(Request::parse(r#"{"cmd":"enqueue","track":"spotify:playlist:x"}"#), None);
+    }
+
+    #[test]
+    fn rejects_what_it_cannot_act_on() {
+        for line in ["", "toggle", r#"{"cmd":"dance"}"#, r#"{"cmd":"seek"}"#, r#"{"cmd":"seek","ms":-5}"#, r#"{"cmd":"play"}"#, r#"{"cmd":"search","q":"  "}"#, r#"{"cmd":"tracks"}"#] {
+            assert_eq!(Request::parse(line), None, "{line}");
+        }
+    }
+
+    #[test]
+    fn state_is_one_line_of_json() {
+        let state = State {
+            track: Some(Track {
+                uri: "spotify:track:x".into(),
+                name: "So \"What\"\n".into(),
+                artists: "Miles Davis".into(),
+                album: "Kind of Blue".into(),
+                duration_ms: 562000,
+                cover: None,
+            }),
+            playing: true,
+            position_ms: 1000,
+            volume: 80,
+            shuffle: false,
+        };
+        let line = state.to_line();
+        assert_eq!(line.matches('\n').count(), 1);
+        let value: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(value["type"], "state");
+        assert_eq!(value["track"]["name"], "So \"What\"\n");
+        assert_eq!(value["volume"], 80);
+        assert_eq!(serde_json::from_str::<Value>(&State::default().to_line()).unwrap()["track"], Value::Null);
+    }
+}

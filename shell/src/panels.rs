@@ -6,7 +6,7 @@ use crate::globe;
 use crate::sysmon::SysMon;
 use crate::theme::Theme;
 use crate::ui::{self, Icon};
-use edex_common::{
+use des_common::{
     Panel, Panels,
     ipc::{DesktopState, Place},
 };
@@ -202,6 +202,7 @@ pub fn right(
     desktop: Option<&DesktopState>,
     rotation: f32,
     geo: &Snapshot,
+    playing: impl FnOnce(&mut Ui),
 ) {
     ui.spacing_mut().item_spacing.y = 7.0;
     let online = !mon.ip.is_empty();
@@ -278,6 +279,8 @@ pub fn right(
         });
     }
 
+    playing(ui);
+
     if let Some(desktop) = desktop {
         ui.add_space(SECTION_GAP);
         ui::section(ui, "DISPLAYS", |ui| {
@@ -318,6 +321,7 @@ pub fn right(
     for (action, key) in [
         ("Launcher", "SPACE"),
         ("Settings", ","),
+        ("Music", "M"),
         ("Lock", "L"),
         ("Next application", "TAB"),
         ("Split the workspace", "S"),
@@ -346,23 +350,26 @@ pub fn status(
     desktop: Option<&DesktopState>,
     panels: Panels,
     overlay: Option<&str>,
-) -> (Option<Panel>, bool) {
+) -> (Option<Panel>, bool, bool) {
     let mut toggled = None;
     ui.spacing_mut().item_spacing.x = 20.0;
     ui::tracked(ui, "DEs-UI", ui::display_bold(11.0), theme.main, 3.0);
     // The way into the settings, lit while they are open.
-    let in_settings = overlay == Some("SETTINGS");
-    let label = ui::galley(ui, "SETTINGS", ui::display(11.0), ui::SECONDARY, 2.0);
-    let (rect, response) = ui.allocate_exact_size(label.size() + vec2(0.0, 8.0), Sense::click());
-    let ink = if in_settings {
-        theme.main
-    } else if response.hovered() {
-        ui::TEXT
-    } else {
-        ui::SECONDARY
+    let way_in = |ui: &mut Ui, name: &str, hint: &str| {
+        let label = ui::galley(ui, name, ui::display(11.0), ui::SECONDARY, 2.0);
+        let (rect, response) = ui.allocate_exact_size(label.size() + vec2(0.0, 8.0), Sense::click());
+        let ink = if overlay == Some(name) {
+            theme.main
+        } else if response.hovered() {
+            ui::TEXT
+        } else {
+            ui::SECONDARY
+        };
+        ui.painter().galley(rect.left_center() - vec2(0.0, label.size().y / 2.0), label, ink);
+        response.on_hover_text(hint).clicked()
     };
-    ui.painter().galley(rect.left_center() - vec2(0.0, label.size().y / 2.0), label, ink);
-    let settings_clicked = response.on_hover_text("Settings (Super+,)").clicked();
+    let settings_clicked = way_in(ui, "SETTINGS", "Settings (Super+,)");
+    let music_clicked = way_in(ui, "MUSIC", "Music (Super+M)");
 
     let holder = match (overlay, desktop.and_then(|d| d.focus.and_then(|index| d.apps.get(index)))) {
         (Some(overlay), _) => overlay.to_string(),
@@ -408,7 +415,7 @@ pub fn status(
             }
         }
     });
-    (toggled, settings_clicked)
+    (toggled, settings_clicked, music_clicked)
 }
 
 /// What a further display shows while no application is on it.

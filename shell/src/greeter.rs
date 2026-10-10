@@ -18,7 +18,7 @@ use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
 /// Where users' pictures for the login screen are kept, readable by the login screen.
-pub const AVATAR_DIR: &str = "/var/lib/edex-rs/avatars";
+pub const AVATAR_DIR: &str = "/var/lib/des-ui/avatars";
 
 /// A desktop that can be started after signing in.
 #[derive(Debug, Clone, PartialEq)]
@@ -56,7 +56,7 @@ fn sessions() -> Vec<Session> {
         .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "desktop"))
         .filter_map(|entry| parse_session(&std::fs::read_to_string(entry.path()).ok()?))
         .collect();
-    found.sort_by_key(|session| (!session.command[0].contains("edex-rs"), session.name.to_lowercase()));
+    found.sort_by_key(|session| (!session.command[0].contains("des-ui"), session.name.to_lowercase()));
     found
 }
 
@@ -615,8 +615,8 @@ mod tests {
 
     #[test]
     fn signs_in_through_the_login_service() {
-        let session = Session { name: "DEs-UI".into(), command: vec!["/usr/local/bin/edex-rs-session".into()], desktop: "edex-rs".into() };
-        let dir = std::env::temp_dir().join(format!("edex-greeter-test-{}", std::process::id()));
+        let session = Session { name: "DEs-UI".into(), command: vec!["/usr/local/bin/des-ui-session".into()], desktop: "des-ui".into() };
+        let dir = std::env::temp_dir().join(format!("des-greeter-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
         let path = dir.join("good.sock");
@@ -626,8 +626,8 @@ mod tests {
         assert_eq!(seen[0]["username"], "ada");
         let start = seen.last().unwrap();
         assert_eq!(start["type"], "start_session");
-        assert_eq!(start["cmd"][0], "/usr/local/bin/edex-rs-session");
-        assert!(start["env"].as_array().unwrap().iter().any(|v| v == "XDG_CURRENT_DESKTOP=edex-rs"));
+        assert_eq!(start["cmd"][0], "/usr/local/bin/des-ui-session");
+        assert!(start["env"].as_array().unwrap().iter().any(|v| v == "XDG_CURRENT_DESKTOP=des-ui"));
 
         let path = dir.join("bad.sock");
         let server = fake_greetd(path.clone(), "open sesame");

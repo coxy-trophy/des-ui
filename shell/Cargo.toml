@@ -1,5 +1,5 @@
 [package]
-name = "edex-rs"
+name = "des-ui"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
@@ -14,5 +14,5 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sysinfo = "0.38.4"
 vt100 = "0.16.2"
-edex-common = { path = "../common" }
+des-common = { path = "../common" }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

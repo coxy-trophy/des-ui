@@ -35,7 +35,7 @@ use crate::{
     policy::{App, ScreenMode},
     udev::UdevData,
 };
-use edex_common::{Panels, ipc::Place};
+use des_common::{Panels, ipc::Place};
 use smithay::{reexports::calloop::LoopHandle, wayland::xwayland_shell::XWaylandShellState, xwayland::X11Wm};
 
 /// How to start the shell.
@@ -48,14 +48,14 @@ pub struct ShellSpec {
 const MAX_CRASHES: usize = 3;
 const CRASH_WINDOW: Duration = Duration::from_secs(30);
 
-pub struct EdexComp {
+pub struct DesComp {
     pub start_time: std::time::Instant,
     pub socket_name: OsString,
     pub display_handle: DisplayHandle,
 
     pub space: Space<Window>,
     pub loop_signal: LoopSignal,
-    pub loop_handle: LoopHandle<'static, EdexComp>,
+    pub loop_handle: LoopHandle<'static, DesComp>,
     /// The windowed backend, when running inside another desktop.
     pub backend: Option<WinitGraphicsBackend<GlesRenderer>>,
     /// The hardware backend, when running as a login session.
@@ -74,7 +74,7 @@ pub struct EdexComp {
     pub x_popups: Vec<Window>,
     pub shm_state: ShmState,
     pub output_manager_state: OutputManagerState,
-    pub seat_state: SeatState<EdexComp>,
+    pub seat_state: SeatState<DesComp>,
     pub data_device_state: DataDeviceState,
     pub dmabuf_state: DmabufState,
     pub dmabuf_global: Option<DmabufGlobal>,
@@ -90,7 +90,7 @@ pub struct EdexComp {
     /// Set while a restart of the shell was asked for and its old process is going away.
     shell_restarting: bool,
     pub shell_pid: Option<u32>,
-    /// The edex-rs shell window: always fullscreen, always at the bottom.
+    /// The des-ui shell window: always fullscreen, always at the bottom.
     pub shell: Option<Window>,
     /// The shell's backdrop windows: the nth covers display n + 1 behind its applications.
     pub backdrops: Vec<Window>,
@@ -115,7 +115,7 @@ pub struct EdexComp {
     /// A display layout chosen in the settings and not yet saved, which overrides
     /// the saved ones.
     /// The keyboard, mouse and touchpad settings in force.
-    pub input_settings: edex_common::input::InputSettings,
+    pub input_settings: des_common::input::InputSettings,
     /// The keyboard layout and variant last given to the keymap compiler.
     pub keymap_applied: Option<(String, String)>,
     /// While locked, only the shell is on screen, showing the lock screen, and the
@@ -127,8 +127,8 @@ pub struct EdexComp {
     pub screenshot: Option<PathBuf>,
 }
 
-impl EdexComp {
-    pub fn new(event_loop: &mut EventLoop<'static, EdexComp>, display: Display<Self>) -> Self {
+impl DesComp {
+    pub fn new(event_loop: &mut EventLoop<'static, DesComp>, display: Display<Self>) -> Self {
         let start_time = std::time::Instant::now();
 
         let dh = display.handle();
@@ -194,7 +194,7 @@ impl EdexComp {
 
             ipc: None,
             fatal: None,
-            input_settings: edex_common::input::InputSettings::default(),
+            input_settings: des_common::input::InputSettings::default(),
             keymap_applied: None,
             locked: false,
             display_override: None,
@@ -204,8 +204,8 @@ impl EdexComp {
     }
 
     fn init_wayland_listener(
-        display: Display<EdexComp>,
-        event_loop: &mut EventLoop<'static, EdexComp>,
+        display: Display<DesComp>,
+        event_loop: &mut EventLoop<'static, DesComp>,
     ) -> OsString {
         // Creates a new listening socket, automatically choosing the next available `wayland` socket name.
         let listening_socket = ListeningSocketSource::new_auto().unwrap();
@@ -301,7 +301,7 @@ impl EdexComp {
         };
         let mut command = std::process::Command::new(&spec.program);
         if let Some(server) = &self.ipc {
-            command.env(edex_common::ipc::SOCKET_ENV, server.path());
+            command.env(des_common::ipc::SOCKET_ENV, server.path());
         }
         // Only the shell is pointed at our socket; programs started from it inherit it.
         // Never a host desktop's X server: programs must open here.

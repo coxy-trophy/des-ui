@@ -4,20 +4,20 @@ A sci-fi terminal desktop for Linux, written in Rust: a Wayland compositor and a
 shell that run as their own login session. It began as a rewrite of
 [eDEX-UI](https://github.com/GitSquared/edex-ui).
 
-The programs, and the files they keep, still carry the working name `edex-rs`.
+It has three programs:
 
-It has two programs:
-
-- **edex-rs** (`shell/`) — the interface: terminal, system panels, file browser.
-- **edex-comp** (`compositor/`) — a Wayland compositor that shows the shell
+- **des-ui** (`shell/`) — the interface: terminal, system panels, file browser.
+- **des-comp** (`compositor/`) — a Wayland compositor that shows the shell
   fullscreen and places other applications in the middle of its frame.
+- **des-music** (`music/`) — a Spotify player with no window of its own; the
+  shell is its interface.
 
 ## Try it in a window
 
     cargo build
-    ./target/debug/edex-comp                      # the whole desktop
-    ./target/debug/edex-comp -- --theme blade     # arguments after -- go to the shell
-    ./target/debug/edex-rs --windowed             # the shell on its own
+    ./target/debug/des-comp                      # the whole desktop
+    ./target/debug/des-comp -- --theme blade     # arguments after -- go to the shell
+    ./target/debug/des-ui --windowed             # the shell on its own
 
 Open applications with the launcher, or by starting them from the terminal. Hold
 Super (or Ctrl+Alt, which works when running in a window):
@@ -49,12 +49,12 @@ Otherwise the frame is on a laptop's own panel and the others extend to its righ
 Each further display shows its applications at full size, split or not.
 Applications open on the display the pointer is on.
 
-`edex-rs --list-apps` prints what the launcher offers.
+`des-ui --list-apps` prints what the launcher offers.
 
 The globe marks this machine and the places it has connections open to. Positions
 come from looking addresses up at get.geojs.io, which tells that service the public
 addresses this machine talks to; each is asked about once and kept in
-`~/.cache/edex-rs/places.tsv`. Your own position is guessed from your address
+`~/.cache/des-ui/places.tsv`. Your own position is guessed from your address
 unless you set it.
 
 ## The terminal
@@ -93,24 +93,24 @@ Esc closes. Changes apply at once and are saved.
 
 A display change is tried for 15 seconds and kept only if you confirm it; otherwise
 it goes back by itself, so a mode your monitor cannot show does not strand you.
-Confirmed layouts are saved in `~/.config/edex-rs/displays`, one per set of
+Confirmed layouts are saved in `~/.config/des-ui/displays`, one per set of
 monitors, and come before GNOME's saved layout.
 
-The rest are kept in `~/.config/edex-rs/config` as `key = value` lines, which can also
+The rest are kept in `~/.config/des-ui/config` as `key = value` lines, which can also
 be edited by hand. The compositor reads the keyboard, mouse and touchpad
 settings from the same file. Network and Bluetooth go through `nmcli` and
 `bluetoothctl`; a Wi-Fi password is handed to `nmcli` on its command line. Two can be set from a terminal:
 
-    edex-rs --set-location 48.8566,2.3522,Paris   # or: --set-location auto
-    edex-rs --geo off                             # no lookups at all; on to resume
+    des-ui --set-location 48.8566,2.3522,Paris   # or: --set-location auto
+    des-ui --geo off                             # no lookups at all; on to resume
 
-X11 applications run through Xwayland, which `edex-comp` starts and manages; the
+X11 applications run through Xwayland, which `des-comp` starts and manages; the
 clipboard is shared between them and Wayland applications.
 
 The look is called Signal (`shell/src/ui.rs`): fixed greys, two typefaces, and one
 accent colour. A theme sets that accent and the terminal's colours, in the JSON
 format eDEX-UI uses, so its theme files work here. `themes/` holds the built-in
-one; your own go in `~/.config/edex-rs/themes/`.
+one; your own go in `~/.config/des-ui/themes/`.
 
 ## Install as a login session
 
@@ -121,9 +121,9 @@ Then log out and choose **DEs-UI** from the session menu on the login screen.
 Exiting the last shell, or Ctrl+Shift+Q, ends the session. `./uninstall.sh`
 removes it again.
 
-In the session, `edex-comp` drives the displays and input devices itself (one GPU,
+In the session, `des-comp` drives the displays and input devices itself (one GPU,
 every monitor connected to it, including ones plugged in later). If that fails in the first seconds it falls back to running inside
-`cage`, and the reason is in `~/.local/state/edex-rs/session.log`. What applications started
+`cage`, and the reason is in `~/.local/state/des-ui/session.log`. What applications started
 from the launcher print goes to `apps.log` next to it.
 
 Ways out if something goes wrong: **Ctrl+Alt+Backspace** ends the session, and
@@ -137,7 +137,33 @@ nothing but the lock screen and sends it every key, so no shortcut reaches what 
 behind it. The password is checked with the system's own helper, `unix_chkpwd`.
 
 If the lock screen ever cannot be unlocked, press Ctrl+Alt+F3, sign in on the text
-console, and run `edex-rs --unlock`.
+console, and run `des-ui --unlock`.
+
+## Music
+
+**Super+M**, or `MUSIC` in the status strip, opens a Spotify player in the
+workspace: search, your playlists and your liked songs, with the track playing and
+its controls along the bottom. `UP NEXT` shows what is queued, and `+ QUEUE` on a
+track under the pointer adds it. While something plays, the right column shows it
+too, and the keyboard's play, next and previous keys work from anywhere.
+
+It needs Spotify Premium, and two things done once, both from the music view:
+
+1. **Sign in** (or `des-music login`), on Spotify's own page in your browser.
+   This is what plays.
+2. **Connect your library** (or `des-music library <client ID>`). Spotify turns
+   away library requests made in a player's name, so reading playlists, liked songs
+   and search needs an app of your own: at
+   [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) create
+   an app with the Redirect URI `http://127.0.0.1:8898/login` and the Web API ticked,
+   and paste its Client ID into the music view.
+
+`des-music logout` forgets both. Nothing else of Spotify needs to be installed or open.
+
+The playing is done by `des-music`, built on
+[librespot](https://github.com/librespot-org/librespot): it appears in Spotify's
+device list as "DEs-UI", so a phone can control it as well, and it keeps playing
+while the shell restarts. Sound goes out through PipeWire (`pw-cat`).
 
 ## Its own login screen
 
@@ -147,15 +173,15 @@ Optional, and separate from the above, because it changes how the machine boots:
 
 That installs greetd, a small login manager, and makes the DEs-UI login screen the
 machine's own in place of GDM, from the next boot. `./uninstall-login.sh` puts GDM
-back. To see the screen without any of that: `edex-rs --greeter --windowed`.
+back. To see the screen without any of that: `des-ui --greeter --windowed`.
 
 The screen shows a picture, a name and a password line. The picture is a pattern
-made from the name unless you give it one: `edex-rs --set-avatar <file>`. F1 changes
+made from the name unless you give it one: `des-ui --set-avatar <file>`. F1 changes
 the session, Tab the account when there are several, and the three marks at the
 bottom right suspend, restart and shut down, each on a second click.
 
-The screen is shown by `edex-comp` itself; its log is
-`/var/lib/edex-rs/greeter/login.log`. If it cannot start, a text login takes its
+The screen is shown by `des-comp` itself; its log is
+`/var/lib/des-ui/greeter/login.log`. If it cannot start, a text login takes its
 place. If the machine ever comes
 up with no usable login at all, press Ctrl+Alt+F3, sign in on the text console, and
 run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`.
@@ -187,6 +213,9 @@ run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`
 - `common/src/input.rs` — keyboard, mouse and touchpad settings
 - `shell/src/apps.rs`, `launcher.rs` — installed applications and the launcher
 - `shell/src/theme.rs` — eDEX-UI theme loader
+- `shell/src/music.rs` — the music view and what is playing
+- `music/src/main.rs`, `web.rs`, `protocol.rs` — the Spotify player, the library
+  lookups, and the lines it exchanges with the shell
 - `compositor/src/policy.rs` — which window is shown on which display
 - `compositor/src/udev.rs`, `winit.rs` — the hardware and windowed backends
 - `compositor/src/displays.rs`, `monitors.rs` — display settings and saved layouts
@@ -202,6 +231,8 @@ run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`
 - Dialogs at their natural size; sharing the middle-click selection with X11 applications
 - Turning a display off; placing displays above one another; scaling
 - Wired and VPN connections in the settings; Bluetooth devices that need a code
+- In the music player: removing from or reordering the queue (Spotify offers outside
+  apps no way to), albums and artists, more than the first page of a long playlist
 - Locking by itself after a while, or when the lid closes
 - On the login screen: accounts that need more than a password
 - From the original: on-screen keyboard, sound effects, mouse reporting to
@@ -214,4 +245,4 @@ MIT. The bundled typefaces, Chakra Petch and JetBrains Mono (`shell/assets/fonts
 are under the SIL Open Font License.
 
 eDEX-UI's own theme files are GPL-3.0 and are not part of this repository. They
-work as themes here: copy them into `~/.config/edex-rs/themes/`.
+work as themes here: copy them into `~/.config/des-ui/themes/`.

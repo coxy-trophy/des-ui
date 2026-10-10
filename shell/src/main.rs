@@ -1,4 +1,4 @@
-//! edex-rs: a Rust rewrite of the eDEX-UI sci-fi terminal desktop.
+//! des-ui: a Rust rewrite of the eDEX-UI sci-fi terminal desktop.
 
 mod apps;
 mod config;
@@ -8,6 +8,7 @@ mod globe;
 mod greeter;
 mod launcher;
 mod lock;
+mod music;
 mod panels;
 mod radio;
 mod settings;
@@ -21,7 +22,7 @@ use eframe::egui::{
     StrokeKind, Ui, UiBuilder, ViewportBuilder, ViewportCommand, Visuals, pos2, vec2,
 };
 use desktop::Desktop;
-use edex_common::{
+use des_common::{
     Panels,
     ipc::{Command, DesktopState, Place},
 };
@@ -37,7 +38,7 @@ use theme::Theme;
 const MAX_TABS: usize = 9;
 
 const USAGE: &str = "\
-Usage: edex-rs [OPTIONS]
+Usage: des-ui [OPTIONS]
 
 Options:
   --theme <NAME|FILE>  Theme to use: its accent and terminal colours (default: signal)
@@ -47,6 +48,7 @@ Options:
   --split-terminal[=below]
                        Start with the terminal split in two
   --settings[=SECTION] Start with the settings open, optionally on a section
+  --music              Start with the music player open
                        (appearance, terminal, frame, displays, network, bluetooth,
                        keyboard, mouse, globe, sound, session)
   --list-apps          Print the applications the launcher would offer, and exit
@@ -81,12 +83,13 @@ struct App {
     desktop: Option<Desktop>,
     launcher: Launcher,
     settings: settings::Settings,
+    music: music::Music,
     lock: lock::Lock,
     /// Whether the compositor has confirmed the lock now showing.
     lock_confirmed: bool,
     config: config::Config,
     /// The keyboard, mouse and touchpad settings, as last saved.
-    input: edex_common::input::InputSettings,
+    input: des_common::input::InputSettings,
     /// The font that supplies prompt symbols, kept for when fonts are set up again.
     symbols: Option<PathBuf>,
     /// Whether the saved panel choice has been sent to the compositor yet.
@@ -114,6 +117,7 @@ impl App {
             .unwrap_or_else(|| PathBuf::from("/"));
         let first = TermTab::spawn(&shell, &home, ctx.clone(), config.scrollback)?;
         let desktop = Desktop::connect(ctx.clone());
+        let music = music::Music::new(ctx.clone());
         Ok(App {
             ctx,
             theme,
@@ -128,12 +132,13 @@ impl App {
             desktop,
             launcher: Launcher::default(),
             settings: settings::Settings::default(),
+            music,
             lock: lock::Lock::new(),
             lock_confirmed: false,
             geo: geo::Geo::start(config.lookups, config.location.clone()),
             local_panels: config.panels,
             config,
-            input: edex_common::input::InputSettings::load(),
+            input: des_common::input::InputSettings::load(),
             symbols,
             panels_synced: false,
             screenshot,
@@ -157,7 +162,7 @@ impl App {
                 self.tabs.push(tab);
                 self.show_tab(self.tabs.len() - 1);
             }
-            Err(e) => eprintln!("edex-rs: cannot open tab: {e}"),
+            Err(e) => eprintln!("des-ui: cannot open tab: {e}"),
         }
     }
 
@@ -215,23 +220,36 @@ impl App {
     fn toggle_settings(&mut self) {
         if self.settings.open {
             self.settings.open = false;
+            self.music.open = false;
             return;
         }
         self.launcher.open = false;
+        self.music.open = false;
         self.settings.open(&self.config);
         if let Some(desktop) = &mut self.desktop {
             desktop.send(Command::Terminal);
         }
     }
 
+    /// Opens or closes the music player, which also takes the terminal's place.
+    fn toggle_music(&mut self) {
+        self.launcher.open = false;
+        self.settings.open = false;
+        self.music.toggle();
+        if self.music.open {
+            self.send(Command::Terminal);
+        }
+    }
+
     /// Locks the screen, if a password can be checked to unlock it again.
     fn lock_now(&mut self) {
         if !lock::can_check() {
-            eprintln!("edex-rs: not locking: this system has no way to check the password");
+            eprintln!("des-ui: not locking: this system has no way to check the password");
             return;
         }
         self.launcher.open = false;
         self.settings.open = false;
+        self.music.open = false;
         self.lock.engage();
         self.lock_confirmed = false;
         self.send(Command::Lock);
@@ -248,7 +266,7 @@ impl App {
         use settings::Change;
         let save = |key: &str, value: Option<&str>| {
             if let Err(e) = config::set(key, value) {
-                eprintln!("edex-rs: cannot save the setting: {e}");
+                eprintln!("des-ui: cannot save the setting: {e}");
             }
         };
         match change {
@@ -281,9 +299,9 @@ impl App {
             Change::Panel(panel, open) => {
                 let mut panels = self.config.panels;
                 match panel {
-                    edex_common::Panel::Left => panels.left = open,
-                    edex_common::Panel::Right => panels.right = open,
-                    edex_common::Panel::Bottom => panels.bottom = open,
+                    des_common::Panel::Left => panels.left = open,
+                    des_common::Panel::Right => panels.right = open,
+                    des_common::Panel::Bottom => panels.bottom = open,
                 }
                 self.config.panels = panels;
                 save("panels", Some(&config::Config::panels_value(panels)));
@@ -298,7 +316,7 @@ impl App {
                 let font = self.config.terminal_font.clone();
                 self.config = config::Config::load();
                 self.config.theme = theme;
-                self.input = edex_common::input::InputSettings::load();
+                self.input = des_common::input::InputSettings::load();
                 if self.config.terminal_font != font {
                     ui::install_fonts(ctx, self.symbols.as_deref(), self.config.terminal_font.as_deref());
                 }
@@ -324,6 +342,7 @@ impl App {
     /// covering that must make way.
     fn toggle_launcher(&mut self) {
         self.settings.open = false;
+        self.music.open = false;
         self.launcher.toggle();
         if self.launcher.open {
             if let Some(desktop) = &mut self.desktop {
@@ -363,7 +382,7 @@ impl App {
                 data.extend_from_slice(&[pixel.r(), pixel.g(), pixel.b()]);
             }
             if let Err(e) = std::fs::write(path, data) {
-                eprintln!("edex-rs: cannot write {}: {e}", path.display());
+                eprintln!("des-ui: cannot write {}: {e}", path.display());
             }
             ctx.send_viewport_cmd(ViewportCommand::Close);
         }
@@ -391,6 +410,10 @@ impl App {
                 }
                 if modifiers.ctrl && modifiers.shift && *key == Key::S {
                     self.toggle_settings();
+                    continue;
+                }
+                if modifiers.ctrl && modifiers.shift && *key == Key::M {
+                    self.toggle_music();
                     continue;
                 }
                 if modifiers.ctrl && modifiers.shift && *key == Key::Q {
@@ -542,7 +565,7 @@ impl App {
         let mut actions = BarActions::default();
         ui.spacing_mut().item_spacing.x = 4.0;
         let covered = state.and_then(|s| s.covering()).is_some();
-        let terminal_in_use = !covered && !self.launcher.open && !self.settings.open;
+        let terminal_in_use = !covered && !self.launcher.open && !self.settings.open && !self.music.open;
 
         for i in 0..self.tabs.len() {
             let process = self.tabs[i]
@@ -559,6 +582,7 @@ impl App {
                 self.show_tab(i);
                 self.launcher.open = false;
                 self.settings.open = false;
+                self.music.open = false;
                 actions.command = Some(Command::Terminal);
             }
         }
@@ -585,6 +609,7 @@ impl App {
             actions.split_terminal = true;
             self.launcher.open = false;
             self.settings.open = false;
+            self.music.open = false;
             actions.command = Some(Command::Terminal);
         }
 
@@ -599,11 +624,12 @@ impl App {
                     detail: None,
                     badge: (state.screens > 1).then(|| (app.screen + 1).to_string()),
                     selected: app.place != Place::Hidden
-                        && !((self.launcher.open || self.settings.open) && app.screen == 0),
+                        && !((self.launcher.open || self.settings.open || self.music.open) && app.screen == 0),
                 };
                 if tab(ui, theme, look).clicked() {
                     self.launcher.open = false;
                     self.settings.open = false;
+                    self.music.open = false;
                     actions.command = Some(Command::Activate(i));
                 }
                 // The application in use carries its own controls.
@@ -663,20 +689,27 @@ impl eframe::App for App {
             desktop.pump();
             if std::mem::take(&mut desktop.launcher_requested) && !self.launcher.open {
                 self.settings.open = false;
+                self.music.open = false;
                 self.launcher.open();
             }
             if std::mem::take(&mut desktop.settings_requested) && !self.settings.open {
                 self.launcher.open = false;
+                self.music.open = false;
                 self.settings.open(&self.config);
+            }
+            if std::mem::take(&mut desktop.music_requested) && !self.music.open {
+                self.launcher.open = false;
+                self.settings.open = false;
+                self.music.open = true;
             }
             // Bring the frame in line with the saved choice of panels: once at the
             // start, and again whenever that choice is changed in the settings.
             if !self.panels_synced && desktop.connected() {
                 let (now, wanted) = (desktop.state.panels, self.config.panels);
                 for (panel, differs) in [
-                    (edex_common::Panel::Left, now.left != wanted.left),
-                    (edex_common::Panel::Right, now.right != wanted.right),
-                    (edex_common::Panel::Bottom, now.bottom != wanted.bottom),
+                    (des_common::Panel::Left, now.left != wanted.left),
+                    (des_common::Panel::Right, now.right != wanted.right),
+                    (des_common::Panel::Bottom, now.bottom != wanted.bottom),
                 ] {
                     if differs {
                         desktop.send(Command::TogglePanel(panel));
@@ -716,7 +749,7 @@ impl eframe::App for App {
             // A shell started while the screen is locked takes the lock over.
             Some(true) if !self.lock.locked => self.lock.engage(),
             Some(true) => self.lock_confirmed = true,
-            // Unlocked from outside, with `edex-rs --unlock`.
+            // Unlocked from outside, with `des-ui --unlock`.
             Some(false) if self.lock.locked && self.lock_confirmed => self.lock.release(),
             _ => {}
         }
@@ -744,6 +777,8 @@ impl eframe::App for App {
             Some("LAUNCHER")
         } else if self.settings.open {
             Some("SETTINGS")
+        } else if self.music.open {
+            Some("MUSIC")
         } else {
             None
         };
@@ -751,12 +786,12 @@ impl eframe::App for App {
 
         // Every region is placed from the shared geometry, so that the workspace is
         // exactly where the compositor puts application windows.
-        let area = edex_common::workspace(screen.width(), screen.height(), open);
+        let area = des_common::workspace(screen.width(), screen.height(), open);
         let workspace = Rect::from_min_size(
             screen.min + vec2(area.x, area.y),
             vec2(area.width, area.height),
         );
-        let status_top = screen.bottom() - edex_common::STATUS_HEIGHT;
+        let status_top = screen.bottom() - des_common::STATUS_HEIGHT;
         CentralPanel::default()
             .frame(Frame::new().fill(ui::GROUND))
             .show(ctx, |ui| {
@@ -764,9 +799,12 @@ impl eframe::App for App {
                 let toggled = region(ui, status, vec2(24.0, 0.0), Layout::left_to_right(Align::Center), |ui| {
                     panels::status(ui, &theme, &self.mon, state.as_ref(), open, overlay)
                 });
-                let (toggled, settings_clicked) = toggled;
+                let (toggled, settings_clicked, music_clicked) = toggled;
                 if settings_clicked {
                     self.toggle_settings();
+                }
+                if music_clicked {
+                    self.toggle_music();
                 }
                 if let Some(panel) = toggled {
                     match &self.desktop {
@@ -785,8 +823,14 @@ impl eframe::App for App {
                 if open.right {
                     let rect = Rect::from_min_max(pos2(workspace.right(), screen.top()), pos2(screen.right(), status_top));
                     region(ui, rect, column, Layout::top_down(Align::Min), |ui| {
-                        panels::right(ui, &theme, &self.mon, state.as_ref(), rotation, &places)
-                    });
+                        let music = &mut self.music;
+                        let mut wanted = false;
+                        panels::right(ui, &theme, &self.mon, state.as_ref(), rotation, &places, |ui| {
+                            wanted = music.panel(ui, &theme);
+                        });
+                        wanted
+                    })
+                    .then(|| self.toggle_music());
                 }
                 let mut typed = None;
                 if open.bottom {
@@ -831,6 +875,12 @@ impl eframe::App for App {
                     for change in changes {
                         self.apply(ctx, change);
                     }
+                    return;
+                }
+                if self.music.open {
+                    region(ui, mine, vec2(0.0, 0.0), Layout::top_down(Align::Min), |ui| {
+                        self.music.show(ui, mine, &theme)
+                    });
                     return;
                 }
                 if self.launcher.open {
@@ -940,10 +990,10 @@ impl eframe::App for App {
         let screens = state.as_ref().map_or(1, |state| state.screens);
         for number in 2..=screens {
             ctx.show_viewport_immediate(
-                egui::ViewportId::from_hash_of(("edex-display", number)),
+                egui::ViewportId::from_hash_of(("des-display", number)),
                 ViewportBuilder::default()
-                    .with_title(format!("edex-rs display {number}"))
-                    .with_app_id("edex-rs"),
+                    .with_title(format!("des-ui display {number}"))
+                    .with_app_id("des-ui"),
                 |ctx, class| {
                     // Without support for extra windows there is nowhere to draw this.
                     if class == egui::ViewportClass::Embedded {
@@ -995,7 +1045,7 @@ fn spawn_quietly(program: &str, args: &[&str]) {
                 let _ = child.wait();
             });
         }
-        Err(e) => eprintln!("edex-rs: cannot run {program}: {e}"),
+        Err(e) => eprintln!("des-ui: cannot run {program}: {e}"),
     }
 }
 
@@ -1054,6 +1104,7 @@ fn main() -> eframe::Result {
     let mut screenshot = None;
     let mut font = None;
     let mut launcher = false;
+    let mut music = false;
     let mut greeter = false;
     let mut locked = false;
     let mut split = None;
@@ -1064,6 +1115,7 @@ fn main() -> eframe::Result {
         match arg.as_str() {
             "--windowed" => windowed = true,
             "--launcher" => launcher = true,
+            "--music" => music = true,
             "--greeter" => greeter = true,
             "--locked" => locked = true,
             "--split-terminal" => split = Some(false),
@@ -1074,7 +1126,7 @@ fn main() -> eframe::Result {
                 let mut reached = 0;
                 for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
                     let name = entry.file_name().to_string_lossy().into_owned();
-                    if name.starts_with("edex-comp-") && name.ends_with(".sock") {
+                    if name.starts_with("des-comp-") && name.ends_with(".sock") {
                         if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(entry.path()) {
                             use std::io::Write;
                             if stream.write_all(Command::Unlock.encode().as_bytes()).is_ok() {
@@ -1084,7 +1136,7 @@ fn main() -> eframe::Result {
                     }
                 }
                 if reached == 0 {
-                    eprintln!("edex-rs: found no running desktop to unlock in {}", dir.display());
+                    eprintln!("des-ui: found no running desktop to unlock in {}", dir.display());
                     std::process::exit(1);
                 }
                 println!("Unlocked.");
@@ -1098,7 +1150,7 @@ fn main() -> eframe::Result {
                 match outcome {
                     Ok(path) => println!("Saved to {}. The login screen shows it from now on.", path.display()),
                     Err(e) => {
-                        eprintln!("edex-rs: {e}");
+                        eprintln!("des-ui: {e}");
                         std::process::exit(1);
                     }
                 }
@@ -1117,14 +1169,14 @@ fn main() -> eframe::Result {
                     ("--geo", Some(value)) if value == "on" => ("geo", None),
                     ("--geo", Some(value)) if value == "off" => ("geo", Some(value)),
                     _ => {
-                        eprintln!("edex-rs: {arg} needs a valid value\n\n{USAGE}");
+                        eprintln!("des-ui: {arg} needs a valid value\n\n{USAGE}");
                         std::process::exit(2);
                     }
                 };
                 match config::set(key, value.as_deref()) {
                     Ok(path) => println!("Saved to {}. It takes effect when the shell next starts.", path.display()),
                     Err(e) => {
-                        eprintln!("edex-rs: cannot save the setting: {e}");
+                        eprintln!("des-ui: cannot save the setting: {e}");
                         std::process::exit(1);
                     }
                 }
@@ -1140,21 +1192,21 @@ fn main() -> eframe::Result {
             "--theme" => match args.next() {
                 Some(name) => config.theme = name,
                 None => {
-                    eprintln!("edex-rs: --theme needs a value\n\n{USAGE}");
+                    eprintln!("des-ui: --theme needs a value\n\n{USAGE}");
                     std::process::exit(2);
                 }
             },
             "--font" => match args.next() {
                 Some(path) => font = Some(PathBuf::from(path)),
                 None => {
-                    eprintln!("edex-rs: --font needs a value\n\n{USAGE}");
+                    eprintln!("des-ui: --font needs a value\n\n{USAGE}");
                     std::process::exit(2);
                 }
             },
             "--screenshot" => match args.next() {
                 Some(path) => screenshot = Some(PathBuf::from(path)),
                 None => {
-                    eprintln!("edex-rs: --screenshot needs a value\n\n{USAGE}");
+                    eprintln!("des-ui: --screenshot needs a value\n\n{USAGE}");
                     std::process::exit(2);
                 }
             },
@@ -1163,7 +1215,7 @@ fn main() -> eframe::Result {
                 return Ok(());
             }
             other => {
-                eprintln!("edex-rs: unknown option '{other}'\n\n{USAGE}");
+                eprintln!("des-ui: unknown option '{other}'\n\n{USAGE}");
                 std::process::exit(2);
             }
         }
@@ -1174,13 +1226,13 @@ fn main() -> eframe::Result {
         let options = eframe::NativeOptions {
             viewport: ViewportBuilder::default()
                 .with_title("DEs-UI login")
-                .with_app_id("edex-rs-greeter")
+                .with_app_id("des-ui-greeter")
                 .with_inner_size([1280.0, 760.0])
                 .with_fullscreen(!windowed),
             ..Default::default()
         };
         return eframe::run_native(
-            "edex-rs-greeter",
+            "des-ui-greeter",
             options,
             Box::new(move |cc| {
                 apply_style(&cc.egui_ctx, &theme);
@@ -1191,14 +1243,14 @@ fn main() -> eframe::Result {
     }
     let options = eframe::NativeOptions {
         viewport: ViewportBuilder::default()
-            .with_title("edex-rs")
-            .with_app_id("edex-rs")
+            .with_title("des-ui")
+            .with_app_id("des-ui")
             .with_inner_size([1280.0, 760.0])
             .with_fullscreen(!windowed),
         ..Default::default()
     };
     eframe::run_native(
-        "edex-rs",
+        "des-ui",
         options,
         Box::new(move |cc| {
             apply_style(&cc.egui_ctx, &theme);
@@ -1217,6 +1269,7 @@ fn main() -> eframe::Result {
             if launcher {
                 app.launcher.open();
             }
+            app.music.open = music;
             Ok(Box::new(app))
         }),
     )
