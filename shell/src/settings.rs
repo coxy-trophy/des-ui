@@ -131,6 +131,7 @@ pub struct Settings {
     layout_text: String,
     radio: Option<Radio>,
     faces: Option<Faces>,
+    sound: Option<crate::sound::Sound>,
 }
 
 impl Default for Settings {
@@ -151,6 +152,7 @@ impl Default for Settings {
             layout_text: String::new(),
             radio: None,
             faces: None,
+            sound: None,
         }
     }
 }
@@ -844,6 +846,8 @@ impl Settings {
             note(ui, &format!("Battery at {battery}%."));
         }
         ui.add_space(22.0);
+        self.sound.get_or_insert_with(|| crate::sound::Sound::new(ui.ctx().clone())).show(ui, theme);
+        ui.add_space(26.0);
         heading(ui, "NOTIFICATIONS", "");
         if switch_row(ui, theme, "Sounds", "A notification that shows also makes a sound, unless it asks not to", config.notification_sounds) {
             changes.push(Change::Set("notification_sounds", config.notification_sounds.then(|| "off".to_string())));

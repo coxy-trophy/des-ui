@@ -102,7 +102,9 @@ Esc closes. Changes apply at once and are saved.
 - **Keyboard** — layout, and how held keys repeat
 - **Mouse & touchpad** — natural scrolling, tap to click, pointer speed, left-handed
 - **Globe** — rotation, online lookups, and your location
-- **Sound & screen** — volume and brightness
+- **Sound & screen** — volume and brightness; which device plays and which
+  microphone listens, each with its level and a mute; and the volume of each
+  application that is making sound
 - **Session** — your picture for the lock and login screens, locking, where the
   logs are, and logging out
 
@@ -258,11 +260,9 @@ list. Nothing is shown over the lock screen.
 
 ## The splash
 
-From signing in until the desktop is there, the screen shows the desktop's name over
-a bar that fills, in your theme's accent; the name glitches now and then. The
-compositor draws it, so it is there before anything else is. It stays for about a
-second and a half at least, and for as long as the shell takes beyond that.
-Restarting the shell (Super+Shift+R) shows it for a moment too.
+While the shell restarts (Super+Shift+R), the screen shows the desktop's name over a
+bar that fills, in your theme's accent; the name glitches now and then. The
+compositor draws it, in place of the blank the shell would leave.
 
 The same screen can stand in for the maker's logo while the machine boots and
 shuts down:
@@ -273,10 +273,6 @@ shuts down:
 
 It is a Plymouth theme, made in the colours of the theme you use at the time; run it
 again after changing theme. `./uninstall-boot-splash.sh` puts back what was there.
-
-Between the password and the splash the screen is black for a second or so: the
-login screen has gone and the session's compositor is still taking over the display,
-and in between nothing can draw.
 
 ## Its own login screen
 
@@ -323,6 +319,7 @@ run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`
 - `shell/src/globe.rs`, `geo.rs` — the rotating globe and the places on it
 - `shell/src/settings.rs`, `config.rs` — the settings screen and the file behind it
 - `shell/src/radio.rs` — Wi-Fi, wired and VPN connections, Bluetooth
+- `shell/src/sound.rs` — output and input devices, levels, per-application volume
 - `shell/src/greeter.rs`, `lock.rs` — the login screen and the lock screen
 - `shell/src/power.rs` — locking before sleep, and what holds off the idle lock
 - `common/src/input.rs` — keyboard, mouse and touchpad settings

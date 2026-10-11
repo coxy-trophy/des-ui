@@ -1,8 +1,9 @@
-//! The splash: what is on screen from the moment the session starts until the shell
-//! has something to show, in place of a blank screen.
+//! The splash: what is on screen while the shell is restarted, in place of a blank
+//! screen, until the shell has something to show again.
 //!
 //! It is the desktop's name, which glitches now and then, over a bar of blocks that
-//! fills. The compositor draws it itself, since at that point it is all there is.
+//! fills. The compositor draws it itself, since at that point it is all there is. The
+//! boot splash (`session/boot`) is the same screen, drawn by Plymouth.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};

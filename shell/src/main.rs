@@ -15,6 +15,7 @@ mod panels;
 mod power;
 mod bootsplash;
 mod radio;
+mod sound;
 mod settings;
 mod sysmon;
 mod term;

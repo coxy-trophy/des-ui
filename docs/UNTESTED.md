@@ -94,7 +94,6 @@ watched work on a real machine. Tick them off, or note what went wrong.
 
 ## The splash
 
-- [ ] It shows after the password, on the real display, and gives way to the desktop
 - [ ] How the glitch reads in motion: how often, how hard
 - [ ] It shows briefly on Super+Shift+R
 - [ ] With two displays: it shows on each
@@ -104,3 +103,11 @@ watched work on a real machine. Tick them off, or note what went wrong.
 - [ ] `./install-boot-splash.sh`: the splash shows while booting and shutting down
 - [ ] The boot splash's bar follows the boot, and the name glitches
 - [ ] `./uninstall-boot-splash.sh` brings the old boot screen back
+
+## Sound (Settings → Sound & Screen)
+
+- [ ] Clicking another output moves the sound there (speakers, Bluetooth, HDMI)
+- [ ] Clicking another input changes the microphone in use
+- [ ] The level sliders and MUTE, for the output, the input and each application
+- [ ] A device plugged in or connected while the page is open appears within a few seconds
+- [ ] Music that is playing follows a change of output

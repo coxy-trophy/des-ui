@@ -95,7 +95,7 @@ pub struct DesComp {
     pub shell_pid: Option<u32>,
     /// The des-ui shell window: always fullscreen, always at the bottom.
     pub shell: Option<Window>,
-    /// What is shown until the shell has a window, and for a moment after.
+    /// What is shown while the shell is being restarted, until it has a window again.
     pub splash: Option<crate::splash::Splash>,
     /// When a key, button or pointer was last used.
     pub last_input: Instant,
@@ -232,7 +232,8 @@ impl DesComp {
             idle_held: false,
             idle_inhibitors: Vec::new(),
             toast: None,
-            splash: Some(crate::splash::Splash::new(Duration::from_millis(test_millis("DES_TEST_SPLASH_MS", 1400)))),
+            // A session starts quickly enough to need none; a test may ask for one.
+            splash: std::env::var_os("DES_TEST_SPLASH_MS").map(|_| crate::splash::Splash::new(Duration::from_millis(test_millis("DES_TEST_SPLASH_MS", 1400)))),
             toast_id: smithay::backend::renderer::element::Id::new(),
             backdrops: Vec::new(),
             apps: Vec::new(),
