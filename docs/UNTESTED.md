@@ -111,3 +111,18 @@ watched work on a real machine. Tick them off, or note what went wrong.
 - [ ] The level sliders and MUTE, for the output, the input and each application
 - [ ] A device plugged in or connected while the page is open appears within a few seconds
 - [ ] Music that is playing follows a change of output
+
+## Music on the lock screen
+
+- [ ] The card shows when something plays, here or on another device, and not otherwise
+- [ ] Previous, play/pause and next work with the pointer while locked
+- [ ] The media keys work while locked
+- [ ] On the real display the card sits clear of the password line
+
+## Lyrics
+
+- [ ] LYRICS with a real track playing: the words appear and follow the singing
+- [ ] Clicking a line jumps to it
+- [ ] Scrolling by hand, then the view following again at the next line
+- [ ] A track whose words are not timed, and one with none
+- [ ] Words for a track playing on another device

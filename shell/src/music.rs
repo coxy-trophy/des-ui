@@ -152,6 +152,43 @@ pub fn parse_items(value: &Value) -> Vec<Item> {
         .unwrap_or_default()
 }
 
+/// A track's words, as the service gave them.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Lyrics {
+    /// The track they belong to.
+    pub track: String,
+    /// Whether each line carries the moment it is sung.
+    pub synced: bool,
+    /// Each line, with that moment in milliseconds.
+    pub lines: Vec<(u32, String)>,
+    /// Why there are none, when there are none.
+    pub error: Option<String>,
+}
+
+impl Lyrics {
+    pub fn parse(value: &Value) -> Lyrics {
+        Lyrics {
+            track: value["track"].as_str().unwrap_or_default().to_string(),
+            synced: value["synced"] == true,
+            lines: value["lines"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|line| (line["ms"].as_u64().unwrap_or(0) as u32, line["text"].as_str().unwrap_or_default().to_string()))
+                .collect(),
+            error: value["error"].as_str().map(str::to_string),
+        }
+    }
+
+    /// The line being sung `position` milliseconds in: the last one that has begun.
+    pub fn current(&self, position: u32) -> Option<usize> {
+        if !self.synced {
+            return None;
+        }
+        self.lines.iter().rposition(|(at, _)| *at <= position)
+    }
+}
+
 /// Minutes and seconds, as on a track listing.
 pub fn clock(ms: u32) -> String {
     format!("{}:{:02}", ms / 60_000, (ms / 1000) % 60)
@@ -174,6 +211,8 @@ struct Shared {
     lists: HashMap<String, (Vec<Item>, Option<String>)>,
     /// The lists, by the same names, that have more after what was received.
     more: std::collections::HashSet<String>,
+    /// The words last received.
+    lyrics: Option<Lyrics>,
     /// What last went wrong with something asked of the service, and when.
     problem: Option<(String, Instant)>,
     /// Set to ask the connection thread to run a sign-in: the service's arguments.
@@ -304,6 +343,7 @@ fn connection(shared: Arc<Mutex<Shared>>, commands: Receiver<String>, ctx: egui:
                 let mut shared = reading.lock().unwrap();
                 match value["type"].as_str() {
                     Some("state") => shared.now = Now::parse(&value),
+                    Some("lyrics") => shared.lyrics = Some(Lyrics::parse(&value)),
                     Some("problem") => {
                         shared.problem = value["text"].as_str().map(|text| (text.to_string(), Instant::now()));
                     }
@@ -372,6 +412,8 @@ enum Source {
     Artist { id: String, name: String },
     /// What can play, to choose among.
     Devices,
+    /// The words of the track playing.
+    Lyrics,
     Search(String),
 }
 
@@ -385,6 +427,7 @@ impl Source {
             Source::Album { id, .. } => format!("album:{id}"),
             Source::Artist { id, .. } => format!("artist:{id}"),
             Source::Devices => "devices:".to_string(),
+            Source::Lyrics => "lyrics:".to_string(),
             Source::Search(query) => format!("search:{query}"),
         }
     }
@@ -409,6 +452,8 @@ impl Source {
             Source::Album { id, .. } => json!({ "cmd": "album", "album": id }),
             Source::Artist { id, .. } => json!({ "cmd": "artist", "artist": id }),
             Source::Devices => json!({ "cmd": "devices" }),
+            // Asked for by track, as each begins.
+            Source::Lyrics => json!({ "cmd": "state" }),
             Source::Search(query) => json!({ "cmd": "search", "q": query }),
         }
     }
@@ -418,7 +463,7 @@ impl Source {
         match self {
             Source::Liked => Some("liked".to_string()),
             Source::Playlist { uri, .. } | Source::Album { uri, .. } => Some(uri.clone()),
-            Source::Search(_) | Source::Queue | Source::Albums | Source::Artist { .. } | Source::Devices => None,
+            Source::Search(_) | Source::Queue | Source::Albums | Source::Artist { .. } | Source::Devices | Source::Lyrics => None,
         }
     }
 }
@@ -566,6 +611,10 @@ pub struct Music {
     covers: Covers,
     /// When the devices were last asked for, while they are being looked at.
     devices_asked: Option<Instant>,
+    /// The track whose words were last asked for.
+    lyrics_asked: Option<String>,
+    /// The line last brought into view, so that it is done once per line.
+    lyrics_at: Option<usize>,
 }
 
 impl Music {
@@ -575,6 +624,7 @@ impl Music {
             now: Now::default(),
             lists: HashMap::new(),
             more: std::collections::HashSet::new(),
+            lyrics: None,
             problem: None,
             sign_in: None,
             refresh: false,
@@ -598,6 +648,8 @@ impl Music {
             trail: Vec::new(),
             covers,
             devices_asked: None,
+            lyrics_asked: None,
+            lyrics_at: None,
         }
     }
 
@@ -613,6 +665,11 @@ impl Music {
 
     pub fn now(&self) -> Now {
         self.shared.lock().unwrap().now.clone()
+    }
+
+    /// Starts on the words of what is playing.
+    pub fn show_lyrics(&mut self) {
+        self.source = Source::Lyrics;
     }
 
     pub fn toggle(&mut self) {
@@ -704,6 +761,63 @@ impl Music {
         let frac = now.position_ms() as f32 / track.duration_ms.max(1) as f32;
         ui::bar(ui, theme, 3.0, frac.min(CAUTION_FREE), 0.0);
         open
+    }
+
+    /// What is playing, for the lock screen: the cover, the track, how far along it
+    /// is, and the three controls. Nothing when nothing is. It sits at the bottom of
+    /// `within`, in the middle.
+    pub fn lock_card(&mut self, ui: &mut Ui, theme: &Theme, within: Rect) {
+        let now = self.now();
+        let Some(track) = now.track.clone() else {
+            return;
+        };
+        let size = vec2(460.0_f32.min(within.width()), 116.0);
+        let mut card = Rect::from_center_size(pos2(within.center().x, within.bottom() - 40.0 - size.y / 2.0), size);
+        // On a short screen the middle is taken by the password line: the corner then.
+        if card.top() < within.center().y + 236.0 {
+            card = Rect::from_min_size(within.right_bottom() - size, size);
+        }
+        ui.painter().rect_filled(card, 0.0, ui::PANEL);
+        ui.painter().rect_stroke(card, 0.0, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
+        ui::corners(ui.painter(), card, 10.0, Stroke::new(1.5, if now.playing { theme.main } else { ui::LINE_STRONG }));
+        let mut inner = ui.new_child(UiBuilder::new().max_rect(card.shrink(14.0)).layout(Layout::left_to_right(Align::Center)));
+        let ui = &mut inner;
+        ui.spacing_mut().item_spacing.x = 16.0;
+        self.draw_cover(ui, 88.0, track.cover.as_deref());
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
+            let fit = (ui.available_width() / 8.6) as usize;
+            let state = match (&now.device, now.playing) {
+                (Some(device), true) => format!("PLAYING ON {}", device.to_uppercase()),
+                (None, true) => "NOW PLAYING".to_string(),
+                (_, false) => "PAUSED".to_string(),
+            };
+            ui::tracked(ui, &crate::panels::truncate(&state, fit), ui::display_bold(10.0), if now.playing { theme.main } else { ui::LABEL }, 2.0);
+            ui::text(ui, &crate::panels::truncate(&track.name, fit), ui::display_bold(16.0), ui::TEXT);
+            ui::text(ui, &crate::panels::truncate(&track.artists, fit + 4), ui::mono(11.0), ui::SECONDARY);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                if control(ui, theme, Control::Previous, 26.0, false).clicked() {
+                    self.send(json!({ "cmd": "prev" }));
+                }
+                let which = if now.playing { Control::Pause } else { Control::Play };
+                if control(ui, theme, which, 30.0, true).clicked() {
+                    self.send(json!({ "cmd": "toggle" }));
+                }
+                if control(ui, theme, Control::Next, 26.0, false).clicked() {
+                    self.send(json!({ "cmd": "next" }));
+                }
+                ui.add_space(10.0);
+                let position = now.position_ms();
+                ui::text(ui, &format!("{} / {}", clock(position), clock(track.duration_ms)), ui::mono(11.0), ui::LABEL);
+            });
+            let frac = now.position_ms() as f32 / track.duration_ms.max(1) as f32;
+            ui::bar(ui, theme, 3.0, frac.min(CAUTION_FREE), 0.0);
+        });
+        // The position keeps moving while it plays.
+        if now.playing {
+            ui.ctx().request_repaint_after(Duration::from_millis(500));
+        }
     }
 
     /// The full view, in place of the terminal.
@@ -866,6 +980,10 @@ impl Music {
                     self.go(Source::Queue, false);
                     self.queue_as_of = None;
                 }
+                if side_row(ui, theme, "LYRICS", self.source == Source::Lyrics) {
+                    self.go(Source::Lyrics, false);
+                    self.lyrics_at = None;
+                }
                 if side_row(ui, theme, "DEVICES", self.source == Source::Devices) {
                     self.go(Source::Devices, false);
                     self.devices_asked = None;
@@ -907,6 +1025,7 @@ impl Music {
                     Source::Albums => "ALBUMS".to_string(),
                     Source::Artist { name, .. } => format!("ALBUMS BY {}", name.to_uppercase()),
                     Source::Devices => "PLAY ON".to_string(),
+                    Source::Lyrics => "LYRICS".to_string(),
                     Source::Search(query) => format!("RESULTS FOR “{}”", query.to_uppercase()),
                 };
                 let mut back = false;
@@ -923,6 +1042,10 @@ impl Music {
                     if let Some(to) = self.trail.pop() {
                         self.source = to;
                     }
+                    return;
+                }
+                if source == Source::Lyrics {
+                    self.lyrics(ui, theme, now);
                     return;
                 }
                 match list {
@@ -1030,6 +1153,71 @@ impl Music {
         self.transport(ui, theme, now, transport_height);
     }
 
+    /// The words of the track playing: the line being sung in the accent and kept in
+    /// the middle, the rest around it. A click on a line goes to it.
+    fn lyrics(&mut self, ui: &mut Ui, theme: &Theme, now: &Now) {
+        let Some(track) = &now.track else {
+            ui::text(ui, "Nothing is playing.", ui::mono(12.0), ui::LABEL);
+            return;
+        };
+        if self.lyrics_asked.as_deref() != Some(track.uri.as_str()) {
+            self.lyrics_asked = Some(track.uri.clone());
+            self.lyrics_at = None;
+            self.send(json!({ "cmd": "lyrics", "track": track.uri }));
+        }
+        let lyrics = self.shared.lock().unwrap().lyrics.clone().filter(|lyrics| lyrics.track == track.uri);
+        let Some(lyrics) = lyrics else {
+            ui::text(ui, "Looking for the words…", ui::mono(12.0), ui::LABEL);
+            return;
+        };
+        if let Some(why) = &lyrics.error {
+            ui::text(ui, why, ui::mono(12.0), ui::LABEL);
+            return;
+        }
+        let current = lyrics.current(now.position_ms());
+        if !lyrics.synced {
+            ui::text(ui, "These words are not timed to the music.", ui::mono(11.0), ui::LABEL);
+            ui.add_space(8.0);
+        }
+        let moved = current != self.lyrics_at;
+        self.lyrics_at = current;
+        let mut seek = None;
+        ScrollArea::vertical().id_salt("lyrics").auto_shrink([false, false]).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 10.0;
+            ui.add_space(ui.available_height() * 0.3);
+            for (index, (at, text)) in lyrics.lines.iter().enumerate() {
+                let sung = current == Some(index);
+                let (font, ink) = match (lyrics.synced, sung, current.is_some_and(|current| index < current)) {
+                    (false, _, _) => (ui::display(17.0), ui::TEXT),
+                    (true, true, _) => (ui::display_bold(22.0), theme.main),
+                    (true, false, true) => (ui::display(17.0), ui::LABEL),
+                    (true, false, false) => (ui::display(17.0), ui::SECONDARY),
+                };
+                // A line with no words is a stretch of music.
+                let shown = if text.is_empty() { "· · ·" } else { text.as_str() };
+                let galley = ui.painter().layout(shown.to_string(), font, ink, ui.available_width() - 12.0);
+                let (rect, response) = ui.allocate_exact_size(galley.size(), if lyrics.synced { Sense::click() } else { Sense::hover() });
+                let ink = if response.hovered() && !sung { ui::TEXT } else { ink };
+                ui.painter().galley(rect.min, galley, ink);
+                if response.clicked() {
+                    seek = Some(*at);
+                }
+                // Follow the singing, but only as it moves on: scrolling by hand is let be until then.
+                if sung && moved {
+                    ui.scroll_to_rect(rect, Some(Align::Center));
+                }
+            }
+            ui.add_space(ui.available_height().max(120.0) * 0.5);
+        });
+        if let Some(ms) = seek {
+            self.send(json!({ "cmd": "seek", "ms": ms }));
+        }
+        // The line changes with the music, not with the pointer.
+        if now.playing && lyrics.synced {
+            ui.ctx().request_repaint_after(Duration::from_millis(200));
+        }
+    }
+
     /// The strip along the bottom of the view: the track, the controls, the position.
     fn transport(&mut self, ui: &mut Ui, theme: &Theme, now: &Now, height: f32) {
         let (strip, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
@@ -1080,7 +1268,7 @@ impl Music {
         // What is left over, after the readings and controls to the right, is the bar.
         // In a narrow view the volume gives way: the keyboard's keys still set it.
         let roomy = strip.width() > 940.0;
-        let bar_width = (ui.available_width() - if roomy { 520.0 } else { 380.0 }).max(60.0);
+        let bar_width = (ui.available_width() - if roomy { 610.0 } else { 380.0 }).max(60.0);
         let frac = position as f32 / track.duration_ms.max(1) as f32;
         if let Some(to) = ui::slider(ui, theme, bar_width, frac) {
             // Only on release: asking for every step of a drag would stutter.
@@ -1108,6 +1296,17 @@ impl Music {
         }
         if !roomy {
             return;
+        }
+        let on_lyrics = self.source == Source::Lyrics;
+        if ui::chip(ui, theme, "LYRICS", None, on_lyrics).clicked() {
+            if on_lyrics {
+                // Back to where the words were opened from.
+                let back = self.trail.pop().unwrap_or(Source::Liked);
+                self.source = back;
+            } else {
+                self.go(Source::Lyrics, true);
+                self.lyrics_at = None;
+            }
         }
         ui::text(ui, "VOL", ui::mono(11.0), ui::LABEL);
         if let Some(to) = ui::slider(ui, theme, 90.0, now.volume as f32 / 100.0) {
@@ -1292,6 +1491,21 @@ mod tests {
         assert_eq!(Source::Liked.further(50), Some(json!({"cmd": "liked", "offset": 50})));
         assert_eq!(Source::Album { id: "a".into(), name: "n".into(), uri: "u".into() }.further(50), None, "an album comes whole");
         assert_eq!(Source::Album { id: "a".into(), name: "n".into(), uri: "spotify:album:a".into() }.context(), Some("spotify:album:a".to_string()));
+    }
+
+    #[test]
+    fn finds_the_line_being_sung() {
+        let lyrics = Lyrics::parse(&json!({"type": "lyrics", "track": "spotify:track:t", "synced": true, "error": null,
+            "lines": [{"ms": 1200, "text": "So what"}, {"ms": 5400, "text": ""}, {"ms": 9000, "text": "and again"}]}));
+        assert_eq!(lyrics.lines.len(), 3);
+        assert_eq!(lyrics.current(0), None, "before the first line");
+        assert_eq!(lyrics.current(1200), Some(0));
+        assert_eq!(lyrics.current(8999), Some(1));
+        assert_eq!(lyrics.current(600_000), Some(2));
+        let plain = Lyrics { synced: false, ..lyrics.clone() };
+        assert_eq!(plain.current(5000), None, "untimed words have no line being sung");
+        let none = Lyrics::parse(&json!({"type": "lyrics", "track": "t", "synced": false, "lines": [], "error": "Spotify has no words for this track."}));
+        assert!(none.lines.is_empty() && none.error.is_some());
     }
 
     #[test]

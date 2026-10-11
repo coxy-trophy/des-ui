@@ -928,7 +928,8 @@ impl eframe::App for App {
                 self.send(Command::Toast(None));
             }
             let theme = self.theme.clone();
-            if self.lock.show(ctx, &theme) {
+            let music = &mut self.music;
+            if self.lock.show(ctx, &theme, |ui, within| music.lock_card(ui, &theme, within)) {
                 self.send(Command::Unlock);
             }
             return;
@@ -1337,6 +1338,7 @@ fn main() -> eframe::Result {
     let mut screenshot = None;
     let mut font = None;
     let mut launcher = false;
+    let mut lyrics = false;
     let mut music = false;
     let mut power_menu = false;
     let mut greeter = false;
@@ -1350,6 +1352,10 @@ fn main() -> eframe::Result {
             "--windowed" => windowed = true,
             "--launcher" => launcher = true,
             "--music" => music = true,
+            "--music=lyrics" => {
+                music = true;
+                lyrics = true;
+            }
             "--power" => power_menu = true,
             "--greeter" => greeter = true,
             "--locked" => locked = true,
@@ -1522,6 +1528,9 @@ fn main() -> eframe::Result {
                 app.launcher.open();
             }
             app.music.open = music;
+            if lyrics {
+                app.music.show_lyrics();
+            }
             app.power_menu.open = power_menu;
             Ok(Box::new(app))
         }),

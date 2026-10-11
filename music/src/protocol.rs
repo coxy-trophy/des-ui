@@ -106,6 +106,8 @@ pub enum Request {
     Repeat(String),
     /// Put the track playing among the liked songs, or take it out.
     Like(bool),
+    /// The words of the track with this address.
+    Lyrics(String),
     /// The devices that could play.
     Devices,
     /// Carry on playing on the device with this id.
@@ -144,12 +146,19 @@ impl Request {
             "queue" => Request::Queue,
             "repeat" => Request::Repeat(text("mode").filter(|mode| matches!(mode.as_str(), "off" | "all" | "one"))?),
             "like" => Request::Like(value.get("on")?.as_bool()?),
+            "lyrics" => Request::Lyrics(text("track").filter(|uri| uri.starts_with("spotify:track:"))?),
             "devices" => Request::Devices,
             "transfer" => Request::Transfer(id("device")?),
             "enqueue" => Request::Enqueue(text("track").filter(|uri| uri.starts_with("spotify:track:"))?),
             _ => return None,
         })
     }
+}
+
+/// A track's words: each line with the moment it is sung, in milliseconds, when the
+/// lines are `synced` to the music; and why there are none, when there are none.
+pub fn lyrics_line(track: &str, synced: bool, lines: Vec<Value>, error: Option<String>) -> String {
+    format!("{}\n", json!({ "type": "lyrics", "track": track, "synced": synced, "lines": lines, "error": error }))
 }
 
 /// Something that went wrong with what a client asked, in words for the user.
@@ -194,6 +203,8 @@ mod tests {
         assert_eq!(Request::parse(r#"{"cmd":"repeat","mode":"twice"}"#), None);
         assert_eq!(Request::parse(r#"{"cmd":"like","on":false}"#), Some(Request::Like(false)));
         assert_eq!(Request::parse(r#"{"cmd":"devices"}"#), Some(Request::Devices));
+        assert_eq!(Request::parse(r#"{"cmd":"lyrics","track":"spotify:track:x"}"#), Some(Request::Lyrics("spotify:track:x".into())));
+        assert_eq!(Request::parse(r#"{"cmd":"lyrics","track":"spotify:album:x"}"#), None);
         assert_eq!(Request::parse(r#"{"cmd":"transfer","device":"0d1841b0976bae2a3a310dd74c0f3df354899bc8"}"#), Some(Request::Transfer("0d1841b0976bae2a3a310dd74c0f3df354899bc8".into())));
         assert_eq!(Request::parse(r#"{"cmd":"queue"}"#), Some(Request::Queue));
         assert_eq!(Request::parse(r#"{"cmd":"enqueue","track":"spotify:track:x"}"#), Some(Request::Enqueue("spotify:track:x".into())));

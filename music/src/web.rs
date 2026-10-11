@@ -149,6 +149,46 @@ pub async fn devices(session: &Session, here: &str) -> String {
     }
 }
 
+/// Reads Spotify's answer about a track's words: whether the lines are timed, and
+/// each line with its time. Lines that are only a pause are kept, as a breath.
+pub fn read_lyrics(answer: &Value) -> (bool, Vec<Value>) {
+    let lyrics = &answer["lyrics"];
+    let synced = lyrics["syncType"] == "LINE_SYNCED";
+    let lines = lyrics["lines"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|line| {
+            let words = line["words"].as_str()?.trim();
+            // The time comes as text.
+            let ms = line["startTimeMs"].as_str().and_then(|ms| ms.parse::<u64>().ok()).or_else(|| line["startTimeMs"].as_u64()).unwrap_or(0);
+            Some(json!({ "ms": ms, "text": if words == "♪" { "" } else { words } }))
+        })
+        .collect();
+    (synced, lines)
+}
+
+/// The words of a track, as Spotify has them for its own player.
+pub async fn lyrics(session: &Session, uri: &str) -> String {
+    use crate::protocol::lyrics_line;
+    let none = |why: &str| lyrics_line(uri, false, Vec::new(), Some(why.to_string()));
+    let Some(id) = uri.strip_prefix("spotify:track:").and_then(|id| librespot_core::SpotifyId::from_base62(id).ok()) else {
+        return none("Only tracks have words.");
+    };
+    match session.spclient().get_lyrics(&id).await {
+        Ok(bytes) => {
+            let (synced, lines) = read_lyrics(&serde_json::from_slice(&bytes).unwrap_or(Value::Null));
+            if lines.is_empty() {
+                none("Spotify has no words for this track.")
+            } else {
+                lyrics_line(uri, synced, lines, None)
+            }
+        }
+        // Spotify answers "not found" for a track without words.
+        Err(_) => none("Spotify has no words for this track."),
+    }
+}
+
 /// Whether a track is among the liked songs.
 pub async fn is_liked(session: &Session, uri: &str) -> Option<bool> {
     let id = uri.strip_prefix("spotify:track:")?;
@@ -444,6 +484,21 @@ mod tests {
         assert_eq!((item["album_id"].as_str(), item["artist_id"].as_str()), (Some("al1"), Some("ar1")));
         assert!(has_more(&json!({"next": "https://api.spotify.com/v1/me/tracks?offset=50"})));
         assert!(!has_more(&json!({"next": null})));
+    }
+
+    #[test]
+    fn reads_a_track_s_words() {
+        let answer = json!({"lyrics": {"syncType": "LINE_SYNCED", "lines": [
+            {"startTimeMs": "1200", "words": "So what", "endTimeMs": "0"},
+            {"startTimeMs": "5400", "words": "♪"},
+            {"startTimeMs": 9000, "words": " and again "},
+        ]}});
+        let (synced, lines) = read_lyrics(&answer);
+        assert!(synced);
+        assert_eq!(lines, [json!({"ms": 1200, "text": "So what"}), json!({"ms": 5400, "text": ""}), json!({"ms": 9000, "text": "and again"})]);
+        let (synced, lines) = read_lyrics(&json!({"lyrics": {"syncType": "UNSYNCED", "lines": [{"startTimeMs": "0", "words": "One"}]}}));
+        assert!(!synced && lines.len() == 1);
+        assert_eq!(read_lyrics(&Value::Null), (false, Vec::new()));
     }
 
     #[test]

@@ -385,6 +385,7 @@ impl Service {
                     Err(why) => Some(protocol::problem_line(&why)),
                 }
             }
+            Request::Lyrics(track) => Some(web::lyrics(&self.session, &track).await),
             Request::Devices => Some(web::devices(&self.session, self.session.device_id()).await),
             Request::Transfer(device) => {
                 self.tell(Method::PUT, "/me/player", Some(json!({ "device_ids": [device], "play": true }))).await;

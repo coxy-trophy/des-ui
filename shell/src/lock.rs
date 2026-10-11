@@ -110,7 +110,10 @@ impl Lock {
 
     /// Takes the keyboard and draws the lock screen over everything. Returns true on
     /// the frame the right password is given.
-    pub fn show(&mut self, ctx: &egui::Context, theme: &Theme) -> bool {
+    ///
+    /// `below` draws whatever else belongs on the screen (what is playing), given the
+    /// part of it inside the margins.
+    pub fn show(&mut self, ctx: &egui::Context, theme: &Theme, below: impl FnOnce(&mut egui::Ui, egui::Rect)) -> bool {
         if let Some(outcome) = self.result.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.result = None;
             match outcome {
@@ -194,6 +197,7 @@ impl Lock {
                 ui::mono(12.0),
                 ui::LABEL,
             );
+            below(ui, inner);
         });
         // The clock and the cursor keep moving.
         ctx.request_repaint_after(Duration::from_millis(250));

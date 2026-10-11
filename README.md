@@ -177,7 +177,11 @@ What plays on another of your devices shows here too, with `ON <DEVICE>` beside
 it, and the controls then act on that device. `DEVICES` lists what is online; a
 click moves the music there, or here. `REPEAT` goes from off to the whole list to
 the one track, and `LIKE` puts the track among your liked songs (which asks once
-more for Spotify's approval). `UP NEXT` shows what is queued, and `+ QUEUE` on a
+more for Spotify's approval).
+
+`LYRICS` shows the words of the track playing, from Spotify's own source. Where they
+are timed to the music, the line being sung is picked out and kept in the middle,
+and a click on any line goes to it. `UP NEXT` shows what is queued, and `+ QUEUE` on a
 track under the pointer adds it. While something plays, the right column shows it
 too, and the keyboard's play, next and previous keys work from anywhere.
 
@@ -256,7 +260,9 @@ shown.
 
 **Super+N**, or `NOTIFICATIONS` in the status strip, opens the list. `DO NOT
 DISTURB` there keeps all but the urgent ones off the screen; they still reach the
-list. Nothing is shown over the lock screen.
+list. Nothing is shown over the lock screen. What is playing is the exception: the lock screen
+shows the track, its cover and how far along it is, with previous, play or pause, and
+next to click, and the keyboard's media keys work there too.
 
 ## The splash
 
@@ -348,7 +354,7 @@ run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`
 - VPNs that ask for a password each time they connect
 - In the music player: removing from or reordering the queue (Spotify offers outside
   apps no way to), an artist's most played tracks, the artists you follow, adding
-  to and editing playlists, podcasts, lyrics
+  to and editing playlists, podcasts
 - In notifications: icons that exist only as SVG drawings
 - On the login screen: accounts that need more than a password
 - From the original: on-screen keyboard, sound effects, mouse reporting to
