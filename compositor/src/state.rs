@@ -76,6 +76,9 @@ pub struct DesComp {
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<DesComp>,
     pub data_device_state: DataDeviceState,
+    /// Lets clipboard tools (such as `wl-copy`, which screenshots use) set and read
+    /// the clipboard without a window of their own.
+    pub data_control_state: smithay::wayland::selection::wlr_data_control::DataControlState,
     pub dmabuf_state: DmabufState,
     pub dmabuf_global: Option<DmabufGlobal>,
     pub popups: PopupManager,
@@ -94,6 +97,18 @@ pub struct DesComp {
     pub shell: Option<Window>,
     /// When a key, button or pointer was last used.
     pub last_input: Instant,
+    /// Lines for the shell that arose while its socket was being read.
+    pub unsaid: Vec<String>,
+    /// When the windowed backend last drew a frame.
+    pub last_frame: Instant,
+    /// The recording under way, if any.
+    pub recording: Option<crate::capture::Recording>,
+    /// How many screenshots have been taken, to name each one's file.
+    pub shots: u32,
+    /// The shell is asking what to picture, and has the keyboard for it.
+    pub picking: bool,
+    /// Whether the screens are turned off for want of anyone looking.
+    pub screens_off: bool,
     /// Whether the lock was already asked for since then.
     pub idle_lock_asked: bool,
     /// Whether the shell says an application is showing something to watch.
@@ -153,6 +168,8 @@ impl DesComp {
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&dh);
+        let data_control_state =
+            smithay::wayland::selection::wlr_data_control::DataControlState::new::<Self, _>(&dh, None, |_| true);
         let popups = PopupManager::default();
 
         let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, "winit");
@@ -185,6 +202,7 @@ impl DesComp {
             output_manager_state,
             seat_state,
             data_device_state,
+            data_control_state,
             dmabuf_state: DmabufState::new(),
             dmabuf_global: None,
             popups,
@@ -197,6 +215,12 @@ impl DesComp {
             shell_pid: None,
             shell: None,
             last_input: Instant::now(),
+            unsaid: Vec::new(),
+            last_frame: Instant::now(),
+            recording: None,
+            shots: 0,
+            picking: false,
+            screens_off: false,
             idle_lock_asked: false,
             idle_held: false,
             idle_inhibitors: Vec::new(),

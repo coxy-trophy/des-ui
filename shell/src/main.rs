@@ -1,6 +1,7 @@
 //! des-ui: a Rust rewrite of the eDEX-UI sci-fi terminal desktop.
 
 mod apps;
+mod capture;
 mod config;
 mod desktop;
 mod geo;
@@ -51,6 +52,7 @@ Options:
                        Start with the terminal split in two
   --settings[=SECTION] Start with the settings open, optionally on a section
   --music              Start with the music player open
+  --power              Start with the power menu open
                        (appearance, terminal, frame, displays, network, bluetooth,
                        keyboard, mouse, globe, sound, session)
   --list-apps          Print the applications the launcher would offer, and exit
@@ -89,6 +91,9 @@ struct App {
     notices: notify::Center,
     /// Sleep, and what holds off the lock.
     power: power::Power,
+    power_menu: power::Menu,
+    /// Screenshots and recordings.
+    capture: capture::Capture,
     /// Whether the compositor was last told that something is being watched.
     idle_held: bool,
     /// What the desktop itself gives notice of, as last seen.
@@ -129,7 +134,8 @@ impl App {
         let first = TermTab::spawn(&shell, &home, ctx.clone(), config.scrollback)?;
         let desktop = Desktop::connect(ctx.clone());
         let music = music::Music::new(ctx.clone());
-        let power = power::Power::start(ctx.clone());
+        let capture = capture::Capture::new(ctx.clone());
+        let power = power::Power::start(ctx.clone(), desktop.is_some());
         let notices = notify::Center::new(ctx.clone(), config.do_not_disturb, true);
         Ok(App {
             ctx,
@@ -148,6 +154,8 @@ impl App {
             music,
             notices,
             power,
+            power_menu: power::Menu::default(),
+            capture,
             idle_held: false,
             watch: notify::Watch::default(),
             toast_area: None,
@@ -240,11 +248,13 @@ impl App {
             self.settings.open = false;
             self.music.open = false;
             self.notices.open = false;
+            self.power_menu.open = false;
             return;
         }
         self.launcher.open = false;
         self.music.open = false;
         self.notices.open = false;
+        self.power_menu.open = false;
         self.settings.open(&self.config);
         if let Some(desktop) = &mut self.desktop {
             desktop.send(Command::Terminal);
@@ -256,6 +266,7 @@ impl App {
         self.launcher.open = false;
         self.settings.open = false;
         self.notices.open = false;
+        self.power_menu.open = false;
         self.music.toggle();
         if self.music.open {
             self.send(Command::Terminal);
@@ -273,6 +284,24 @@ impl App {
         }
     }
 
+    fn toggle_recording(&mut self) {
+        if let Some(command) = self.capture.toggle_recording(&mut self.notices) {
+            self.send(command);
+        }
+    }
+
+    /// Opens or closes the power menu, which also takes the terminal's place.
+    fn toggle_power(&mut self) {
+        self.launcher.open = false;
+        self.settings.open = false;
+        self.music.open = false;
+        self.notices.open = false;
+        self.power_menu.toggle();
+        if self.power_menu.open {
+            self.send(Command::Terminal);
+        }
+    }
+
     /// Brings into view the application a notification came from, if it has a window.
     fn follow(&mut self, chosen: notify::Chosen) {
         let name = chosen.app.to_lowercase();
@@ -281,6 +310,7 @@ impl App {
         });
         if let Some(index) = index {
             self.notices.open = false;
+            self.power_menu.open = false;
             self.send(Command::Activate(index));
         }
     }
@@ -295,6 +325,7 @@ impl App {
         self.settings.open = false;
         self.music.open = false;
         self.notices.open = false;
+        self.power_menu.open = false;
         self.lock.engage();
         self.lock_confirmed = false;
         self.send(Command::Lock);
@@ -366,7 +397,7 @@ impl App {
                     ui::install_fonts(ctx, self.symbols.as_deref(), self.config.terminal_font.as_deref());
                 }
                 // The compositor owns the devices these are about.
-                if ["keyboard_", "mouse_", "touchpad_", "lock_after"].iter().any(|prefix| key.starts_with(prefix)) {
+                if ["keyboard_", "mouse_", "touchpad_", "lock_after", "screen_off_after"].iter().any(|prefix| key.starts_with(prefix)) {
                     self.send(Command::ReloadInput);
                 }
             }
@@ -389,6 +420,7 @@ impl App {
         self.settings.open = false;
         self.music.open = false;
         self.notices.open = false;
+        self.power_menu.open = false;
         self.launcher.toggle();
         if self.launcher.open {
             if let Some(desktop) = &mut self.desktop {
@@ -464,6 +496,10 @@ impl App {
                 }
                 if modifiers.ctrl && modifiers.shift && *key == Key::N {
                     self.toggle_notices();
+                    continue;
+                }
+                if modifiers.ctrl && modifiers.shift && *key == Key::P {
+                    self.toggle_power();
                     continue;
                 }
                 if modifiers.ctrl && modifiers.shift && *key == Key::Q {
@@ -615,7 +651,7 @@ impl App {
         let mut actions = BarActions::default();
         ui.spacing_mut().item_spacing.x = 4.0;
         let covered = state.and_then(|s| s.covering()).is_some();
-        let terminal_in_use = !covered && !self.launcher.open && !self.settings.open && !self.music.open && !self.notices.open;
+        let terminal_in_use = !covered && !self.launcher.open && !self.settings.open && !self.music.open && !self.notices.open && !self.power_menu.open;
 
         for i in 0..self.tabs.len() {
             let process = self.tabs[i]
@@ -634,6 +670,7 @@ impl App {
                 self.settings.open = false;
                 self.music.open = false;
                 self.notices.open = false;
+                self.power_menu.open = false;
                 actions.command = Some(Command::Terminal);
             }
         }
@@ -662,6 +699,7 @@ impl App {
             self.settings.open = false;
             self.music.open = false;
             self.notices.open = false;
+            self.power_menu.open = false;
             actions.command = Some(Command::Terminal);
         }
 
@@ -676,13 +714,14 @@ impl App {
                     detail: None,
                     badge: (state.screens > 1).then(|| (app.screen + 1).to_string()),
                     selected: app.place != Place::Hidden
-                        && !((self.launcher.open || self.settings.open || self.music.open || self.notices.open) && app.screen == 0),
+                        && !((self.launcher.open || self.settings.open || self.music.open || self.notices.open || self.power_menu.open) && app.screen == 0),
                 };
                 if tab(ui, theme, look).clicked() {
                     self.launcher.open = false;
                     self.settings.open = false;
                     self.music.open = false;
                     self.notices.open = false;
+                    self.power_menu.open = false;
                     actions.command = Some(Command::Activate(i));
                 }
                 // The application in use carries its own controls.
@@ -744,19 +783,29 @@ impl eframe::App for App {
                 self.settings.open = false;
                 self.music.open = false;
                 self.notices.open = false;
+                self.power_menu.open = false;
                 self.launcher.open();
             }
             if std::mem::take(&mut desktop.settings_requested) && !self.settings.open {
                 self.launcher.open = false;
                 self.music.open = false;
                 self.notices.open = false;
+                self.power_menu.open = false;
                 self.settings.open(&self.config);
             }
             if std::mem::take(&mut desktop.music_requested) && !self.music.open {
                 self.launcher.open = false;
                 self.settings.open = false;
                 self.notices.open = false;
+                self.power_menu.open = false;
                 self.music.open = true;
+            }
+            if std::mem::take(&mut desktop.power_requested) {
+                self.launcher.open = false;
+                self.settings.open = false;
+                self.music.open = false;
+                self.notices.open = false;
+                self.power_menu.open = true;
             }
             if std::mem::take(&mut desktop.notifications_requested) && !self.notices.open {
                 self.launcher.open = false;
@@ -816,6 +865,15 @@ impl eframe::App for App {
             _ => {}
         }
         self.notices.pump();
+        if let Some(desktop) = &mut self.desktop {
+            for shot in std::mem::take(&mut desktop.shots) {
+                self.capture.take(shot);
+            }
+            for state in std::mem::take(&mut desktop.recording_news) {
+                self.capture.recording_is(state, &mut self.notices);
+            }
+        }
+        self.capture.report(&mut self.notices);
         // Sleep is on its way, or the session was told to lock.
         if self.power.lock_wanted() && !self.lock.locked {
             let for_sleep = self.power.sleep_waiting();
@@ -839,8 +897,11 @@ impl eframe::App for App {
             self.send(Command::HoldIdle(held));
         }
         let screens = self.desktop.as_ref().filter(|desktop| desktop.connected()).map(|desktop| desktop.state.screens);
-        self.watch.check(&mut self.notices, self.mon.battery, !self.mon.ip.is_empty(), screens);
+        if self.watch.check(&mut self.notices, self.mon.power, !self.mon.ip.is_empty(), screens) {
+            power::Act::Suspend.run();
+        }
         if self.lock.locked {
+            self.capture.cancel();
             // Nothing is shown over the lock; what arrives waits in the list.
             if self.toast_area != Some(None) {
                 self.toast_area = Some(None);
@@ -873,6 +934,8 @@ impl eframe::App for App {
             Some("MUSIC")
         } else if self.notices.open {
             Some("NOTIFICATIONS")
+        } else if self.power_menu.open {
+            Some("POWER")
         } else {
             None
         };
@@ -891,9 +954,15 @@ impl eframe::App for App {
             .show(ctx, |ui| {
                 let status = Rect::from_min_max(pos2(screen.left(), status_top), screen.max);
                 let toggled = region(ui, status, vec2(24.0, 0.0), Layout::left_to_right(Align::Center), |ui| {
-                    panels::status(ui, &theme, &self.mon, state.as_ref(), open, overlay, self.notices.count())
+                    panels::status(ui, &theme, &self.mon, state.as_ref(), open, overlay, self.notices.count(), self.capture.recording.map(|since| since.elapsed()))
                 });
-                let (toggled, settings_clicked, music_clicked, notices_clicked) = toggled;
+                let (toggled, settings_clicked, music_clicked, notices_clicked, power_clicked, stop_clicked) = toggled;
+                if stop_clicked {
+                    self.toggle_recording();
+                }
+                if power_clicked {
+                    self.toggle_power();
+                }
                 if notices_clicked {
                     self.toggle_notices();
                 }
@@ -978,6 +1047,18 @@ impl eframe::App for App {
                     region(ui, mine, vec2(0.0, 0.0), Layout::top_down(Align::Min), |ui| {
                         self.music.show(ui, mine, &theme)
                     });
+                    return;
+                }
+                if self.power_menu.open {
+                    let act = region(ui, mine, vec2(0.0, 0.0), Layout::top_down(Align::Min), |ui| {
+                        self.power_menu.show(ui, mine, &theme, self.mon.power)
+                    });
+                    match act {
+                        Some(power::Act::Lock) => self.lock_now(),
+                        Some(power::Act::LogOut) => ctx.send_viewport_cmd(ViewportCommand::Close),
+                        Some(act) => act.run(),
+                        None => {}
+                    }
                     return;
                 }
                 if self.notices.open {
@@ -1098,7 +1179,14 @@ impl eframe::App for App {
 
         // Toasts hang from the top right corner of the workspace. The compositor is
         // told where, so that it shows them above whatever application is open.
-        let (covered, chosen) = self.notices.toasts(ctx, &theme, workspace.right_top() + vec2(-16.0, 12.0));
+        let (mut covered, chosen) = self.notices.toasts(ctx, &theme, workspace.right_top() + vec2(-16.0, 12.0));
+        // Marking out a piece for a screenshot takes the whole display, above everything.
+        if self.capture.marking() {
+            if self.capture.mark(ctx, theme.main) {
+                self.toggle_recording();
+            }
+            covered = Some(screen);
+        }
         let area = covered.map(|rect| {
             (rect.left().floor() as i32, rect.top().floor() as i32, rect.width().ceil() as i32 + 1, rect.height().ceil() as i32 + 1)
         });
@@ -1230,6 +1318,7 @@ fn main() -> eframe::Result {
     let mut font = None;
     let mut launcher = false;
     let mut music = false;
+    let mut power_menu = false;
     let mut greeter = false;
     let mut locked = false;
     let mut split = None;
@@ -1241,6 +1330,7 @@ fn main() -> eframe::Result {
             "--windowed" => windowed = true,
             "--launcher" => launcher = true,
             "--music" => music = true,
+            "--power" => power_menu = true,
             "--greeter" => greeter = true,
             "--locked" => locked = true,
             "--split-terminal" => split = Some(false),
@@ -1395,6 +1485,7 @@ fn main() -> eframe::Result {
                 app.launcher.open();
             }
             app.music.open = music;
+            app.power_menu.open = power_menu;
             Ok(Box::new(app))
         }),
     )

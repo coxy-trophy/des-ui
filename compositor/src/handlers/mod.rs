@@ -104,3 +104,10 @@ impl smithay::wayland::idle_inhibit::IdleInhibitHandler for DesComp {
     }
 }
 smithay::delegate_idle_inhibit!(DesComp);
+
+impl smithay::wayland::selection::wlr_data_control::DataControlHandler for DesComp {
+    fn data_control_state(&self) -> &smithay::wayland::selection::wlr_data_control::DataControlState {
+        &self.data_control_state
+    }
+}
+smithay::delegate_data_control!(DesComp);

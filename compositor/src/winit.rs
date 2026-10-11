@@ -89,6 +89,24 @@ pub fn init_winit(
 
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
 
+    // The host stops asking for frames while this window is out of sight. The desktop
+    // inside must not stop with it: its shell is still spoken to, and its applications
+    // are still told to draw.
+    event_loop
+        .handle()
+        .insert_source(
+            smithay::reexports::calloop::timer::Timer::from_duration(Duration::from_millis(100)),
+            |_, _, state| {
+                if state.last_frame.elapsed() > Duration::from_millis(250) && state.before_frame() {
+                    state.record_tick();
+                    state.after_frame();
+                    let _ = state.display_handle.flush_clients();
+                }
+                smithay::reexports::calloop::timer::TimeoutAction::ToDuration(Duration::from_millis(100))
+            },
+        )
+        .map_err(|e| format!("cannot start the timer for frames out of sight: {e}"))?;
+
     event_loop.handle().insert_source(winit, move |event, _, data| {
         let state = data;
 
@@ -154,6 +172,8 @@ pub fn init_winit(
                     tracing::error!("cannot present frame: {e}");
                 }
 
+                state.record_tick();
+                state.last_frame = std::time::Instant::now();
                 state.after_frame();
                 let _ = state.display_handle.flush_clients();
 

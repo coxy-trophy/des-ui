@@ -10,6 +10,7 @@ mod input;
 mod ipc;
 mod monitors;
 mod policy;
+mod capture;
 mod state;
 mod toast;
 mod udev;
@@ -44,6 +45,9 @@ Keys (hold Super, or Ctrl+Alt):
   ,                    Open the settings
   M                    Open the music player
   N                    Open the notifications
+  Escape               Open the power menu
+  Shift+S              Screenshot of a piece of the display (also Shift+Print)
+  R                    Start or end a screen recording
   L                    Lock the screen
   Tab                  Switch between the terminal and open applications
   O                    Move the current application to the next display

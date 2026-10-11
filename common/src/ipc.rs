@@ -10,6 +10,7 @@
 //! - `settings` when the user asks for the settings;
 //! - `music` when the user asks for the music player;
 //! - `notifications` when the user asks for the list of notifications;
+//! - `power` when the user asks for the power menu;
 //! - `lock` when the user asks for the screen to be locked, which the shell answers
 //!   with its own `lock` once it is ready to show the lock screen;
 //! - `locked <0|1>` whenever the screen becomes locked or unlocked;
@@ -259,6 +260,49 @@ pub struct DisplayChoice {
     pub main: bool,
 }
 
+/// What a screenshot is of.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ShotMode {
+    /// The display in use.
+    Screen,
+    /// The window in use.
+    Window,
+    /// A piece of the display, which the user marks out in the shell.
+    Region,
+    /// Whichever of those the user then picks, in the shell.
+    Pick,
+}
+
+impl ShotMode {
+    pub fn word(self) -> &'static str {
+        match self {
+            ShotMode::Screen => "screen",
+            ShotMode::Window => "window",
+            ShotMode::Region => "region",
+            ShotMode::Pick => "pick",
+        }
+    }
+
+    pub fn from_word(word: &str) -> Option<ShotMode> {
+        Some(match word {
+            "screen" => ShotMode::Screen,
+            "window" => ShotMode::Window,
+            "region" => ShotMode::Region,
+            "pick" => ShotMode::Pick,
+            _ => return None,
+        })
+    }
+}
+
+/// How a recording stands.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Recording {
+    On,
+    Off,
+    /// It could not be started.
+    Failed,
+}
+
 /// A message from the compositor to the shell.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
@@ -271,6 +315,14 @@ pub enum Event {
     Music,
     /// The notifications shortcut was pressed.
     Notifications,
+    /// The power key or shortcut was pressed.
+    Power,
+    /// A screenshot was taken: its width and height, and the file of plain pixels
+    /// (four bytes each, rows from the top) that holds it. `window` is where in it
+    /// the window in use lies (left, top, width, height), when the shell may need to
+    /// cut that out.
+    Shot { mode: ShotMode, width: u32, height: u32, window: Option<(u32, u32, u32, u32)>, path: String },
+    Recording(Recording),
     /// The lock shortcut was pressed.
     LockRequested,
     /// The screen is now locked, or no longer.
@@ -283,6 +335,17 @@ impl Event {
     pub const SETTINGS: &str = "settings\n";
     pub const MUSIC: &str = "music\n";
     pub const NOTIFICATIONS: &str = "notifications\n";
+    pub const POWER: &str = "power\n";
+
+    pub fn shot(mode: ShotMode, width: i32, height: i32, window: Option<(i32, i32, i32, i32)>, path: &str) -> String {
+        let window = window.map_or("-".to_string(), |(x, y, w, h)| format!("{x},{y},{w},{h}"));
+        format!("shot {} {width} {height} {window} {path}\n", mode.word())
+    }
+
+    /// `state` is `on`, `off` or `failed`.
+    pub fn recording(state: &str) -> String {
+        format!("recording {state}\n")
+    }
     pub const LOCK_REQUESTED: &str = "lock\n";
 
     pub fn locked(locked: bool) -> String {
@@ -295,6 +358,10 @@ impl Event {
             "settings" => return Some(Event::Settings),
             "music" => return Some(Event::Music),
             "notifications" => return Some(Event::Notifications),
+            "power" => return Some(Event::Power),
+            "recording on" => return Some(Event::Recording(Recording::On)),
+            "recording off" => return Some(Event::Recording(Recording::Off)),
+            "recording failed" => return Some(Event::Recording(Recording::Failed)),
             "lock" => return Some(Event::LockRequested),
             "locked 0" => return Some(Event::Locked(false)),
             "locked 1" => return Some(Event::Locked(true)),
@@ -302,6 +369,23 @@ impl Event {
         }
         if line.starts_with("displays ") {
             return Displays::decode(line).map(Event::Displays);
+        }
+        if let Some(shot) = line.trim_end_matches('\n').strip_prefix("shot ") {
+            // The path comes last and may hold spaces.
+            let mut parts = shot.splitn(5, ' ');
+            let mode = ShotMode::from_word(parts.next()?)?;
+            let width = parts.next()?.parse().ok()?;
+            let height = parts.next()?.parse().ok()?;
+            let window = match parts.next()? {
+                "-" => None,
+                sides => {
+                    let mut sides = sides.split(',').map(|side| side.parse::<u32>().ok());
+                    let window = (sides.next()??, sides.next()??, sides.next()??, sides.next()??);
+                    sides.next().is_none().then_some(window)
+                }
+            };
+            let path = parts.next().filter(|path| !path.is_empty())?.to_string();
+            return Some(Event::Shot { mode, width, height, window, path });
         }
         DesktopState::decode(line).map(Event::State)
     }
@@ -341,6 +425,11 @@ pub enum Command {
     /// An application is showing something to watch (or no longer): do not lock the
     /// screen for want of input meanwhile.
     HoldIdle(bool),
+    /// Take a screenshot.
+    Shot(ShotMode),
+    /// Record the display in use into this file.
+    Record(String),
+    RecordStop,
 }
 
 impl Command {
@@ -363,6 +452,9 @@ impl Command {
             Command::Toast(None) => "toast none\n".to_string(),
             Command::HoldIdle(true) => "hold-idle on\n".to_string(),
             Command::HoldIdle(false) => "hold-idle off\n".to_string(),
+            Command::Shot(mode) => format!("shot {}\n", mode.word()),
+            Command::Record(path) => format!("record {path}\n"),
+            Command::RecordStop => "record-stop\n".to_string(),
             Command::Toast(Some((x, y, w, h))) => format!("toast {x} {y} {w} {h}\n"),
             Command::ApplyDisplays(choices) => {
                 let mut line = "displays-apply".to_string();
@@ -396,6 +488,9 @@ impl Command {
                 .collect();
             return choices.filter(|choices| !choices.is_empty()).map(Command::ApplyDisplays);
         }
+        if let Some(path) = line.trim_end_matches('\n').strip_prefix("record ") {
+            return (!path.is_empty()).then(|| Command::Record(path.to_string()));
+        }
         if let Some(area) = line.trim_end().strip_prefix("toast ") {
             if area == "none" {
                 return Some(Command::Toast(None));
@@ -408,6 +503,8 @@ impl Command {
             ("activate", Some(index)) => Command::Activate(index.parse().ok()?),
             ("close", Some(index)) => Command::Close(index.parse().ok()?),
             ("move", Some(index)) => Command::Move(index.parse().ok()?),
+            ("shot", Some(word)) => Command::Shot(ShotMode::from_word(word)?),
+            ("record-stop", None) => Command::RecordStop,
             ("hold-idle", Some("on")) => Command::HoldIdle(true),
             ("hold-idle", Some("off")) => Command::HoldIdle(false),
             ("panel", Some("left")) => Command::TogglePanel(Panel::Left),
@@ -543,6 +640,18 @@ mod tests {
         assert_eq!(Event::decode(Event::SETTINGS), Some(Event::Settings));
         assert_eq!(Event::decode(Event::MUSIC), Some(Event::Music));
         assert_eq!(Event::decode(Event::NOTIFICATIONS), Some(Event::Notifications));
+        assert_eq!(Event::decode(Event::POWER), Some(Event::Power));
+        assert_eq!(Event::decode(&Event::recording("failed")), Some(Event::Recording(Recording::Failed)));
+        assert_eq!(
+            Event::decode(&Event::shot(ShotMode::Region, 1920, 1080, None, "/run/user/1000/a shot.rgba")),
+            Some(Event::Shot { mode: ShotMode::Region, width: 1920, height: 1080, window: None, path: "/run/user/1000/a shot.rgba".into() })
+        );
+        assert_eq!(
+            Event::decode(&Event::shot(ShotMode::Pick, 1920, 1080, Some((300, 40, 1066, 701)), "/run/a.rgba")),
+            Some(Event::Shot { mode: ShotMode::Pick, width: 1920, height: 1080, window: Some((300, 40, 1066, 701)), path: "/run/a.rgba".into() })
+        );
+        assert_eq!(Event::decode("shot region 1920 1080 - "), None);
+        assert_eq!(Event::decode("shot pick 1920 1080 1,2,3 /run/a.rgba"), None);
         assert_eq!(Event::decode(Event::LOCK_REQUESTED), Some(Event::LockRequested));
         assert_eq!(Event::decode(&Event::locked(true)), Some(Event::Locked(true)));
         assert_eq!(Event::decode(&Event::locked(false)), Some(Event::Locked(false)));
@@ -570,6 +679,9 @@ mod tests {
             Command::Toast(None),
             Command::HoldIdle(true),
             Command::HoldIdle(false),
+            Command::Shot(ShotMode::Window),
+            Command::Record("/home/ada/Videos/a film.mp4".into()),
+            Command::RecordStop,
             Command::Toast(Some((1500, 52, 380, 240))),
             Command::ApplyDisplays(vec![
                 DisplayChoice { name: "eDP-1".into(), mode: mode(1920, 1080, 60052), main: false },

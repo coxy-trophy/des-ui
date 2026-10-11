@@ -4,6 +4,15 @@ A sci-fi terminal desktop for Linux, written in Rust: a Wayland compositor and a
 shell that run as their own login session. It began as a rewrite of
 [eDEX-UI](https://github.com/GitSquared/edex-ui).
 
+![The DEs-UI desktop: a terminal in the middle, system panels either side, a file browser below](docs/screenshots/desktop.png)
+
+| | |
+|---|---|
+| ![An application open in the workspace, with notifications above it](docs/screenshots/app.png) An application in the workspace, with notifications | ![The application launcher](docs/screenshots/launcher.png) The launcher |
+| ![The music player](docs/screenshots/music.png) The music player | ![The settings](docs/screenshots/settings.png) The settings |
+
+![The lock screen](docs/screenshots/lock.png)
+
 It has three programs:
 
 - **des-ui** (`shell/`) — the interface: terminal, system panels, file browser.
@@ -174,6 +183,44 @@ The playing is done by `des-music`, built on
 device list as "DEs-UI", so a phone can control it as well, and it keeps playing
 while the shell restarts. Sound goes out through PipeWire (`pw-cat`).
 
+## Power
+
+**Super+Escape**, the power key, or `POWER` in the status strip opens the power
+menu: lock, sleep, restart, shut down, log out. The last three take a second click.
+While the screen is locked, the power key puts the machine to sleep.
+
+The status strip shows the battery with the time left, or the time until it is
+full. Running low, it says so at 15% and at 8%; at 4% the machine warns for a
+minute and then goes to sleep, so that work is kept rather than lost to the
+battery running out. Plugging in during that minute calls it off.
+
+The screen can be turned off after a time left alone (Session in the settings;
+off unless you choose a time). Any key or pointer movement turns it back on. Should
+it ever stay dark, Ctrl+Alt+F3 and then Ctrl+Alt+F1 (or whichever console the
+desktop is on) draws it afresh.
+
+## Screenshots and recordings
+
+Press **Print** (PrtSc). The display stands still and asks what you want:
+
+- **FULL SCREEN** (or F, or Enter): a picture of the display.
+- **AREA** (or A): of a piece. Drag over the piece you want; dragging straight
+  away, without choosing first, does the same.
+- **WINDOW** (or W): of the window in use.
+- **RECORD** (or R): start recording the display. `STOP` in the status strip, or
+  Print and then **STOP RECORDING**, ends it. The strip shows how long it has
+  been running.
+
+Escape, Print again, or a click beside the choices calls it off. **Alt+Print**
+and **Shift+Print** go straight to the window and to a piece.
+
+Screenshots are saved in `~/Pictures/Screenshots` and, where `wl-copy` is
+installed, also copied, ready to paste. Recordings are saved in
+`~/Videos/Recordings` as MP4, with the pointer and without sound; they need
+`ffmpeg`. Both programs come with `sudo apt install ffmpeg wl-clipboard`.
+
+Nothing is pictured while the screen is locked.
+
 ## Notifications
 
 The shell is the session's notification service, so what applications announce (a
@@ -239,6 +286,7 @@ run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`
 - `shell/src/apps.rs`, `launcher.rs` — installed applications and the launcher
 - `shell/src/theme.rs` — eDEX-UI theme loader
 - `shell/src/music.rs` — the music view and what is playing
+- `compositor/src/capture.rs`, `shell/src/capture.rs` — screenshots and recordings
 - `shell/src/notify.rs`, `compositor/src/toast.rs` — notifications, and how their
   toasts get above the applications
 - `music/src/main.rs`, `web.rs`, `protocol.rs` — the Spotify player, the library
@@ -261,7 +309,6 @@ run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`
 - In the music player: removing from or reordering the queue (Spotify offers outside
   apps no way to), albums and artists, more than the first page of a long playlist
 - In notifications: pictures and application icons, sounds
-- Turning the screen off after a while
 - On the login screen: accounts that need more than a password
 - From the original: on-screen keyboard, sound effects, mouse reporting to
   terminal apps

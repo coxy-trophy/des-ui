@@ -4,6 +4,7 @@
 //! on D-Bus). What arrives is shown for a moment as a toast at the top right of the
 //! workspace, above whatever is open, and kept in a list that the status strip opens.
 
+use crate::sysmon::Battery;
 use crate::theme::Theme;
 use crate::ui;
 use eframe::egui::{
@@ -486,18 +487,55 @@ pub struct Watch {
     screens: Option<usize>,
     /// When the network was last seen to change, to say so only once it has settled.
     since: Option<Instant>,
+    /// When the warning went out that the machine will sleep to save what is left.
+    sleep_warned: Option<Instant>,
+    /// Whether that sleep has been asked for since the battery last charged.
+    slept: bool,
 }
 
+/// At or below this, on battery, the machine is put to sleep before it dies.
+const NEARLY_EMPTY: u8 = 4;
+/// How long the warning stands before that.
+const SLEEP_WARNING: Duration = Duration::from_secs(60);
+
 impl Watch {
-    pub fn check(&mut self, center: &mut Center, battery: Option<u8>, online: bool, screens: Option<usize>) {
-        if let (Some(before), Some(now)) = (self.battery, battery) {
-            for (level, urgent) in [(15, false), (5, true)] {
-                if before > level && now <= level {
-                    center.post("Battery low", &format!("{now}% left. Plug in soon."), urgent);
+    /// Gives notice of what changed. Returns true when the battery is so nearly
+    /// empty that the machine should be put to sleep now.
+    pub fn check(&mut self, center: &mut Center, battery: Option<Battery>, online: bool, screens: Option<usize>) -> bool {
+        let mut sleep_now = false;
+        if let Some(now) = battery {
+            if now.plugged {
+                // Charging again: the next time it runs low is a new occasion.
+                if self.sleep_warned.take().is_some() && !self.slept {
+                    center.post("Charging", "The machine will stay awake.", false);
+                }
+                self.slept = false;
+            } else {
+                if let Some(before) = self.battery {
+                    for (level, urgent) in [(15, false), (8, true)] {
+                        if before > level && now.percent <= level {
+                            let left = now.minutes.map_or(String::new(), |minutes| format!(" About {} left.", crate::power::duration(minutes).to_lowercase()));
+                            center.post("Battery low", &format!("{}%.{left} Plug in soon.", now.percent), urgent);
+                        }
+                    }
+                }
+                if now.percent <= NEARLY_EMPTY && !self.slept {
+                    match self.sleep_warned {
+                        None => {
+                            self.sleep_warned = Some(Instant::now());
+                            center.post("Battery almost empty", "Going to sleep in a minute, to keep your work. Plug in to stay awake.", true);
+                        }
+                        Some(at) if at.elapsed() >= SLEEP_WARNING => {
+                            self.sleep_warned = None;
+                            self.slept = true;
+                            sleep_now = true;
+                        }
+                        Some(_) => {}
+                    }
                 }
             }
+            self.battery = Some(now.percent);
         }
-        self.battery = battery.or(self.battery);
 
         // A connection that drops for a moment and returns is not worth a word.
         match self.online {
@@ -526,6 +564,7 @@ impl Watch {
             }
         }
         self.screens = screens.or(self.screens);
+        sleep_now
     }
 }
 
@@ -641,6 +680,26 @@ mod tests {
         assert_eq!(center.count(), 2);
         let fresh: Vec<&str> = center.notices.iter().filter(|n| n.fresh).map(|n| n.title.as_str()).collect();
         assert_eq!(fresh, ["Battery low"]);
+    }
+
+    #[test]
+    fn a_nearly_empty_battery_warns_then_asks_for_sleep_once() {
+        let mut center = center();
+        let mut watch = Watch::default();
+        let battery = |percent, plugged| Some(Battery { percent, plugged, minutes: None });
+        assert!(!watch.check(&mut center, battery(20, false), true, None));
+        assert!(!watch.check(&mut center, battery(14, false), true, None));
+        assert_eq!(center.notices.last().unwrap().title, "Battery low");
+        assert!(!watch.check(&mut center, battery(4, false), true, None));
+        assert_eq!(center.notices.last().unwrap().title, "Battery almost empty");
+        // The warning has stood for its minute.
+        watch.sleep_warned = Some(Instant::now() - SLEEP_WARNING);
+        assert!(watch.check(&mut center, battery(4, false), true, None));
+        assert!(!watch.check(&mut center, battery(3, false), true, None), "asked for once, not again on waking");
+        // Plugged in and run down again: a new occasion.
+        assert!(!watch.check(&mut center, battery(5, true), true, None));
+        assert!(!watch.check(&mut center, battery(4, false), true, None));
+        assert!(watch.sleep_warned.is_some());
     }
 
     #[test]

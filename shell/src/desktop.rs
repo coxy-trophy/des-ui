@@ -19,6 +19,12 @@ pub struct Desktop {
     pub music_requested: bool,
     /// Likewise for the notifications shortcut.
     pub notifications_requested: bool,
+    /// Likewise for the power key.
+    pub power_requested: bool,
+    /// Screenshots the compositor took, waiting to be taken over.
+    pub shots: Vec<crate::capture::Shot>,
+    /// What the compositor has said about the recording since last looked at.
+    pub recording_news: Vec<des_common::ipc::Recording>,
     /// Set when the compositor's lock shortcut was pressed.
     pub lock_requested: bool,
     /// Whether the compositor has the screen locked.
@@ -60,6 +66,9 @@ impl Desktop {
             settings_requested: false,
             music_requested: false,
             notifications_requested: false,
+            power_requested: false,
+            shots: Vec::new(),
+            recording_news: Vec::new(),
             lock_requested: false,
             locked: false,
             displays: Displays::default(),
@@ -79,6 +88,9 @@ impl Desktop {
                 Event::Settings => self.settings_requested = true,
                 Event::Music => self.music_requested = true,
                 Event::Notifications => self.notifications_requested = true,
+                Event::Power => self.power_requested = true,
+                Event::Shot { mode, width, height, window, path } => self.shots.push(crate::capture::Shot { mode, width, height, window, path }),
+                Event::Recording(state) => self.recording_news.push(state),
                 Event::Displays(displays) => self.displays = displays,
                 Event::LockRequested => self.lock_requested = true,
                 Event::Locked(locked) => self.locked = locked,

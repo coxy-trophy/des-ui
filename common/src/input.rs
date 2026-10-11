@@ -33,6 +33,8 @@ pub struct InputSettings {
     pub repeat_rate: u32,
     /// Minutes without input after which the screen locks; `None` for never.
     pub lock_after: Option<u32>,
+    /// Minutes without input after which the screens are turned off; `None` for never.
+    pub screen_off_after: Option<u32>,
 }
 
 impl Default for InputSettings {
@@ -50,6 +52,7 @@ impl Default for InputSettings {
             repeat_delay: 250,
             repeat_rate: 30,
             lock_after: Some(10),
+            screen_off_after: None,
         }
     }
 }
@@ -99,6 +102,13 @@ impl InputSettings {
                 "keyboard_repeat_rate" => {
                     if let Ok(rate) = value.parse::<u32>() {
                         settings.repeat_rate = rate.clamp(REPEAT_RATE_RANGE.0, REPEAT_RATE_RANGE.1);
+                    }
+                }
+                "screen_off_after" => {
+                    settings.screen_off_after = match value.parse::<u32>() {
+                        Ok(minutes) => Some(minutes.clamp(1, 240)),
+                        Err(_) if value == "never" => None,
+                        Err(_) => settings.screen_off_after,
                     }
                 }
                 "lock_after" => {

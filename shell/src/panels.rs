@@ -323,6 +323,7 @@ pub fn right(
         ("Settings", ","),
         ("Music", "M"),
         ("Notifications", "N"),
+        ("Power", "ESC"),
         ("Lock", "L"),
         ("Next application", "TAB"),
         ("Split the workspace", "S"),
@@ -352,7 +353,8 @@ pub fn status(
     panels: Panels,
     overlay: Option<&str>,
     notices: usize,
-) -> (Option<Panel>, bool, bool, bool) {
+    recording: Option<std::time::Duration>,
+) -> (Option<Panel>, bool, bool, bool, bool, bool) {
     let mut toggled = None;
     ui.spacing_mut().item_spacing.x = 20.0;
     ui::tracked(ui, "DEs-UI", ui::display_bold(11.0), theme.main, 3.0);
@@ -372,6 +374,7 @@ pub fn status(
     };
     let settings_clicked = way_in(ui, "SETTINGS", "Settings (Super+,)");
     let music_clicked = way_in(ui, "MUSIC", "Music (Super+M)");
+    let power_clicked = way_in(ui, "POWER", "Sleep, restart, shut down (Super+Escape, or the power key)");
     let notices_clicked = way_in(ui, "NOTIFICATIONS", "Notifications (Super+N)");
     if notices > 0 {
         // Close up to the word it counts.
@@ -386,9 +389,27 @@ pub fn status(
     };
     ui::text(ui, &format!("{holder} HAS THE KEYBOARD"), ui::mono(11.0), ui::SECONDARY);
 
+    let mut stop_clicked = false;
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        if let Some(battery) = mon.battery {
-            ui::text(ui, &format!("BAT {battery}%"), ui::mono(11.0), ui::TEXT);
+        if let Some(running) = recording {
+            // The one thing here that is happening to the user, so it is the one in colour.
+            let seconds = running.as_secs();
+            let label = ui::galley(ui, &format!("REC {:02}:{:02}  STOP", seconds / 60, seconds % 60), ui::mono(11.0), ui::CAUTION, 0.0);
+            let (rect, response) = ui.allocate_exact_size(label.size() + vec2(14.0, 8.0), Sense::click());
+            ui.painter().rect_stroke(rect, 0.0, Stroke::new(1.0, ui::CAUTION), StrokeKind::Inside);
+            ui.painter().galley(rect.center() - label.size() / 2.0, label, ui::CAUTION);
+            stop_clicked = response.on_hover_text("End the recording").clicked();
+        }
+        if let Some(battery) = mon.power {
+            // Low and running down is the one reading here that asks for something.
+            let low = !battery.plugged && battery.percent <= 15;
+            let left = battery.minutes.map_or(String::new(), |minutes| format!("  {}", crate::power::duration(minutes)));
+            let label = match (battery.plugged, battery.minutes) {
+                (true, Some(_)) => format!("CHARGING {}%{left}", battery.percent),
+                (true, None) => format!("MAINS {}%", battery.percent),
+                (false, _) => format!("BAT {}%{left}", battery.percent),
+            };
+            ui::text(ui, &label, ui::mono(11.0), if low { ui::CAUTION } else { ui::TEXT });
         }
         if let Some(volume) = mon.volume() {
             ui::text(ui, &format!("VOL {volume}"), ui::mono(11.0), ui::SECONDARY);
@@ -423,7 +444,7 @@ pub fn status(
             }
         }
     });
-    (toggled, settings_clicked, music_clicked, notices_clicked)
+    (toggled, settings_clicked, music_clicked, notices_clicked, power_clicked, stop_clicked)
 }
 
 /// What a further display shows while no application is on it.

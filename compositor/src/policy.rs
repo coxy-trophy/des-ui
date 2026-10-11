@@ -44,7 +44,7 @@ fn is_toplevel(window: &Window, surface: &WlSurface) -> bool {
 }
 
 /// What to give the keyboard to for it to reach `window`.
-fn focus_of(window: &Window) -> Option<Focus> {
+pub fn focus_of(window: &Window) -> Option<Focus> {
     match window.x11_surface() {
         Some(x11) => Some(Focus::X11(x11.clone())),
         None => window.wl_surface().map(|surface| Focus::Surface(surface.into_owned())),
@@ -153,7 +153,7 @@ impl DesComp {
 
     /// The application that has the keyboard on a display: the one in the half last
     /// used, or the only one there is.
-    fn focused_on(&self, screen: usize) -> Option<usize> {
+    pub fn focused_on(&self, screen: usize) -> Option<usize> {
         let side = self.in_place(screen, Place::Side);
         match side {
             Some(side) if self.mode(screen).side_focused => Some(side),
@@ -488,9 +488,6 @@ impl DesComp {
     /// Asks for the lock once the machine has been left alone for as long as the
     /// settings say, unless something on screen is being watched.
     pub fn check_idle(&mut self) {
-        let Some(minutes) = self.input_settings.lock_after else {
-            return;
-        };
         self.idle_inhibitors.retain(smithay::utils::IsAlive::alive);
         let watched = self.idle_held || !self.idle_inhibitors.is_empty();
         if watched {
@@ -498,6 +495,15 @@ impl DesComp {
             self.last_input = std::time::Instant::now();
             return;
         }
+        if let Some(minutes) = self.input_settings.screen_off_after {
+            if !self.screens_off && self.last_input.elapsed() >= std::time::Duration::from_secs(minutes as u64 * 60) {
+                tracing::info!(minutes, "left alone: turning the screens off");
+                self.blank(true);
+            }
+        }
+        let Some(minutes) = self.input_settings.lock_after else {
+            return;
+        };
         let waited = self.last_input.elapsed() >= std::time::Duration::from_secs(minutes as u64 * 60);
         if waited && !self.locked && !self.idle_lock_asked && self.shell.is_some() {
             tracing::info!(minutes, "left alone: asking for the lock");
@@ -531,6 +537,11 @@ impl DesComp {
     /// Asks the shell to show the music player.
     pub fn open_music(&mut self) {
         self.ask_shell(Event::MUSIC);
+    }
+
+    /// Asks the shell to show the power menu.
+    pub fn open_power(&mut self) {
+        self.ask_shell(Event::POWER);
     }
 
     /// Asks the shell to show the list of notifications.
@@ -606,12 +617,22 @@ impl DesComp {
                 Command::ReloadInput => self.reload_input(),
                 Command::Lock => self.set_locked(true),
                 Command::Unlock => self.set_locked(false),
+                Command::Shot(mode) => self.take_shot(mode),
+                Command::Record(path) => self.start_recording(&path),
+                Command::RecordStop => self.stop_recording(),
                 Command::HoldIdle(held) => {
                     tracing::info!(held, "an application is asking that the screen be left alone");
                     self.idle_held = held;
                 }
                 Command::Toast(area) => {
                     self.toast = area.map(|(x, y, w, h)| Rectangle::new((x, y).into(), (w.max(0), h.max(0)).into()));
+                    // The shell is done choosing what to picture: the keyboard goes
+                    // back to whatever had it.
+                    let whole = self.screens.first().copied();
+                    if self.picking && !self.toast.zip(whole).is_some_and(|(toast, whole)| toast.contains_rect(whole)) {
+                        self.picking = false;
+                        self.arrange();
+                    }
                 }
             }
         }
@@ -633,7 +654,19 @@ impl DesComp {
         });
         ipc.publish_displays(&self.display_report());
         ipc.publish_locked(self.locked);
+        // What handling the commands gave rise to, while the socket was out of reach.
+        for line in std::mem::take(&mut self.unsaid) {
+            ipc.send(&line);
+        }
         self.ipc = Some(ipc);
+    }
+
+    /// Says something to the shell: at once, or as soon as the socket is back in hand.
+    pub fn tell(&mut self, line: String) {
+        match self.ipc.as_mut() {
+            Some(ipc) => ipc.send(&line),
+            None => self.unsaid.push(line),
+        }
     }
 }
 

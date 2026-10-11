@@ -45,11 +45,13 @@ impl IpcServer {
     /// Never blocks; meant to be called once per frame.
     pub fn poll(&mut self) -> Vec<Command> {
         while let Ok((mut stream, _)) = self.listener.accept() {
-            if stream.set_nonblocking(true).is_ok()
-                && stream.write_all(self.last.as_bytes()).is_ok()
-                && stream.write_all(self.last_displays.as_bytes()).is_ok()
-                && stream.write_all(self.last_locked.as_bytes()).is_ok()
-            {
+            if stream.set_nonblocking(true).is_ok() {
+                // A client that has already left cannot be greeted, but may have said
+                // something first, which the reading below still takes in.
+                let _ = stream
+                    .write_all(self.last.as_bytes())
+                    .and_then(|()| stream.write_all(self.last_displays.as_bytes()))
+                    .and_then(|()| stream.write_all(self.last_locked.as_bytes()));
                 self.clients.push(Client {
                     stream,
                     pending: Vec::new(),
@@ -60,12 +62,20 @@ impl IpcServer {
         let mut commands = Vec::new();
         self.clients.retain_mut(|client| {
             let mut buf = [0u8; 512];
+            // A client may say its piece and leave at once: what it said still counts.
+            let mut gone = false;
             loop {
                 match client.stream.read(&mut buf) {
-                    Ok(0) => return false,
+                    Ok(0) => {
+                        gone = true;
+                        break;
+                    }
                     Ok(n) => client.pending.extend_from_slice(&buf[..n]),
                     Err(e) if e.kind() == ErrorKind::WouldBlock => break,
-                    Err(_) => return false,
+                    Err(_) => {
+                        gone = true;
+                        break;
+                    }
                 }
             }
             while let Some(end) = client.pending.iter().position(|byte| *byte == b'\n') {
@@ -75,7 +85,7 @@ impl IpcServer {
                 }
             }
             // A client that never finishes a line is not speaking the protocol.
-            client.pending.len() < 4096
+            !gone && client.pending.len() < 4096
         });
         commands
     }

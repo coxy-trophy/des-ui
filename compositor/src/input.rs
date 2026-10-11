@@ -23,6 +23,9 @@ enum Action {
     Settings,
     Music,
     Notifications,
+    /// The power key, or its shortcut.
+    Power,
+    Shot(des_common::ipc::ShotMode),
     Lock,
     /// Super with a key that is no shortcut: swallowed, so that it types nothing.
     Ignore,
@@ -172,6 +175,9 @@ impl DesComp {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
         self.last_input = std::time::Instant::now();
         self.idle_lock_asked = false;
+        if self.screens_off {
+            self.blank(false);
+        }
         match event {
             InputEvent::Keyboard { event, .. } => {
                 let serial = SERIAL_COUNTER.next_serial();
@@ -200,6 +206,22 @@ impl DesComp {
                         if let Some(media) = Media::from_keysym(sym) {
                             return FilterResult::Intercept(Action::Media(media));
                         }
+                        // Print asks what to take; with Alt it is the window at once,
+                        // with Shift a piece.
+                        if sym == Keysym::Print || sym == Keysym::Sys_Req {
+                            use des_common::ipc::ShotMode;
+                            let mode = if modifiers.shift {
+                                ShotMode::Region
+                            } else if modifiers.alt {
+                                ShotMode::Window
+                            } else {
+                                ShotMode::Pick
+                            };
+                            return FilterResult::Intercept(Action::Shot(mode));
+                        }
+                        if sym == Keysym::XF86_PowerOff {
+                            return FilterResult::Intercept(Action::Power);
+                        }
                         // Locked, every other key goes to the lock screen: no shortcut
                         // reaches what is behind it, and the session cannot be ended.
                         if !held || locked {
@@ -214,6 +236,7 @@ impl DesComp {
                             Keysym::comma => FilterResult::Intercept(Action::Settings),
                             Keysym::m | Keysym::M => FilterResult::Intercept(Action::Music),
                             Keysym::n | Keysym::N => FilterResult::Intercept(Action::Notifications),
+                            Keysym::Escape => FilterResult::Intercept(Action::Power),
                             Keysym::l | Keysym::L => FilterResult::Intercept(Action::Lock),
                             Keysym::o | Keysym::O => FilterResult::Intercept(Action::MoveDisplay),
                             Keysym::R if modifiers.shift => FilterResult::Intercept(Action::RestartShell),
@@ -247,6 +270,12 @@ impl DesComp {
                     Some(Action::Settings) => self.open_settings(),
                     Some(Action::Music) => self.open_music(),
                     Some(Action::Notifications) => self.ask_notifications(),
+                    // Behind the lock there is no menu to show: the key puts the machine to sleep.
+                    // Nothing behind the lock is to be pictured.
+                    Some(Action::Shot(_)) if self.locked => {}
+                    Some(Action::Shot(mode)) => self.take_shot(mode),
+                    Some(Action::Power) if self.locked => run("systemctl", &["suspend"]),
+                    Some(Action::Power) => self.open_power(),
                     Some(Action::Lock) => self.request_lock(),
                     Some(Action::Ignore) => {}
                     Some(Action::RestartShell) => self.restart_shell(),

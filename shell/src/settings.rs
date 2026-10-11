@@ -782,6 +782,22 @@ impl Settings {
         ui.add_space(8.0);
         note(ui, "Not while an application is playing something to watch.");
         ui.add_space(8.0);
+        ui::text(ui, "Turn the screen off when the machine is left alone for", ui::mono(12.0), ui::SECONDARY);
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            for minutes in [Some(2), Some(5), Some(15), Some(30), None] {
+                let chosen = input.screen_off_after == minutes;
+                let label = minutes.map_or("NEVER".to_string(), |minutes| format!("{minutes} MIN"));
+                if ui::chip(ui, theme, &label, None, chosen).clicked() && !chosen {
+                    let value = minutes.map(|minutes| minutes.to_string());
+                    changes.push(Change::Set("screen_off_after", value));
+                }
+            }
+        });
+        ui.add_space(8.0);
+        note(ui, "Any key or movement of the pointer turns it back on.");
+        ui.add_space(8.0);
         if switch_row(ui, theme, "Lock before sleep", "When the lid closes or the machine is put to sleep, it wakes to the lock screen", config.lock_on_sleep) {
             changes.push(Change::Set("lock_on_sleep", config.lock_on_sleep.then(|| "off".to_string())));
         }

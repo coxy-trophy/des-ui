@@ -73,6 +73,45 @@ render_elements! {
     Toast=crate::toast::ToastElement,
 }
 
+/// The pointer as something to draw at `position` on a display: the arrow, or the
+/// image the application under it supplies.
+pub fn cursor_elements(
+    renderer: &mut GlesRenderer,
+    cursor: &MemoryRenderBuffer,
+    status: &CursorImageStatus,
+    position: smithay::utils::Point<f64, smithay::utils::Logical>,
+) -> Vec<OutputElements> {
+    let mut elements = Vec::new();
+    match status {
+        CursorImageStatus::Hidden => {}
+        CursorImageStatus::Surface(surface) => {
+            let hotspot = with_states(surface, |states| {
+                states
+                    .data_map
+                    .get::<Mutex<CursorImageAttributes>>()
+                    .map(|attributes| attributes.lock().unwrap().hotspot)
+                    .unwrap_or_default()
+            });
+            elements.extend(render_elements_from_surface_tree(
+                renderer,
+                surface,
+                (position - hotspot.to_f64()).to_physical(1.0).to_i32_round(),
+                1.0,
+                1.0,
+                Kind::Cursor,
+            ));
+        }
+        CursorImageStatus::Named(_) => {
+            if let Ok(arrow) =
+                MemoryRenderBufferRenderElement::from_buffer(renderer, position.to_physical(1.0), cursor, None, None, None, Kind::Cursor)
+            {
+                elements.push(OutputElements::Cursor(arrow));
+            }
+        }
+    }
+    elements
+}
+
 /// One monitor and the means to draw on it.
 struct Monitor {
     connector: connector::Handle,
@@ -96,7 +135,7 @@ pub struct UdevData {
     /// Connected monitors, the main display first.
     monitors: Vec<Monitor>,
     manager: Manager,
-    cursor: MemoryRenderBuffer,
+    pub cursor: MemoryRenderBuffer,
     /// False while another virtual terminal owns the displays.
     active: bool,
     /// Frames that have reached a screen.
@@ -321,6 +360,7 @@ pub fn init_udev(
                 return TimeoutAction::Drop;
             }
             state.render_udev();
+            state.record_tick();
             state.after_frame();
             let _ = state.display_handle.flush_clients();
             let frame_time = state
@@ -634,7 +674,31 @@ impl DesComp {
         self.rescan_monitors();
     }
 
+    /// Turns every screen off, or back on. Off, nothing is drawn; on, the next frame
+    /// lights them again.
+    pub fn blank(&mut self, off: bool) {
+        self.screens_off = off;
+        let Some(udev) = self.udev.as_mut() else {
+            tracing::info!(off, "screens would be switched, were this not a window");
+            return;
+        };
+        for monitor in udev.monitors.iter_mut() {
+            monitor.pending_since = None;
+            if off {
+                if let Err(e) = monitor.surface.with_compositor(|compositor| compositor.clear()) {
+                    tracing::warn!("cannot turn a screen off: {e}");
+                }
+            } else {
+                // Everything is drawn afresh, which is what switches the screen on.
+                monitor.surface.reset_buffers();
+            }
+        }
+    }
+
     fn render_udev(&mut self) {
+        if self.screens_off {
+            return;
+        }
         let toast_area = self.toast_area();
         let primary = self.screens.first().map(|screen| screen.loc);
         let Some(udev) = self.udev.as_mut() else {
@@ -669,40 +733,7 @@ impl DesComp {
             let mut elements: Vec<OutputElements> = Vec::new();
             if geometry.to_f64().contains(pointer) {
                 let position = pointer - geometry.loc.to_f64();
-                match &self.cursor_status {
-                    CursorImageStatus::Hidden => {}
-                    // The application under the pointer supplies its own image.
-                    CursorImageStatus::Surface(surface) => {
-                        let hotspot = with_states(surface, |states| {
-                            states
-                                .data_map
-                                .get::<Mutex<CursorImageAttributes>>()
-                                .map(|attributes| attributes.lock().unwrap().hotspot)
-                                .unwrap_or_default()
-                        });
-                        elements.extend(render_elements_from_surface_tree(
-                            renderer,
-                            surface,
-                            (position - hotspot.to_f64()).to_physical(1.0).to_i32_round(),
-                            1.0,
-                            1.0,
-                            Kind::Cursor,
-                        ));
-                    }
-                    CursorImageStatus::Named(_) => {
-                        if let Ok(arrow) = MemoryRenderBufferRenderElement::from_buffer(
-                            renderer,
-                            position.to_physical(1.0),
-                            cursor,
-                            None,
-                            None,
-                            None,
-                            Kind::Cursor,
-                        ) {
-                            elements.push(OutputElements::Cursor(arrow));
-                        }
-                    }
-                }
+                elements.extend(cursor_elements(renderer, cursor, &self.cursor_status, position));
             }
             elements.extend(
                 crate::toast::elements(renderer, self.shell.as_ref(), toast_area, primary, &self.toast_id, geometry.loc)
