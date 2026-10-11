@@ -545,6 +545,40 @@ impl eframe::App for Greeter {
     }
 }
 
+/// Stops using a picture: the screens go back to the pattern made from the name.
+pub fn remove_avatar() -> Result<(), String> {
+    let user = std::env::var("USER").map_err(|_| "cannot tell who you are: USER is not set".to_string())?;
+    let target = PathBuf::from(AVATAR_DIR).join(&user);
+    match std::fs::remove_file(&target) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("cannot remove {}: {e}", target.display())),
+    }
+}
+
+/// The pictures in these folders that could be someone's picture, newest first within
+/// each folder, and no more than `most` in all.
+pub fn pictures_in(folders: &[PathBuf], most: usize) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for folder in folders {
+        let mut here: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(folder)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| {
+                let path = entry.path();
+                let kind = path.extension()?.to_str()?.to_ascii_lowercase();
+                let meta = entry.metadata().ok()?;
+                (meta.is_file() && matches!(kind.as_str(), "png" | "jpg" | "jpeg")).then(|| (meta.modified().unwrap_or(std::time::UNIX_EPOCH), path))
+            })
+            .collect();
+        here.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        found.extend(here.into_iter().map(|(_, path)| path));
+    }
+    found.truncate(most);
+    found
+}
+
 /// Copies a picture to where the login screen can read it, as a small PNG.
 pub fn set_avatar(source: &std::path::Path) -> Result<PathBuf, String> {
     let user = std::env::var("USER").map_err(|_| "cannot tell who you are: USER is not set".to_string())?;
@@ -575,6 +609,20 @@ mod tests {
         }
         let different = ["alice", "bob", "root", "coxy2", ""].iter().filter(|name| sigil(name) != a).count();
         assert_eq!(different, 5);
+    }
+
+    #[test]
+    fn lists_pictures_newest_first() {
+        let folder = std::env::temp_dir().join(format!("des-faces-{}", std::process::id()));
+        std::fs::create_dir_all(folder.join("album.png")).unwrap();
+        for name in ["old.JPG", "notes.txt", "new.png"] {
+            std::fs::write(folder.join(name), b"x").unwrap();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let found = pictures_in(&[folder.clone(), folder.join("missing")], 10);
+        assert_eq!(found, [folder.join("new.png"), folder.join("old.JPG")], "pictures only, and no folders");
+        assert_eq!(pictures_in(&[folder.clone()], 1).len(), 1);
+        let _ = std::fs::remove_dir_all(&folder);
     }
 
     #[test]

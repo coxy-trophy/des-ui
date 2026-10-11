@@ -412,6 +412,19 @@ impl App {
             Change::KeepDisplays => self.send(Command::KeepDisplays),
             Change::RevertDisplays => self.send(Command::RevertDisplays),
             Change::Lock => self.lock_now(),
+            Change::Avatar(picture) => {
+                let outcome = match &picture {
+                    Some(path) => greeter::set_avatar(path).map(|_| ()),
+                    None => greeter::remove_avatar(),
+                };
+                match outcome {
+                    Ok(()) => {
+                        self.lock.forget_picture();
+                        self.settings.forget_picture();
+                    }
+                    Err(why) => self.notices.post("Picture not changed", &why, true),
+                }
+            }
             Change::LogOut => ctx.send_viewport_cmd(ViewportCommand::Close),
         }
     }

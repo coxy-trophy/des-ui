@@ -1,6 +1,7 @@
 //! The settings screen, shown in place of the terminal. It only draws and reports what
 //! the user asked for; applying and saving a change is the caller's job.
 
+use eframe::egui;
 use crate::config::{Config, LINE_HEIGHT_RANGE, MAX_FONT_SIZE, MIN_FONT_SIZE, SCROLLBACK_CHOICES};
 use crate::radio::Radio;
 use crate::term::CursorShape;
@@ -41,6 +42,42 @@ pub enum Change {
     RevertDisplays,
     Lock,
     LogOut,
+    /// Use this picture on the lock and login screens; `None` goes back to none.
+    Avatar(Option<std::path::PathBuf>),
+}
+
+/// The pictures on offer for the lock and login screens, read in the background:
+/// a large photograph takes a moment to make small.
+struct Faces {
+    read: std::sync::Arc<std::sync::Mutex<Vec<(std::path::PathBuf, egui::ColorImage)>>>,
+    shown: Vec<(std::path::PathBuf, egui::TextureHandle)>,
+    /// The picture in use, once looked for.
+    current: Option<Option<egui::TextureHandle>>,
+    path: String,
+}
+
+impl Faces {
+    fn new(ctx: &egui::Context) -> Faces {
+        let read: std::sync::Arc<std::sync::Mutex<Vec<(std::path::PathBuf, egui::ColorImage)>>> = Default::default();
+        let (into, ctx) = (read.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+            let folders = [home.join("Pictures"), std::path::PathBuf::from("/usr/share/pixmaps/faces")];
+            for path in crate::greeter::pictures_in(&folders, 36) {
+                // One that cannot be read is simply not offered.
+                let Some(image) = image::ImageReader::open(&path).ok().and_then(|reader| reader.with_guessed_format().ok()).and_then(|reader| reader.decode().ok()) else {
+                    continue;
+                };
+                // Square, from the middle, as it will be used.
+                let side = image.width().min(image.height());
+                let square = image.crop_imm((image.width() - side) / 2, (image.height() - side) / 2, side, side).thumbnail(128, 128).to_rgba8();
+                let pixels = egui::ColorImage::from_rgba_unmultiplied([square.width() as usize, square.height() as usize], square.as_raw());
+                into.lock().unwrap().push((path, pixels));
+                ctx.request_repaint();
+            }
+        });
+        Faces { read, shown: Vec::new(), current: None, path: String::new() }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -93,6 +130,7 @@ pub struct Settings {
     fonts: Vec<(String, std::path::PathBuf)>,
     layout_text: String,
     radio: Option<Radio>,
+    faces: Option<Faces>,
 }
 
 impl Default for Settings {
@@ -112,6 +150,7 @@ impl Default for Settings {
             fonts: Vec::new(),
             layout_text: String::new(),
             radio: None,
+            faces: None,
         }
     }
 }
@@ -811,6 +850,89 @@ impl Settings {
         }
     }
 
+    /// The user's picture changed: show the new one.
+    pub fn forget_picture(&mut self) {
+        if let Some(faces) = &mut self.faces {
+            faces.current = None;
+        }
+    }
+
+    /// Choosing the picture the lock and login screens show.
+    fn picture(&mut self, ui: &mut Ui, theme: &Theme, changes: &mut Vec<Change>) {
+        heading(ui, "YOUR PICTURE", "Shown on the lock screen and the login screen.");
+        let user = std::env::var("USER").unwrap_or_default();
+        let faces = self.faces.get_or_insert_with(|| Faces::new(ui.ctx()));
+        for (path, pixels) in std::mem::take(&mut *faces.read.lock().unwrap()) {
+            let texture = ui.ctx().load_texture(format!("face-{}", path.display()), pixels, egui::TextureOptions::LINEAR);
+            faces.shown.push((path, texture));
+        }
+        let current = faces.current.get_or_insert_with(|| crate::greeter::load_picture(ui.ctx(), &user)).clone();
+        let whole = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 16.0;
+            let (frame, _) = ui.allocate_exact_size(vec2(84.0, 84.0), Sense::hover());
+            ui.painter().rect_filled(frame, 0.0, ui::PANEL);
+            ui::corners(ui.painter(), frame, 10.0, Stroke::new(1.5, theme.main));
+            match &current {
+                Some(texture) => {
+                    ui.painter().image(texture.id(), frame.shrink(6.0), whole, egui::Color32::WHITE);
+                }
+                None => {
+                    ui.painter().text(frame.center(), Align2::CENTER_CENTER, "NONE", ui::display_bold(11.0), ui::LABEL);
+                }
+            }
+            ui.vertical(|ui| {
+                ui.add_space(8.0);
+                if current.is_some() {
+                    if ui::button(ui, theme, "REMOVE", None, false).clicked() {
+                        changes.push(Change::Avatar(None));
+                    }
+                } else {
+                    ui::text(ui, "Without one, a pattern made from your name is drawn.", ui::mono(12.0), ui::LABEL);
+                }
+            });
+        });
+        ui.add_space(14.0);
+        if faces.shown.is_empty() {
+            note(ui, "Pictures in ~/Pictures are offered here.");
+        }
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
+            for (path, texture) in &faces.shown {
+                let (tile, response) = ui.allocate_exact_size(vec2(64.0, 64.0), Sense::click());
+                ui.painter().image(texture.id(), tile, whole, egui::Color32::WHITE);
+                let line = if response.hovered() { theme.main } else { ui::LINE_STRONG };
+                ui.painter().rect_stroke(tile, 0.0, Stroke::new(if response.hovered() { 2.0 } else { 1.0 }, line), StrokeKind::Inside);
+                let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+                if response.on_hover_text(name).clicked() {
+                    changes.push(Change::Avatar(Some(path.clone())));
+                }
+            }
+        });
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            let (field, _) = ui.allocate_exact_size(vec2(420.0_f32.min(ui.available_width() - 80.0), 28.0), Sense::hover());
+            ui.painter().rect_filled(field, 0.0, ui::PANEL);
+            ui.painter().rect_stroke(field, 0.0, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
+            let edit = ui.put(
+                field.shrink2(vec2(8.0, 4.0)),
+                egui::TextEdit::singleline(&mut faces.path).frame(false).font(ui::mono(13.0)).text_color(ui::TEXT).hint_text("or the path to any picture"),
+            );
+            let entered = edit.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+            let ready = !faces.path.trim().is_empty();
+            if (ui::button(ui, theme, "USE", None, ready).clicked() || entered) && ready {
+                let typed = faces.path.trim().to_string();
+                let path = match typed.strip_prefix("~/") {
+                    Some(rest) => std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest),
+                    None => std::path::PathBuf::from(typed),
+                };
+                faces.path.clear();
+                changes.push(Change::Avatar(Some(path)));
+            }
+        });
+    }
+
     fn session(&mut self, ui: &mut Ui, theme: &Theme, config: &Config, input: &InputSettings, changes: &mut Vec<Change>) {
         heading(ui, "SESSION", "");
         for (name, value) in [
@@ -828,6 +950,8 @@ impl Settings {
         ui.add_space(22.0);
         note(ui, "Super+Shift+R restarts the shell on a newly installed build. Applications stay open; terminal tabs close.");
         ui.add_space(22.0);
+        self.picture(ui, theme, changes);
+        ui.add_space(26.0);
 
         if ui::button(ui, theme, "LOCK NOW", Some("SUPER L"), false).clicked() {
             changes.push(Change::Lock);

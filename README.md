@@ -103,7 +103,8 @@ Esc closes. Changes apply at once and are saved.
 - **Mouse & touchpad** — natural scrolling, tap to click, pointer speed, left-handed
 - **Globe** — rotation, online lookups, and your location
 - **Sound & screen** — volume and brightness
-- **Session** — where the logs are, and logging out
+- **Session** — your picture for the lock and login screens, locking, where the
+  logs are, and logging out
 
 A display change is tried for 15 seconds and kept only if you confirm it; otherwise
 it goes back by itself, so a mode your monitor cannot show does not strand you.
@@ -260,7 +261,8 @@ machine's own in place of GDM, from the next boot. `./uninstall-login.sh` puts G
 back. To see the screen without any of that: `des-ui --greeter --windowed`.
 
 The screen shows a picture, a name and a password line. The picture is a pattern
-made from the name unless you give it one: `des-ui --set-avatar <file>`. F1 changes
+made from the name unless you give it one, in **Settings → Session**
+or with `des-ui --set-avatar <file>`. F1 changes
 the session, Tab the account when there are several, and the three marks at the
 bottom right suspend, restart and shut down, each on a second click.
 

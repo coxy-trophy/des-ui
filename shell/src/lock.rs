@@ -69,6 +69,11 @@ impl Lock {
         }
     }
 
+    /// The user's picture changed: look for it again when next shown.
+    pub fn forget_picture(&mut self) {
+        self.picture = None;
+    }
+
     pub fn engage(&mut self) {
         self.locked = true;
         self.password.clear();

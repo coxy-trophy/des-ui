@@ -72,3 +72,11 @@ watched work on a real machine. Tick them off, or note what went wrong.
 - [ ] Albums and artists among search results
 - [ ] BACK, through several lists
 - [ ] The Spotify sign-in carried over from the old `edex-rs` folder still works
+
+## Your picture (Settings → Session)
+
+- [ ] Clicking a picture sets it; it then shows in the frame above, on the lock
+      screen, and on the login screen
+- [ ] USE with a typed path, including one starting with `~/`
+- [ ] REMOVE goes back to the pattern
+- [ ] A file that is no picture gives a "Picture not changed" notice
