@@ -75,11 +75,11 @@ watched work on a real machine. Tick them off, or note what went wrong.
 
 ## Your picture (Settings → Session)
 
-- [ ] Clicking a picture sets it; it then shows in the frame above, on the lock
+- [x] Clicking a picture sets it; it then shows in the frame above, on the lock
       screen, and on the login screen
-- [ ] USE with a typed path, including one starting with `~/`
-- [ ] REMOVE goes back to the pattern
-- [ ] A file that is no picture gives a "Picture not changed" notice
+- [x] USE with a typed path, including one starting with `~/`
+- [x] REMOVE goes back to the pattern
+- [x] A file that is no picture gives a "Picture not changed" notice
 
 ## Music: other devices, covers, repeat, like
 
@@ -97,7 +97,7 @@ watched work on a real machine. Tick them off, or note what went wrong.
 - [ ] How the glitch reads in motion: how often, how hard
 - [ ] It shows briefly on Super+Shift+R
 - [ ] With two displays: it shows on each
-- [ ] After the password, the black before the splash is now about a second shorter
+- [x] After the password, the black before the splash is now about a second shorter
       (the compositor leaves without switching the panel off)
 - [ ] Logging out still returns to the login screen, now that the compositor leaves at once
 - [ ] `./install-boot-splash.sh`: the splash shows while booting and shutting down
@@ -106,23 +106,23 @@ watched work on a real machine. Tick them off, or note what went wrong.
 
 ## Sound (Settings → Sound & Screen)
 
-- [ ] Clicking another output moves the sound there (speakers, Bluetooth, HDMI)
-- [ ] Clicking another input changes the microphone in use
-- [ ] The level sliders and MUTE, for the output, the input and each application
-- [ ] A device plugged in or connected while the page is open appears within a few seconds
-- [ ] Music that is playing follows a change of output
+- [x] Clicking another output moves the sound there (speakers, Bluetooth, HDMI)
+- [x] Clicking another input changes the microphone in use
+- [x] The level sliders and MUTE, for the output, the input and each application
+- [x] A device plugged in or connected while the page is open appears within a few seconds
+- [x] Music that is playing follows a change of output
 
 ## Music on the lock screen
 
-- [ ] The card shows when something plays, here or on another device, and not otherwise
-- [ ] Previous, play/pause and next work with the pointer while locked
-- [ ] The media keys work while locked
-- [ ] On the real display the card sits clear of the password line
+- [x] The card shows when something plays, here or on another device, and not otherwise
+- [x] Previous, play/pause and next work with the pointer while locked
+- [x] The media keys work while locked
+- [x] On the real display the card sits clear of the password line
 
 ## Lyrics
 
-- [ ] LYRICS with a real track playing: the words appear and follow the singing
-- [ ] Clicking a line jumps to it
-- [ ] Scrolling by hand, then the view following again at the next line
-- [ ] A track whose words are not timed, and one with none
-- [ ] Words for a track playing on another device
+- [x] LYRICS with a real track playing: the words appear and follow the singing
+- [x] Clicking a line jumps to it
+- [x] Scrolling by hand, then the view following again at the next line
+- [x] A track whose words are not timed, and one with none
+- [x] Words for a track playing on another device

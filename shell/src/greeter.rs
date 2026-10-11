@@ -162,13 +162,20 @@ pub fn sign_in(socket: &std::path::Path, user: &str, password: &str, session: &S
     }
 }
 
+/// Reads a picture whatever its file is called. The pictures kept for users carry the
+/// user's name and nothing to say what kind of file they are, so the kind is read
+/// from what is in them.
+pub fn read_picture(path: &std::path::Path) -> Option<image::DynamicImage> {
+    image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.decode().ok()
+}
+
 /// Loads the picture kept for a user, if there is one.
 pub fn load_picture(ctx: &egui::Context, user: &str) -> Option<TextureHandle> {
     let candidates = [
         PathBuf::from(AVATAR_DIR).join(user),
         PathBuf::from("/var/lib/AccountsService/icons").join(user),
     ];
-    let image = candidates.iter().find_map(|path| image::open(path).ok())?;
+    let image = candidates.iter().find_map(|path| read_picture(path))?;
     let image = image.thumbnail(320, 320).to_rgba8();
     let size = [image.width() as usize, image.height() as usize];
     let pixels = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
@@ -582,7 +589,7 @@ pub fn pictures_in(folders: &[PathBuf], most: usize) -> Vec<PathBuf> {
 /// Copies a picture to where the login screen can read it, as a small PNG.
 pub fn set_avatar(source: &std::path::Path) -> Result<PathBuf, String> {
     let user = std::env::var("USER").map_err(|_| "cannot tell who you are: USER is not set".to_string())?;
-    let image = image::open(source).map_err(|e| format!("cannot read {}: {e}", source.display()))?;
+    let image = read_picture(source).ok_or_else(|| format!("{} is not a picture this desktop can read (PNG or JPEG)", source.display()))?;
     // Square, from the middle, and no larger than the screen shows it.
     let side = image.width().min(image.height());
     let (x, y) = ((image.width() - side) / 2, (image.height() - side) / 2);
@@ -609,6 +616,18 @@ mod tests {
         }
         let different = ["alice", "bob", "root", "coxy2", ""].iter().filter(|name| sigil(name) != a).count();
         assert_eq!(different, 5);
+    }
+
+    #[test]
+    fn reads_a_picture_whose_name_says_nothing() {
+        // As the pictures kept for users are: named after the user, with no ending.
+        let path = std::env::temp_dir().join(format!("des-face-{}", std::process::id()));
+        image::RgbaImage::from_pixel(4, 3, image::Rgba([10, 20, 30, 255])).save_with_format(&path, image::ImageFormat::Png).unwrap();
+        let read = read_picture(&path).expect("read by what is in it");
+        assert_eq!((read.width(), read.height()), (4, 3));
+        std::fs::write(&path, b"not a picture").unwrap();
+        assert!(read_picture(&path).is_none());
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
