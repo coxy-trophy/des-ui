@@ -136,7 +136,8 @@ impl App {
         let music = music::Music::new(ctx.clone());
         let capture = capture::Capture::new(ctx.clone());
         let power = power::Power::start(ctx.clone(), desktop.is_some());
-        let notices = notify::Center::new(ctx.clone(), config.do_not_disturb, true);
+        let mut notices = notify::Center::new(ctx.clone(), config.do_not_disturb, true);
+        notices.sounds = config.notification_sounds;
         Ok(App {
             ctx,
             theme,
@@ -392,6 +393,7 @@ impl App {
                 let font = self.config.terminal_font.clone();
                 self.config = config::Config::load();
                 self.config.theme = theme;
+                self.notices.sounds = self.config.notification_sounds;
                 self.input = des_common::input::InputSettings::load();
                 if self.config.terminal_font != font {
                     ui::install_fonts(ctx, self.symbols.as_deref(), self.config.terminal_font.as_deref());

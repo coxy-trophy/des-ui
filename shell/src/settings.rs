@@ -275,7 +275,7 @@ impl Settings {
                             Section::Pointer => self.pointer(ui, theme, input, &mut changes),
                             Section::Displays => self.displays(ui, theme, displays, &mut changes),
                             Section::Globe => self.globe(ui, theme, config, geo, &mut changes),
-                            Section::Sound => self.sound(ui, theme, mon, &mut changes),
+                            Section::Sound => self.sound(ui, theme, config, mon, &mut changes),
                             Section::Session => self.session(ui, theme, config, input, &mut changes),
                         }
                     });
@@ -763,7 +763,7 @@ impl Settings {
         }
     }
 
-    fn sound(&mut self, ui: &mut Ui, theme: &Theme, mon: &SysMon, changes: &mut Vec<Change>) {
+    fn sound(&mut self, ui: &mut Ui, theme: &Theme, config: &Config, mon: &SysMon, changes: &mut Vec<Change>) {
         heading(ui, "SOUND & SCREEN", "The volume and brightness keys do the same.");
         let volume = held(&mut self.volume_held, mon.volume());
         let brightness = held(&mut self.brightness_held, mon.brightness);
@@ -803,6 +803,11 @@ impl Settings {
         }
         if let Some(battery) = mon.battery {
             note(ui, &format!("Battery at {battery}%."));
+        }
+        ui.add_space(22.0);
+        heading(ui, "NOTIFICATIONS", "");
+        if switch_row(ui, theme, "Sounds", "A notification that shows also makes a sound, unless it asks not to", config.notification_sounds) {
+            changes.push(Change::Set("notification_sounds", config.notification_sounds.then(|| "off".to_string())));
         }
     }
 

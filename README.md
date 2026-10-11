@@ -237,6 +237,12 @@ A toast stays a few seconds, longer under the pointer; an urgent one stays until
 seen to. Clicking it does what its sender offered (usually: show the application),
 and the cross puts it away for good.
 
+Each shows its sender's picture or icon where there is one, and makes a sound when
+it shows, unless it asks for silence or for a sound of its own. Several at once make
+one sound. **Settings → Sound & Screen → Notifications** turns the sounds off; do not
+disturb silences all but the urgent. Icons that exist only as drawings (SVG) are not
+shown.
+
 **Super+N**, or `NOTIFICATIONS` in the status strip, opens the list. `DO NOT
 DISTURB` there keeps all but the urgent ones off the screen; they still reach the
 list. Nothing is shown over the lock screen.
@@ -312,7 +318,7 @@ run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`
 - VPNs that ask for a password each time they connect
 - In the music player: removing from or reordering the queue (Spotify offers outside
   apps no way to), albums and artists, more than the first page of a long playlist
-- In notifications: pictures and application icons, sounds
+- In notifications: icons that exist only as SVG drawings
 - On the login screen: accounts that need more than a password
 - From the original: on-screen keyboard, sound effects, mouse reporting to
   terminal apps

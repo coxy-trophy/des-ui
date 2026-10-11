@@ -3,6 +3,7 @@
 //! The shell is the session's notification service (`org.freedesktop.Notifications`
 //! on D-Bus). What arrives is shown for a moment as a toast at the top right of the
 //! workspace, above whatever is open, and kept in a list that the status strip opens.
+//! Each comes with its sender's picture where one can be found, and with a sound.
 
 use crate::sysmon::Battery;
 use crate::theme::Theme;
@@ -12,6 +13,7 @@ use eframe::egui::{
     UiBuilder, pos2, vec2,
 };
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use zbus::zvariant::OwnedValue;
@@ -31,6 +33,166 @@ const TOAST_WIDTH: f32 = 360.0;
 const DISMISSED: u32 = 2;
 const WITHDRAWN: u32 = 3;
 
+/// Where the sounds every desktop is expected to have are kept.
+const SOUNDS: &str = "/usr/share/sounds/freedesktop/stereo";
+/// The least time between two sounds: a burst of notifications is one interruption.
+const SOUND_GAP: Duration = Duration::from_millis(1500);
+/// Pictures are kept no larger than this, a side.
+const ICON_SIDE: u32 = 96;
+
+/// A notification's picture.
+pub struct Icon {
+    width: usize,
+    height: usize,
+    rgba: Vec<u8>,
+    /// What it is drawn from, made the first time it is drawn.
+    texture: Mutex<Option<egui::TextureHandle>>,
+}
+
+impl PartialEq for Icon {
+    fn eq(&self, other: &Icon) -> bool {
+        (self.width, self.height) == (other.width, other.height) && self.rgba == other.rgba
+    }
+}
+
+impl std::fmt::Debug for Icon {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Icon({}x{})", self.width, self.height)
+    }
+}
+
+impl Icon {
+    fn new(image: image::DynamicImage) -> Icon {
+        let image = if image.width() > ICON_SIDE || image.height() > ICON_SIDE { image.thumbnail(ICON_SIDE, ICON_SIDE) } else { image };
+        let image = image.to_rgba8();
+        Icon { width: image.width() as usize, height: image.height() as usize, rgba: image.into_raw(), texture: Mutex::new(None) }
+    }
+
+    /// From pixels sent along with the notification: rows of `stride` bytes, three or
+    /// four bytes a pixel.
+    pub fn from_raw(width: i32, height: i32, stride: i32, channels: i32, data: &[u8]) -> Option<Icon> {
+        let (width, height, stride, channels) = (usize::try_from(width).ok()?, usize::try_from(height).ok()?, usize::try_from(stride).ok()?, usize::try_from(channels).ok()?);
+        if width == 0 || height == 0 || width > 4096 || height > 4096 || !(3..=4).contains(&channels) || stride < width * channels {
+            return None;
+        }
+        // The last row may stop where its pixels do.
+        if data.len() < stride * (height - 1) + width * channels {
+            return None;
+        }
+        let mut rgba = Vec::with_capacity(width * height * 4);
+        for row in 0..height {
+            for pixel in data[row * stride..row * stride + width * channels].chunks_exact(channels) {
+                rgba.extend_from_slice(&[pixel[0], pixel[1], pixel[2], if channels == 4 { pixel[3] } else { 255 }]);
+            }
+        }
+        image::RgbaImage::from_raw(width as u32, height as u32, rgba).map(|image| Icon::new(image.into()))
+    }
+
+    fn open(path: &Path) -> Option<Icon> {
+        let image = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.decode().ok()?;
+        Some(Icon::new(image))
+    }
+
+    fn texture(&self, ctx: &egui::Context) -> egui::TextureId {
+        self.texture
+            .lock()
+            .unwrap()
+            .get_or_insert_with(|| {
+                let image = egui::ColorImage::from_rgba_unmultiplied([self.width, self.height], &self.rgba);
+                ctx.load_texture("notice-icon", image, egui::TextureOptions::LINEAR)
+            })
+            .id()
+    }
+
+    /// Draws it in a square of `side`, keeping its shape.
+    fn show(&self, ui: &mut Ui, side: f32) {
+        let (rect, _) = ui.allocate_exact_size(vec2(side, side), Sense::hover());
+        let scale = side / self.width.max(self.height).max(1) as f32;
+        let fitted = Rect::from_center_size(rect.center(), vec2(self.width as f32, self.height as f32) * scale);
+        let whole = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+        ui.painter().image(self.texture(ui.ctx()), fitted, whole, egui::Color32::WHITE);
+    }
+}
+
+/// The folders icons are installed under, most specific first.
+fn icon_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        roots.push(home.join(".local/share/icons"));
+        roots.push(home.join(".local/share/flatpak/exports/share/icons"));
+    }
+    roots.extend(["/usr/share/icons", "/usr/local/share/icons", "/var/lib/flatpak/exports/share/icons", "/var/lib/snapd/desktop/icons"].map(PathBuf::from));
+    roots
+}
+
+/// Finds the file for an icon given by name, among `roots`. Only pictures this shell
+/// can read are looked for, which leaves out drawings (SVG).
+pub fn find_icon(name: &str, roots: &[PathBuf]) -> Option<PathBuf> {
+    if name.is_empty() || name.contains('/') || name.contains("..") {
+        return None;
+    }
+    for root in roots {
+        for theme in ["hicolor", "Yaru", "Adwaita"] {
+            for size in ["64x64", "48x48", "96x96", "128x128", "256x256", "32x32"] {
+                for kind in ["apps", "status", "devices", "actions", "categories", "places", "legacy", "emblems", "mimetypes"] {
+                    // Themes disagree on which of the two comes first.
+                    for path in [root.join(theme).join(size).join(kind), root.join(theme).join(kind).join(size)] {
+                        let file = path.join(format!("{name}.png"));
+                        if file.is_file() {
+                            return Some(file);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let pixmap = Path::new("/usr/share/pixmaps").join(format!("{name}.png"));
+    pixmap.is_file().then_some(pixmap)
+}
+
+/// The picture named by a notification: a file, a `file://` address, or an icon's name.
+fn named_icon(name: &str) -> Option<Icon> {
+    let name = name.trim();
+    if let Some(path) = name.strip_prefix("file://") {
+        return Icon::open(Path::new(path));
+    }
+    if name.starts_with('/') {
+        return Icon::open(Path::new(name));
+    }
+    Icon::open(&find_icon(name, &icon_roots())?)
+}
+
+/// The sound a notification asks for, by what its hints say: none (`Some(None)`), a
+/// particular file, or nothing in particular (`None`).
+pub fn asked_sound(suppress: bool, file: Option<&str>, name: Option<&str>) -> Option<Option<PathBuf>> {
+    if suppress {
+        return Some(None);
+    }
+    if let Some(file) = file.filter(|file| file.starts_with('/')) {
+        return Some(Some(PathBuf::from(file)));
+    }
+    let name = name.filter(|name| !name.is_empty() && !name.contains('/') && !name.contains(".."))?;
+    Some(Some(Path::new(SOUNDS).join(format!("{name}.oga"))))
+}
+
+/// Plays a sound file, without waiting for it.
+fn play(path: &Path) {
+    if !path.is_file() {
+        return;
+    }
+    let started = std::process::Command::new("pw-play")
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    if let Ok(mut child) = started {
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Notice {
     pub id: u32,
@@ -40,6 +202,9 @@ pub struct Notice {
     /// What can be done about it: a key for the sender, and a label for the user.
     pub actions: Vec<(String, String)>,
     pub urgent: bool,
+    pub icon: Option<Arc<Icon>>,
+    /// The sound it asked for: none, or a file. `None` leaves it to the desktop.
+    sound: Option<Option<PathBuf>>,
     /// The time of day it arrived, as shown in the list.
     pub clock: String,
     /// How long its toast stays; `None` until dismissed.
@@ -112,7 +277,7 @@ struct Service {
 #[zbus::interface(name = "org.freedesktop.Notifications")]
 impl Service {
     fn get_capabilities(&self) -> Vec<String> {
-        ["body", "actions", "persistence"].map(str::to_string).to_vec()
+        ["body", "actions", "persistence", "icon-static", "sound"].map(str::to_string).to_vec()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -120,7 +285,7 @@ impl Service {
         &self,
         app_name: String,
         replaces_id: u32,
-        _app_icon: String,
+        app_icon: String,
         summary: String,
         body: String,
         actions: Vec<String>,
@@ -128,6 +293,21 @@ impl Service {
         expire_timeout: i32,
     ) -> u32 {
         let urgent = hints.get("urgency").and_then(|value| value.downcast_ref::<u8>().ok()) == Some(2);
+        let word = |key: &str| hints.get(key).and_then(|value| value.downcast_ref::<&str>().ok()).filter(|word| !word.is_empty());
+        let pixels = |key: &str| {
+            let value = hints.get(key)?.try_clone().ok()?;
+            let (width, height, stride, _alpha, _bits, channels, data): (i32, i32, i32, bool, i32, i32, Vec<u8>) = value.try_into().ok()?;
+            Icon::from_raw(width, height, stride, channels, &data)
+        };
+        // In the order the specification gives them weight.
+        let icon = pixels("image-data")
+            .or_else(|| pixels("image_data"))
+            .or_else(|| word("image-path").or(word("image_path")).and_then(named_icon))
+            .or_else(|| named_icon(&app_icon))
+            .or_else(|| pixels("icon_data"))
+            .or_else(|| word("desktop-entry").and_then(named_icon));
+        let suppress = hints.get("suppress-sound").and_then(|value| value.downcast_ref::<bool>().ok()) == Some(true);
+        let sound = asked_sound(suppress, word("sound-file"), word("sound-name"));
         let mut inbox = self.inbox.lock().unwrap();
         let id = if replaces_id != 0 {
             replaces_id
@@ -142,6 +322,8 @@ impl Service {
             body: plain(&body),
             actions: pair_actions(&actions),
             urgent,
+            icon: icon.map(Arc::new),
+            sound,
             clock: clock_now(),
             stay: match expire_timeout {
                 // Urgent ones stay until seen to.
@@ -178,6 +360,9 @@ pub struct Chosen {
 pub struct Center {
     pub open: bool,
     pub quiet: bool,
+    /// Whether a notification that shows also sounds.
+    pub sounds: bool,
+    last_sound: Option<Instant>,
     notices: Vec<Notice>,
     inbox: Arc<Mutex<Inbox>>,
     /// The connection to D-Bus, when this shell is the notification service.
@@ -200,7 +385,7 @@ impl Center {
                     .build()
             })
             .and_then(|built| built.map_err(|e| eprintln!("des-ui: not taking applications' notifications: {e}")).ok());
-        Center { open: false, quiet, notices: Vec::new(), inbox, bus, own_id: u32::MAX / 2 }
+        Center { open: false, quiet, sounds: false, last_sound: None, notices: Vec::new(), inbox, bus, own_id: u32::MAX / 2 }
     }
 
     /// A notice from the desktop itself.
@@ -214,6 +399,8 @@ impl Center {
                 body: body.to_string(),
                 actions: Vec::new(),
                 urgent,
+                icon: None,
+                sound: None,
                 clock: clock_now(),
                 stay: if urgent { None } else { Some(STAY) },
                 shown: None,
@@ -227,13 +414,33 @@ impl Center {
     fn add(&mut self, mut notice: Notice, replaces: u32) {
         // Quiet, only what is urgent interrupts; the rest goes straight to the list.
         notice.fresh = !self.quiet || notice.urgent;
+        let sound = self.sound_for(&notice);
         match self.notices.iter_mut().find(|old| replaces != 0 && old.id == replaces) {
+            // The same thing said again, such as progress, is no new interruption.
             Some(old) => *old = notice,
-            None => self.notices.push(notice),
+            None => {
+                self.notices.push(notice);
+                if let Some(sound) = sound {
+                    self.last_sound = Some(Instant::now());
+                    play(&sound);
+                }
+            }
         }
         if self.notices.len() > KEPT {
             let gone = self.notices.remove(0);
             self.tell_closed(&gone, DISMISSED);
+        }
+    }
+
+    /// The sound to make for a notification, if any: only for one that shows, not too
+    /// soon after another, and never one it asked to be spared.
+    fn sound_for(&self, notice: &Notice) -> Option<PathBuf> {
+        if !self.sounds || !notice.fresh || self.last_sound.is_some_and(|at| at.elapsed() < SOUND_GAP) {
+            return None;
+        }
+        match &notice.sound {
+            Some(asked) => asked.clone(),
+            None => Some(Path::new(SOUNDS).join(if notice.urgent { "dialog-warning.oga" } else { "message.oga" })),
         }
     }
 
@@ -369,12 +576,21 @@ impl Center {
                     ui::text(ui, &notice.clock, ui::mono(10.0), ui::LABEL);
                 });
             });
-            if !notice.title.is_empty() {
-                wrapped(ui, &notice.title, ui::display_bold(14.0), ui::TEXT, 2);
-            }
-            if !notice.body.is_empty() {
-                wrapped(ui, &notice.body, ui::mono(12.0), ui::SECONDARY, 4);
-            }
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 12.0;
+                if let Some(icon) = &notice.icon {
+                    icon.show(ui, 40.0);
+                }
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 5.0;
+                    if !notice.title.is_empty() {
+                        wrapped(ui, &notice.title, ui::display_bold(14.0), ui::TEXT, 2);
+                    }
+                    if !notice.body.is_empty() {
+                        wrapped(ui, &notice.body, ui::mono(12.0), ui::SECONDARY, 4);
+                    }
+                });
+            });
             let offered: Vec<&(String, String)> = notice.actions.iter().filter(|(key, _)| key != "default").take(3).collect();
             if !offered.is_empty() {
                 ui.add_space(4.0);
@@ -621,8 +837,14 @@ fn row(ui: &mut Ui, theme: &Theme, notice: &Notice) -> Deed {
         });
         ui.horizontal(|ui| {
             ui.add_space(10.0);
+            ui.spacing_mut().item_spacing.x = 12.0;
+            let mut taken = 40.0;
+            if let Some(icon) = &notice.icon {
+                icon.show(ui, 36.0);
+                taken += 48.0;
+            }
             ui.vertical(|ui| {
-                ui.set_width((width - 40.0).max(40.0));
+                ui.set_width((width - taken).max(40.0));
                 if !notice.title.is_empty() {
                     wrapped(ui, &notice.title, ui::display_bold(14.0), ui::TEXT, 2);
                 }
@@ -662,13 +884,70 @@ mod tests {
     }
 
     #[test]
+    fn reads_pictures_sent_as_pixels() {
+        // Two by two, three bytes a pixel, each row padded to eight bytes.
+        let data = [1, 2, 3, 4, 5, 6, 0, 0, 7, 8, 9, 10, 11, 12];
+        let icon = Icon::from_raw(2, 2, 8, 3, &data).unwrap();
+        assert_eq!((icon.width, icon.height), (2, 2));
+        assert_eq!(icon.rgba, [1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255]);
+        assert!(Icon::from_raw(2, 2, 8, 3, &data[..10]).is_none(), "too few pixels");
+        assert!(Icon::from_raw(2, 2, 4, 3, &data).is_none(), "rows shorter than their pixels");
+        assert!(Icon::from_raw(0, 2, 8, 3, &data).is_none());
+        assert!(Icon::from_raw(2, 2, 8, 2, &data).is_none(), "not a kind of pixel known here");
+        // A large one is kept small.
+        let large = vec![9u8; 400 * 200 * 4];
+        let icon = Icon::from_raw(400, 200, 1600, 4, &large).unwrap();
+        assert_eq!((icon.width, icon.height), (96, 48));
+    }
+
+    #[test]
+    fn finds_icons_by_name_and_sounds_by_hint() {
+        let root = std::env::temp_dir().join(format!("des-icons-{}", std::process::id()));
+        let folder = root.join("hicolor/48x48/apps");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("editor.png"), b"").unwrap();
+        let roots = [root.clone()];
+        assert_eq!(find_icon("editor", &roots), Some(folder.join("editor.png")));
+        assert_eq!(find_icon("../editor", &roots), None);
+        assert_eq!(find_icon("", &roots), None);
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert_eq!(asked_sound(true, Some("/a.oga"), Some("bell")), Some(None), "asked for silence");
+        assert_eq!(asked_sound(false, Some("/a.oga"), Some("bell")), Some(Some(PathBuf::from("/a.oga"))));
+        assert_eq!(asked_sound(false, None, Some("bell")), Some(Some(PathBuf::from("/usr/share/sounds/freedesktop/stereo/bell.oga"))));
+        assert_eq!(asked_sound(false, None, Some("../../etc/passwd")), None);
+        assert_eq!(asked_sound(false, None, None), None);
+    }
+
+    #[test]
+    fn sounds_only_for_what_shows_and_not_in_bursts() {
+        let mut center = center();
+        center.post("One", "", false);
+        let notice = center.notices[0].clone();
+        assert_eq!(center.sound_for(&notice), None, "sounds are off");
+        center.sounds = true;
+        assert_eq!(center.sound_for(&notice), Some(PathBuf::from("/usr/share/sounds/freedesktop/stereo/message.oga")));
+        let mut urgent = notice.clone();
+        urgent.urgent = true;
+        assert!(center.sound_for(&urgent).unwrap().ends_with("dialog-warning.oga"));
+        let mut spared = notice.clone();
+        spared.sound = Some(None);
+        assert_eq!(center.sound_for(&spared), None);
+        let mut unseen = notice.clone();
+        unseen.fresh = false;
+        assert_eq!(center.sound_for(&unseen), None, "kept off the screen, kept quiet");
+        center.last_sound = Some(Instant::now());
+        assert_eq!(center.sound_for(&notice), None, "too soon after another");
+    }
+
+    #[test]
     fn pairs_actions() {
         let flat = ["default", "Open", "reply", "Reply", "dangling"].map(str::to_string);
         assert_eq!(pair_actions(&flat), vec![("default".into(), "Open".into()), ("reply".into(), "Reply".into())]);
     }
 
     fn center() -> Center {
-        Center { open: false, quiet: false, notices: Vec::new(), inbox: Arc::default(), bus: None, own_id: u32::MAX / 2 }
+        Center { open: false, quiet: false, sounds: false, last_sound: None, notices: Vec::new(), inbox: Arc::default(), bus: None, own_id: u32::MAX / 2 }
     }
 
     #[test]
@@ -707,6 +986,8 @@ mod tests {
         let mut center = center();
         let notice = |id, title: &str| Notice {
             id, app: "Brave".into(), title: title.into(), body: String::new(), actions: Vec::new(), urgent: false,
+            icon: None,
+            sound: None,
             clock: "12:00".into(), stay: Some(STAY), shown: None, fresh: true, foreign: false,
         };
         center.add(notice(7, "1 new message"), 0);

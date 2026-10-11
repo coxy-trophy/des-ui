@@ -55,3 +55,11 @@ watched work on a real machine. Tick them off, or note what went wrong.
 - [ ] Bluetooth: a phone that asks to confirm a code
 - [ ] Bluetooth: a device that wants a PIN typed here
 - [ ] Bluetooth: CANCEL while pairing
+
+## Notifications: pictures and sounds
+
+- [ ] The sound itself: one when a notification shows, a different one when urgent
+- [ ] Several notifications at once make one sound, not several
+- [ ] No sound with do not disturb on, or with sounds switched off in the settings
+- [ ] Pictures from real applications: a browser's message with a sender's
+      picture, a music player's cover

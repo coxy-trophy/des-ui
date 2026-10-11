@@ -37,6 +37,8 @@ pub struct Config {
     pub location: Option<Place>,
     /// Whether the screen locks before the machine sleeps.
     pub lock_on_sleep: bool,
+    /// Whether a notification that shows also makes a sound.
+    pub notification_sounds: bool,
     /// Whether notifications are kept off the screen as they arrive.
     pub do_not_disturb: bool,
     /// Which panels are open when the desktop starts.
@@ -59,6 +61,7 @@ impl Default for Config {
             lookups: true,
             location: None,
             lock_on_sleep: true,
+            notification_sounds: true,
             do_not_disturb: false,
             panels: Panels::default(),
         }
@@ -110,6 +113,7 @@ impl Config {
                 "globe_rotation" => config.globe_rotation = value != "off",
                 "do_not_disturb" => config.do_not_disturb = value == "on",
                 "lock_on_sleep" => config.lock_on_sleep = value != "off",
+                "notification_sounds" => config.notification_sounds = value != "off",
                 "geo" => config.lookups = value != "off",
                 "location" => config.location = parse_location(value),
                 "panels" => {
