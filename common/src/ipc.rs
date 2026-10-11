@@ -22,7 +22,9 @@
 //! `toast <x y w h|none>`, `fullscreen`, `lock`, `unlock`, `panel <left|right|bottom>`, `reload-input` (the input settings in the
 //! configuration file changed), `displays-keep`, `displays-revert`, or
 //! `displays-apply` followed by one `<name>=<mode>` per monitor, left to right, with a
-//! `*` after the one that is to be the main display.
+//! `*` after the one that is to be the main display, then `/<scale>:<turn>:<use>`: the
+//! scale in percent, the turn in degrees, and `o` for a display of its own, `m` for one
+//! mirroring the main display, `x` for one turned off.
 
 use crate::{Panel, Panels};
 
@@ -180,6 +182,67 @@ impl Mode {
     }
 }
 
+/// What a monitor is used for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Usage {
+    /// A display of its own, beside the others.
+    #[default]
+    Own,
+    /// Showing what the main display shows.
+    Mirror,
+    Off,
+}
+
+/// How a monitor is set beyond its mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Setup {
+    /// How large things are drawn, in percent: 100 is one to one.
+    pub scale: u32,
+    /// Quarter turns clockwise, in degrees: 0, 90, 180 or 270.
+    pub turn: u16,
+    pub usage: Usage,
+}
+
+impl Default for Setup {
+    fn default() -> Self {
+        Setup { scale: 100, turn: 0, usage: Usage::Own }
+    }
+}
+
+impl Setup {
+    /// The scales on offer.
+    pub const SCALES: [u32; 5] = [100, 125, 150, 175, 200];
+
+    pub fn encode(&self) -> String {
+        let usage = match self.usage {
+            Usage::Own => 'o',
+            Usage::Mirror => 'm',
+            Usage::Off => 'x',
+        };
+        format!("{}:{}:{usage}", self.scale, self.turn)
+    }
+
+    pub fn decode(text: &str) -> Option<Setup> {
+        let mut parts = text.split(':');
+        let scale: u32 = parts.next()?.parse().ok()?;
+        let turn: u16 = parts.next()?.parse().ok()?;
+        let usage = match parts.next()? {
+            "o" => Usage::Own,
+            "m" => Usage::Mirror,
+            "x" => Usage::Off,
+            _ => return None,
+        };
+        (parts.next().is_none() && (50..=400).contains(&scale) && matches!(turn, 0 | 90 | 180 | 270)).then_some(Setup { scale, turn, usage })
+    }
+
+    /// The size a mode comes to on the desktop: turned, then scaled.
+    pub fn logical(&self, mode: Mode) -> (i32, i32) {
+        let (width, height) = if self.turn % 180 == 90 { (mode.height, mode.width) } else { (mode.width, mode.height) };
+        let scaled = |side: u32| ((side as f64 * 100.0 / self.scale.max(1) as f64).round() as i32).max(1);
+        (scaled(width), scaled(height))
+    }
+}
+
 /// One connected monitor, as the compositor is driving it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DisplayInfo {
@@ -191,6 +254,7 @@ pub struct DisplayInfo {
     pub y: i32,
     pub current: Mode,
     pub modes: Vec<Mode>,
+    pub setup: Setup,
 }
 
 /// The connected monitors, left to right.
@@ -208,12 +272,13 @@ impl Displays {
             let modes: Vec<String> = monitor.modes.iter().map(Mode::encode).collect();
             let name: String = monitor.name.chars().filter(|c| !c.is_whitespace()).collect();
             line.push_str(&format!(
-                "\t{name} {} {} {} {} {}",
+                "\t{name} {} {} {} {} {} {}",
                 monitor.main as u8,
                 monitor.x,
                 monitor.y,
                 monitor.current.encode(),
-                modes.join(",")
+                modes.join(","),
+                monitor.setup.encode()
             ));
         }
         line.push('\n');
@@ -236,6 +301,11 @@ impl Displays {
             let y = parts.next()?.parse().ok()?;
             let current = Mode::decode(parts.next()?)?;
             let modes: Option<Vec<Mode>> = parts.next()?.split(',').map(Mode::decode).collect();
+            // A compositor from before monitors could be turned or scaled says nothing more.
+            let setup = match parts.next() {
+                Some(setup) => Setup::decode(setup)?,
+                None => Setup::default(),
+            };
             if parts.next().is_some() {
                 return None;
             }
@@ -246,6 +316,7 @@ impl Displays {
                 y,
                 current,
                 modes: modes?,
+                setup,
             });
         }
         Some(Displays { pending, monitors })
@@ -258,6 +329,7 @@ pub struct DisplayChoice {
     pub name: String,
     pub mode: Mode,
     pub main: bool,
+    pub setup: Setup,
 }
 
 /// What a screenshot is of.
@@ -460,7 +532,7 @@ impl Command {
                 let mut line = "displays-apply".to_string();
                 for choice in choices {
                     let main = if choice.main { "*" } else { "" };
-                    line.push_str(&format!(" {}={}{main}", choice.name, choice.mode.encode()));
+                    line.push_str(&format!(" {}={}{main}/{}", choice.name, choice.mode.encode(), choice.setup.encode()));
                 }
                 line.push('\n');
                 line
@@ -475,6 +547,10 @@ impl Command {
                 .skip(1)
                 .map(|word| {
                     let (name, mode) = word.split_once('=')?;
+                    let (mode, setup) = match mode.split_once('/') {
+                        Some((mode, setup)) => (mode, Setup::decode(setup)?),
+                        None => (mode, Setup::default()),
+                    };
                     let (mode, main) = match mode.strip_suffix('*') {
                         Some(mode) => (mode, true),
                         None => (mode, false),
@@ -483,6 +559,7 @@ impl Command {
                         name: name.to_string(),
                         mode: Mode::decode(mode)?,
                         main,
+                        setup,
                     })
                 })
                 .collect();
@@ -615,6 +692,7 @@ mod tests {
                     y: 0,
                     current: mode(1920, 1080, 60052),
                     modes: vec![mode(1920, 1080, 60052), mode(1280, 720, 60000)],
+                    setup: Setup::default(),
                 },
                 DisplayInfo {
                     name: "HDMI-A-1".into(),
@@ -623,6 +701,7 @@ mod tests {
                     y: 0,
                     current: mode(1920, 1080, 60000),
                     modes: vec![mode(3840, 2160, 30000)],
+                    setup: Setup { scale: 150, turn: 90, usage: Usage::Mirror },
                 },
             ],
         };
@@ -684,8 +763,8 @@ mod tests {
             Command::RecordStop,
             Command::Toast(Some((1500, 52, 380, 240))),
             Command::ApplyDisplays(vec![
-                DisplayChoice { name: "eDP-1".into(), mode: mode(1920, 1080, 60052), main: false },
-                DisplayChoice { name: "HDMI-A-1".into(), mode: mode(3840, 2160, 30000), main: true },
+                DisplayChoice { name: "eDP-1".into(), mode: mode(1920, 1080, 60052), main: false, setup: Setup::default() },
+                DisplayChoice { name: "HDMI-A-1".into(), mode: mode(3840, 2160, 30000), main: true, setup: Setup { scale: 200, turn: 270, usage: Usage::Off } },
             ]),
         ] {
             assert_eq!(Command::decode(command.encode().trim_end()), Some(command));

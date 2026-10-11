@@ -60,7 +60,9 @@ pub fn init_winit(
         },
     );
     let _global = output.create_global::<DesComp>(display_handle);
-    output.change_current_state(Some(mode), Some(Transform::Flipped180), None, Some((0, 0).into()));
+    // Testing aid: `DES_TEST_SCALE=1.5` runs the window as a scaled display.
+    let scale = std::env::var("DES_TEST_SCALE").ok().and_then(|scale| scale.parse::<f64>().ok()).filter(|scale| (0.5..=4.0).contains(scale)).unwrap_or(1.0);
+    output.change_current_state(Some(mode), Some(Transform::Flipped180), Some(smithay::output::Scale::Fractional(scale)), Some((0, 0).into()));
     output.set_preferred(mode);
 
     state.space.map_output(&output, (0, 0));
@@ -85,7 +87,8 @@ pub fn init_winit(
     });
 
     state.backend = Some(backend);
-    state.set_screens(screens_of(mode.size.w, mode.size.h, state.split));
+    let logical = move |size: smithay::utils::Size<i32, smithay::utils::Physical>| size.to_f64().to_logical(scale).to_i32_round::<i32>();
+    state.set_screens(screens_of(logical(mode.size).w, logical(mode.size).h, state.split));
 
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
 
@@ -97,7 +100,23 @@ pub fn init_winit(
         .insert_source(
             smithay::reexports::calloop::timer::Timer::from_duration(Duration::from_millis(100)),
             |_, _, state| {
-                if state.last_frame.elapsed() > Duration::from_millis(250) && state.before_frame() {
+                let hidden = state.last_frame.elapsed() > Duration::from_millis(250);
+                // Out of sight nothing is drawn to the window, so the picture asked
+                // for with `--screenshot` is drawn off screen instead.
+                if hidden && state.screenshot.is_some() && state.start_time.elapsed() > Duration::from_secs(5) {
+                    match state.grab(0, false) {
+                        Ok(frame) => {
+                            let mut data = format!("P6\n{} {}\n255\n", frame.width, frame.height).into_bytes();
+                            data.extend(frame.rgba.chunks_exact(4).flat_map(|pixel| [pixel[0], pixel[1], pixel[2]]));
+                            if let Err(e) = std::fs::write(state.screenshot.as_deref().unwrap(), data) {
+                                tracing::error!("cannot write the screenshot: {e}");
+                            }
+                        }
+                        Err(e) => tracing::error!("screenshot failed: {e}"),
+                    }
+                    state.loop_signal.stop();
+                }
+                if hidden && state.before_frame() {
                     state.record_tick();
                     state.after_frame();
                     let _ = state.display_handle.flush_clients();
@@ -121,7 +140,7 @@ pub fn init_winit(
                     None,
                     None,
                 );
-                state.set_screens(screens_of(size.w, size.h, state.split));
+                state.set_screens(screens_of(logical(size).w, logical(size).h, state.split));
             }
             WinitEvent::Input(event) => state.process_input_event(event),
             WinitEvent::Redraw => {
@@ -138,7 +157,7 @@ pub fn init_winit(
 
                 {
                     let (renderer, mut framebuffer) = backend.bind().unwrap();
-                    let toasts = crate::toast::elements(renderer, state.shell.as_ref(), toast_area, primary, &state.toast_id, (0, 0).into());
+                    let toasts = crate::toast::elements(renderer, state.shell.as_ref(), toast_area, primary, &state.toast_id, (0, 0).into(), scale);
                     smithay::desktop::space::render_output::<_, crate::toast::ToastElement, _, _>(
                         &output,
                         renderer,

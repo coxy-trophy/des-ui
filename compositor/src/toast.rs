@@ -94,6 +94,7 @@ pub fn elements(
     primary: Option<Point<i32, Logical>>,
     id: &Id,
     origin: Point<i32, Logical>,
+    scale: f64,
 ) -> Vec<ToastElement> {
     let (Some(area), Some(shell), Some(primary)) = (area, shell, primary) else {
         return Vec::new();
@@ -101,12 +102,12 @@ pub fn elements(
     let Some(surface) = shell.toplevel().map(|toplevel| toplevel.wl_surface().clone()) else {
         return Vec::new();
     };
-    let crop = Rectangle::new(area.loc - origin, area.size).to_physical(1);
+    let crop = Rectangle::new(area.loc - origin, area.size).to_f64().to_physical(scale).to_i32_round();
     let whole: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = render_elements_from_surface_tree(
         renderer,
         &surface,
-        (primary - origin).to_physical(1),
-        1.0,
+        (primary - origin).to_f64().to_physical(scale).to_i32_round(),
+        scale,
         1.0,
         Kind::Unspecified,
     );
@@ -114,7 +115,7 @@ pub fn elements(
     whole
         .into_iter()
         .next_back()
-        .and_then(|element| CropRenderElement::from_element(element, 1.0, crop))
+        .and_then(|element| CropRenderElement::from_element(element, scale, crop))
         .map(|inner| ToastElement { inner, id: id.clone() })
         .into_iter()
         .collect()

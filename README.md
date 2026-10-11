@@ -90,8 +90,10 @@ Esc closes. Changes apply at once and are saved.
 - **Terminal** — font, text size, line height, cursor shape and blink, bold in
   bright colours, copy on select, scrollback
 - **Frame** — which panels are open, now and at every start
-- **Displays** — each monitor's resolution and refresh rate, their order left to
-  right, and which one is the main display
+- **Displays** — each monitor's resolution and refresh rate, how large things are
+  drawn on it (100% to 200%), which way it is turned, their order left to right,
+  which one is the main display, and whether each other one is a desktop of its
+  own, mirrors the main display, or is off
 - **Network** — Wi-Fi on or off, and joining, leaving and forgetting networks
 - **Bluetooth** — on or off, and pairing, connecting and forgetting devices
 - **Keyboard** — layout, and how held keys repeat
@@ -301,10 +303,9 @@ run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`
 
 ## Not done yet
 
-- Mirroring displays
-- Keyboard layout setting; display scaling for high-density screens
+- Keyboard layout setting
 - Dialogs at their natural size; sharing the middle-click selection with X11 applications
-- Turning a display off; placing displays above one another; scaling
+- Placing displays above one another
 - Wired and VPN connections in the settings; Bluetooth devices that need a code
 - In the music player: removing from or reordering the queue (Spotify offers outside
   apps no way to), albums and artists, more than the first page of a long playlist

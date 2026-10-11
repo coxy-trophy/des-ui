@@ -96,6 +96,7 @@ impl DesComp {
         let toast_area = self.toast_area();
         let primary = self.screens.first().map(|screen| screen.loc);
         let at = self.seat.get_pointer().map(|pointer| pointer.current_location());
+        let scale = output.current_scale().fractional_scale();
 
         // The renderer belongs to whichever backend is running; it is taken out for
         // the moment so that the rest of the state can be read beside it.
@@ -107,7 +108,7 @@ impl DesComp {
                 (Some(udev), _) => {
                     if let Some(at) = at.filter(|at| pointer && rect.to_f64().contains(*at)) {
                         let position = at - rect.loc.to_f64();
-                        elements.extend(crate::udev::cursor_elements(&mut udev.renderer, &udev.cursor, &self.cursor_status, position));
+                        elements.extend(crate::udev::cursor_elements(&mut udev.renderer, &udev.cursor, &self.cursor_status, position, scale));
                     }
                     &mut udev.renderer
                 }
@@ -115,14 +116,18 @@ impl DesComp {
                 (None, None) => return Err("nothing is drawing yet".to_string()),
             };
             elements.extend(
-                crate::toast::elements(renderer, self.shell.as_ref(), toast_area, primary, &self.toast_id, rect.loc)
+                crate::toast::elements(renderer, self.shell.as_ref(), toast_area, primary, &self.toast_id, rect.loc, scale)
                     .into_iter()
                     .map(OutputElements::Toast),
             );
             let space = space_render_elements(renderer, [&self.space], &output, 1.0).map_err(|e| format!("{e:?}"))?;
             elements.extend(space.into_iter().map(OutputElements::Space));
 
-            let size = output.current_mode().map(|mode| mode.size).ok_or("the display has no mode")?;
+            // The picture is the display as it is looked at: turned the way it stands.
+            let size = output
+                .current_mode()
+                .map(|mode| output.current_transform().transform_size(mode.size))
+                .ok_or("the display has no mode")?;
             let mut texture: GlesTexture = renderer
                 .create_buffer(Fourcc::Abgr8888, (size.w, size.h).into())
                 .map_err(|e| format!("cannot make room for the picture: {e}"))?;
@@ -130,7 +135,7 @@ impl DesComp {
                 let mut target = renderer.bind(&mut texture).map_err(|e| format!("{e}"))?;
                 // Drawn the right way up whatever way the display itself is turned: the
                 // windowed backend's is upside down, as far as drawing goes.
-                OutputDamageTracker::new((size.w, size.h), 1.0, Transform::Normal)
+                OutputDamageTracker::new((size.w, size.h), scale, Transform::Normal)
                     .render_output(renderer, &mut target, 0, &elements, [0.0, 0.0, 0.0, 1.0])
                     .map_err(|e| format!("cannot draw the picture: {e:?}"))?;
                 renderer
@@ -156,7 +161,16 @@ impl DesComp {
             area.loc -= self.screens[screen].loc;
             Some(area)
         });
-        let frame = self.grab(screen, false).and_then(|frame| match (mode, window) {
+        let across = self.screens.get(screen).map_or(1, |screen| screen.size.w.max(1)) as f64;
+        let mut window = window;
+        let frame = self.grab(screen, false).and_then(|frame| {
+            // From places on the desktop to pixels of the picture, which differ on a
+            // scaled display.
+            let factor = frame.width as f64 / across;
+            window = window.map(|area| area.to_f64().upscale(factor).to_i32_round());
+            Ok(frame)
+        });
+        let frame = frame.and_then(|frame| match (mode, window) {
             (ShotMode::Window, Some(area)) => frame.crop(area).ok_or("the window is not on screen".to_string()),
             // Without a window in use there is the whole display.
             _ => Ok(frame),
@@ -175,7 +189,7 @@ impl DesComp {
             tracing::warn!("cannot hand over the screenshot: {e}");
             return;
         }
-        let mut window = window.map(|area| (area.loc.x, area.loc.y, area.size.w, area.size.h));
+        let mut window = window.map(|area| (area.loc.x.max(0), area.loc.y.max(0), area.size.w, area.size.h));
         if matches!(mode, ShotMode::Region | ShotMode::Pick) {
             // The rest happens in the shell's window, which has to be the one in view
             // and the one the keys go to.

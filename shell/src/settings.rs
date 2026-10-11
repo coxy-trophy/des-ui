@@ -11,7 +11,7 @@ use crate::theme::{self, Theme};
 use crate::ui;
 use des_common::{
     Panel, Panels,
-    ipc::{DisplayChoice, DisplayInfo, Displays, Mode},
+    ipc::{DisplayChoice, DisplayInfo, Displays, Mode, Setup, Usage},
 };
 use eframe::egui::{
     Align, Align2, Color32, Key, Layout, Modifiers, Rect, ScrollArea, Sense, Stroke, StrokeKind,
@@ -124,6 +124,7 @@ fn current_choices(monitors: &[DisplayInfo]) -> Vec<DisplayChoice> {
             name: monitor.name.clone(),
             mode: monitor.current,
             main: monitor.main,
+            setup: monitor.setup,
         })
         .collect()
 }
@@ -530,23 +531,39 @@ impl Settings {
 
         heading(ui, "ARRANGEMENT", "As they stand on your desk, left to right. Click one to change it.");
         // The monitors to scale, in a row.
-        let total: f32 = self.draft.iter().map(|choice| choice.mode.width as f32).sum();
-        let tallest = self.draft.iter().map(|choice| choice.mode.height).max().unwrap_or(1) as f32;
+        // Each is drawn the shape it has on the desktop: turned, and as large as its
+        // scale leaves it. Those that are no display of their own keep a place here,
+        // so that they can be chosen and changed back.
+        let shape = |choice: &DisplayChoice| {
+            let (width, height) = choice.setup.logical(choice.mode);
+            (width as f32, height as f32)
+        };
+        let total: f32 = self.draft.iter().map(|choice| shape(choice).0).sum();
+        let tallest = self.draft.iter().map(|choice| shape(choice).1).fold(1.0, f32::max);
         let scale = ((ui.available_width() - 8.0 * self.draft.len() as f32) / total.max(1.0)).min(130.0 / tallest);
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             for (index, choice) in self.draft.iter().enumerate() {
-                let size = vec2(choice.mode.width as f32 * scale, choice.mode.height as f32 * scale);
+                let size = vec2(shape(choice).0 * scale, shape(choice).1 * scale).max(vec2(92.0, 64.0));
                 let (rect, response) = ui.allocate_exact_size(size, Sense::click());
                 let chosen = index == self.selected_display;
                 let painter = ui.painter_at(rect);
                 painter.rect_filled(rect, 0.0, if chosen { theme.tint() } else { ui::PANEL });
                 let line = if chosen { theme.main } else if response.hovered() { ui::SECONDARY } else { ui::LINE_STRONG };
                 painter.rect_stroke(rect, 0.0, Stroke::new(if chosen { 2.0 } else { 1.0 }, line), StrokeKind::Inside);
-                painter.text(rect.left_top() + vec2(10.0, 8.0), Align2::LEFT_TOP, &choice.name, ui::mono(12.0), ui::TEXT);
+                let lit = choice.setup.usage != Usage::Off;
+                painter.text(rect.left_top() + vec2(10.0, 8.0), Align2::LEFT_TOP, &choice.name, ui::mono(12.0), if lit { ui::TEXT } else { ui::LABEL });
                 let detail = format!("{} × {}", choice.mode.width, choice.mode.height);
-                painter.text(rect.left_top() + vec2(10.0, 26.0), Align2::LEFT_TOP, detail, ui::mono(11.0), ui::SECONDARY);
-                if choice.main {
+                painter.text(rect.left_top() + vec2(10.0, 26.0), Align2::LEFT_TOP, detail, ui::mono(11.0), if lit { ui::SECONDARY } else { ui::LABEL });
+                let role = match choice.setup.usage {
+                    Usage::Mirror => Some("MIRROR"),
+                    Usage::Off => Some("OFF"),
+                    Usage::Own => None,
+                };
+                if let Some(role) = role {
+                    let label = ui::galley(ui, role, ui::display_bold(11.0), ui::SECONDARY, 2.0);
+                    painter.galley(rect.left_bottom() + vec2(10.0, -8.0 - label.size().y), label, ui::SECONDARY);
+                } else if choice.main {
                     let label = ui::galley(ui, "MAIN", ui::display_bold(11.0), theme.main, 2.0);
                     painter.galley(rect.left_bottom() + vec2(10.0, -8.0 - label.size().y), label, theme.main);
                 }
@@ -579,6 +596,8 @@ impl Settings {
                     for (index, choice) in self.draft.iter_mut().enumerate() {
                         choice.main = index == chosen;
                     }
+                    // The main display is one of its own.
+                    self.draft[chosen].setup.usage = Usage::Own;
                 }
             }
         });
@@ -589,6 +608,26 @@ impl Settings {
         ui.add_space(24.0);
 
         let selected = self.selected_display;
+        if self.draft.len() > 1 {
+            heading(ui, "USE", &format!("What {} shows.", monitor.name));
+            let is_main = self.draft[selected].main;
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
+                for (usage, label) in [(Usage::Own, "ITS OWN DESKTOP"), (Usage::Mirror, "MIRROR THE MAIN DISPLAY"), (Usage::Off, "OFF")] {
+                    let chosen = self.draft[selected].setup.usage == usage;
+                    // The main display stays one: another has to be made main first.
+                    if (usage == Usage::Own || !is_main) && ui::chip(ui, theme, label, None, chosen).clicked() {
+                        self.draft[selected].setup.usage = usage;
+                    }
+                }
+            });
+            if is_main {
+                ui.add_space(6.0);
+                note(ui, "To mirror or turn off this one, make another the main display first.");
+            }
+            ui.add_space(22.0);
+        }
+
         heading(ui, "RESOLUTION", &format!("For {}.", monitor.name));
         let mode = self.draft[selected].mode;
         ui.horizontal_wrapped(|ui| {
@@ -613,6 +652,30 @@ impl Settings {
                 let chosen = rate.refresh == mode.refresh;
                 if ui::chip(ui, theme, &hertz(rate.refresh), None, chosen).clicked() {
                     self.draft[selected].mode = *rate;
+                }
+            }
+        });
+        ui.add_space(22.0);
+
+        heading(ui, "SCALE", "How large everything is drawn. Larger suits a dense or distant screen.");
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
+            for scale in Setup::SCALES {
+                let chosen = self.draft[selected].setup.scale == scale;
+                if ui::chip(ui, theme, &format!("{scale}%"), None, chosen).clicked() {
+                    self.draft[selected].setup.scale = scale;
+                }
+            }
+        });
+        ui.add_space(22.0);
+
+        heading(ui, "TURN", "How the monitor itself stands.");
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
+            for (turn, label) in [(0, "UPRIGHT"), (90, "ON ITS RIGHT SIDE"), (180, "UPSIDE DOWN"), (270, "ON ITS LEFT SIDE")] {
+                let chosen = self.draft[selected].setup.turn == turn;
+                if ui::chip(ui, theme, label, None, chosen).clicked() {
+                    self.draft[selected].setup.turn = turn;
                 }
             }
         });
@@ -898,6 +961,7 @@ mod tests {
             y: 0,
             current: mode(1920, 1080, 60000),
             modes: vec![mode(3840, 2160, 30000), mode(1920, 1080, 60000), mode(1920, 1080, 59940), mode(1280, 720, 60000)],
+            setup: Setup { scale: 150, turn: 90, usage: Usage::Own },
         };
         assert_eq!(sizes(&monitor), [(3840, 2160), (1920, 1080), (1280, 720)]);
         assert_eq!(best_mode(&monitor, (1920, 1080)), Some(mode(1920, 1080, 60000)));
@@ -907,6 +971,7 @@ mod tests {
         assert_eq!(hertz(60052), "60.05 Hz");
         let choices = current_choices(std::slice::from_ref(&monitor));
         assert_eq!(choices[0].mode, monitor.current);
+        assert_eq!(choices[0].setup.logical(monitor.current), (720, 1280), "on its side, at one and a half times");
     }
 
     #[test]
