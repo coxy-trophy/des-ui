@@ -74,18 +74,31 @@ impl Now {
     }
 }
 
-/// A row in a list: a track, or a playlist to open.
+/// What a row in a list is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Kind {
+    Track,
+    Playlist,
+    Album,
+    Artist,
+}
+
+/// A row in a list: a track, or a playlist, album or artist to open.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Item {
-    pub playlist: bool,
+    pub kind: Kind,
     pub uri: String,
-    /// A playlist's id, for asking for its tracks.
+    /// The id of a playlist, album or artist, for asking what is in it.
     pub id: String,
     pub name: String,
-    /// A track's artists, or a playlist's owner.
+    /// A track's or album's artists, or a playlist's owner.
     pub by: String,
+    /// The album a track is on, or the year an album came out.
     pub album: String,
     pub duration_ms: u32,
+    /// For a track: the ids of its album and of its first artist, for going to them.
+    pub album_id: String,
+    pub artist_id: String,
 }
 
 pub fn parse_items(value: &Value) -> Vec<Item> {
@@ -95,16 +108,23 @@ pub fn parse_items(value: &Value) -> Vec<Item> {
             items
                 .iter()
                 .filter_map(|item| {
-                    let playlist = item["kind"] == "playlist";
+                    let kind = match item["kind"].as_str() {
+                        Some("playlist") => Kind::Playlist,
+                        Some("album") => Kind::Album,
+                        Some("artist") => Kind::Artist,
+                        _ => Kind::Track,
+                    };
                     let text = |key: &str| item[key].as_str().unwrap_or_default().to_string();
                     Some(Item {
-                        playlist,
+                        kind,
                         uri: item["uri"].as_str()?.to_string(),
                         id: text("id"),
                         name: text("name"),
-                        by: if playlist { text("owner") } else { text("artists") },
+                        by: if kind == Kind::Playlist { text("owner") } else { text("artists") },
                         album: text("album"),
                         duration_ms: item["duration_ms"].as_u64().unwrap_or(0) as u32,
+                        album_id: text("album_id"),
+                        artist_id: text("artist_id"),
                     })
                 })
                 .collect()
@@ -132,6 +152,8 @@ struct Shared {
     now: Now,
     /// Lists received, by `kind:key`, each with the reason it is empty if it failed.
     lists: HashMap<String, (Vec<Item>, Option<String>)>,
+    /// The lists, by the same names, that have more after what was received.
+    more: std::collections::HashSet<String>,
     /// Set to ask the connection thread to run a sign-in: the service's arguments.
     sign_in: Option<Vec<String>>,
     /// Set when a sign-in went through, so that lists are asked for afresh.
@@ -191,6 +213,7 @@ fn connection(shared: Arc<Mutex<Shared>>, commands: Receiver<String>, ctx: egui:
             if signed_in {
                 let mut shared = shared.lock().unwrap();
                 shared.lists.clear();
+                shared.more.clear();
                 shared.refresh = true;
             }
             // Connecting the library fails without undoing the sign-in itself.
@@ -262,7 +285,24 @@ fn connection(shared: Arc<Mutex<Shared>>, commands: Receiver<String>, ctx: egui:
                     Some("list") => {
                         let key = format!("{}:{}", value["kind"].as_str().unwrap_or_default(), value["key"].as_str().unwrap_or_default());
                         let error = value["error"].as_str().map(str::to_string);
-                        shared.lists.insert(key, (parse_items(&value), error));
+                        let offset = value["offset"].as_u64().unwrap_or(0) as usize;
+                        if value["more"] == true {
+                            shared.more.insert(key.clone());
+                        } else {
+                            shared.more.remove(&key);
+                        }
+                        match shared.lists.get_mut(&key) {
+                            // A further part goes after what is there, if it is the part that follows.
+                            Some((items, _)) if offset > 0 => {
+                                if items.len() == offset && error.is_none() {
+                                    items.extend(parse_items(&value));
+                                }
+                            }
+                            _ if offset > 0 => {}
+                            _ => {
+                                shared.lists.insert(key, (parse_items(&value), error));
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -300,6 +340,11 @@ enum Source {
     /// What plays next.
     Queue,
     Playlist { id: String, name: String, uri: String },
+    /// The albums saved to the library.
+    Albums,
+    Album { id: String, name: String, uri: String },
+    /// An artist's albums.
+    Artist { id: String, name: String },
     Search(String),
 }
 
@@ -309,8 +354,22 @@ impl Source {
             Source::Liked => "liked:".to_string(),
             Source::Queue => "queue:".to_string(),
             Source::Playlist { id, .. } => format!("tracks:{id}"),
+            Source::Albums => "albums:".to_string(),
+            Source::Album { id, .. } => format!("album:{id}"),
+            Source::Artist { id, .. } => format!("artist:{id}"),
             Source::Search(query) => format!("search:{query}"),
         }
+    }
+
+    /// How to ask for the part of this list from `offset` on, for the lists that
+    /// come a part at a time.
+    fn further(&self, offset: usize) -> Option<Value> {
+        let mut request = match self {
+            Source::Liked | Source::Playlist { .. } | Source::Albums => self.request(),
+            _ => return None,
+        };
+        request["offset"] = json!(offset);
+        Some(request)
     }
 
     fn request(&self) -> Value {
@@ -318,6 +377,9 @@ impl Source {
             Source::Liked => json!({ "cmd": "liked" }),
             Source::Queue => json!({ "cmd": "queue" }),
             Source::Playlist { id, .. } => json!({ "cmd": "tracks", "playlist": id }),
+            Source::Albums => json!({ "cmd": "albums" }),
+            Source::Album { id, .. } => json!({ "cmd": "album", "album": id }),
+            Source::Artist { id, .. } => json!({ "cmd": "artist", "artist": id }),
             Source::Search(query) => json!({ "cmd": "search", "q": query }),
         }
     }
@@ -326,8 +388,8 @@ impl Source {
     fn context(&self) -> Option<String> {
         match self {
             Source::Liked => Some("liked".to_string()),
-            Source::Playlist { uri, .. } => Some(uri.clone()),
-            Source::Search(_) | Source::Queue => None,
+            Source::Playlist { uri, .. } | Source::Album { uri, .. } => Some(uri.clone()),
+            Source::Search(_) | Source::Queue | Source::Albums | Source::Artist { .. } => None,
         }
     }
 }
@@ -389,6 +451,10 @@ pub struct Music {
     client_id: String,
     /// Lists already asked for, so that each is asked for once.
     asked: Vec<String>,
+    /// The further part of a list last asked for: the list, and from where.
+    asked_further: Option<(String, usize)>,
+    /// The lists looked at before this one, for going back.
+    trail: Vec<Source>,
     /// The cover being shown: its address, and the picture once fetched.
     cover: Option<(String, Arc<Mutex<Option<PathBuf>>>, Option<TextureHandle>)>,
 }
@@ -399,6 +465,7 @@ impl Music {
             link: Link::Starting,
             now: Now::default(),
             lists: HashMap::new(),
+            more: std::collections::HashSet::new(),
             sign_in: None,
             refresh: false,
             cancel: false,
@@ -416,6 +483,8 @@ impl Music {
             queue_as_of: None,
             queued: None,
             asked: Vec::new(),
+            asked_further: None,
+            trail: Vec::new(),
             cover: None,
         }
     }
@@ -436,6 +505,22 @@ impl Music {
 
     pub fn toggle(&mut self) {
         self.open = !self.open;
+    }
+
+    /// Shows another list. Going into something from a list leaves a way back to it.
+    fn go(&mut self, to: Source, deeper: bool) {
+        if to == self.source {
+            return;
+        }
+        if deeper {
+            self.trail.push(self.source.clone());
+            if self.trail.len() > 12 {
+                self.trail.remove(0);
+            }
+        } else {
+            self.trail.clear();
+        }
+        self.source = to;
     }
 
     /// Asks for a list unless it was asked for already.
@@ -647,6 +732,7 @@ impl Music {
     fn library(&mut self, ui: &mut Ui, theme: &Theme, now: &Now) {
         if std::mem::take(&mut self.shared.lock().unwrap().refresh) {
             self.asked.clear();
+            self.asked_further = None;
         }
         self.want("playlists:".to_string(), json!({ "cmd": "playlists" }));
         let source = self.source.clone();
@@ -657,9 +743,9 @@ impl Music {
             self.queue_as_of = playing_uri;
             self.send(json!({ "cmd": "queue" }));
         }
-        let (playlists, list) = {
+        let (playlists, list, more) = {
             let shared = self.shared.lock().unwrap();
-            (shared.lists.get("playlists:").cloned(), shared.lists.get(&source.key()).cloned())
+            (shared.lists.get("playlists:").cloned(), shared.lists.get(&source.key()).cloned(), shared.more.contains(&source.key()))
         };
 
         let transport_height = 84.0;
@@ -690,14 +776,17 @@ impl Music {
                         .hint_text("search Spotify"),
                 );
                 if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !self.query.trim().is_empty() {
-                    self.source = Source::Search(self.query.trim().to_string());
+                    self.go(Source::Search(self.query.trim().to_string()), false);
                 }
                 ui.add_space(10.0);
                 if side_row(ui, theme, "LIKED SONGS", self.source == Source::Liked) {
-                    self.source = Source::Liked;
+                    self.go(Source::Liked, false);
+                }
+                if side_row(ui, theme, "ALBUMS", self.source == Source::Albums) {
+                    self.go(Source::Albums, false);
                 }
                 if side_row(ui, theme, "UP NEXT", self.source == Source::Queue) {
-                    self.source = Source::Queue;
+                    self.go(Source::Queue, false);
                     self.queue_as_of = None;
                 }
                 ui.add_space(8.0);
@@ -715,11 +804,12 @@ impl Music {
                             for playlist in &items {
                                 let chosen = matches!(&self.source, Source::Playlist { id, .. } if *id == playlist.id);
                                 if side_row(ui, theme, &playlist.name, chosen) {
-                                    self.source = Source::Playlist {
+                                    let to = Source::Playlist {
                                         id: playlist.id.clone(),
                                         name: playlist.name.clone(),
                                         uri: playlist.uri.clone(),
                                     };
+                                    self.go(to, false);
                                 }
                             }
                         });
@@ -732,14 +822,27 @@ impl Music {
                 let title = match &source {
                     Source::Liked => "LIKED SONGS".to_string(),
                     Source::Queue => "UP NEXT".to_string(),
-                    Source::Playlist { name, .. } => name.to_uppercase(),
+                    Source::Playlist { name, .. } | Source::Album { name, .. } => name.to_uppercase(),
+                    Source::Albums => "ALBUMS".to_string(),
+                    Source::Artist { name, .. } => format!("ALBUMS BY {}", name.to_uppercase()),
                     Source::Search(query) => format!("RESULTS FOR “{}”", query.to_uppercase()),
                 };
+                let mut back = false;
                 ui::section(ui, &crate::panels::truncate(&title, 48), |ui| {
+                    if !self.trail.is_empty() {
+                        back = ui::button(ui, theme, "BACK", None, false).clicked();
+                    }
                     if let Some((items, None)) = &list {
-                        ui::meta(ui, &format!("{} SHOWN", items.len()), ui::LABEL);
+                        let count = if more { format!("{} SO FAR", items.len()) } else { format!("{} SHOWN", items.len()) };
+                        ui::meta(ui, &count, ui::LABEL);
                     }
                 });
+                if back {
+                    if let Some(to) = self.trail.pop() {
+                        self.source = to;
+                    }
+                    return;
+                }
                 match list {
                     None => {
                         ui::text(ui, "Loading…", ui::mono(12.0), ui::LABEL);
@@ -773,22 +876,43 @@ impl Music {
                                     self.send(json!({ "cmd": "enqueue", "track": item.uri }));
                                     ui.ctx().request_repaint_after(Duration::from_secs(2));
                                 }
+                                // From a track to the album it is on, or to who made it.
+                                if picked == Picked::Album && !item.album_id.is_empty() {
+                                    let uri = format!("spotify:album:{}", item.album_id);
+                                    self.go(Source::Album { id: item.album_id.clone(), name: item.album.clone(), uri }, true);
+                                }
+                                if picked == Picked::Artist && !item.artist_id.is_empty() {
+                                    // Only the first of several artists can be gone to.
+                                    let name = item.by.split(", ").next().unwrap_or_default().to_string();
+                                    self.go(Source::Artist { id: item.artist_id.clone(), name }, true);
+                                }
                                 if picked != Picked::Row {
                                     continue;
                                 }
-                                if in_queue {
+                                let named = (item.id.clone(), item.name.clone(), item.uri.clone());
+                                match item.kind {
                                     // Spotify offers no way to jump into the queue but one step at a time.
-                                    for _ in 0..=index {
-                                        self.send(json!({ "cmd": "next" }));
+                                    Kind::Track if in_queue => {
+                                        for _ in 0..=index {
+                                            self.send(json!({ "cmd": "next" }));
+                                        }
                                     }
-                                } else if item.playlist {
-                                    self.source = Source::Playlist {
-                                        id: item.id.clone(),
-                                        name: item.name.clone(),
-                                        uri: item.uri.clone(),
-                                    };
-                                } else {
-                                    self.send(json!({ "cmd": "play", "context": source.context(), "track": item.uri }));
+                                    Kind::Track => self.send(json!({ "cmd": "play", "context": source.context(), "track": item.uri })),
+                                    Kind::Playlist => self.go(Source::Playlist { id: named.0, name: named.1, uri: named.2 }, true),
+                                    Kind::Album => self.go(Source::Album { id: named.0, name: named.1, uri: named.2 }, true),
+                                    Kind::Artist => self.go(Source::Artist { id: named.0, name: named.1 }, true),
+                                }
+                            }
+                            // The rest of a long list is fetched as its end comes into view.
+                            if more {
+                                let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0), Sense::hover());
+                                ui.painter().text(rect.left_center() + vec2(26.0, 0.0), Align2::LEFT_CENTER, "Loading more…", ui::mono(12.0), ui::LABEL);
+                                let wanted = (source.key(), items.len());
+                                if ui.is_rect_visible(rect) && self.asked_further.as_ref() != Some(&wanted) {
+                                    if let Some(request) = source.further(items.len()) {
+                                        self.send(request);
+                                        self.asked_further = Some(wanted);
+                                    }
                                 }
                             }
                         });
@@ -884,15 +1008,32 @@ enum Picked {
     Nothing,
     Row,
     Queue,
+    /// The album a track is on.
+    Album,
+    /// Who a track is by.
+    Artist,
 }
 
-/// A track, or a playlist among search results. `queueable` rows carry a way to add
+/// What a row says in its second column: who a track is by, or what else the row is.
+fn described(item: &Item) -> String {
+    match item.kind {
+        Kind::Track => item.by.clone(),
+        Kind::Playlist if item.by.is_empty() => "playlist".to_string(),
+        Kind::Playlist => format!("playlist by {}", item.by),
+        Kind::Album if item.by.is_empty() => "album".to_string(),
+        Kind::Album => format!("album by {}", item.by),
+        Kind::Artist => "artist".to_string(),
+    }
+}
+
+/// A track, or a playlist, album or artist to open. `queueable` rows carry a way to add
 /// them to what plays next, and say `queued` for a moment after.
 fn track_row(ui: &mut Ui, theme: &Theme, item: &Item, playing: bool, queueable: bool, queued: bool) -> Picked {
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0), Sense::click());
     // Under the pointer, the row offers to queue the track where its length is.
     let mut add = None;
-    if queueable && !item.playlist && (queued || ui.rect_contains_pointer(rect)) {
+    let track = item.kind == Kind::Track;
+    if queueable && track && (queued || ui.rect_contains_pointer(rect)) {
         let spot = Rect::from_min_max(pos2(rect.right() - 92.0, rect.top()), rect.right_bottom());
         add = Some((spot, ui.interact(spot, ui.id().with("queue"), Sense::click())));
     }
@@ -912,10 +1053,38 @@ fn track_row(ui: &mut Ui, theme: &Theme, item: &Item, playing: bool, queueable: 
     let with_album = width > 620.0;
     let by_width = if with_album { width * 0.26 } else { width * 0.54 - 64.0 };
     painter.text(rect.left_center() + vec2(26.0, 0.0), Align2::LEFT_CENTER, crate::panels::truncate(&item.name, chars(width * 0.46 - 26.0)), ui::mono(13.0), ink);
-    let by = if item.playlist && !item.by.is_empty() { format!("playlist by {}", item.by) } else if item.playlist { "playlist".to_string() } else { item.by.clone() };
-    painter.text(rect.left_center() + vec2(width * 0.46, 0.0), Align2::LEFT_CENTER, crate::panels::truncate(&by, chars(by_width)), ui::mono(12.0), ui::SECONDARY);
+    let by = described(item);
+    // A track's artist and album are ways to go to them.
+    let mut went = None;
+    let mut link = |ui: &mut Ui, at: f32, text: String, quiet: egui::Color32, to: Picked, id: &str| {
+        let from = rect.left_center() + vec2(at, 0.0);
+        let galley = painter.layout_no_wrap(text, ui::mono(12.0), quiet);
+        let spot = Rect::from_min_size(from - vec2(0.0, galley.size().y / 2.0), galley.size()).expand2(vec2(2.0, 6.0));
+        let over = ui.interact(spot, ui.id().with(id), Sense::click());
+        if over.hovered() {
+            painter.hline(spot.shrink2(vec2(2.0, 0.0)).x_range(), spot.bottom() - 5.0, Stroke::new(1.0, ui::TEXT));
+        }
+        painter.galley(from - vec2(0.0, galley.size().y / 2.0), galley, if over.hovered() { ui::TEXT } else { quiet });
+        if over.clicked() {
+            went = Some(to);
+        }
+    };
+    let by_text = crate::panels::truncate(&by, chars(by_width));
+    if track && !item.artist_id.is_empty() {
+        link(ui, width * 0.46, by_text, ui::SECONDARY, Picked::Artist, "artist");
+    } else {
+        painter.text(rect.left_center() + vec2(width * 0.46, 0.0), Align2::LEFT_CENTER, by_text, ui::mono(12.0), ui::SECONDARY);
+    }
     if with_album {
-        painter.text(rect.left_center() + vec2(width * 0.72, 0.0), Align2::LEFT_CENTER, crate::panels::truncate(&item.album, chars(width * 0.28 - 64.0)), ui::mono(12.0), ui::LABEL);
+        let album_text = crate::panels::truncate(&item.album, chars(width * 0.28 - 64.0));
+        if track && !item.album_id.is_empty() {
+            link(ui, width * 0.72, album_text, ui::LABEL, Picked::Album, "album");
+        } else {
+            painter.text(rect.left_center() + vec2(width * 0.72, 0.0), Align2::LEFT_CENTER, album_text, ui::mono(12.0), ui::LABEL);
+        }
+    }
+    if let Some(went) = went {
+        return went;
     }
     if let Some((spot, adding)) = add {
         let (label, ink) = match (queued, adding.hovered()) {
@@ -929,7 +1098,7 @@ fn track_row(ui: &mut Ui, theme: &Theme, item: &Item, playing: bool, queueable: 
         }
         return if response.clicked() { Picked::Row } else { Picked::Nothing };
     }
-    let end = if item.playlist { "OPEN".to_string() } else { clock(item.duration_ms) };
+    let end = if track { clock(item.duration_ms) } else { "OPEN".to_string() };
     painter.text(rect.right_center() - vec2(10.0, 0.0), Align2::RIGHT_CENTER, end, ui::mono(12.0), ui::SECONDARY);
     if response.clicked() { Picked::Row } else { Picked::Nothing }
 }
@@ -952,8 +1121,19 @@ mod tests {
             {"kind": "playlist", "uri": "spotify:playlist:p", "id": "p", "name": "Focus", "owner": "ada"},
             {"kind": "track", "name": "no address"}]}));
         assert_eq!(items.len(), 2);
-        assert!(!items[0].playlist && items[0].by == "Miles Davis");
-        assert!(items[1].playlist && items[1].by == "ada" && items[1].id == "p");
+        assert!(items[0].kind == Kind::Track && items[0].by == "Miles Davis");
+        assert!(items[1].kind == Kind::Playlist && items[1].by == "ada" && items[1].id == "p");
+        let more = parse_items(&json!({"items": [
+            {"kind": "album", "uri": "spotify:album:a", "id": "a", "name": "Kind of Blue", "artists": "Miles Davis", "album": "1959"},
+            {"kind": "artist", "uri": "spotify:artist:r", "id": "r", "name": "Miles Davis"},
+            {"kind": "track", "uri": "spotify:track:t", "name": "So What", "artists": "Miles Davis", "album_id": "a", "artist_id": "r"},
+        ]}));
+        assert_eq!(described(&more[0]), "album by Miles Davis");
+        assert_eq!(described(&more[1]), "artist");
+        assert_eq!((more[2].album_id.as_str(), more[2].artist_id.as_str()), ("a", "r"));
+        assert_eq!(Source::Liked.further(50), Some(json!({"cmd": "liked", "offset": 50})));
+        assert_eq!(Source::Album { id: "a".into(), name: "n".into(), uri: "u".into() }.further(50), None, "an album comes whole");
+        assert_eq!(Source::Album { id: "a".into(), name: "n".into(), uri: "spotify:album:a".into() }.context(), Some("spotify:album:a".to_string()));
     }
 
     #[test]

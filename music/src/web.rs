@@ -3,7 +3,7 @@
 //! Every function answers with a finished `list` line: on failure the list is empty
 //! and says why, so that the player always has something to show.
 
-use crate::protocol::list_line;
+use crate::protocol::{list_line, page_line};
 use bytes::Bytes;
 use http::{Method, Request};
 use http_body_util::BodyExt;
@@ -72,7 +72,43 @@ pub fn track_item(track: &Value) -> Option<Value> {
         "artists": artists.join(", "),
         "album": track["album"]["name"].as_str().unwrap_or_default(),
         "duration_ms": track["duration_ms"].as_u64().unwrap_or(0),
+        // For going from a track to where it comes from.
+        "album_id": track["album"]["id"].as_str(),
+        "artist_id": track["artists"][0]["id"].as_str(),
     }))
+}
+
+pub fn album_item(album: &Value) -> Option<Value> {
+    let id = album["id"].as_str()?;
+    let artists: Vec<&str> = album["artists"]
+        .as_array()
+        .map(|artists| artists.iter().filter_map(|artist| artist["name"].as_str()).collect())
+        .unwrap_or_default();
+    Some(json!({
+        "kind": "album",
+        "id": id,
+        "uri": album["uri"].as_str().map(str::to_string).unwrap_or_else(|| format!("spotify:album:{id}")),
+        "name": album["name"].as_str().unwrap_or("Untitled"),
+        "artists": artists.join(", "),
+        // The year is all of the date that is always there.
+        "album": album["release_date"].as_str().and_then(|date| date.get(..4)).unwrap_or_default(),
+        "count": album["total_tracks"].as_u64(),
+    }))
+}
+
+pub fn artist_item(artist: &Value) -> Option<Value> {
+    let id = artist["id"].as_str()?;
+    Some(json!({
+        "kind": "artist",
+        "id": id,
+        "uri": artist["uri"].as_str().map(str::to_string).unwrap_or_else(|| format!("spotify:artist:{id}")),
+        "name": artist["name"].as_str().unwrap_or("Unknown"),
+    }))
+}
+
+/// Whether a page says there is more after it.
+fn has_more(page: &Value) -> bool {
+    page["next"].as_str().is_some_and(|next| !next.is_empty())
 }
 
 pub fn playlist_item(playlist: &Value) -> Option<Value> {
@@ -105,11 +141,13 @@ pub fn wrapped_tracks(page: &Value) -> Vec<Value> {
 
 pub async fn search(session: &Session, query: &str) -> String {
     // Ten is the most a personal app may ask for at a time.
-    let path = format!("/search?q={}&type=track,playlist&limit=10", encode(query));
+    let path = format!("/search?q={}&type=track,album,artist,playlist&limit=10", encode(query));
     match get(session, &path).await {
         Ok(found) => {
             let list = |key: &str| found[key]["items"].as_array().cloned().unwrap_or_default();
             let mut items: Vec<Value> = list("tracks").iter().filter_map(track_item).collect();
+            items.extend(list("artists").iter().take(4).filter_map(artist_item));
+            items.extend(list("albums").iter().filter_map(album_item));
             items.extend(list("playlists").iter().filter_map(playlist_item));
             list_line("search", query, items, None)
         }
@@ -117,27 +155,101 @@ pub async fn search(session: &Session, query: &str) -> String {
     }
 }
 
+/// Every playlist in the library, however many pages that takes (within reason).
 pub async fn playlists(session: &Session) -> String {
-    match get(session, "/me/playlists?limit=50").await {
-        Ok(page) => {
-            let items = page["items"].as_array().map(|all| all.iter().filter_map(playlist_item).collect());
-            list_line("playlists", "", items.unwrap_or_default(), None)
+    let mut items = Vec::new();
+    for page_number in 0..20 {
+        match get(session, &format!("/me/playlists?limit=50&offset={}", page_number * 50)).await {
+            Ok(page) => {
+                items.extend(page["items"].as_array().into_iter().flatten().filter_map(playlist_item));
+                if !has_more(&page) {
+                    break;
+                }
+            }
+            // The first pages are worth having even when a later one fails.
+            Err(_) if !items.is_empty() => break,
+            Err(why) => return list_line("playlists", "", Vec::new(), Some(why)),
         }
-        Err(why) => list_line("playlists", "", Vec::new(), Some(why)),
+    }
+    list_line("playlists", "", items, None)
+}
+
+pub async fn tracks(session: &Session, playlist: &str, offset: u32) -> String {
+    let id = encode(playlist);
+    // The address was renamed in 2026; fall back to the old one for older accounts.
+    let mut page = get(session, &format!("/playlists/{id}/items?limit=100&offset={offset}")).await;
+    if page.is_err() {
+        page = get(session, &format!("/playlists/{id}/tracks?limit=100&offset={offset}")).await;
+    }
+    match page {
+        Ok(page) => page_line("tracks", playlist, wrapped_tracks(&page), None, offset, has_more(&page)),
+        Err(why) => page_line("tracks", playlist, Vec::new(), Some(why), offset, false),
     }
 }
 
-pub async fn tracks(session: &Session, playlist: &str) -> String {
-    let id = encode(playlist);
-    // The address was renamed in 2026; fall back to the old one for older accounts.
-    let mut page = get(session, &format!("/playlists/{id}/items?limit=100")).await;
-    if page.is_err() {
-        page = get(session, &format!("/playlists/{id}/tracks?limit=100")).await;
+/// The albums saved to the library.
+pub async fn albums(session: &Session, offset: u32) -> String {
+    match get(session, &format!("/me/albums?limit=50&offset={offset}")).await {
+        Ok(page) => {
+            let items = page["items"].as_array().into_iter().flatten().filter_map(|entry| album_item(&entry["album"])).collect();
+            page_line("albums", "", items, None, offset, has_more(&page))
+        }
+        Err(why) => page_line("albums", "", Vec::new(), Some(why), offset, false),
     }
-    match page {
-        Ok(page) => list_line("tracks", playlist, wrapped_tracks(&page), None),
-        Err(why) => list_line("tracks", playlist, Vec::new(), Some(why)),
+}
+
+/// The tracks of an album, in order. Its tracks do not say which album they are on,
+/// so that is filled in from the album itself.
+pub async fn album(session: &Session, id: &str) -> String {
+    let found = match get(session, &format!("/albums/{id}")).await {
+        Ok(found) => found,
+        Err(why) => return list_line("album", id, Vec::new(), Some(why)),
+    };
+    let on = json!({ "name": found["name"], "id": found["id"] });
+    let fill = |track: &Value| {
+        let mut track = track.clone();
+        track["album"] = on.clone();
+        track_item(&track)
+    };
+    let mut items: Vec<Value> = found["tracks"]["items"].as_array().into_iter().flatten().filter_map(fill).collect();
+    // A long album comes in several pages.
+    let mut more = has_more(&found["tracks"]);
+    while more && items.len() < 500 {
+        match get(session, &format!("/albums/{id}/tracks?limit=50&offset={}", items.len())).await {
+            Ok(page) => {
+                let before = items.len();
+                items.extend(page["items"].as_array().into_iter().flatten().filter_map(fill));
+                more = has_more(&page) && items.len() > before;
+            }
+            Err(_) => break,
+        }
     }
+    list_line("album", id, items, None)
+}
+
+/// An artist's albums and singles, newest first as Spotify gives them.
+pub async fn artist(session: &Session, id: &str) -> String {
+    let mut items: Vec<Value> = Vec::new();
+    // Ten at a time is the most a personal app may ask for here.
+    for page_number in 0..6 {
+        let path = format!("/artists/{id}/albums?include_groups=album,single&limit=10&offset={}", page_number * 10);
+        match get(session, &path).await {
+            Ok(page) => {
+                for item in page["items"].as_array().into_iter().flatten().filter_map(album_item) {
+                    // The same album is often listed once for each market.
+                    if !items.iter().any(|other| other["name"] == item["name"] && other["album"] == item["album"]) {
+                        items.push(item);
+                    }
+                }
+                if !has_more(&page) {
+                    break;
+                }
+            }
+            Err(_) if !items.is_empty() => break,
+            Err(why) => return list_line("artist", id, Vec::new(), Some(why)),
+        }
+    }
+    list_line("artist", id, items, None)
 }
 
 /// Why the queue cannot be read or added to, in words the player can act on.
@@ -170,10 +282,10 @@ pub async fn enqueue(session: &Session, track: &str) -> String {
     }
 }
 
-pub async fn liked(session: &Session) -> String {
-    match get(session, "/me/tracks?limit=50").await {
-        Ok(page) => list_line("liked", "", wrapped_tracks(&page), None),
-        Err(why) => list_line("liked", "", Vec::new(), Some(why)),
+pub async fn liked(session: &Session, offset: u32) -> String {
+    match get(session, &format!("/me/tracks?limit=50&offset={offset}")).await {
+        Ok(page) => page_line("liked", "", wrapped_tracks(&page), None, offset, has_more(&page)),
+        Err(why) => page_line("liked", "", Vec::new(), Some(why), offset, false),
     }
 }
 
@@ -202,6 +314,24 @@ mod tests {
         assert_eq!(wrapped_tracks(&new_shape).len(), 1);
         assert_eq!(wrapped_tracks(&old_shape).len(), 1);
         assert!(wrapped_tracks(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn reads_albums_and_artists() {
+        let album = json!({"id": "al1", "name": "Kind of Blue", "release_date": "1959-08-17", "total_tracks": 5,
+            "artists": [{"name": "Miles Davis", "id": "ar1"}]});
+        let item = album_item(&album).unwrap();
+        assert_eq!((item["kind"].as_str(), item["uri"].as_str()), (Some("album"), Some("spotify:album:al1")));
+        assert_eq!((item["artists"].as_str(), item["album"].as_str()), (Some("Miles Davis"), Some("1959")));
+        assert_eq!(album_item(&json!({"name": "no id"})), None);
+        let item = artist_item(&json!({"id": "ar1", "name": "Miles Davis"})).unwrap();
+        assert_eq!((item["kind"].as_str(), item["uri"].as_str()), (Some("artist"), Some("spotify:artist:ar1")));
+        // A track says where it comes from, for going there.
+        let track = json!({"uri": "spotify:track:1", "name": "So What", "artists": [{"name": "Miles Davis", "id": "ar1"}], "album": {"name": "Kind of Blue", "id": "al1"}});
+        let item = track_item(&track).unwrap();
+        assert_eq!((item["album_id"].as_str(), item["artist_id"].as_str()), (Some("al1"), Some("ar1")));
+        assert!(has_more(&json!({"next": "https://api.spotify.com/v1/me/tracks?offset=50"})));
+        assert!(!has_more(&json!({"next": null})));
     }
 
     #[test]

@@ -219,8 +219,11 @@ impl Service {
             }
             Request::Search(query) => Some(web::search(&self.session, &query).await),
             Request::Playlists => Some(web::playlists(&self.session).await),
-            Request::Tracks(playlist) => Some(web::tracks(&self.session, &playlist).await),
-            Request::Liked => Some(web::liked(&self.session).await),
+            Request::Tracks { playlist, offset } => Some(web::tracks(&self.session, &playlist, offset).await),
+            Request::Liked { offset } => Some(web::liked(&self.session, offset).await),
+            Request::Albums { offset } => Some(web::albums(&self.session, offset).await),
+            Request::Album(id) => Some(web::album(&self.session, &id).await),
+            Request::Artist(id) => Some(web::artist(&self.session, &id).await),
             Request::Queue => Some(web::queue(&self.session).await),
             Request::Enqueue(track) => Some(web::enqueue(&self.session, &track).await),
         }

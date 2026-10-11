@@ -63,3 +63,12 @@ watched work on a real machine. Tick them off, or note what went wrong.
 - [ ] No sound with do not disturb on, or with sounds switched off in the settings
 - [ ] Pictures from real applications: a browser's message with a sender's
       picture, a music player's cover
+
+## Music: albums, artists, long lists
+
+- [ ] Scrolling to the end of the liked songs, or of a long playlist, loads the rest
+- [ ] ALBUMS in the sidebar; opening one; playing a track from it plays on through the album
+- [ ] Clicking a track's artist, and its album (the album shows only when the view is wide)
+- [ ] Albums and artists among search results
+- [ ] BACK, through several lists
+- [ ] The Spotify sign-in carried over from the old `edex-rs` folder still works

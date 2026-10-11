@@ -165,8 +165,10 @@ console, and run `des-ui --unlock`.
 ## Music
 
 **Super+M**, or `MUSIC` in the status strip, opens a Spotify player in the
-workspace: search, your playlists and your liked songs, with the track playing and
-its controls along the bottom. `UP NEXT` shows what is queued, and `+ QUEUE` on a
+workspace: search, your playlists, your saved albums and your liked songs, with the
+track playing and its controls along the bottom. Long lists load the rest as you
+scroll to their end. A track's artist and album can be clicked to go to them, search
+finds albums and artists too, and `BACK` returns to the list you came from. `UP NEXT` shows what is queued, and `+ QUEUE` on a
 track under the pointer adds it. While something plays, the right column shows it
 too, and the keyboard's play, next and previous keys work from anywhere.
 
@@ -317,7 +319,7 @@ run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`
 - Placing displays above one another
 - VPNs that ask for a password each time they connect
 - In the music player: removing from or reordering the queue (Spotify offers outside
-  apps no way to), albums and artists, more than the first page of a long playlist
+  apps no way to), an artist's most played tracks, the artists you follow
 - In notifications: icons that exist only as SVG drawings
 - On the login screen: accounts that need more than a password
 - From the original: on-screen keyboard, sound effects, mouse reporting to

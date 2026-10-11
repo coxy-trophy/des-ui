@@ -79,9 +79,16 @@ pub enum Request {
     Play { context: Option<String>, track: Option<String> },
     Search(String),
     Playlists,
-    /// The tracks of the playlist with this id.
-    Tracks(String),
-    Liked,
+    /// The tracks of the playlist with this id, from the one at `offset` on.
+    Tracks { playlist: String, offset: u32 },
+    /// The liked songs, from the one at `offset` on.
+    Liked { offset: u32 },
+    /// The albums saved to the library, from the one at `offset` on.
+    Albums { offset: u32 },
+    /// The tracks of the album with this id.
+    Album(String),
+    /// The albums of the artist with this id.
+    Artist(String),
     /// What plays next.
     Queue,
     /// Add the track with this address to what plays next.
@@ -92,6 +99,9 @@ impl Request {
     pub fn parse(line: &str) -> Option<Request> {
         let value: Value = serde_json::from_str(line).ok()?;
         let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_string);
+        // Ids go into addresses as they are, so only what an id is made of is let through.
+        let id = |key: &str| text(key).filter(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric()));
+        let offset = value.get("offset").and_then(Value::as_u64).unwrap_or(0).min(100_000) as u32;
         Some(match value.get("cmd")?.as_str()? {
             "state" => Request::State,
             "toggle" => Request::Toggle,
@@ -109,8 +119,11 @@ impl Request {
             }
             "search" => Request::Search(text("q").filter(|q| !q.trim().is_empty())?),
             "playlists" => Request::Playlists,
-            "tracks" => Request::Tracks(text("playlist")?),
-            "liked" => Request::Liked,
+            "tracks" => Request::Tracks { playlist: text("playlist")?, offset },
+            "liked" => Request::Liked { offset },
+            "albums" => Request::Albums { offset },
+            "album" => Request::Album(id("album")?),
+            "artist" => Request::Artist(id("artist")?),
             "queue" => Request::Queue,
             "enqueue" => Request::Enqueue(text("track").filter(|uri| uri.starts_with("spotify:track:"))?),
             _ => return None,
@@ -121,7 +134,12 @@ impl Request {
 /// A list answered to a client: `kind` says of what, `key` which one (the search text
 /// or the playlist's id), and `error` why it is empty when something went wrong.
 pub fn list_line(kind: &str, key: &str, items: Vec<Value>, error: Option<String>) -> String {
-    format!("{}\n", json!({ "type": "list", "kind": kind, "key": key, "items": items, "error": error }))
+    page_line(kind, key, items, error, 0, false)
+}
+
+/// A part of a list: the items from `offset` on, and whether there are `more` after them.
+pub fn page_line(kind: &str, key: &str, items: Vec<Value>, error: Option<String>, offset: u32, more: bool) -> String {
+    format!("{}\n", json!({ "type": "list", "kind": kind, "key": key, "items": items, "error": error, "offset": offset, "more": more }))
 }
 
 #[cfg(test)]
@@ -139,7 +157,13 @@ mod tests {
             Some(Request::Play { context: Some("spotify:playlist:abc".into()), track: Some("spotify:track:x".into()) })
         );
         assert_eq!(Request::parse(r#"{"cmd":"search","q":"miles davis"}"#), Some(Request::Search("miles davis".into())));
-        assert_eq!(Request::parse(r#"{"cmd":"tracks","playlist":"abc"}"#), Some(Request::Tracks("abc".into())));
+        assert_eq!(Request::parse(r#"{"cmd":"tracks","playlist":"abc"}"#), Some(Request::Tracks { playlist: "abc".into(), offset: 0 }));
+        assert_eq!(Request::parse(r#"{"cmd":"tracks","playlist":"abc","offset":200}"#), Some(Request::Tracks { playlist: "abc".into(), offset: 200 }));
+        assert_eq!(Request::parse(r#"{"cmd":"liked","offset":50}"#), Some(Request::Liked { offset: 50 }));
+        assert_eq!(Request::parse(r#"{"cmd":"albums"}"#), Some(Request::Albums { offset: 0 }));
+        assert_eq!(Request::parse(r#"{"cmd":"album","album":"4aawyAB9vmqN3uQ7FjRGTy"}"#), Some(Request::Album("4aawyAB9vmqN3uQ7FjRGTy".into())));
+        assert_eq!(Request::parse(r#"{"cmd":"artist","artist":"0TnOYISbd1XYRBk9myaseg"}"#), Some(Request::Artist("0TnOYISbd1XYRBk9myaseg".into())));
+        assert_eq!(Request::parse(r#"{"cmd":"album","album":"../me"}"#), None);
         assert_eq!(Request::parse(r#"{"cmd":"queue"}"#), Some(Request::Queue));
         assert_eq!(Request::parse(r#"{"cmd":"enqueue","track":"spotify:track:x"}"#), Some(Request::Enqueue("spotify:track:x".into())));
         assert_eq!(Request::parse(r#"{"cmd":"enqueue","track":"spotify:playlist:x"}"#), None);
