@@ -1,46 +1,139 @@
+<div align="center">
+
+<a href="https://coxy-trophy.github.io/des-website/"><img src="docs/screenshots/desktop.png" alt="The DEs-UI desktop: a terminal in the middle, system panels either side, a file browser below" width="100%"></a>
+
 # DEs-UI
 
-A sci-fi terminal desktop for Linux, written in Rust: a Wayland compositor and a
-shell that run as their own login session. It began as a rewrite of
-[eDEX-UI](https://github.com/GitSquared/edex-ui).
+**A sci-fi terminal desktop for Linux, written in Rust.**
 
-![The DEs-UI desktop: a terminal in the middle, system panels either side, a file browser below](docs/screenshots/desktop.png)
+A Wayland compositor and a shell that run as their own login session:
+the terminal in the middle, the machine drawn around it, applications inside the frame.
+
+**[Website](https://coxy-trophy.github.io/des-website/)** · [Try it](#try-it-in-a-window) · [Install](#install-as-a-login-session) · [Keys](#keys) · [What is in it](#what-is-in-it) · [Not done yet](#not-done-yet)
+
+</div>
+
+> [!NOTE]
+> DEs-UI is in development and is being built in the open. It is used daily on one
+> machine; expect rough edges on yours. [What is missing](#not-done-yet) is listed
+> plainly, and [docs/UNTESTED.md](docs/UNTESTED.md) lists what is built but not yet
+> tried on real hardware.
+
+The website has a version of the desktop you can use in the browser:
+**[coxy-trophy.github.io/des-website](https://coxy-trophy.github.io/des-website/)**
+
+## What it looks like
 
 | | |
-|---|---|
-| ![An application open in the workspace, with notifications above it](docs/screenshots/app.png) An application in the workspace, with notifications | ![The application launcher](docs/screenshots/launcher.png) The launcher |
-| ![The music player](docs/screenshots/music.png) The music player | ![The settings](docs/screenshots/settings.png) The settings |
+|:---:|:---:|
+| <img src="docs/screenshots/app.png" alt="An application open in the workspace, with notifications above it"><br>**An application** in the workspace, with notifications | <img src="docs/screenshots/launcher.png" alt="The application launcher"><br>**The launcher** — <kbd>Super</kbd>+<kbd>Space</kbd> |
+| <img src="docs/screenshots/music.png" alt="The music player"><br>**The music player** — <kbd>Super</kbd>+<kbd>M</kbd> | <img src="docs/screenshots/settings.png" alt="The settings"><br>**The settings** — <kbd>Super</kbd>+<kbd>,</kbd> |
+| <img src="docs/screenshots/lock.png" alt="The lock screen"><br>**The lock screen** — <kbd>Super</kbd>+<kbd>L</kbd> | <img src="docs/screenshots/desktop.png" alt="The desktop with only the terminal open"><br>**The desktop** as it starts |
 
-![The lock screen](docs/screenshots/lock.png)
+## What it is
 
-It has three programs:
+One login session, made of three programs:
 
-- **des-ui** (`shell/`) — the interface: terminal, system panels, file browser.
-- **des-comp** (`compositor/`) — a Wayland compositor that shows the shell
-  fullscreen and places other applications in the middle of its frame.
-- **des-music** (`music/`) — a Spotify player with no window of its own; the
-  shell is its interface.
+| Program | Where | What it does |
+|---|---|---|
+| **`des-ui`** | `shell/` | The interface: terminal, system panels, file browser, launcher, settings, lock and login screens. |
+| **`des-comp`** | `compositor/` | A Wayland compositor that shows the shell fullscreen and places other applications in the middle of its frame. |
+| **`des-music`** | `music/` | A Spotify player with no window of its own; the shell is its interface. |
+
+```
+┌─ des-comp ── drives the displays and input ───────────────┐
+│ ┌─ des-ui ── drawn fullscreen ──────────────────────────┐ │
+│ │ clock    │  terminal                      │ network   │ │
+│ │ system   │  and your applications,        │ globe     │ │      ┌─ des-music ─┐
+│ │ cpu, mem │  Wayland or X11                │ keys      │ │◄────►│ no window   │
+│ │ procs    ├────────────────────────────────┤           │ │socket│ PipeWire    │
+│ │          │  files (follow the terminal)   │           │ │      └─────────────┘
+│ └───────────────────────────────────────────────────────┘ │
+└───────────────────────────────────────────────────────────┘
+```
+
+## Inspired by eDEX-UI
+
+DEs-UI began as a rewrite of **[eDEX-UI](https://github.com/GitSquared/edex-ui)** by
+GitSquared, the sci-fi terminal that made this look famous. eDEX-UI was archived in
+2021. DEs-UI takes the idea further in one direction: instead of an application that
+covers your desktop, it *is* the desktop.
+
+| | eDEX-UI | DEs-UI |
+|---|---|---|
+| What it is | A fullscreen terminal application | A desktop: its own login session |
+| Runs | Inside your existing desktop | In place of it, with its own Wayland compositor |
+| Built with | Electron (JavaScript) | Rust |
+| Platforms | Windows, macOS, Linux | Linux |
+| Other applications | Stay outside, behind it | Open inside the frame, split or full screen |
+| Settings, lock and login screens | No; those belong to the desktop under it | Yes |
+| Themes | Its own JSON format | The same format; eDEX-UI theme files work |
+| On-screen keyboard, sound effects | Yes | [Not yet](#not-done-yet) |
+| Licence | GPL-3.0 | MIT |
+| Status | Archived, no longer maintained | In development |
+
+No code is shared between the two. Only the theme format is, so that themes made for
+eDEX-UI can be used here.
 
 ## Try it in a window
 
-    cargo build
-    ./target/debug/des-comp                      # the whole desktop
-    ./target/debug/des-comp -- --theme blade     # arguments after -- go to the shell
-    ./target/debug/des-ui --windowed             # the shell on its own
+Nothing is installed and nothing on your machine changes:
 
-Open applications with the launcher, or by starting them from the terminal. Hold
-Super (or Ctrl+Alt, which works when running in a window):
+```sh
+sudo apt install libudev-dev libinput-dev libgbm-dev libseat-dev cage
+git clone https://github.com/coxy-trophy/des-ui
+cd des-ui
+cargo build
 
-- **Space** — open the launcher: type to search, Enter to open, Esc to cancel
-- **,** — open the settings
-- **L** — lock the screen
-- **Tab** — switch between the terminal and the applications on this display
-- **S** — split the workspace between two windows, or make it whole again
-- **Left / Right** — give the keyboard to that half of a split
-- **F** — full screen: the applications on this display cover all of it
-- **[  ]  \\** — collapse or open the left, right and bottom panels
-- **Q** — close the current application
-- **O** — move the current application to the next display
+./target/debug/des-comp                      # the whole desktop
+./target/debug/des-comp -- --theme blade     # arguments after -- go to the shell
+./target/debug/des-ui --windowed             # the shell on its own
+```
+
+Open applications with the launcher, or by starting them from the terminal.
+`des-ui --list-apps` prints what the launcher offers.
+
+## Install as a login session
+
+    sudo apt install libudev-dev libinput-dev libgbm-dev libseat-dev cage
+    ./install.sh
+
+Then log out and choose **DEs-UI** from the session menu on the login screen.
+Exiting the last shell, or Ctrl+Shift+Q, ends the session. `./uninstall.sh`
+removes it again.
+
+In the session, `des-comp` drives the displays and input devices itself (one GPU,
+every monitor connected to it, including ones plugged in later). If that fails in the first seconds it falls back to running inside
+`cage`, and the reason is in `~/.local/state/des-ui/session.log`. What applications started
+from the launcher print goes to `apps.log` next to it.
+
+Ways out if something goes wrong: **Ctrl+Alt+Backspace** ends the session, and
+**Ctrl+Alt+F1…F12** switch virtual terminals.
+
+## Keys
+
+Hold <kbd>Super</kbd>, or <kbd>Ctrl</kbd>+<kbd>Alt</kbd>, which works when running in a
+window.
+
+| Key | What it does |
+|---|---|
+| <kbd>Space</kbd> | Open the launcher: type to search, Enter to open, Esc to cancel |
+| <kbd>,</kbd> | Open the settings |
+| <kbd>L</kbd> | Lock the screen |
+| <kbd>Tab</kbd> | Switch between the terminal and the applications on this display |
+| <kbd>S</kbd> | Split the workspace between two windows, or make it whole again |
+| <kbd>←</kbd> <kbd>→</kbd> | Give the keyboard to that half of a split |
+| <kbd>F</kbd> | Full screen: the applications on this display cover all of it |
+| <kbd>[</kbd> <kbd>]</kbd> <kbd>\</kbd> | Collapse or open the left, right and bottom panels |
+| <kbd>Q</kbd> | Close the current application |
+| <kbd>O</kbd> | Move the current application to the next display |
+| <kbd>M</kbd> | Open the music player |
+| <kbd>N</kbd> | Open the notifications |
+| <kbd>Esc</kbd> | Open the power menu |
+| <kbd>Shift</kbd>+<kbd>R</kbd> | Restart the shell on a new build; applications stay open |
+
+Without Super: <kbd>Print</kbd> takes a screenshot or starts a recording, and
+<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Backspace</kbd> ends the session.
 
 The bar above the workspace lists the terminal tabs and every open application;
 click one to switch to it. The application in use shows an arrow, to send it to
@@ -58,14 +151,6 @@ Otherwise the frame is on a laptop's own panel and the others extend to its righ
 Each further display shows its applications at full size, split or not.
 Applications open on the display the pointer is on.
 
-`des-ui --list-apps` prints what the launcher offers.
-
-The globe marks this machine and the places it has connections open to. Positions
-come from looking addresses up at get.geojs.io, which tells that service the public
-addresses this machine talks to; each is asked about once and kept in
-`~/.cache/des-ui/places.tsv`. Your own position is guessed from your address
-unless you set it.
-
 ## The terminal
 
 Ctrl+Shift+T opens a tab and Ctrl+Tab moves between them. The terminal can also be
@@ -81,7 +166,12 @@ The small divided-frame button beside `+` does the same as Ctrl+Shift+E. Both ta
 stay open when the split ends. This is separate from Super+S, which shares the
 workspace with an application.
 
-## Settings
+## What is in it
+
+Each of these opens for the details.
+
+<details>
+<summary><b>Settings</b> — theme, terminal, displays, network, Bluetooth, sound, and more</summary>
 
 **Super+,** or `SETTINGS` in the status strip opens them in place of the terminal;
 Esc closes. Changes apply at once and are saved.
@@ -129,24 +219,10 @@ accent colour. A theme sets that accent and the terminal's colours, in the JSON
 format eDEX-UI uses, so its theme files work here. `themes/` holds the built-in
 one; your own go in `~/.config/des-ui/themes/`.
 
-## Install as a login session
+</details>
 
-    sudo apt install libudev-dev libinput-dev libgbm-dev libseat-dev cage
-    ./install.sh
-
-Then log out and choose **DEs-UI** from the session menu on the login screen.
-Exiting the last shell, or Ctrl+Shift+Q, ends the session. `./uninstall.sh`
-removes it again.
-
-In the session, `des-comp` drives the displays and input devices itself (one GPU,
-every monitor connected to it, including ones plugged in later). If that fails in the first seconds it falls back to running inside
-`cage`, and the reason is in `~/.local/state/des-ui/session.log`. What applications started
-from the launcher print goes to `apps.log` next to it.
-
-Ways out if something goes wrong: **Ctrl+Alt+Backspace** ends the session, and
-**Ctrl+Alt+F1…F12** switch virtual terminals.
-
-## Locking
+<details>
+<summary><b>Locking</b> — by key, by itself, and before sleep</summary>
 
 **Super+L**, or `LOCK NOW` under Session in the settings, hides everything behind
 your password; what was running keeps running. While locked the compositor shows
@@ -165,7 +241,10 @@ It also locks by itself:
 If the lock screen ever cannot be unlocked, press Ctrl+Alt+F3, sign in on the text
 console, and run `des-ui --unlock`.
 
-## Music
+</details>
+
+<details>
+<summary><b>Music</b> — a Spotify player in the workspace</summary>
 
 **Super+M**, or `MUSIC` in the status strip, opens a Spotify player in the
 workspace: search, your playlists, your saved albums and your liked songs, with the
@@ -203,7 +282,10 @@ The playing is done by `des-music`, built on
 device list as "DEs-UI", so a phone can control it as well, and it keeps playing
 while the shell restarts. Sound goes out through PipeWire (`pw-cat`).
 
-## Power
+</details>
+
+<details>
+<summary><b>Power</b> — the power menu, the battery, and turning the screen off</summary>
 
 **Super+Escape**, the power key, or `POWER` in the status strip opens the power
 menu: lock, sleep, restart, shut down, log out. The last three take a second click.
@@ -219,7 +301,10 @@ off unless you choose a time). Any key or pointer movement turns it back on. Sho
 it ever stay dark, Ctrl+Alt+F3 and then Ctrl+Alt+F1 (or whichever console the
 desktop is on) draws it afresh.
 
-## Screenshots and recordings
+</details>
+
+<details>
+<summary><b>Screenshots and recordings</b> — full screen, an area, a window, or a recording</summary>
 
 Press **Print** (PrtSc). The display stands still and asks what you want:
 
@@ -241,7 +326,10 @@ installed, also copied, ready to paste. Recordings are saved in
 
 Nothing is pictured while the screen is locked.
 
-## Notifications
+</details>
+
+<details>
+<summary><b>Notifications</b> — toasts, the list, and do not disturb</summary>
 
 The shell is the session's notification service, so what applications announce (a
 message in the browser, a finished download) shows as a toast at the top right of
@@ -264,7 +352,21 @@ list. Nothing is shown over the lock screen. What is playing is the exception: t
 shows the track, its cover and how far along it is, with previous, play or pause, and
 next to click, and the keyboard's media keys work there too.
 
-## The splash
+</details>
+
+<details>
+<summary><b>The globe</b> — where this machine is connected to, and what that tells whom</summary>
+
+The globe marks this machine and the places it has connections open to. Positions
+come from looking addresses up at get.geojs.io, which tells that service the public
+addresses this machine talks to; each is asked about once and kept in
+`~/.cache/des-ui/places.tsv`. Your own position is guessed from your address
+unless you set it.
+
+</details>
+
+<details>
+<summary><b>The splash</b> — while the shell restarts, and optionally while the machine boots</summary>
 
 While the shell restarts (Super+Shift+R), the screen shows the desktop's name over a
 bar that fills, in your theme's accent; the name glitches now and then. The
@@ -280,7 +382,10 @@ shuts down:
 It is a Plymouth theme, made in the colours of the theme you use at the time; run it
 again after changing theme. `./uninstall-boot-splash.sh` puts back what was there.
 
-## Its own login screen
+</details>
+
+<details>
+<summary><b>Its own login screen</b> — optional, in place of GDM</summary>
 
 Optional, and separate from the above, because it changes how the machine boots:
 
@@ -302,6 +407,8 @@ place. If the machine ever comes
 up with no usable login at all, press Ctrl+Alt+F3, sign in on the text console, and
 run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`.
 
+</details>
+
 ## Working inside it while changing it
 
 - `./dev.sh` builds the working copy and runs it in a window inside the running
@@ -317,6 +424,9 @@ run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`
   terminal tabs: use a terminal application such as `ptyxis`, or `tmux`.
 
 ## Layout
+
+<details>
+<summary><b>Where things are in the source</b> — file by file</summary>
 
 - `shell/src/term.rs` — shell on a PTY, VT parsing, grid rendering, key encoding
 - `shell/src/sysmon.rs` — CPU, memory, process and network sampling
@@ -345,6 +455,8 @@ run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`
 - `compositor/src/ipc.rs`, `shell/src/desktop.rs` — the socket the two talk over
 - `common/` — frame geometry and that socket's protocol, shared by both
 - `session/` — login session entry and launcher
+
+</details>
 
 ## Not done yet
 
