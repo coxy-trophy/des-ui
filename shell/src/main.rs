@@ -13,6 +13,7 @@ mod music;
 mod notify;
 mod panels;
 mod power;
+mod bootsplash;
 mod radio;
 mod settings;
 mod sysmon;
@@ -60,6 +61,9 @@ Options:
                        console you have signed in on
   --greeter            Run as the login screen (under greetd; alone, as a preview)
   --set-avatar <FILE>  Use this picture on the login screen
+  --write-boot-splash <DIR>
+                       Write the boot splash's pictures, in your theme's colours
+                       (install-boot-splash.sh uses this)
   --set-location <LAT,LON[,NAME]>
                        Mark this place as yours on the globe, instead of the one
                        guessed from your address; 'auto' goes back to guessing
@@ -1370,6 +1374,23 @@ fn main() -> eframe::Result {
                     std::process::exit(1);
                 }
                 println!("Unlocked.");
+                return Ok(());
+            }
+            "--write-boot-splash" => {
+                let outcome = match args.next() {
+                    Some(dir) => {
+                        let config = config::Config::load();
+                        bootsplash::write(std::path::Path::new(&dir), &Theme::load(&config.theme))
+                    }
+                    None => Err("--write-boot-splash needs a folder".to_string()),
+                };
+                match outcome {
+                    Ok(count) => println!("Wrote {count} pictures for the boot splash."),
+                    Err(e) => {
+                        eprintln!("des-ui: {e}");
+                        std::process::exit(1);
+                    }
+                }
                 return Ok(());
             }
             "--set-avatar" => {

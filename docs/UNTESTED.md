@@ -80,3 +80,27 @@ watched work on a real machine. Tick them off, or note what went wrong.
 - [ ] USE with a typed path, including one starting with `~/`
 - [ ] REMOVE goes back to the pattern
 - [ ] A file that is no picture gives a "Picture not changed" notice
+
+## Music: other devices, covers, repeat, like
+
+- [ ] Controls while another device plays: pause, next, previous, seek, volume, shuffle
+- [ ] Clicking a track while another device plays: it plays there
+- [ ] DEVICES: moving the music to this machine, and from it to a phone
+- [ ] Playing here after playing elsewhere: the `ON <DEVICE>` line goes away
+- [ ] REPEAT in its three states, here and on another device
+- [ ] LIKE: the approval it asks for the first time, then liking and unliking
+- [ ] The large cover of what is playing on another device
+- [ ] Scrolling a long list: covers appear as rows come into view
+
+## The splash
+
+- [ ] It shows after the password, on the real display, and gives way to the desktop
+- [ ] How the glitch reads in motion: how often, how hard
+- [ ] It shows briefly on Super+Shift+R
+- [ ] With two displays: it shows on each
+- [ ] After the password, the black before the splash is now about a second shorter
+      (the compositor leaves without switching the panel off)
+- [ ] Logging out still returns to the login screen, now that the compositor leaves at once
+- [ ] `./install-boot-splash.sh`: the splash shows while booting and shutting down
+- [ ] The boot splash's bar follows the boot, and the name glitches
+- [ ] `./uninstall-boot-splash.sh` brings the old boot screen back

@@ -12,6 +12,7 @@ mod monitors;
 mod policy;
 mod capture;
 mod state;
+mod splash;
 mod toast;
 mod udev;
 mod winit;
@@ -196,7 +197,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = child.wait();
     }
     data.ipc = None;
-    if let Some(reason) = data.fatal.take() {
+    let fatal = data.fatal.take();
+    // On real displays, leave at once. Taking everything down in order switches each
+    // display off first, which on a laptop's panel takes over a second: a second of
+    // black before whatever starts next (the session, after the login screen) can
+    // even begin. The system takes back the displays and devices of a program that
+    // has gone, so nothing is left behind.
+    if data.udev.is_some() {
+        tracing::info!("leaving the displays as they are");
+        if let Some(reason) = &fatal {
+            eprintln!("Error: {reason:?}");
+        }
+        std::process::exit(if fatal.is_some() { 1 } else { 0 });
+    }
+    if let Some(reason) = fatal {
         return Err(reason.into());
     }
     Ok(())

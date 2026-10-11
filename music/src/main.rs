@@ -23,7 +23,7 @@ use protocol::{Request, State, Track};
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::broadcast;
@@ -97,24 +97,132 @@ fn pick_cover(covers: &[librespot_metadata::audio::item::CoverImage]) -> Option<
         .map(|cover| cover.url.clone())
 }
 
+/// The name this player goes by among the user's devices: forty letters and digits,
+/// the same at every start, so that it can be told apart from the others when
+/// Spotify lists them. A service being tried out beside the real one gets its own.
+fn device_id() -> String {
+    let fresh = || {
+        let mut bytes = [0u8; 20];
+        let read = std::fs::File::open("/dev/urandom").and_then(|mut file| std::io::Read::read_exact(&mut file, &mut bytes));
+        if read.is_err() {
+            let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+            bytes[..16].copy_from_slice(&nanos.to_le_bytes());
+            bytes[16..].copy_from_slice(&std::process::id().to_le_bytes());
+        }
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>()
+    };
+    if std::env::var_os("DES_MUSIC_SOCKET").is_some() {
+        return fresh();
+    }
+    let path = cache_dir().join("device-id");
+    let kept = std::fs::read_to_string(&path).ok().map(|id| id.trim().to_string());
+    match kept.filter(|id| id.len() == 40 && id.chars().all(|c| c.is_ascii_hexdigit())) {
+        Some(id) => id,
+        None => {
+            let id = fresh();
+            let _ = std::fs::write(&path, &id);
+            id
+        }
+    }
+}
+
 struct Service {
     spirc: Spirc,
     session: Session,
     state: Mutex<(State, Instant)>,
+    /// What another device is playing, as last heard, while one is: this then is what
+    /// clients are shown, and what the controls act on.
+    remote: Mutex<Option<(State, Instant)>>,
+    /// The track last asked about, and whether it is among the liked songs.
+    liked: Mutex<(String, Option<bool>)>,
+    /// Woken to look at once at what is playing elsewhere.
+    look: tokio::sync::Notify,
     updates: broadcast::Sender<String>,
 }
+
+/// How often what other devices are playing is looked at.
+const LOOK_EVERY: Duration = Duration::from_secs(5);
+
+pub const NO_LIKING: &str = "Liking needs one more approval from Spotify.";
 
 impl Service {
     /// The state as of now, with the position moved on by the time since it was set.
     fn snapshot(&self) -> State {
-        let guard = self.state.lock().unwrap();
-        let (state, since) = (&guard.0, guard.1);
-        let mut now = state.clone();
+        let (mut now, since) = match &*self.remote.lock().unwrap() {
+            Some((state, since)) => (state.clone(), *since),
+            None => {
+                let guard = self.state.lock().unwrap();
+                (guard.0.clone(), guard.1)
+            }
+        };
         if now.playing {
             let length = now.track.as_ref().map_or(u32::MAX, |track| track.duration_ms);
             now.position_ms = now.position_ms.saturating_add(since.elapsed().as_millis() as u32).min(length);
         }
+        let liked = self.liked.lock().unwrap();
+        now.liked = liked.1.filter(|_| now.track.as_ref().is_some_and(|track| track.uri == liked.0));
         now
+    }
+
+    /// Whether another device is the one playing.
+    fn elsewhere(&self) -> bool {
+        self.remote.lock().unwrap().is_some()
+    }
+
+    /// Changes what is shown of the other device at once, ahead of hearing it confirmed.
+    fn update_remote(&self, change: impl FnOnce(&mut State)) {
+        if let Some((state, since)) = self.remote.lock().unwrap().as_mut() {
+            if state.playing {
+                state.position_ms = state.position_ms.saturating_add(since.elapsed().as_millis() as u32);
+            }
+            *since = Instant::now();
+            change(state);
+        }
+        self.publish();
+    }
+
+    /// Tells the device that is playing something, through the Web API. What goes
+    /// wrong is said to the clients.
+    async fn tell(&self, method: http::Method, path: &str, body: Option<serde_json::Value>) {
+        if let Err(why) = web::send(&self.session, method, path, body).await {
+            let _ = self.updates.send(protocol::problem_line(&why));
+        }
+        self.look.notify_one();
+    }
+
+    /// Finds out whether the track playing is liked, when the track changes.
+    async fn check_liked(&self) {
+        let Some(uri) = self.snapshot().track.map(|track| track.uri) else { return };
+        if self.liked.lock().unwrap().0 == uri {
+            return;
+        }
+        *self.liked.lock().unwrap() = (uri.clone(), None);
+        let liked = web::is_liked(&self.session, &uri).await;
+        let mut held = self.liked.lock().unwrap();
+        if held.0 == uri {
+            held.1 = liked;
+            drop(held);
+            self.publish();
+        }
+    }
+
+    /// Looks at what is playing on whichever device, and takes it up when that is
+    /// not this one.
+    async fn look_elsewhere(&self) -> Result<(), String> {
+        let found = web::player(&self.session).await?;
+        let here = self.session.device_id().to_string();
+        let remote = found.filter(|(_, device)| *device != here).map(|(state, _)| (state, Instant::now()));
+        let changed = {
+            let mut held = self.remote.lock().unwrap();
+            let changed = held.as_ref().map(|(state, _)| state) != remote.as_ref().map(|(state, _)| state) || remote.is_some();
+            *held = remote;
+            changed
+        };
+        if changed {
+            self.publish();
+        }
+        self.check_liked().await;
+        Ok(())
     }
 
     fn publish(&self) {
@@ -159,9 +267,17 @@ impl Service {
                     state.position_ms = 0;
                 });
             }
-            PlayerEvent::Playing { position_ms, .. } => self.update(|state| {
-                state.playing = true;
-                state.position_ms = position_ms;
+            PlayerEvent::Playing { position_ms, .. } => {
+                // Playing here: whatever another device was doing is over.
+                *self.remote.lock().unwrap() = None;
+                self.look.notify_one();
+                self.update(|state| {
+                    state.playing = true;
+                    state.position_ms = position_ms;
+                })
+            }
+            PlayerEvent::RepeatChanged { context, track } => self.update(|state| {
+                state.repeat = if track { "one" } else if context { "all" } else { "off" }.to_string();
             }),
             PlayerEvent::Paused { position_ms, .. } => self.update(|state| {
                 state.playing = false;
@@ -187,8 +303,96 @@ impl Service {
             }
             None
         };
+        use http::Method;
+        // While another device plays, the controls are for it.
+        if self.elsewhere() {
+            match &request {
+                Request::Toggle => {
+                    let playing = self.snapshot().playing;
+                    self.update_remote(|state| state.playing = !playing);
+                    self.tell(Method::PUT, if playing { "/me/player/pause" } else { "/me/player/play" }, None).await;
+                    return None;
+                }
+                Request::Next => {
+                    self.tell(Method::POST, "/me/player/next", None).await;
+                    return None;
+                }
+                Request::Previous => {
+                    self.tell(Method::POST, "/me/player/previous", None).await;
+                    return None;
+                }
+                Request::Seek(ms) => {
+                    let ms = *ms;
+                    self.update_remote(|state| state.position_ms = ms);
+                    self.tell(Method::PUT, &format!("/me/player/seek?position_ms={ms}"), None).await;
+                    return None;
+                }
+                Request::Volume(percent) => {
+                    let percent = (*percent).min(100);
+                    self.update_remote(|state| state.volume = percent);
+                    self.tell(Method::PUT, &format!("/me/player/volume?volume_percent={percent}"), None).await;
+                    return None;
+                }
+                Request::Shuffle(on) => {
+                    let on = *on;
+                    self.update_remote(|state| state.shuffle = on);
+                    self.tell(Method::PUT, &format!("/me/player/shuffle?state={on}"), None).await;
+                    return None;
+                }
+                Request::Repeat(mode) => {
+                    let word = match mode.as_str() {
+                        "all" => "context",
+                        "one" => "track",
+                        _ => "off",
+                    };
+                    let mode = mode.clone();
+                    self.update_remote(|state| state.repeat = mode);
+                    self.tell(Method::PUT, &format!("/me/player/repeat?state={word}"), None).await;
+                    return None;
+                }
+                Request::Play { context, track } => {
+                    let context = context.as_ref().map(|context| match context.as_str() {
+                        "liked" => format!("spotify:user:{}:collection", self.session.username()),
+                        other => other.to_string(),
+                    });
+                    let body = match (context, track) {
+                        (Some(context), Some(track)) => json!({ "context_uri": context, "offset": { "uri": track } }),
+                        (Some(context), None) => json!({ "context_uri": context }),
+                        (None, Some(track)) => json!({ "uris": [track] }),
+                        (None, None) => return None,
+                    };
+                    self.tell(Method::PUT, "/me/player/play", Some(body)).await;
+                    return None;
+                }
+                _ => {}
+            }
+        }
         match request {
             Request::State => Some(self.snapshot().to_line()),
+            Request::Repeat(mode) => {
+                let _ = self.spirc.repeat(mode == "all");
+                done(self.spirc.repeat_track(mode == "one"))
+            }
+            Request::Like(on) => {
+                let Some(uri) = self.snapshot().track.map(|track| track.uri) else { return None };
+                match web::set_liked(&self.session, &uri, on).await {
+                    Ok(()) => {
+                        *self.liked.lock().unwrap() = (uri, Some(on));
+                        self.publish();
+                        None
+                    }
+                    Err(why) if ["401", "403", "scope"].iter().any(|sign| why.contains(sign)) => Some(protocol::problem_line(NO_LIKING)),
+                    Err(why) => Some(protocol::problem_line(&why)),
+                }
+            }
+            Request::Devices => Some(web::devices(&self.session, self.session.device_id()).await),
+            Request::Transfer(device) => {
+                self.tell(Method::PUT, "/me/player", Some(json!({ "device_ids": [device], "play": true }))).await;
+                // The devices take a moment to agree on who is playing.
+                tokio::time::sleep(Duration::from_millis(900)).await;
+                let _ = self.look_elsewhere().await;
+                Some(web::devices(&self.session, self.session.device_id()).await)
+            }
             Request::Toggle => done(self.spirc.play_pause()),
             Request::Next => done(self.spirc.next()),
             Request::Previous => done(self.spirc.prev()),
@@ -272,7 +476,7 @@ async fn serve() -> Result<(), String> {
     }
     let cache = open_cache()?;
     let credentials = cache.credentials().ok_or("not signed in: run `des-music login` first")?;
-    let session = Session::new(SessionConfig::default(), Some(cache));
+    let session = Session::new(SessionConfig { device_id: device_id(), ..Default::default() }, Some(cache));
 
     let mixer_builder = mixer::find(None).ok_or("no volume control is built in")?;
     let mixer = mixer_builder(MixerConfig::default()).map_err(|e| format!("cannot set up the volume: {e}"))?;
@@ -298,7 +502,29 @@ async fn serve() -> Result<(), String> {
         spirc,
         session,
         state: Mutex::new((State::default(), Instant::now())),
+        remote: Mutex::new(None),
+        liked: Mutex::new((String::new(), None)),
+        look: tokio::sync::Notify::new(),
         updates,
+    });
+
+    // What other devices are playing is asked for now and then, while anyone is
+    // there to be shown it.
+    let for_looking = service.clone();
+    tokio::spawn(async move {
+        let mut wait = LOOK_EVERY;
+        loop {
+            tokio::select! {
+                () = tokio::time::sleep(wait) => {}
+                // Something was just changed: give it a moment to take, then look.
+                () = for_looking.look.notified() => tokio::time::sleep(Duration::from_millis(700)).await,
+            }
+            if for_looking.updates.receiver_count() == 0 {
+                continue;
+            }
+            // Without a library connection, or with Spotify out of reach, ask less often.
+            wait = if for_looking.look_elsewhere().await.is_ok() { LOOK_EVERY } else { LOOK_EVERY * 6 };
+        }
     });
 
     let for_events = service.clone();
@@ -375,9 +601,10 @@ fn web_token_file() -> PathBuf {
     cache_dir().join("web-token.json")
 }
 
-/// What the Web API is asked to allow: reading the user's library, and reading and
-/// adding to what plays next.
-const LIBRARY_SCOPES: [&str; 6] = [
+/// What the Web API is asked to allow: reading the user's library and liking tracks
+/// in it, reading and steering what plays on any device, and adding to what plays next.
+const LIBRARY_SCOPES: [&str; 7] = [
+    "user-library-modify",
     "user-read-playback-state",
     "user-modify-playback-state",
     "user-read-private",

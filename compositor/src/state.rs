@@ -95,6 +95,8 @@ pub struct DesComp {
     pub shell_pid: Option<u32>,
     /// The des-ui shell window: always fullscreen, always at the bottom.
     pub shell: Option<Window>,
+    /// What is shown until the shell has a window, and for a moment after.
+    pub splash: Option<crate::splash::Splash>,
     /// When a key, button or pointer was last used.
     pub last_input: Instant,
     /// Lines for the shell that arose while its socket was being read.
@@ -152,6 +154,11 @@ pub struct DesComp {
     /// Set while a new layout waits to be confirmed: what to go back to, and since when.
     pub display_pending: Option<(Option<Vec<crate::monitors::Saved>>, Instant)>,
     pub screenshot: Option<PathBuf>,
+}
+
+/// A length of time in milliseconds that a test may set through the environment.
+pub fn test_millis(name: &str, usual: u64) -> u64 {
+    std::env::var(name).ok().and_then(|value| value.parse().ok()).unwrap_or(usual)
 }
 
 impl DesComp {
@@ -225,6 +232,7 @@ impl DesComp {
             idle_held: false,
             idle_inhibitors: Vec::new(),
             toast: None,
+            splash: Some(crate::splash::Splash::new(Duration::from_millis(test_millis("DES_TEST_SPLASH_MS", 1400)))),
             toast_id: smithay::backend::renderer::element::Id::new(),
             backdrops: Vec::new(),
             apps: Vec::new(),
@@ -321,6 +329,9 @@ impl DesComp {
 
     /// Work due before drawing a frame. Returns false once the session is over.
     pub fn before_frame(&mut self) -> bool {
+        if self.splash.as_ref().is_some_and(|splash| splash.done()) {
+            self.splash = None;
+        }
         if let Some(child) = self.shell_child.as_mut() {
             if let Ok(Some(status)) = child.try_wait() {
                 self.shell_child = None;
@@ -396,6 +407,8 @@ impl DesComp {
         if let Some(child) = self.shell_child.as_mut() {
             tracing::info!("restarting the shell");
             self.shell_restarting = true;
+            // Briefly, in place of the blank the shell leaves behind it.
+            self.splash = Some(crate::splash::Splash::new(Duration::from_millis(500)));
             let _ = child.kill();
         }
     }

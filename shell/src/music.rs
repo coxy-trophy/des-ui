@@ -40,6 +40,12 @@ pub struct Now {
     position_ms: u32,
     pub volume: u8,
     pub shuffle: bool,
+    /// `off`, `all` or `one`.
+    pub repeat: String,
+    /// The device it is playing on, when that is not this one.
+    pub device: Option<String>,
+    /// Whether the track is among the liked songs, once known.
+    pub liked: Option<bool>,
     at: Option<Instant>,
 }
 
@@ -69,6 +75,9 @@ impl Now {
             position_ms: value["position_ms"].as_u64().unwrap_or(0) as u32,
             volume: value["volume"].as_u64().unwrap_or(0).min(100) as u8,
             shuffle: value["shuffle"].as_bool().unwrap_or(false),
+            repeat: value["repeat"].as_str().unwrap_or("off").to_string(),
+            device: value["device"].as_str().map(str::to_string),
+            liked: value["liked"].as_bool(),
             at: Some(Instant::now()),
         }
     }
@@ -81,6 +90,8 @@ pub enum Kind {
     Playlist,
     Album,
     Artist,
+    /// Something that can play: this machine, a phone, a speaker.
+    Device,
 }
 
 /// A row in a list: a track, or a playlist, album or artist to open.
@@ -99,6 +110,11 @@ pub struct Item {
     /// For a track: the ids of its album and of its first artist, for going to them.
     pub album_id: String,
     pub artist_id: String,
+    /// The address of its picture.
+    pub cover: Option<String>,
+    /// For a device: whether it is the one playing, and whether it is this machine.
+    pub active: bool,
+    pub here: bool,
 }
 
 pub fn parse_items(value: &Value) -> Vec<Item> {
@@ -112,6 +128,7 @@ pub fn parse_items(value: &Value) -> Vec<Item> {
                         Some("playlist") => Kind::Playlist,
                         Some("album") => Kind::Album,
                         Some("artist") => Kind::Artist,
+                        Some("device") => Kind::Device,
                         _ => Kind::Track,
                     };
                     let text = |key: &str| item[key].as_str().unwrap_or_default().to_string();
@@ -125,6 +142,9 @@ pub fn parse_items(value: &Value) -> Vec<Item> {
                         duration_ms: item["duration_ms"].as_u64().unwrap_or(0) as u32,
                         album_id: text("album_id"),
                         artist_id: text("artist_id"),
+                        cover: item["cover"].as_str().map(str::to_string),
+                        active: item["active"] == true,
+                        here: item["here"] == true,
                     })
                 })
                 .collect()
@@ -154,6 +174,8 @@ struct Shared {
     lists: HashMap<String, (Vec<Item>, Option<String>)>,
     /// The lists, by the same names, that have more after what was received.
     more: std::collections::HashSet<String>,
+    /// What last went wrong with something asked of the service, and when.
+    problem: Option<(String, Instant)>,
     /// Set to ask the connection thread to run a sign-in: the service's arguments.
     sign_in: Option<Vec<String>>,
     /// Set when a sign-in went through, so that lists are asked for afresh.
@@ -282,6 +304,9 @@ fn connection(shared: Arc<Mutex<Shared>>, commands: Receiver<String>, ctx: egui:
                 let mut shared = reading.lock().unwrap();
                 match value["type"].as_str() {
                     Some("state") => shared.now = Now::parse(&value),
+                    Some("problem") => {
+                        shared.problem = value["text"].as_str().map(|text| (text.to_string(), Instant::now()));
+                    }
                     Some("list") => {
                         let key = format!("{}:{}", value["kind"].as_str().unwrap_or_default(), value["key"].as_str().unwrap_or_default());
                         let error = value["error"].as_str().map(str::to_string);
@@ -345,6 +370,8 @@ enum Source {
     Album { id: String, name: String, uri: String },
     /// An artist's albums.
     Artist { id: String, name: String },
+    /// What can play, to choose among.
+    Devices,
     Search(String),
 }
 
@@ -357,6 +384,7 @@ impl Source {
             Source::Albums => "albums:".to_string(),
             Source::Album { id, .. } => format!("album:{id}"),
             Source::Artist { id, .. } => format!("artist:{id}"),
+            Source::Devices => "devices:".to_string(),
             Source::Search(query) => format!("search:{query}"),
         }
     }
@@ -380,6 +408,7 @@ impl Source {
             Source::Albums => json!({ "cmd": "albums" }),
             Source::Album { id, .. } => json!({ "cmd": "album", "album": id }),
             Source::Artist { id, .. } => json!({ "cmd": "artist", "artist": id }),
+            Source::Devices => json!({ "cmd": "devices" }),
             Source::Search(query) => json!({ "cmd": "search", "q": query }),
         }
     }
@@ -389,9 +418,88 @@ impl Source {
         match self {
             Source::Liked => Some("liked".to_string()),
             Source::Playlist { uri, .. } | Source::Album { uri, .. } => Some(uri.clone()),
-            Source::Search(_) | Source::Queue | Source::Albums | Source::Artist { .. } => None,
+            Source::Search(_) | Source::Queue | Source::Albums | Source::Artist { .. } | Source::Devices => None,
         }
     }
+}
+
+/// The pictures shown beside tracks, albums and the rest: fetched and made small in
+/// the background, a few at a time, and kept on disk so that each is fetched once.
+struct Covers {
+    wanted: Sender<String>,
+    ready: Receiver<(String, Option<egui::ColorImage>)>,
+    /// Those asked for: `None` while on their way, and for good if they cannot be had.
+    held: HashMap<String, Option<TextureHandle>>,
+}
+
+impl Covers {
+    fn new(ctx: &egui::Context) -> Covers {
+        let (wanted, queue) = channel::<String>();
+        let (done, ready) = channel();
+        let queue = Arc::new(Mutex::new(queue));
+        for _ in 0..3 {
+            let (queue, done, ctx) = (queue.clone(), done.clone(), ctx.clone());
+            std::thread::spawn(move || {
+                loop {
+                    let next = queue.lock().unwrap().recv();
+                    let Ok(url) = next else { return };
+                    let pixels = fetch_cover(&url);
+                    if done.send((url, pixels)).is_err() {
+                        return;
+                    }
+                    ctx.request_repaint();
+                }
+            });
+        }
+        Covers { wanted, ready, held: HashMap::new() }
+    }
+
+    fn get(&mut self, ctx: &egui::Context, url: Option<&str>) -> Option<TextureHandle> {
+        while let Ok((url, pixels)) = self.ready.try_recv() {
+            let texture = pixels.map(|pixels| ctx.load_texture(format!("cover-{url}"), pixels, egui::TextureOptions::LINEAR));
+            self.held.insert(url, texture);
+        }
+        let url = url?;
+        match self.held.get(url) {
+            Some(texture) => texture.clone(),
+            None => {
+                self.held.insert(url.to_string(), None);
+                let _ = self.wanted.send(url.to_string());
+                None
+            }
+        }
+    }
+}
+
+/// Fetches a cover, or finds it where it was kept, and reads it.
+fn fetch_cover(url: &str) -> Option<egui::ColorImage> {
+    // Kept on disk under a name made from the address.
+    let name: String = url.chars().rev().take(48).filter(|c| c.is_ascii_alphanumeric()).collect();
+    let dir = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+        .unwrap_or_else(std::env::temp_dir)
+        .join("des-ui/music/covers");
+    let path = dir.join(name);
+    let fetched = path.exists()
+        || (std::fs::create_dir_all(&dir).is_ok()
+            && url.starts_with("https://")
+            && Command::new("curl")
+                .args(["-fsS", "-m", "10", "--proto", "=https", "-o"])
+                .arg(&path)
+                .arg(url)
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success()));
+    if !fetched {
+        // Whatever part arrived is no picture.
+        let _ = std::fs::remove_file(&path);
+        return None;
+    }
+    // The file's name says nothing of its kind, so that is read from its contents.
+    let image = image::ImageReader::open(&path).and_then(|reader| reader.with_guessed_format()).ok()?.decode().ok()?;
+    let image = image.thumbnail(320, 320).to_rgba8();
+    Some(egui::ColorImage::from_rgba_unmultiplied([image.width() as usize, image.height() as usize], image.as_raw()))
 }
 
 /// A transport control, drawn rather than lettered.
@@ -455,8 +563,9 @@ pub struct Music {
     asked_further: Option<(String, usize)>,
     /// The lists looked at before this one, for going back.
     trail: Vec<Source>,
-    /// The cover being shown: its address, and the picture once fetched.
-    cover: Option<(String, Arc<Mutex<Option<PathBuf>>>, Option<TextureHandle>)>,
+    covers: Covers,
+    /// When the devices were last asked for, while they are being looked at.
+    devices_asked: Option<Instant>,
 }
 
 impl Music {
@@ -466,12 +575,14 @@ impl Music {
             now: Now::default(),
             lists: HashMap::new(),
             more: std::collections::HashSet::new(),
+            problem: None,
             sign_in: None,
             refresh: false,
             cancel: false,
         }));
         let (commands, receiver) = channel();
         let for_thread = shared.clone();
+        let covers = Covers::new(&ctx);
         std::thread::spawn(move || connection(for_thread, receiver, ctx));
         Music {
             open: false,
@@ -485,7 +596,8 @@ impl Music {
             asked: Vec::new(),
             asked_further: None,
             trail: Vec::new(),
-            cover: None,
+            covers,
+            devices_asked: None,
         }
     }
 
@@ -531,61 +643,9 @@ impl Music {
         }
     }
 
-    /// The picture for the track playing, fetched in the background the first time.
-    fn cover_texture(&mut self, ctx: &egui::Context, url: Option<&str>) -> Option<TextureHandle> {
-        let url = url?;
-        if self.cover.as_ref().is_none_or(|(shown, _, _)| shown != url) {
-            let slot: Arc<Mutex<Option<PathBuf>>> = Arc::default();
-            self.cover = Some((url.to_string(), slot.clone(), None));
-            let (url, ctx) = (url.to_string(), ctx.clone());
-            std::thread::spawn(move || {
-                // Kept on disk under a name made from the address, so that each cover
-                // is downloaded once.
-                let name: String = url.chars().rev().take(48).filter(|c| c.is_ascii_alphanumeric()).collect();
-                let dir = std::env::var_os("XDG_CACHE_HOME")
-                    .map(PathBuf::from)
-                    .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
-                    .unwrap_or_else(std::env::temp_dir)
-                    .join("des-ui/music/covers");
-                let path = dir.join(name);
-                let fetched = path.exists()
-                    || (std::fs::create_dir_all(&dir).is_ok()
-                        && url.starts_with("https://")
-                        && Command::new("curl")
-                            .args(["-fsS", "-m", "10", "--proto", "=https", "-o"])
-                            .arg(&path)
-                            .arg(&url)
-                            .stderr(Stdio::null())
-                            .status()
-                            .is_ok_and(|status| status.success()));
-                if fetched {
-                    *slot.lock().unwrap() = Some(path);
-                    ctx.request_repaint();
-                }
-            });
-        }
-        let (url, slot, texture) = self.cover.as_mut()?;
-        if texture.is_none() {
-            if let Some(path) = slot.lock().unwrap().take() {
-                // The file's name says nothing of its kind, so that is read from its contents.
-                let opened = image::ImageReader::open(&path)
-                    .and_then(|reader| reader.with_guessed_format())
-                    .ok()
-                    .and_then(|reader| reader.decode().ok());
-                if let Some(image) = opened {
-                    let image = image.thumbnail(320, 320).to_rgba8();
-                    let size = [image.width() as usize, image.height() as usize];
-                    let pixels = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
-                    *texture = Some(ctx.load_texture(format!("cover-{url}"), pixels, egui::TextureOptions::LINEAR));
-                }
-            }
-        }
-        texture.clone()
-    }
-
     /// Draws a square for the cover: the picture, or a quiet placeholder.
     fn draw_cover(&mut self, ui: &mut Ui, size: f32, url: Option<&str>) {
-        let texture = self.cover_texture(ui.ctx(), url);
+        let texture = self.covers.get(ui.ctx(), url);
         let (rect, _) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
         ui.painter().rect_filled(rect, 0.0, ui::PANEL);
         match texture {
@@ -609,7 +669,9 @@ impl Music {
         let mut open = false;
         ui.add_space(22.0);
         ui::section(ui, "NOW PLAYING", |ui| {
-            if now.playing {
+            if let Some(device) = now.device.as_ref().filter(|_| now.playing) {
+                ui::meta(ui, &format!("ON {}", crate::panels::truncate(&device.to_uppercase(), 14)), theme.main);
+            } else if now.playing {
                 ui::meta(ui, "SPOTIFY", theme.main);
             } else {
                 ui::meta(ui, "PAUSED", ui::LABEL);
@@ -743,13 +805,28 @@ impl Music {
             self.queue_as_of = playing_uri;
             self.send(json!({ "cmd": "queue" }));
         }
-        let (playlists, list, more) = {
-            let shared = self.shared.lock().unwrap();
-            (shared.lists.get("playlists:").cloned(), shared.lists.get(&source.key()).cloned(), shared.more.contains(&source.key()))
+        // Devices come and go, so while they are looked at they are asked for again.
+        if source == Source::Devices && self.devices_asked.is_none_or(|at| at.elapsed() > Duration::from_secs(6)) {
+            self.devices_asked = Some(Instant::now());
+            self.send(json!({ "cmd": "devices" }));
+            ui.ctx().request_repaint_after(Duration::from_secs(6));
+        }
+        let (playlists, list, more, problem) = {
+            let mut shared = self.shared.lock().unwrap();
+            if shared.problem.as_ref().is_some_and(|(_, at)| at.elapsed() > Duration::from_secs(12)) {
+                shared.problem = None;
+            }
+            (
+                shared.lists.get("playlists:").cloned(),
+                shared.lists.get(&source.key()).cloned(),
+                shared.more.contains(&source.key()),
+                shared.problem.as_ref().map(|(text, _)| text.clone()),
+            )
         };
 
         let transport_height = 84.0;
-        let body_height = (ui.available_height() - transport_height - 12.0).max(80.0);
+        let problem_height = if problem.is_some() { 40.0 } else { 0.0 };
+        let body_height = (ui.available_height() - transport_height - 12.0 - problem_height).max(80.0);
         let unconnected = matches!(&playlists, Some((_, Some(why))) if why.starts_with("Your library is not connected"));
         if unconnected {
             ui.allocate_ui_with_layout(vec2(ui.available_width(), body_height), Layout::top_down(Align::Min), |ui| {
@@ -789,6 +866,10 @@ impl Music {
                     self.go(Source::Queue, false);
                     self.queue_as_of = None;
                 }
+                if side_row(ui, theme, "DEVICES", self.source == Source::Devices) {
+                    self.go(Source::Devices, false);
+                    self.devices_asked = None;
+                }
                 ui.add_space(8.0);
                 ui::tracked(ui, "PLAYLISTS", ui::display_bold(11.0), ui::LABEL, 3.0);
                 match playlists {
@@ -825,6 +906,7 @@ impl Music {
                     Source::Playlist { name, .. } | Source::Album { name, .. } => name.to_uppercase(),
                     Source::Albums => "ALBUMS".to_string(),
                     Source::Artist { name, .. } => format!("ALBUMS BY {}", name.to_uppercase()),
+                    Source::Devices => "PLAY ON".to_string(),
                     Source::Search(query) => format!("RESULTS FOR “{}”", query.to_uppercase()),
                 };
                 let mut back = false;
@@ -858,7 +940,11 @@ impl Music {
                         ui::text(ui, &why, ui::mono(12.0), ui::CAUTION);
                     }
                     Some((items, None)) if items.is_empty() => {
-                        let empty = if source == Source::Queue { "Nothing is waiting to play." } else { "Nothing here." };
+                        let empty = match source {
+                            Source::Queue => "Nothing is waiting to play.",
+                            Source::Devices => "No device is online. Open Spotify on one and it shows up here.",
+                            _ => "Nothing here.",
+                        };
                         ui::text(ui, empty, ui::mono(12.0), ui::LABEL);
                     }
                     Some((items, None)) => {
@@ -869,8 +955,11 @@ impl Music {
                             for (index, item) in items.iter().enumerate() {
                                 let just_queued = self.queued.as_ref().is_some_and(|(uri, at)| *uri == item.uri && at.elapsed() < Duration::from_secs(2));
                                 // In the queue a track may come up twice, and none of them is the one playing.
-                                let lit = !in_queue && playing == Some(item.uri.as_str());
-                                let picked = ui.push_id(index, |ui| track_row(ui, theme, item, lit, !in_queue, just_queued)).inner;
+                                let lit = (!in_queue && playing == Some(item.uri.as_str())) || item.active;
+                                // Only the rows in view have their pictures fetched.
+                                let place = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), ROW));
+                                let cover = if ui.is_rect_visible(place) { self.covers.get(ui.ctx(), item.cover.as_deref()) } else { None };
+                                let picked = ui.push_id(index, |ui| track_row(ui, theme, item, cover.as_ref(), lit, !in_queue, just_queued)).inner;
                                 if picked == Picked::Queue {
                                     self.queued = Some((item.uri.clone(), Instant::now()));
                                     self.send(json!({ "cmd": "enqueue", "track": item.uri }));
@@ -901,11 +990,16 @@ impl Music {
                                     Kind::Playlist => self.go(Source::Playlist { id: named.0, name: named.1, uri: named.2 }, true),
                                     Kind::Album => self.go(Source::Album { id: named.0, name: named.1, uri: named.2 }, true),
                                     Kind::Artist => self.go(Source::Artist { id: named.0, name: named.1 }, true),
+                                    Kind::Device => {
+                                        if !item.active {
+                                            self.send(json!({ "cmd": "transfer", "device": item.id }));
+                                        }
+                                    }
                                 }
                             }
                             // The rest of a long list is fetched as its end comes into view.
                             if more {
-                                let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0), Sense::hover());
+                                let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::hover());
                                 ui.painter().text(rect.left_center() + vec2(26.0, 0.0), Align2::LEFT_CENTER, "Loading more…", ui::mono(12.0), ui::LABEL);
                                 let wanted = (source.key(), items.len());
                                 if ui.is_rect_visible(rect) && self.asked_further.as_ref() != Some(&wanted) {
@@ -921,6 +1015,17 @@ impl Music {
             });
         });
 
+        if let Some(problem) = problem {
+            ui.allocate_ui_with_layout(vec2(ui.available_width(), problem_height), Layout::left_to_right(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 12.0;
+                ui::text(ui, &crate::panels::truncate(&problem, 110), ui::mono(12.0), ui::CAUTION);
+                // One more permission is asked for on Spotify's page, as for the library.
+                if problem.contains("needs one more approval") && ui::button(ui, theme, "APPROVE", None, true).clicked() {
+                    self.shared.lock().unwrap().problem = None;
+                    self.sign_in(vec!["library".to_string()]);
+                }
+            });
+        }
         ui.add_space(12.0);
         self.transport(ui, theme, now, transport_height);
     }
@@ -941,10 +1046,21 @@ impl Music {
         let names = (strip.width() * 0.22).clamp(120.0, 260.0);
         ui.allocate_ui_with_layout(vec2(names, 56.0), Layout::top_down(Align::Min), |ui| {
             ui.spacing_mut().item_spacing.y = 4.0;
-            ui.add_space(6.0);
+            if now.device.is_none() {
+                ui.add_space(6.0);
+            }
             let fit = (names / 8.5) as usize;
             ui::text(ui, &crate::panels::truncate(&track.name, fit), ui::display_bold(15.0), ui::TEXT);
             ui::text(ui, &crate::panels::truncate(&track.artists, fit + 4), ui::mono(11.0), ui::SECONDARY);
+            // Playing somewhere else: say where, and offer the way to change that.
+            if let Some(device) = &now.device {
+                let label = format!("ON {}", crate::panels::truncate(&device.to_uppercase(), fit.saturating_sub(4)));
+                let said = ui::tracked(ui, &label, ui::display_bold(10.0), theme.main, 1.5);
+                if ui.interact(said.rect, ui.id().with("playing-on"), Sense::click()).on_hover_text("Choose where to play").clicked() {
+                    self.go(Source::Devices, false);
+                    self.devices_asked = None;
+                }
+            }
         });
         ui.spacing_mut().item_spacing.x = 4.0;
         if control(ui, theme, Control::Previous, 32.0, false).clicked() {
@@ -962,7 +1078,9 @@ impl Music {
         let position = now.position_ms();
         ui::text(ui, &clock(position), ui::mono(12.0), ui::TEXT);
         // What is left over, after the readings and controls to the right, is the bar.
-        let bar_width = (ui.available_width() - 330.0).max(60.0);
+        // In a narrow view the volume gives way: the keyboard's keys still set it.
+        let roomy = strip.width() > 940.0;
+        let bar_width = (ui.available_width() - if roomy { 520.0 } else { 380.0 }).max(60.0);
         let frac = position as f32 / track.duration_ms.max(1) as f32;
         if let Some(to) = ui::slider(ui, theme, bar_width, frac) {
             // Only on release: asking for every step of a drag would stutter.
@@ -974,6 +1092,22 @@ impl Music {
         ui.add_space(8.0);
         if ui::chip(ui, theme, "SHUFFLE", None, now.shuffle).clicked() {
             self.send(json!({ "cmd": "shuffle", "on": !now.shuffle }));
+        }
+        // Off, then the whole list over again, then the one track.
+        let (label, next) = match now.repeat.as_str() {
+            "all" => ("REPEAT", "one"),
+            "one" => ("REPEAT 1", "off"),
+            _ => ("REPEAT", "all"),
+        };
+        if ui::chip(ui, theme, label, None, now.repeat != "off").clicked() {
+            self.send(json!({ "cmd": "repeat", "mode": next }));
+        }
+        let liked = now.liked == Some(true);
+        if ui::chip(ui, theme, if liked { "LIKED" } else { "LIKE" }, None, liked).clicked() {
+            self.send(json!({ "cmd": "like", "on": !liked }));
+        }
+        if !roomy {
+            return;
         }
         ui::text(ui, "VOL", ui::mono(11.0), ui::LABEL);
         if let Some(to) = ui::slider(ui, theme, 90.0, now.volume as f32 / 100.0) {
@@ -1023,13 +1157,18 @@ fn described(item: &Item) -> String {
         Kind::Album if item.by.is_empty() => "album".to_string(),
         Kind::Album => format!("album by {}", item.by),
         Kind::Artist => "artist".to_string(),
+        Kind::Device if item.here => format!("this machine · {}", item.by.to_lowercase()),
+        Kind::Device => item.by.to_lowercase(),
     }
 }
 
+/// How tall a row of a list is.
+const ROW: f32 = 44.0;
+
 /// A track, or a playlist, album or artist to open. `queueable` rows carry a way to add
 /// them to what plays next, and say `queued` for a moment after.
-fn track_row(ui: &mut Ui, theme: &Theme, item: &Item, playing: bool, queueable: bool, queued: bool) -> Picked {
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0), Sense::click());
+fn track_row(ui: &mut Ui, theme: &Theme, item: &Item, cover: Option<&TextureHandle>, playing: bool, queueable: bool, queued: bool) -> Picked {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
     // Under the pointer, the row offers to queue the track where its length is.
     let mut add = None;
     let track = item.kind == Kind::Track;
@@ -1047,12 +1186,26 @@ fn track_row(ui: &mut Ui, theme: &Theme, item: &Item, playing: bool, queueable: 
     if playing {
         painter.rect_filled(mark, 0.0, theme.main);
     }
+    // Its picture, where it has one; a device has none, and none is drawn for it.
+    let lead = if item.kind == Kind::Device { 26.0 } else { 64.0 };
+    if item.kind != Kind::Device {
+        let square = Rect::from_center_size(rect.left_center() + vec2(40.0, 0.0), vec2(32.0, 32.0));
+        match cover {
+            Some(texture) => {
+                painter.image(texture.id(), square, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), egui::Color32::WHITE);
+            }
+            None => {
+                painter.rect_filled(square, 0.0, ui::PANEL);
+                painter.rect_stroke(square, 0.0, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
+            }
+        }
+    }
     let width = rect.width();
     // How many characters fit in a column this many points wide.
     let chars = |points: f32| ((points - 14.0).max(0.0) / 8.0) as usize;
     let with_album = width > 620.0;
     let by_width = if with_album { width * 0.26 } else { width * 0.54 - 64.0 };
-    painter.text(rect.left_center() + vec2(26.0, 0.0), Align2::LEFT_CENTER, crate::panels::truncate(&item.name, chars(width * 0.46 - 26.0)), ui::mono(13.0), ink);
+    painter.text(rect.left_center() + vec2(lead, 0.0), Align2::LEFT_CENTER, crate::panels::truncate(&item.name, chars(width * 0.46 - lead)), ui::mono(13.0), ink);
     let by = described(item);
     // A track's artist and album are ways to go to them.
     let mut went = None;
@@ -1098,7 +1251,12 @@ fn track_row(ui: &mut Ui, theme: &Theme, item: &Item, playing: bool, queueable: 
         }
         return if response.clicked() { Picked::Row } else { Picked::Nothing };
     }
-    let end = if track { clock(item.duration_ms) } else { "OPEN".to_string() };
+    let end = match item.kind {
+        Kind::Track => clock(item.duration_ms),
+        Kind::Device if item.active => "PLAYING".to_string(),
+        Kind::Device => "SWITCH TO".to_string(),
+        _ => "OPEN".to_string(),
+    };
     painter.text(rect.right_center() - vec2(10.0, 0.0), Align2::RIGHT_CENTER, end, ui::mono(12.0), ui::SECONDARY);
     if response.clicked() { Picked::Row } else { Picked::Nothing }
 }

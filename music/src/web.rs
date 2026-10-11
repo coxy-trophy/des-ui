@@ -27,13 +27,24 @@ async fn get(session: &Session, path: &str) -> Result<Value, String> {
 }
 
 async fn call(session: &Session, method: Method, path: &str) -> Result<Value, String> {
+    send(session, method, path, None).await
+}
+
+/// Asks the Web API for something, or tells it something, with `body` as what is told.
+pub async fn send(session: &Session, method: Method, path: &str, body: Option<Value>) -> Result<Value, String> {
     let token = crate::web_token().await?;
-    let request = Request::builder()
+    let mut request = Request::builder()
         .method(method)
         .uri(format!("{API}{path}"))
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Bytes::new())
-        .map_err(|e| e.to_string())?;
+        .header("Authorization", format!("Bearer {token}"));
+    let body = match body {
+        Some(body) => {
+            request = request.header("Content-Type", "application/json");
+            Bytes::from(body.to_string())
+        }
+        None => Bytes::new(),
+    };
+    let request = request.header("Content-Length", body.len()).body(body).map_err(|e| e.to_string())?;
     let response = session
         .http_client()
         .request(request)
@@ -52,6 +63,103 @@ async fn call(session: &Session, method: Method, path: &str) -> Result<Value, St
         return Err(format!("Spotify refused ({}): {detail}", status.as_u16()));
     }
     Ok(value)
+}
+
+/// The address of the smallest picture that still fills a row, out of those on offer.
+pub fn small_cover(images: &Value) -> Option<&str> {
+    let images = images.as_array()?;
+    images
+        .iter()
+        .filter(|image| image["width"].as_u64().is_none_or(|width| width >= 64))
+        .min_by_key(|image| image["width"].as_u64().unwrap_or(u64::MAX))
+        .or(images.last())
+        .and_then(|image| image["url"].as_str())
+}
+
+/// The address of the picture nearest the size the player draws what is playing at.
+fn large_cover(images: &Value) -> Option<&str> {
+    images
+        .as_array()?
+        .iter()
+        .min_by_key(|image| (image["width"].as_i64().unwrap_or(640) - 300).abs())
+        .and_then(|image| image["url"].as_str())
+}
+
+/// What is playing, on whichever device, as the Web API tells it: the state, and the
+/// id of the device. `None` when nothing is.
+pub async fn player(session: &Session) -> Result<Option<(crate::protocol::State, String)>, String> {
+    let found = get(session, "/me/player?additional_types=track").await?;
+    let Some(device) = found["device"]["id"].as_str() else {
+        return Ok(None);
+    };
+    let item = &found["item"];
+    let track = item["uri"].as_str().filter(|uri| uri.starts_with("spotify:track:")).map(|uri| {
+        let artists: Vec<&str> = item["artists"].as_array().into_iter().flatten().filter_map(|artist| artist["name"].as_str()).collect();
+        crate::protocol::Track {
+            uri: uri.to_string(),
+            name: item["name"].as_str().unwrap_or("Untitled").to_string(),
+            artists: artists.join(", "),
+            album: item["album"]["name"].as_str().unwrap_or_default().to_string(),
+            duration_ms: item["duration_ms"].as_u64().unwrap_or(0) as u32,
+            cover: large_cover(&item["album"]["images"]).map(str::to_string),
+        }
+    });
+    let state = crate::protocol::State {
+        track,
+        playing: found["is_playing"].as_bool().unwrap_or(false),
+        position_ms: found["progress_ms"].as_u64().unwrap_or(0) as u32,
+        volume: found["device"]["volume_percent"].as_u64().unwrap_or(0).min(100) as u8,
+        shuffle: found["shuffle_state"].as_bool().unwrap_or(false),
+        repeat: match found["repeat_state"].as_str() {
+            Some("context") => "all",
+            Some("track") => "one",
+            _ => "off",
+        }
+        .to_string(),
+        device: found["device"]["name"].as_str().map(str::to_string),
+        liked: None,
+    };
+    Ok(Some((state, device.to_string())))
+}
+
+/// The devices that could play, this one marked.
+pub async fn devices(session: &Session, here: &str) -> String {
+    match get(session, "/me/player/devices").await {
+        Ok(found) => {
+            let items = found["devices"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|device| {
+                    let id = device["id"].as_str()?;
+                    Some(json!({
+                        "kind": "device",
+                        "id": id,
+                        "uri": format!("device:{id}"),
+                        "name": device["name"].as_str().unwrap_or("Unnamed"),
+                        "artists": device["type"].as_str().unwrap_or_default(),
+                        "active": device["is_active"].as_bool().unwrap_or(false),
+                        "here": id == here,
+                    }))
+                })
+                .collect();
+            list_line("devices", "", items, None)
+        }
+        Err(why) => list_line("devices", "", Vec::new(), Some(why)),
+    }
+}
+
+/// Whether a track is among the liked songs.
+pub async fn is_liked(session: &Session, uri: &str) -> Option<bool> {
+    let id = uri.strip_prefix("spotify:track:")?;
+    get(session, &format!("/me/tracks/contains?ids={}", encode(id))).await.ok()?[0].as_bool()
+}
+
+/// Puts a track among the liked songs, or takes it out.
+pub async fn set_liked(session: &Session, uri: &str, on: bool) -> Result<(), String> {
+    let id = uri.strip_prefix("spotify:track:").ok_or("only tracks can be liked")?;
+    let method = if on { Method::PUT } else { Method::DELETE };
+    send(session, method, &format!("/me/tracks?ids={}", encode(id)), None).await.map(|_| ())
 }
 
 /// One row for the player from a track as the Web API describes it.
@@ -75,6 +183,7 @@ pub fn track_item(track: &Value) -> Option<Value> {
         // For going from a track to where it comes from.
         "album_id": track["album"]["id"].as_str(),
         "artist_id": track["artists"][0]["id"].as_str(),
+        "cover": small_cover(&track["album"]["images"]),
     }))
 }
 
@@ -93,6 +202,7 @@ pub fn album_item(album: &Value) -> Option<Value> {
         // The year is all of the date that is always there.
         "album": album["release_date"].as_str().and_then(|date| date.get(..4)).unwrap_or_default(),
         "count": album["total_tracks"].as_u64(),
+        "cover": small_cover(&album["images"]),
     }))
 }
 
@@ -103,6 +213,7 @@ pub fn artist_item(artist: &Value) -> Option<Value> {
         "id": id,
         "uri": artist["uri"].as_str().map(str::to_string).unwrap_or_else(|| format!("spotify:artist:{id}")),
         "name": artist["name"].as_str().unwrap_or("Unknown"),
+        "cover": small_cover(&artist["images"]),
     }))
 }
 
@@ -122,6 +233,7 @@ pub fn playlist_item(playlist: &Value) -> Option<Value> {
         "name": playlist["name"].as_str().unwrap_or("Untitled"),
         "owner": playlist["owner"]["display_name"].as_str().unwrap_or_default(),
         "count": count,
+        "cover": small_cover(&playlist["images"]),
     }))
 }
 
@@ -205,7 +317,7 @@ pub async fn album(session: &Session, id: &str) -> String {
         Ok(found) => found,
         Err(why) => return list_line("album", id, Vec::new(), Some(why)),
     };
-    let on = json!({ "name": found["name"], "id": found["id"] });
+    let on = json!({ "name": found["name"], "id": found["id"], "images": found["images"] });
     let fill = |track: &Value| {
         let mut track = track.clone();
         track["album"] = on.clone();
@@ -332,6 +444,18 @@ mod tests {
         assert_eq!((item["album_id"].as_str(), item["artist_id"].as_str()), (Some("al1"), Some("ar1")));
         assert!(has_more(&json!({"next": "https://api.spotify.com/v1/me/tracks?offset=50"})));
         assert!(!has_more(&json!({"next": null})));
+    }
+
+    #[test]
+    fn picks_pictures_by_size() {
+        let images = json!([{"url": "big", "width": 640}, {"url": "mid", "width": 300}, {"url": "small", "width": 64}]);
+        assert_eq!(small_cover(&images), Some("small"));
+        assert_eq!(large_cover(&images), Some("mid"));
+        // Smaller than a row is no use while there is anything larger.
+        assert_eq!(small_cover(&json!([{"url": "a", "width": 640}, {"url": "tiny", "width": 32}])), Some("a"));
+        assert_eq!(small_cover(&json!([{"url": "only", "width": null}])), Some("only"));
+        assert_eq!(small_cover(&json!([])), None);
+        assert_eq!(small_cover(&Value::Null), None);
     }
 
     #[test]

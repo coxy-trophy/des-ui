@@ -296,6 +296,9 @@ impl DesComp {
         if from_shell && self.shell.is_none() {
             tracing::info!("shell window connected");
             self.shell = Some(window);
+            if let Some(splash) = &mut self.splash {
+                splash.shell_ready();
+            }
         } else if from_shell {
             tracing::info!(count = self.backdrops.len() + 1, "shell backdrop connected");
             self.backdrops.push(window);

@@ -169,7 +169,13 @@ console, and run `des-ui --unlock`.
 workspace: search, your playlists, your saved albums and your liked songs, with the
 track playing and its controls along the bottom. Long lists load the rest as you
 scroll to their end. A track's artist and album can be clicked to go to them, search
-finds albums and artists too, and `BACK` returns to the list you came from. `UP NEXT` shows what is queued, and `+ QUEUE` on a
+finds albums and artists too, and `BACK` returns to the list you came from.
+
+What plays on another of your devices shows here too, with `ON <DEVICE>` beside
+it, and the controls then act on that device. `DEVICES` lists what is online; a
+click moves the music there, or here. `REPEAT` goes from off to the whole list to
+the one track, and `LIKE` puts the track among your liked songs (which asks once
+more for Spotify's approval). `UP NEXT` shows what is queued, and `+ QUEUE` on a
 track under the pointer adds it. While something plays, the right column shows it
 too, and the keyboard's play, next and previous keys work from anywhere.
 
@@ -250,6 +256,28 @@ shown.
 DISTURB` there keeps all but the urgent ones off the screen; they still reach the
 list. Nothing is shown over the lock screen.
 
+## The splash
+
+From signing in until the desktop is there, the screen shows the desktop's name over
+a bar that fills, in your theme's accent; the name glitches now and then. The
+compositor draws it, so it is there before anything else is. It stays for about a
+second and a half at least, and for as long as the shell takes beyond that.
+Restarting the shell (Super+Shift+R) shows it for a moment too.
+
+The same screen can stand in for the maker's logo while the machine boots and
+shuts down:
+
+```sh
+./install-boot-splash.sh      # uses sudo; rebuilds the boot image, which takes a minute
+```
+
+It is a Plymouth theme, made in the colours of the theme you use at the time; run it
+again after changing theme. `./uninstall-boot-splash.sh` puts back what was there.
+
+Between the password and the splash the screen is black for a second or so: the
+login screen has gone and the session's compositor is still taking over the display,
+and in between nothing can draw.
+
 ## Its own login screen
 
 Optional, and separate from the above, because it changes how the machine boots:
@@ -302,6 +330,7 @@ run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`
 - `shell/src/theme.rs` — eDEX-UI theme loader
 - `shell/src/music.rs` — the music view and what is playing
 - `compositor/src/capture.rs`, `shell/src/capture.rs` — screenshots and recordings
+- `compositor/src/splash.rs` — the splash shown while the session starts
 - `shell/src/notify.rs`, `compositor/src/toast.rs` — notifications, and how their
   toasts get above the applications
 - `music/src/main.rs`, `web.rs`, `protocol.rs` — the Spotify player, the library
@@ -321,7 +350,8 @@ run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`
 - Placing displays above one another
 - VPNs that ask for a password each time they connect
 - In the music player: removing from or reordering the queue (Spotify offers outside
-  apps no way to), an artist's most played tracks, the artists you follow
+  apps no way to), an artist's most played tracks, the artists you follow, adding
+  to and editing playlists, podcasts, lyrics
 - In notifications: icons that exist only as SVG drawings
 - On the login screen: accounts that need more than a password
 - From the original: on-screen keyboard, sound effects, mouse reporting to

@@ -103,7 +103,7 @@ pub fn init_winit(
                 let hidden = state.last_frame.elapsed() > Duration::from_millis(250);
                 // Out of sight nothing is drawn to the window, so the picture asked
                 // for with `--screenshot` is drawn off screen instead.
-                if hidden && state.screenshot.is_some() && state.start_time.elapsed() > Duration::from_secs(5) {
+                if hidden && state.screenshot.is_some() && state.start_time.elapsed() > Duration::from_millis(crate::state::test_millis("DES_TEST_SHOT_MS", 5000)) {
                     match state.grab(0, false) {
                         Ok(frame) => {
                             let mut data = format!("P6\n{} {}\n255\n", frame.width, frame.height).into_bytes();
@@ -148,7 +148,7 @@ pub fn init_winit(
                     return;
                 }
 
-                let capture = state.screenshot.is_some() && state.start_time.elapsed() > Duration::from_secs(5);
+                let capture = state.screenshot.is_some() && state.start_time.elapsed() > Duration::from_millis(crate::state::test_millis("DES_TEST_SHOT_MS", 5000));
                 let toast_area = state.toast_area();
                 let primary = state.screens.first().map(|screen| screen.loc);
                 let backend = state.backend.as_mut().unwrap();
@@ -157,8 +157,16 @@ pub fn init_winit(
 
                 {
                     let (renderer, mut framebuffer) = backend.bind().unwrap();
-                    let toasts = crate::toast::elements(renderer, state.shell.as_ref(), toast_area, primary, &state.toast_id, (0, 0).into(), scale);
-                    smithay::desktop::space::render_output::<_, crate::toast::ToastElement, _, _>(
+                    let mut toasts: Vec<crate::splash::TopElements> = Vec::new();
+                    if let Some(splash) = state.splash.as_mut() {
+                        toasts.extend(splash.elements(renderer, size.to_f64().to_logical(scale).to_i32_round(), scale));
+                    }
+                    toasts.extend(
+                        crate::toast::elements(renderer, state.shell.as_ref(), toast_area, primary, &state.toast_id, (0, 0).into(), scale)
+                            .into_iter()
+                            .map(crate::splash::TopElements::Toast),
+                    );
+                    smithay::desktop::space::render_output::<_, crate::splash::TopElements, _, _>(
                         &output,
                         renderer,
                         &mut framebuffer,

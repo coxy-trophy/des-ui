@@ -102,6 +102,7 @@ impl DesComp {
         // the moment so that the rest of the state can be read beside it.
         let mut udev = self.udev.take();
         let mut backend = self.backend.take();
+        let mut splash = self.splash.take();
         let result = (|| {
             let mut elements: Vec<OutputElements> = Vec::new();
             let renderer: &mut GlesRenderer = match (&mut udev, &mut backend) {
@@ -115,6 +116,11 @@ impl DesComp {
                 (None, Some(backend)) => backend.renderer(),
                 (None, None) => return Err("nothing is drawing yet".to_string()),
             };
+            // While the splash is up it is all there is to see.
+            if let Some(splash) = splash.as_mut() {
+                elements.clear();
+                elements.extend(crate::udev::splash_elements(splash, renderer, rect.size, scale));
+            }
             elements.extend(
                 crate::toast::elements(renderer, self.shell.as_ref(), toast_area, primary, &self.toast_id, rect.loc, scale)
                     .into_iter()
@@ -147,6 +153,7 @@ impl DesComp {
         })();
         self.udev = udev;
         self.backend = backend;
+        self.splash = splash;
         result
     }
 

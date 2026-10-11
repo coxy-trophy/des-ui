@@ -71,6 +71,7 @@ render_elements! {
     Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
     ClientCursor=WaylandSurfaceRenderElement<GlesRenderer>,
     Toast=crate::toast::ToastElement,
+    Solid=smithay::backend::renderer::element::solid::SolidColorRenderElement,
 }
 
 /// The pointer as something to draw at `position` on a display: the arrow, or the
@@ -111,6 +112,25 @@ pub fn cursor_elements(
         }
     }
     elements
+}
+
+/// The splash as something to draw on a display, in this backend's terms.
+pub fn splash_elements(
+    splash: &mut crate::splash::Splash,
+    renderer: &mut GlesRenderer,
+    size: smithay::utils::Size<i32, smithay::utils::Logical>,
+    scale: f64,
+) -> Vec<OutputElements> {
+    splash
+        .elements(renderer, size, scale)
+        .into_iter()
+        .map(|element| match element {
+            crate::splash::TopElements::Buffer(buffer) => OutputElements::Cursor(buffer),
+            crate::splash::TopElements::Solid(solid) => OutputElements::Solid(solid),
+            crate::splash::TopElements::Toast(toast) => OutputElements::Toast(toast),
+            crate::splash::TopElements::_GenericCatcher(never) => match never {},
+        })
+        .collect()
 }
 
 /// One monitor and the means to draw on it.
@@ -823,7 +843,10 @@ impl DesComp {
             // Front to back: the pointer is above everything.
             let mut elements: Vec<OutputElements> = Vec::new();
             let scale = monitor.output.current_scale().fractional_scale();
-            if geometry.to_f64().contains(pointer) {
+            // The splash covers everything, the pointer included.
+            if let Some(splash) = self.splash.as_mut() {
+                elements.extend(splash_elements(splash, renderer, geometry.size, scale));
+            } else if geometry.to_f64().contains(pointer) {
                 let position = pointer - geometry.loc.to_f64();
                 elements.extend(cursor_elements(renderer, cursor, &self.cursor_status, position, scale));
             }
