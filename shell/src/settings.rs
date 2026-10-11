@@ -265,6 +265,7 @@ impl Settings {
                             Section::Network => {
                                 let radio = self.radio.get_or_insert_with(|| Radio::new(ui.ctx().clone()));
                                 radio.show_wifi(ui, theme);
+                                radio.show_links(ui, theme);
                             }
                             Section::Bluetooth => {
                                 let radio = self.radio.get_or_insert_with(|| Radio::new(ui.ctx().clone()));

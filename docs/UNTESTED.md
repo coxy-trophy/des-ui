@@ -44,3 +44,14 @@ watched work on a real machine. Tick them off, or note what went wrong.
 
 - [ ] Wireless data-control clipboard protocol (used by `wl-copy`)
 - [ ] Media keys (play, next, previous) driving the music player
+
+## Network and Bluetooth (Settings)
+
+- [ ] Wired: a cable plugged in shows as connected; DISCONNECT and CONNECT work
+- [ ] VPN: ADD brings in a WireGuard `.conf` and an OpenVPN `.ovpn` file
+- [ ] VPN: CONNECT, DISCONNECT and FORGET
+- [ ] Bluetooth: pairing a device that needs no code still works
+- [ ] Bluetooth: a keyboard that shows a code to type on it
+- [ ] Bluetooth: a phone that asks to confirm a code
+- [ ] Bluetooth: a device that wants a PIN typed here
+- [ ] Bluetooth: CANCEL while pairing
