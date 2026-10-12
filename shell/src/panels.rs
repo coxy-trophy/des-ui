@@ -326,6 +326,8 @@ pub fn right(
         ("Power", "ESC"),
         ("Lock", "L"),
         ("Next application", "TAB"),
+        ("Workspace", "1 – 4"),
+        ("Send to workspace", "SHIFT 1 – 4"),
         ("Split the workspace", "S"),
         ("Full screen", "F"),
         ("Other display", "O"),

@@ -27,7 +27,12 @@ pub struct App {
     /// Index into `DesComp::screens` of the display it lives on.
     pub screen: usize,
     /// Where it is on that display. At most one application is in each visible place.
+    /// Hidden while its workspace is not the one in view.
     pub place: Place,
+    /// The workspace it belongs to.
+    pub workspace: usize,
+    /// Where it was when its workspace was last in view, to go back to.
+    pub kept: Place,
 }
 
 /// How a display's workspace is being used.
@@ -178,9 +183,12 @@ impl DesComp {
 
     /// Brings the application at `index` into view and gives it the keyboard.
     fn activate(&mut self, index: usize) {
-        let Some(app) = self.apps.get(index) else {
+        let Some(on) = self.apps.get(index).map(|app| app.workspace) else {
             return;
         };
+        // An application on another workspace brings that workspace into view.
+        self.switch_workspace(on);
+        let app = &self.apps[index];
         let screen = app.screen;
         // An application already in the right half stays there.
         let side = app.place == Place::Side;
@@ -312,6 +320,8 @@ impl DesComp {
                 window,
                 screen,
                 place: Place::Hidden,
+                workspace: self.workspace,
+                kept: Place::Hidden,
             });
             self.place(self.apps.len() - 1, if side { Place::Side } else { Place::Main });
             self.focus_screen = screen;
@@ -350,6 +360,7 @@ impl DesComp {
         };
         // Applications in the other slot are not candidates.
         let here: Vec<usize> = (0..self.apps.len())
+            .filter(|i| self.apps[*i].workspace == self.workspace)
             .filter(|i| self.apps[*i].screen == screen && [slot, Place::Hidden].contains(&self.apps[*i].place))
             .collect();
         let current = here.iter().position(|i| self.apps[*i].place == slot);
@@ -373,6 +384,64 @@ impl DesComp {
             }
         }
         self.arrange();
+    }
+
+    /// Brings another workspace into view: its applications where they were, and the
+    /// ones of the workspace left behind out of sight until it is come back to.
+    pub fn switch_workspace(&mut self, to: usize) {
+        if to == self.workspace || to >= des_common::ipc::WORKSPACES {
+            return;
+        }
+        let from = self.workspace;
+        for app in self.apps.iter_mut() {
+            if app.workspace == from {
+                app.kept = app.place;
+                app.place = Place::Hidden;
+            } else if app.workspace == to {
+                app.place = app.kept;
+            }
+        }
+        // Split and full screen belong to the workspace too.
+        if self.kept_modes.len() < des_common::ipc::WORKSPACES {
+            self.kept_modes.resize(des_common::ipc::WORKSPACES, Vec::new());
+        }
+        self.kept_modes[from] = self.modes.clone();
+        let mut modes = std::mem::take(&mut self.kept_modes[to]);
+        modes.resize(self.modes.len(), ScreenMode::default());
+        self.modes = modes;
+        self.workspace = to;
+        tracing::info!(workspace = to + 1, "workspace in view");
+        self.arrange();
+    }
+
+    /// Sends an application to another workspace, where it is the one in view on its
+    /// display the next time that workspace is.
+    pub fn send_to_workspace(&mut self, index: usize, to: usize) {
+        if to >= des_common::ipc::WORKSPACES || index >= self.apps.len() || self.apps[index].workspace == to {
+            return;
+        }
+        let screen = self.apps[index].screen;
+        if to == self.workspace {
+            // Brought here from elsewhere: into view at once.
+            self.apps[index].workspace = to;
+            self.place(index, Place::Main);
+        } else {
+            for app in self.apps.iter_mut().filter(|app| app.workspace == to && app.screen == screen && app.kept == Place::Main) {
+                app.kept = Place::Hidden;
+            }
+            let app = &mut self.apps[index];
+            app.workspace = to;
+            app.kept = Place::Main;
+            app.place = Place::Hidden;
+        }
+        self.arrange();
+    }
+
+    /// Sends the application in use to another workspace.
+    pub fn send_active_to(&mut self, to: usize) {
+        if let Some(index) = self.focused_on(self.focus_screen) {
+            self.send_to_workspace(index, to);
+        }
     }
 
     /// Asks the current application to close. The terminal cannot be closed this way.
@@ -428,7 +497,7 @@ impl DesComp {
         } else {
             let other = (0..self.apps.len())
                 .rev()
-                .find(|i| self.apps[*i].screen == screen && self.apps[*i].place == Place::Hidden);
+                .find(|i| self.apps[*i].workspace == self.workspace && self.apps[*i].screen == screen && self.apps[*i].place == Place::Hidden);
             match (other, main) {
                 (Some(other), _) => self.apps[other].place = Place::Side,
                 // Only the frame has a terminal to put beside a lone application.
@@ -610,6 +679,8 @@ impl DesComp {
                 Command::Activate(_) => {}
                 Command::Close(index) => self.close(index),
                 Command::Move(index) => self.move_app(index),
+                Command::Workspace(workspace) => self.switch_workspace(workspace),
+                Command::SendTo(index, workspace) => self.send_to_workspace(index, workspace),
                 Command::Terminal => self.show_terminal(),
                 Command::Split => self.toggle_split(),
                 Command::Fullscreen => self.toggle_fullscreen(),
@@ -645,6 +716,7 @@ impl DesComp {
             panels: self.panels,
             terminal_split: self.in_place(0, Place::Side).is_some() && self.in_place(0, Place::Main).is_none(),
             focus: self.focused_on(self.focus_screen),
+            workspace: self.workspace,
             apps: self
                 .apps
                 .iter()
@@ -652,6 +724,7 @@ impl DesComp {
                     title: window_title(&app.window),
                     screen: app.screen.min(last_screen),
                     place: app.place,
+                    workspace: app.workspace,
                 })
                 .collect(),
         });

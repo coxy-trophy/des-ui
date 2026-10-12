@@ -40,13 +40,19 @@ pub enum Place {
     Side,
 }
 
+/// How many workspaces there are: sets of applications, one of which is in view.
+pub const WORKSPACES: usize = 4;
+
 /// One open application.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppInfo {
     pub title: String,
     /// Index of the display the application lives on; 0 is the one with the frame.
     pub screen: usize,
+    /// Where it is on that display; hidden when its workspace is not the one in view.
     pub place: Place,
+    /// The workspace it belongs to, counted from 0.
+    pub workspace: usize,
 }
 
 /// The displays and open applications, as the compositor reports them.
@@ -59,6 +65,8 @@ pub struct DesktopState {
     pub terminal_split: bool,
     /// The application with the keyboard; `None` when the shell has it.
     pub focus: Option<usize>,
+    /// The workspace in view, counted from 0.
+    pub workspace: usize,
     pub apps: Vec<AppInfo>,
 }
 
@@ -69,6 +77,7 @@ impl Default for DesktopState {
             panels: Panels::default(),
             terminal_split: false,
             focus: None,
+            workspace: 0,
             apps: Vec::new(),
         }
     }
@@ -88,10 +97,11 @@ impl DesktopState {
             None => "-".to_string(),
         };
         let mut line = format!(
-            "state {} {} {} {focus}",
+            "state {} {} {} {focus} {}",
             self.screens,
             self.panels.bits(),
-            self.terminal_split as u8
+            self.terminal_split as u8,
+            self.workspace
         );
         for app in &self.apps {
             let place = match app.place {
@@ -99,7 +109,7 @@ impl DesktopState {
                 Place::Main => 1,
                 Place::Side => 2,
             };
-            line.push_str(&format!("\t{} {place} ", app.screen));
+            line.push_str(&format!("\t{} {place}:{} ", app.screen, app.workspace));
             // Titles come from applications and must not break the framing.
             line.extend(app.title.chars().map(|c| if c.is_control() { ' ' } else { c }));
         }
@@ -121,6 +131,11 @@ impl DesktopState {
             "-" => None,
             index => Some(index.parse().ok()?),
         };
+        // A compositor from before there were workspaces says nothing of them.
+        let workspace: usize = match head.next() {
+            Some(workspace) => workspace.parse().ok().filter(|workspace| *workspace < WORKSPACES)?,
+            None => 0,
+        };
         if screens == 0 || head.next().is_some() {
             return None;
         }
@@ -128,7 +143,12 @@ impl DesktopState {
         for field in fields {
             let mut parts = field.splitn(3, ' ');
             let screen: usize = parts.next()?.parse().ok()?;
-            let place = match parts.next()? {
+            let word = parts.next()?;
+            let (place, on) = match word.split_once(':') {
+                Some((place, on)) => (place, on.parse::<usize>().ok().filter(|on| *on < WORKSPACES)?),
+                None => (word, 0),
+            };
+            let place = match place {
                 "0" => Place::Hidden,
                 "1" => Place::Main,
                 "2" => Place::Side,
@@ -141,6 +161,7 @@ impl DesktopState {
                 title: parts.next()?.to_string(),
                 screen,
                 place,
+                workspace: on,
             });
         }
         if focus.is_some_and(|index| index >= apps.len()) {
@@ -151,6 +172,7 @@ impl DesktopState {
             panels,
             terminal_split,
             focus,
+            workspace,
             apps,
         })
     }
@@ -472,6 +494,10 @@ pub enum Command {
     Close(usize),
     /// Move the application at this index to the next display.
     Move(usize),
+    /// Bring this workspace into view.
+    Workspace(usize),
+    /// Send the application at this index to this workspace.
+    SendTo(usize, usize),
     /// Uncover the terminal and give it the keyboard.
     Terminal,
     /// Split the workspace in use between two windows, or undo that.
@@ -510,6 +536,8 @@ impl Command {
             Command::Activate(index) => format!("activate {index}\n"),
             Command::Close(index) => format!("close {index}\n"),
             Command::Move(index) => format!("move {index}\n"),
+            Command::Workspace(workspace) => format!("workspace {workspace}\n"),
+            Command::SendTo(index, workspace) => format!("send-to {index}:{workspace}\n"),
             Command::Terminal => "terminal\n".to_string(),
             Command::Split => "split\n".to_string(),
             Command::Fullscreen => "fullscreen\n".to_string(),
@@ -580,6 +608,11 @@ impl Command {
             ("activate", Some(index)) => Command::Activate(index.parse().ok()?),
             ("close", Some(index)) => Command::Close(index.parse().ok()?),
             ("move", Some(index)) => Command::Move(index.parse().ok()?),
+            ("workspace", Some(workspace)) => Command::Workspace(workspace.parse().ok().filter(|workspace| *workspace < WORKSPACES)?),
+            ("send-to", Some(pair)) => {
+                let (index, workspace) = pair.split_once(':')?;
+                Command::SendTo(index.parse().ok()?, workspace.parse().ok().filter(|workspace| *workspace < WORKSPACES)?)
+            }
             ("shot", Some(word)) => Command::Shot(ShotMode::from_word(word)?),
             ("record-stop", None) => Command::RecordStop,
             ("hold-idle", Some("on")) => Command::HoldIdle(true),
@@ -610,6 +643,7 @@ mod tests {
             title: title.into(),
             screen,
             place,
+            workspace: 0,
         }
     }
 
@@ -622,16 +656,23 @@ mod tests {
                 panels: Panels::from_bits(5).unwrap(),
                 terminal_split: true,
                 focus: Some(1),
+                workspace: 2,
                 apps: vec![
                     app("Text Editor", 0, Place::Side),
                     app("Files — Home", 1, Place::Main),
-                    app("x", 0, Place::Hidden),
+                    AppInfo { workspace: 3, ..app("x", 0, Place::Hidden) },
                 ],
             },
         ] {
             assert_eq!(DesktopState::decode(&state.encode()), Some(state.clone()));
             assert_eq!(Event::decode(&state.encode()), Some(Event::State(state)));
         }
+    }
+
+    #[test]
+    fn reads_state_from_before_workspaces() {
+        let state = DesktopState::decode("state 1 7 0 0\t0 1 Editor\n").unwrap();
+        assert_eq!((state.workspace, state.apps[0].workspace, state.apps[0].place), (0, 0, Place::Main));
     }
 
     #[test]
@@ -670,6 +711,9 @@ mod tests {
             "state 1 7 2 -",
             "state 1 7 0",
             "state 1 7 0 - extra",
+            "state 1 7 0 - 0 extra",
+            "state 1 7 0 - 9",
+            "state 1 7 0 -\t0 1:9 on-a-missing-workspace",
             "state 1 7 0 0",
             "state 1 7 0 -\t1 1 on-a-missing-display",
             "state 1 7 0 -\t0 3 bad-place",
@@ -739,6 +783,8 @@ mod tests {
             Command::Activate(3),
             Command::Close(0),
             Command::Move(2),
+            Command::Workspace(3),
+            Command::SendTo(1, 2),
             Command::Terminal,
             Command::Split,
             Command::Fullscreen,

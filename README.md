@@ -65,7 +65,7 @@ covers your desktop, it *is* the desktop.
 | Runs | Inside your existing desktop | In place of it, with its own Wayland compositor |
 | Built with | Electron (JavaScript) | Rust |
 | Platforms | Windows, macOS, Linux | Linux |
-| Other applications | Stay outside, behind it | Open inside the frame, split or full screen |
+| Other applications | Stay outside, behind it | Open inside the frame, with workspaces and splits |
 | Settings, lock and login screens | No; those belong to the desktop under it | Yes |
 | Themes | Its own JSON format | The same format; eDEX-UI theme files work |
 | On-screen keyboard, sound effects | Yes | [Not yet](#not-done-yet) |
@@ -121,6 +121,7 @@ window.
 | <kbd>,</kbd> | Open the settings |
 | <kbd>L</kbd> | Lock the screen |
 | <kbd>Tab</kbd> | Switch between the terminal and the applications on this display |
+| <kbd>1</kbd> to <kbd>4</kbd> | Bring that workspace into view; with <kbd>Shift</kbd>, send the application in use there |
 | <kbd>S</kbd> | Split the workspace between two windows, or make it whole again |
 | <kbd>←</kbd> <kbd>→</kbd> | Give the keyboard to that half of a split |
 | <kbd>F</kbd> | Full screen: the applications on this display cover all of it |
@@ -143,6 +144,12 @@ keys do, and the three small switches in the status strip collapse the panels.
 A split keeps the window in view on the left and puts the application used before
 it on the right. With one application open, that one goes right and the terminal
 stays on the left.
+
+There are four workspaces: sets of applications, one of which is in view at a time,
+each with its own split and full screen. The numbered squares at the top of the
+frame show which is in view and which hold something; a click goes to one, and
+Shift+click sends the application in use there. The terminal and the frame are the
+same in all of them. An application opens on the workspace in view.
 
 With several displays, modes and arrangement follow what you chose in the settings,
 or else the layout saved in GNOME's display settings (`~/.config/monitors.xml`)
@@ -195,6 +202,10 @@ Esc closes. Changes apply at once and are saved.
 - **Sound & screen** — volume and brightness; which device plays and which
   microphone listens, each with its level and a mute; and the volume of each
   application that is making sound
+- **Users** — the people who can sign in: adding one, changing a name or a
+  password, making someone an administrator, and removing an account, with or
+  without its files. Each change asks for your own password and is carried out by
+  the system's own tools through `sudo`
 - **Session** — your picture for the lock and login screens, locking, where the
   logs are, and logging out
 
@@ -436,6 +447,7 @@ run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`
 - `shell/src/settings.rs`, `config.rs` — the settings screen and the file behind it
 - `shell/src/radio.rs` — Wi-Fi, wired and VPN connections, Bluetooth
 - `shell/src/sound.rs` — output and input devices, levels, per-application volume
+- `shell/src/users.rs` — the accounts on the machine
 - `shell/src/greeter.rs`, `lock.rs` — the login screen and the lock screen
 - `shell/src/power.rs` — locking before sleep, and what holds off the idle lock
 - `common/src/input.rs` — keyboard, mouse and touchpad settings

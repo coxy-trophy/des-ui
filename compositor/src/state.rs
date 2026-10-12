@@ -129,6 +129,10 @@ pub struct DesComp {
     pub screens: Vec<Rectangle<i32, Logical>>,
     /// How each display's workspace is being used; parallel to `screens`.
     pub modes: Vec<ScreenMode>,
+    /// The workspace in view, and how the displays of each other one were being used
+    /// when it was last in view.
+    pub workspace: usize,
+    pub kept_modes: Vec<Vec<ScreenMode>>,
     /// Which of the frame's panels are open.
     pub panels: Panels,
     /// The display in use: its application has the keyboard, and shortcuts act on it.
@@ -239,6 +243,8 @@ impl DesComp {
             apps: Vec::new(),
             screens: Vec::new(),
             modes: Vec::new(),
+            workspace: 0,
+            kept_modes: Vec::new(),
             panels: Panels::default(),
             focus_screen: 0,
             cursor_status: CursorImageStatus::default_named(),

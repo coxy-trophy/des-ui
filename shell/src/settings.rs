@@ -92,10 +92,11 @@ enum Section {
     Pointer,
     Globe,
     Sound,
+    Users,
     Session,
 }
 
-const SECTIONS: [(Section, &str); 11] = [
+const SECTIONS: [(Section, &str); 12] = [
     (Section::Appearance, "APPEARANCE"),
     (Section::Terminal, "TERMINAL"),
     (Section::Frame, "FRAME"),
@@ -106,6 +107,7 @@ const SECTIONS: [(Section, &str); 11] = [
     (Section::Pointer, "MOUSE & TOUCHPAD"),
     (Section::Globe, "GLOBE"),
     (Section::Sound, "SOUND & SCREEN"),
+    (Section::Users, "USERS"),
     (Section::Session, "SESSION"),
 ];
 
@@ -132,6 +134,7 @@ pub struct Settings {
     radio: Option<Radio>,
     faces: Option<Faces>,
     sound: Option<crate::sound::Sound>,
+    users: Option<crate::users::Users>,
 }
 
 impl Default for Settings {
@@ -153,6 +156,7 @@ impl Default for Settings {
             radio: None,
             faces: None,
             sound: None,
+            users: None,
         }
     }
 }
@@ -317,6 +321,7 @@ impl Settings {
                             Section::Displays => self.displays(ui, theme, displays, &mut changes),
                             Section::Globe => self.globe(ui, theme, config, geo, &mut changes),
                             Section::Sound => self.sound(ui, theme, config, mon, &mut changes),
+                            Section::Users => self.users.get_or_insert_with(|| crate::users::Users::new(ui.ctx().clone())).show(ui, theme),
                             Section::Session => self.session(ui, theme, config, input, &mut changes),
                         }
                     });

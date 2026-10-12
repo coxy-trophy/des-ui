@@ -16,6 +16,7 @@ mod power;
 mod bootsplash;
 mod radio;
 mod sound;
+mod users;
 mod settings;
 mod sysmon;
 mod term;
@@ -56,7 +57,7 @@ Options:
   --music              Start with the music player open
   --power              Start with the power menu open
                        (appearance, terminal, frame, displays, network, bluetooth,
-                       keyboard, mouse, globe, sound, session)
+                       keyboard, mouse, globe, sound, users, session)
   --list-apps          Print the applications the launcher would offer, and exit
   --unlock             Unlock a locked screen from outside it, such as from a text
                        console you have signed in on
@@ -723,11 +724,13 @@ impl App {
             actions.command = Some(Command::Terminal);
         }
 
-        if let Some(state) = state.filter(|state| !state.apps.is_empty()) {
+        // Only the applications of the workspace in view have a tab; the others are
+        // reached through their workspace.
+        if let Some(state) = state.filter(|state| state.apps.iter().any(|app| app.workspace == state.workspace)) {
             let (rule, _) = ui.allocate_exact_size(vec2(21.0, ui.available_height()), Sense::hover());
             ui.painter()
                 .vline(rule.center().x, rule.shrink2(vec2(0.0, 10.0)).y_range(), Stroke::new(1.0, ui::LINE));
-            for (i, app) in state.apps.iter().enumerate() {
+            for (i, app) in state.apps.iter().enumerate().filter(|(_, app)| app.workspace == state.workspace) {
                 let look = Tab {
                     number: None,
                     name: &panels::truncate(&app.title, 20),
@@ -777,12 +780,46 @@ impl App {
                 {
                     actions.command = Some(Command::Split);
                 }
-                if !state.apps.is_empty()
+                if state.apps.iter().any(|app| app.workspace == state.workspace)
                     && ui::button(ui, theme, "FULL", None, false)
                         .on_hover_text("Let the application cover the whole display (Super+F)")
                         .clicked()
                 {
                     actions.command = Some(Command::Fullscreen);
+                }
+                // The workspaces, last to first since this side fills from the right.
+                ui.add_space(6.0);
+                ui.spacing_mut().item_spacing.x = 4.0;
+                for workspace in (0..des_common::ipc::WORKSPACES).rev() {
+                    let here = workspace == state.workspace;
+                    let count = state.apps.iter().filter(|app| app.workspace == workspace).count();
+                    let (rect, response) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::click());
+                    let painter = ui.painter();
+                    if here {
+                        painter.rect_filled(rect, 0.0, theme.main);
+                    } else {
+                        let line = if response.hovered() { ui::SECONDARY } else { ui::LINE_STRONG };
+                        painter.rect_stroke(rect, 0.0, Stroke::new(1.0, line), egui::StrokeKind::Inside);
+                    }
+                    let ink = if here { ui::GROUND } else if count > 0 { ui::TEXT } else { ui::LABEL };
+                    painter.text(rect.center(), egui::Align2::CENTER_CENTER, (workspace + 1).to_string(), ui::display_bold(12.0), ink);
+                    // A mark on those that hold something.
+                    if count > 0 && !here {
+                        painter.rect_filled(egui::Rect::from_center_size(rect.center_bottom() - vec2(0.0, 4.0), vec2(8.0, 2.0)), 0.0, theme.main);
+                    }
+                    let about = match count {
+                        0 => format!("Workspace {} (Super+{}): empty", workspace + 1, workspace + 1),
+                        1 => format!("Workspace {} (Super+{}): 1 application", workspace + 1, workspace + 1),
+                        many => format!("Workspace {} (Super+{}): {many} applications", workspace + 1, workspace + 1),
+                    };
+                    let response = response.on_hover_text(format!("{about}\nShift+click sends the application in use here (Super+Shift+{})", workspace + 1));
+                    if response.clicked() {
+                        let shift = ui.input(|i| i.modifiers.shift);
+                        actions.command = Some(match state.focus.filter(|_| shift) {
+                            Some(index) => Command::SendTo(index, workspace),
+                            None => Command::Workspace(workspace),
+                        });
+                    }
                 }
             }
         });

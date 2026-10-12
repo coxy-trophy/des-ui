@@ -126,3 +126,19 @@ watched work on a real machine. Tick them off, or note what went wrong.
 - [x] Scrolling by hand, then the view following again at the next line
 - [x] A track whose words are not timed, and one with none
 - [x] Words for a track playing on another device
+
+## Workspaces
+
+- [ ] Super+1 to 4 on the real keyboard, and Super+Shift+1 to 4 to send an application
+- [ ] Clicking the numbered squares, and Shift+click
+- [ ] Split and full screen kept apart per workspace
+- [ ] A notification's click bringing an application on another workspace into view
+- [ ] With two displays: each workspace's applications on both
+
+## Users (Settings → Users)
+
+- [ ] Adding a user, with and without administrator, then signing in as them
+- [ ] Changing a full name, and a password (yours and another's)
+- [ ] Making someone an administrator, and stopping that
+- [ ] Removing a user, keeping files and with files
+- [ ] A wrong password of your own is refused with a clear message

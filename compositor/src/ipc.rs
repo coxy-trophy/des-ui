@@ -158,6 +158,7 @@ mod tests {
                 title: "Editor".into(),
                 screen: 1,
                 place: des_common::ipc::Place::Main,
+                workspace: 0,
             }],
             ..Default::default()
         };

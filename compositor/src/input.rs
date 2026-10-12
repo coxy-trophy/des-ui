@@ -26,6 +26,10 @@ enum Action {
     /// The power key, or its shortcut.
     Power,
     Shot(des_common::ipc::ShotMode),
+    /// Bring a workspace into view.
+    Workspace(usize),
+    /// Send the application in use to a workspace.
+    SendTo(usize),
     Lock,
     /// Super with a key that is no shortcut: swallowed, so that it types nothing.
     Ignore,
@@ -227,6 +231,13 @@ impl DesComp {
                         if !held || locked {
                             return FilterResult::Forward;
                         }
+                        // The digits pick a workspace; with Shift they send the application
+                        // in use there. Shift turns a digit into some other character, so
+                        // the key is read as it is without it.
+                        let digit = handle.raw_syms().first().map(|sym| sym.raw()).filter(|raw| (0x31..=0x39).contains(raw));
+                        if let Some(workspace) = digit.map(|raw| (raw - 0x31) as usize).filter(|workspace| *workspace < des_common::ipc::WORKSPACES) {
+                            return FilterResult::Intercept(if modifiers.shift { Action::SendTo(workspace) } else { Action::Workspace(workspace) });
+                        }
                         match sym {
                             Keysym::BackSpace if modifiers.ctrl && modifiers.alt => {
                                 FilterResult::Intercept(Action::Quit)
@@ -264,6 +275,8 @@ impl DesComp {
                 );
                 match action {
                     Some(Action::Cycle) => self.cycle(),
+                    Some(Action::Workspace(workspace)) => self.switch_workspace(workspace),
+                    Some(Action::SendTo(workspace)) => self.send_active_to(workspace),
                     Some(Action::Close) => self.close_active(),
                     Some(Action::MoveDisplay) => self.move_active(),
                     Some(Action::Launcher) => self.open_launcher(),
