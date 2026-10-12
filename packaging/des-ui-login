@@ -1,0 +1,110 @@
+#!/bin/sh
+# Makes the DEs-UI login screen this machine's login screen, or puts back the one
+# that was there before. Either takes effect at the next boot.
+#
+#     sudo des-ui-login enable
+#     sudo des-ui-login disable
+#     des-ui-login status
+#
+# The login screen is run by greetd, a small login manager. If the machine ever comes
+# up without a usable login, press Ctrl+Alt+F3 for a text console, sign in there, and
+# run:  sudo des-ui-login disable && sudo reboot
+set -eu
+bin=$(dirname "$(readlink -f "$0")")
+config=/etc/greetd/config.toml
+state=/var/lib/des-ui/greeter
+alias=/etc/systemd/system/display-manager.service
+
+# The login manager systemd starts at boot, as a unit name, or nothing.
+current() {
+    [ -L "$alias" ] && basename "$(readlink "$alias")" || true
+}
+ours() {
+    grep -qs "^command *= *\".*des-ui-greeter\"" "$config"
+}
+need_root() {
+    [ "$(id -u)" -eq 0 ] || { echo "This changes the system: run it with sudo." >&2; exit 1; }
+}
+
+case "${1:-}" in
+enable)
+    need_root
+    # The account greetd runs the login screen as, and the console it uses, are the
+    # distribution's choices: keep them.
+    user=$(sed -n 's/^user *= *"\(.*\)"/\1/p' "$config" 2>/dev/null | head -n 1)
+    user=${user:-_greetd}
+    vt=$(sed -n 's/^vt *= *\([0-9a-z"]*\).*/\1/p' "$config" 2>/dev/null | head -n 1)
+    vt=${vt:-7}
+    if ! id "$user" >/dev/null 2>&1; then
+        echo "greetd's account '$user' does not exist; not changing anything." >&2
+        exit 1
+    fi
+    # Where the login screen keeps its log, for when it misbehaves.
+    install -d -o "$user" -m 755 "$state"
+
+    # What starts at boot now is what "disable" puts back. greetd may be that already,
+    # showing its own text login.
+    before=$(current)
+    if ! ours || [ ! -f "$state/previous-login-manager" ]; then
+        echo "$before" >"$state/previous-login-manager"
+    fi
+    if [ -f "$config" ] && ! ours && [ ! -f "$config.before-des-ui" ]; then
+        cp "$config" "$config.before-des-ui"
+    fi
+    cat >"$config" <<CONFIG
+# Written by des-ui-login. The previous file is config.toml.before-des-ui.
+[terminal]
+vt = $vt
+
+[default_session]
+command = "$bin/des-ui-greeter"
+user = "$user"
+CONFIG
+    if [ -n "$before" ] && [ "$before" != greetd.service ]; then
+        systemctl disable "$before" 2>/dev/null || true
+    fi
+    systemctl enable --force greetd
+    echo "Done. The DEs-UI login screen appears from the next boot; nothing has changed yet."
+    echo "To go back:  sudo des-ui-login disable"
+    ;;
+disable)
+    need_root
+    if ! ours; then
+        echo "The DEs-UI login screen is not this machine's login screen; nothing to do."
+        exit 0
+    fi
+    before=$(cat "$state/previous-login-manager" 2>/dev/null || true)
+    if [ -z "$before" ]; then
+        for known in gdm3 gdm sddm lightdm; do
+            if [ -e "/usr/lib/systemd/system/$known.service" ]; then
+                before="$known.service"
+                break
+            fi
+        done
+    fi
+    if [ -n "$before" ] && [ "$before" != greetd.service ]; then
+        systemctl disable greetd 2>/dev/null || true
+        systemctl enable --force "$before"
+    else
+        echo "greetd stays the login manager, with its own text login: there is no other to put back."
+    fi
+    if [ -f "$config.before-des-ui" ]; then
+        mv "$config.before-des-ui" "$config"
+    else
+        sed -i 's|^command *=.*des-ui-greeter"|command = "agreety --cmd /bin/sh"|' "$config"
+    fi
+    rm -f "$state/previous-login-manager"
+    echo "Done. The login screen is as it was before, from the next boot."
+    ;;
+status)
+    if ours && [ "$(current)" = greetd.service ]; then
+        echo "The DEs-UI login screen is this machine's login screen."
+    else
+        echo "The DEs-UI login screen is not in use; the login manager is $(current | sed 's/\.service$//; s/^$/not set/')."
+    fi
+    ;;
+*)
+    sed -n '2,7p' "$0" | cut -c3- >&2
+    exit 2
+    ;;
+esac

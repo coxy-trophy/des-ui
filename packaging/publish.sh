@@ -35,9 +35,40 @@ terminal desktop. For Ubuntu 26.04 on 64-bit Intel and AMD machines.
 Then log out and choose **DEs-UI** from the session menu on the login screen.
 Updates arrive with the rest of the system's, through \`sudo apt upgrade\`.
 
+The login screen and the boot splash are packages of their own:
+
+    sudo apt install des-ui-greeter && sudo des-ui-login enable
+    sudo apt install des-ui-plymouth
+
 The packages are signed with the key
 \`$(gpg --list-keys --with-colons "$key" | sed -n 's/^fpr:*\([0-9A-F]*\):$/\1/p' | head -n 1)\`.
 TEXT
+
+# The same words as a page: without one, the address itself answers "not found",
+# though apt, which asks for the files by name, is served all the same.
+{
+    cat <<'HEAD'
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DEs-UI packages</title>
+<style>
+  body { background: #05080d; color: #aacfd1; font: 16px/1.6 ui-monospace, "DejaVu Sans Mono", monospace; max-width: 52rem; margin: 0 auto; padding: 3rem 1rem; }
+  h1 { font-weight: normal; letter-spacing: .2em; text-transform: uppercase; }
+  a { color: inherit; }
+  pre { border: 1px solid #aacfd155; padding: 1rem; overflow-x: auto; }
+  code { color: #e8fbfc; }
+</style>
+<h1>DEs-UI packages</h1>
+HEAD
+    sed -e '1,2d' -e 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g' \
+        -e 's|\[DEs-UI\](\([^)]*\))|<a href="\1">DEs-UI</a>|' \
+        -e 's|\*\*\([^*]*\)\*\*|<b>\1</b>|g' -e 's|`\([^`]*\)`|<code>\1</code>|g' "$site/README.md" \
+        | awk 'BEGIN { RS = ""; FS = "\n" }
+               /^    / { gsub(/(^|\n)    /, "\n"); sub(/^\n/, ""); print "<pre><code>" $0 "</code></pre>"; next }
+               { print "<p>" $0 "</p>" }'
+} >"$site/index.html"
 
 git -C "$site" add -A
 if git -C "$site" diff --cached --quiet; then

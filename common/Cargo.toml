@@ -1,6 +1,6 @@
 [package]
 name = "des-common"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 description = "Frame geometry and desktop protocol shared by the DEs-UI shell and compositor"

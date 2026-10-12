@@ -121,11 +121,18 @@ On Ubuntu 26.04, from the project's apt repository:
 
 That brings `des-ui`, the desktop, and with it `des-ui-music`, the Spotify player,
 which is a package of its own so that it can be left out or removed. Updates then
-arrive through `sudo apt upgrade`. The login screen and the boot splash are not in
-the packages yet: they still come from `./install-login.sh` and
-`./install-boot-splash.sh`, which expect `./install.sh`.
+arrive through `sudo apt upgrade`. Two more packages are there for the asking:
 
-To make the packages yourself, `packaging/build-deb.sh` builds both into
+    sudo apt install des-ui-greeter && sudo des-ui-login enable
+    sudo apt install des-ui-plymouth
+
+`des-ui-greeter` is the login screen. Installing it changes nothing until
+`des-ui-login enable` makes it this machine's login screen from the next boot;
+`sudo des-ui-login disable`, or removing the package, puts back the one that was
+there. `des-ui-plymouth` is the boot splash, in the colours of the default theme;
+it becomes the one in use and rebuilds the boot image, which takes a minute.
+
+To make the packages yourself, `packaging/build-deb.sh` builds all four into
 `target/deb/`; a package suits the release of Ubuntu or Debian it was built on.
 `packaging/make-repo.sh <folder> [<gpg key id>]` turns them into an apt repository,
 and `packaging/publish.sh` does that into the `des-ui-apt` repository that GitHub

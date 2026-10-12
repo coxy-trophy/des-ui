@@ -806,11 +806,11 @@ dependencies = [
 
 [[package]]
 name = "des-common"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "des-comp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "des-common",
  "smithay",
@@ -820,7 +820,7 @@ dependencies = [
 
 [[package]]
 name = "des-music"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "http",
@@ -836,7 +836,7 @@ dependencies = [
 
 [[package]]
 name = "des-ui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",

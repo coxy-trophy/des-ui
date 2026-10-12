@@ -1,0 +1,6 @@
+#!/bin/sh
+# Never leave the machine starting a login screen that is no longer there.
+set -e
+if [ "$1" = remove ] || [ "$1" = deconfigure ]; then
+    des-ui-login disable || true
+fi

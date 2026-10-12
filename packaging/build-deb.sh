@@ -1,6 +1,7 @@
 #!/bin/sh
-# Builds the Debian packages: des-ui (the desktop) and des-ui-music (the Spotify
-# player, kept apart so that it can be left out). They land in target/deb/.
+# Builds the Debian packages into target/deb/: des-ui (the desktop), des-ui-music
+# (the Spotify player), des-ui-greeter (the login screen) and des-ui-plymouth (the
+# boot splash). The last three are apart so that each can be left out.
 #
 #     packaging/build-deb.sh              build the programs, then the packages
 #     packaging/build-deb.sh --no-build   package what target/release already holds
@@ -33,6 +34,8 @@ linked() {
 # description is read from standard input.
 pack() {
     root="$out/$1"
+    # Whatever the builder's umask: nothing writable by a group, bar the sticky folder.
+    find "$root" ! -perm -1000 -exec chmod go-w {} +
     install -Dm644 LICENSE "$root/usr/share/doc/$1/copyright"
     mkdir -p "$root/DEBIAN"
     {
@@ -50,6 +53,10 @@ pack() {
         echo "Description: $5"
         sed 's/^$/./; s/^/ /'
     } >"$root/DEBIAN/control"
+    # What to run when the package goes on or comes off, where there is something.
+    for script in "packaging/$1"/*; do
+        [ -f "$script" ] && install -m755 "$script" "$root/DEBIAN/"
+    done
     (cd "$root" && find usr -type f -exec md5sum {} + >DEBIAN/md5sums)
     dpkg-deb --root-owner-group --build "$root" "$out/${1}_${version}_${arch}.deb" >/dev/null
     rm -rf "$root"
@@ -65,13 +72,16 @@ install -Dm644 session/des-ui-portals.conf "$root/usr/share/xdg-desktop-portal/d
 install -d "$root/usr/share/des-ui/themes"
 install -m644 themes/*.json "$root/usr/share/des-ui/themes/"
 install -Dm644 README.md "$root/usr/share/doc/des-ui/README.md"
+# Pictures for the lock and login screens: each user can add their own, none can
+# remove another's.
+install -d -m 1777 "$root/var/lib/des-ui/avatars"
 
 # Wayland and the graphics libraries are loaded while running, so nothing finds them
 # by looking at the programs: they are named here.
 pack des-ui \
     "$(linked target/release/des-ui target/release/des-comp), libegl1, libwayland-client0, libwayland-cursor0, libwayland-egl1, fontconfig" \
     "libgl1-mesa-dri, xwayland, cage, xdg-desktop-portal-gtk, wireplumber, pipewire-bin, network-manager, bluez, iproute2, sudo, curl, wl-clipboard, sound-theme-freedesktop, des-ui-music" \
-    "ffmpeg, greetd, plymouth-themes" \
+    "ffmpeg, des-ui-greeter, des-ui-plymouth" \
     "sci-fi terminal desktop" <<'TEXT'
 DEs-UI is a desktop in the style of a film's computer screens: a terminal in
 the middle of a frame of live readings, with other applications opening
@@ -93,6 +103,40 @@ playing on your other devices. It needs a Spotify Premium account.
 
 This is not an official Spotify program: it is built on librespot, an
 independent client.
+TEXT
+
+root="$out/des-ui-greeter"
+install -Dm755 session/des-ui-greeter "$root/usr/bin/des-ui-greeter"
+install -Dm755 packaging/des-ui-login "$root/usr/bin/des-ui-login"
+pack des-ui-greeter \
+    "des-ui (= $version), greetd" \
+    "" "" \
+    "login screen of the DEs-UI desktop" <<'TEXT'
+The DEs-UI login screen, in place of the one the system came with. It is run
+by greetd, a small login manager.
+
+Installing this changes nothing by itself. To make it the login screen from
+the next boot, run "sudo des-ui-login enable"; "sudo des-ui-login disable"
+puts back what was there before, and so does removing the package.
+TEXT
+
+root="$out/des-ui-plymouth"
+install -d "$root/usr/share/plymouth/themes/des-ui"
+# The pictures are drawn by the shell, here in the colours of the default theme:
+# an empty configuration folder keeps the theme of whoever builds out of it.
+empty=$(mktemp -d)
+XDG_CONFIG_HOME="$empty" target/release/des-ui --write-boot-splash "$root/usr/share/plymouth/themes/des-ui" >/dev/null
+rmdir "$empty" 2>/dev/null || rm -rf "$empty"
+install -m644 session/boot/des-ui.plymouth session/boot/des-ui.script "$root/usr/share/plymouth/themes/des-ui/"
+pack des-ui-plymouth \
+    "plymouth" \
+    "" "des-ui" \
+    "boot splash of the DEs-UI desktop" <<'TEXT'
+Shows the DEs-UI splash while the machine starts and shuts down: the name,
+which glitches now and then, over a bar that fills. It is a theme for
+Plymouth, and becomes the one in use unless you have chosen another.
+
+Installing and removing it rebuild the boot image, which takes a minute.
 TEXT
 
 ls -1 "$out"/*.deb
