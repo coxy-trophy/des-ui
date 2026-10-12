@@ -112,21 +112,24 @@ Ways out if something goes wrong: **Ctrl+Alt+Backspace** ends the session, and
 
 ### As a package
 
-`packaging/build-deb.sh` builds two Debian packages into `target/deb/`: `des-ui`,
-the desktop, and `des-ui-music`, the Spotify player, which is separate so that it
-can be left out. They install under `/usr` and are removed like any other package:
+On Ubuntu 26.04, from the project's apt repository:
 
-    packaging/build-deb.sh
-    sudo apt install ./target/deb/des-ui_*.deb ./target/deb/des-ui-music_*.deb
+    curl -fsSL https://coxy-trophy.github.io/des-ui-apt/des-ui.gpg | sudo tee /usr/share/keyrings/des-ui.gpg >/dev/null
+    echo "deb [signed-by=/usr/share/keyrings/des-ui.gpg] https://coxy-trophy.github.io/des-ui-apt ./" | sudo tee /etc/apt/sources.list.d/des-ui.list
+    sudo apt update
+    sudo apt install des-ui
 
-A package suits the release of Ubuntu or Debian it was built on. The login screen
-and the boot splash are not in the packages yet: they still come from
-`./install-login.sh` and `./install-boot-splash.sh`, which expect `./install.sh`.
+That brings `des-ui`, the desktop, and with it `des-ui-music`, the Spotify player,
+which is a package of its own so that it can be left out or removed. Updates then
+arrive through `sudo apt upgrade`. The login screen and the boot splash are not in
+the packages yet: they still come from `./install-login.sh` and
+`./install-boot-splash.sh`, which expect `./install.sh`.
 
-`packaging/make-repo.sh <folder> [<gpg key id>]` turns those packages into an apt
-repository, signed if a key is given. Served over HTTPS, that folder is what makes
-`sudo apt install des-ui` and updates through `apt upgrade` work on other
-machines; the script's first lines say what to run there.
+To make the packages yourself, `packaging/build-deb.sh` builds both into
+`target/deb/`; a package suits the release of Ubuntu or Debian it was built on.
+`packaging/make-repo.sh <folder> [<gpg key id>]` turns them into an apt repository,
+and `packaging/publish.sh` does that into the `des-ui-apt` repository that GitHub
+Pages serves, signing with the "DEs-UI packages" key of whoever runs it.
 
 ## Keys
 
