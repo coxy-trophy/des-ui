@@ -110,6 +110,24 @@ from the launcher print goes to `apps.log` next to it.
 Ways out if something goes wrong: **Ctrl+Alt+Backspace** ends the session, and
 **Ctrl+Alt+F1…F12** switch virtual terminals.
 
+### As a package
+
+`packaging/build-deb.sh` builds two Debian packages into `target/deb/`: `des-ui`,
+the desktop, and `des-ui-music`, the Spotify player, which is separate so that it
+can be left out. They install under `/usr` and are removed like any other package:
+
+    packaging/build-deb.sh
+    sudo apt install ./target/deb/des-ui_*.deb ./target/deb/des-ui-music_*.deb
+
+A package suits the release of Ubuntu or Debian it was built on. The login screen
+and the boot splash are not in the packages yet: they still come from
+`./install-login.sh` and `./install-boot-splash.sh`, which expect `./install.sh`.
+
+`packaging/make-repo.sh <folder> [<gpg key id>]` turns those packages into an apt
+repository, signed if a key is given. Served over HTTPS, that folder is what makes
+`sudo apt install des-ui` and updates through `apt upgrade` work on other
+machines; the script's first lines say what to run there.
+
 ## Keys
 
 Hold <kbd>Super</kbd>, or <kbd>Ctrl</kbd>+<kbd>Alt</kbd>, which works when running in a

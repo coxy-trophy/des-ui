@@ -162,6 +162,7 @@ impl Theme {
             dirs.push(config.join("des-ui/themes"));
         }
         dirs.push(PathBuf::from("/usr/local/share/des-ui/themes"));
+        dirs.push(PathBuf::from("/usr/share/des-ui/themes"));
         dirs.push(PathBuf::from("themes"));
         dirs
     }

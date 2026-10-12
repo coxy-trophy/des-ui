@@ -4,11 +4,12 @@
 # The screen is shown by des-comp, the same compositor the desktop uses, with the
 # login screen in the shell's place. If that cannot start, a plain text login takes
 # over, so that a broken build never leaves the machine with no way to sign in.
+bin=$(dirname "$(readlink -f "$0")")
 log=/var/lib/des-ui/greeter/login.log
 [ -w "$(dirname "$log")" ] || log=/dev/null
 
 started=$(date +%s)
-/usr/local/bin/des-comp --backend drm --no-xwayland -- --greeter >"$log" 2>&1
+"$bin/des-comp" --backend drm --no-xwayland -- --greeter >"$log" 2>&1
 status=$?
 elapsed=$(( $(date +%s) - started ))
 echo "des-comp exited with status $status after ${elapsed}s" >>"$log"
@@ -21,6 +22,6 @@ fi
 
 echo "The DEs-UI login screen could not start (status $status). Sign in here instead."
 if command -v agreety >/dev/null; then
-    exec agreety --cmd /usr/local/bin/des-ui-session
+    exec agreety --cmd "$bin/des-ui-session"
 fi
 exit "$status"
