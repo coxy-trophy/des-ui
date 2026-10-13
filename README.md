@@ -245,7 +245,8 @@ monitors, and come before GNOME's saved layout.
 The rest are kept in `~/.config/des-ui/config` as `key = value` lines, which can also
 be edited by hand. The compositor reads the keyboard, mouse and touchpad
 settings from the same file. Network and Bluetooth go through `nmcli` and
-`bluetoothctl`; a Wi-Fi password is handed to `nmcli` on its command line. Two can be set from a terminal:
+`bluetoothctl`; a Wi-Fi password is handed to `nmcli --ask` through standard input, never in
+its command arguments. Two can be set from a terminal:
 
     des-ui --set-location 48.8566,2.3522,Paris   # or: --set-location auto
     des-ui --geo off                             # no lookups at all; on to resume
@@ -278,7 +279,8 @@ It also locks by itself:
 - when the system asks, as `loginctl lock-session` does.
 
 If the lock screen ever cannot be unlocked, press Ctrl+Alt+F3, sign in on the text
-console, and run `des-ui --unlock`.
+console, and run `sudo -k -- des-ui --unlock`. This recovery requires administrator access;
+ordinary applications cannot send unlock commands.
 
 </details>
 
@@ -511,6 +513,31 @@ run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`
 - On the login screen: accounts that need more than a password
 - From the original: on-screen keyboard, sound effects, mouse reporting to
   terminal apps
+
+## Development checks
+
+    cargo test --workspace --locked
+    cargo clippy --workspace --all-targets --locked
+
+GitHub Actions runs these checks on pushes and pull requests, along with syntax
+checks for the installation and session scripts. IPC and login protocol tests use
+in-memory transports, so they do not require a running compositor or login manager.
+They cover shell authorization, lock recovery, framing, backpressure and traffic
+limits. Terminal tests also exercise a real PTY, with bounded input and output;
+pastes over 64 KiB or input submitted while the queue is full are refused with a
+visible notice, rather than blocking the interface or sending a partial command.
+
+One socket integration test is excluded by default because some sandboxes forbid
+Unix socket operations. On a normal Linux host, run as an ordinary user:
+
+    cargo test --workspace --locked -- --include-ignored
+
+CI runs this command too. The integration test checks real kernel credentials,
+socket permissions, connection admission and revocation after shell restart.
+
+These checks do not replace the real-hardware checklist in
+[docs/UNTESTED.md](docs/UNTESTED.md), including lock/recovery, display rollback,
+suspend/resume, Wi-Fi, Bluetooth and capture on each supported setup.
 
 ## Licence
 

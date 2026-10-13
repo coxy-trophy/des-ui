@@ -105,13 +105,13 @@ pub fn sigil(name: &str) -> [[u8; 5]; 5] {
 }
 
 /// One message to greetd: a length, then JSON.
-fn send(stream: &mut UnixStream, message: &Value) -> std::io::Result<()> {
+fn send(stream: &mut impl Write, message: &Value) -> std::io::Result<()> {
     let body = message.to_string();
     stream.write_all(&(body.len() as u32).to_ne_bytes())?;
     stream.write_all(body.as_bytes())
 }
 
-fn receive(stream: &mut UnixStream) -> std::io::Result<Value> {
+fn receive(stream: &mut impl Read) -> std::io::Result<Value> {
     let mut length = [0u8; 4];
     stream.read_exact(&mut length)?;
     let length = u32::from_ne_bytes(length) as usize;
@@ -128,6 +128,13 @@ fn receive(stream: &mut UnixStream) -> std::io::Result<Value> {
 pub fn sign_in(socket: &std::path::Path, user: &str, password: &str, session: &Session) -> Result<(), String> {
     let lost = |e: std::io::Error| format!("The login service went away: {e}");
     let mut stream = UnixStream::connect(socket).map_err(lost)?;
+    sign_in_connection(&mut stream, user, password, session)
+}
+
+// Keep the protocol independent of the socket so failure paths can be tested
+// without a running login manager or listening-socket permissions.
+fn sign_in_connection(mut stream: &mut (impl Read + Write), user: &str, password: &str, session: &Session) -> Result<(), String> {
+    let lost = |e: std::io::Error| format!("The login service went away: {e}");
     send(&mut stream, &json!({ "type": "create_session", "username": user })).map_err(lost)?;
     loop {
         let reply = receive(&mut stream).map_err(lost)?;
@@ -604,7 +611,6 @@ pub fn set_avatar(source: &std::path::Path) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::net::UnixListener;
 
     #[test]
     fn sigils_are_stable_symmetric_and_distinct() {
@@ -659,51 +665,65 @@ mod tests {
         assert_eq!(parse_users(passwd), ["ada", "bob"]);
     }
 
-    /// A stand-in for greetd that accepts one password.
-    fn fake_greetd(path: PathBuf, right: &'static str) -> std::thread::JoinHandle<Vec<Value>> {
-        let listener = UnixListener::bind(&path).unwrap();
-        std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut seen = Vec::new();
-            loop {
-                let Ok(message) = receive(&mut stream) else { break };
-                seen.push(message.clone());
-                let reply = match message["type"].as_str().unwrap() {
-                    "create_session" => json!({"type": "auth_message", "auth_message_type": "secret", "auth_message": "Password: "}),
-                    "post_auth_message_response" if message["response"] == right => json!({"type": "success"}),
-                    "post_auth_message_response" => json!({"type": "error", "error_type": "auth_error", "description": "pam says no"}),
-                    _ => json!({"type": "success"}),
-                };
-                send(&mut stream, &reply).unwrap();
-            }
-            seen
-        })
+    struct LoginConnection {
+        replies: std::io::Cursor<Vec<u8>>,
+        requests: Vec<u8>,
+    }
+    impl Read for LoginConnection {
+        fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> { self.replies.read(bytes) }
+    }
+    impl Write for LoginConnection {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.requests.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+    fn login_connection(success: bool) -> LoginConnection {
+        let mut bytes = Vec::new();
+        for reply in [
+            json!({"type": "auth_message", "auth_message_type": "secret", "auth_message": "Password: "}),
+            if success { json!({"type": "success"}) } else { json!({"type": "error", "error_type": "auth_error", "description": "pam says no"}) },
+            json!({"type": "success"}),
+        ] { send(&mut bytes, &reply).unwrap(); }
+        LoginConnection { replies: std::io::Cursor::new(bytes), requests: Vec::new() }
+    }
+    fn requests(connection: LoginConnection) -> Vec<Value> {
+        let mut reader = std::io::Cursor::new(connection.requests);
+        let mut seen = Vec::new();
+        while let Ok(message) = receive(&mut reader) { seen.push(message); }
+        seen
     }
 
     #[test]
     fn signs_in_through_the_login_service() {
         let session = Session { name: "DEs-UI".into(), command: vec!["/usr/local/bin/des-ui-session".into()], desktop: "des-ui".into() };
-        let dir = std::env::temp_dir().join(format!("des-greeter-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-
-        let path = dir.join("good.sock");
-        let server = fake_greetd(path.clone(), "open sesame");
-        assert_eq!(sign_in(&path, "ada", "open sesame", &session), Ok(()));
-        let seen = server.join().unwrap();
+        let mut peer = login_connection(true);
+        assert_eq!(sign_in_connection(&mut peer, "ada", "open sesame", &session), Ok(()));
+        let seen = requests(peer);
         assert_eq!(seen[0]["username"], "ada");
+        assert_eq!(seen[1]["response"], "open sesame");
         let start = seen.last().unwrap();
         assert_eq!(start["type"], "start_session");
         assert_eq!(start["cmd"][0], "/usr/local/bin/des-ui-session");
         assert!(start["env"].as_array().unwrap().iter().any(|v| v == "XDG_CURRENT_DESKTOP=des-ui"));
 
-        let path = dir.join("bad.sock");
-        let server = fake_greetd(path.clone(), "open sesame");
-        assert_eq!(sign_in(&path, "ada", "guess", &session), Err("That password did not match".to_string()));
-        let seen = server.join().unwrap();
+        let mut peer = login_connection(false);
+        assert_eq!(sign_in_connection(&mut peer, "ada", "guess", &session), Err("That password did not match".to_string()));
+        let seen = requests(peer);
+        assert_eq!(seen[1]["response"], "guess");
         assert_eq!(seen.last().unwrap()["type"], "cancel_session", "a failed attempt is closed");
         assert!(!seen.iter().any(|m| m["type"] == "start_session"));
+        assert!(sign_in(&std::env::temp_dir().join("des-ui-absent-login.sock"), "ada", "x", &session).is_err());
+    }
 
-        assert!(sign_in(&dir.join("absent.sock"), "ada", "x", &session).is_err());
-        let _ = std::fs::remove_dir_all(dir);
+    #[test]
+    fn login_messages_are_length_framed_and_bad_replies_are_refused() {
+        let mut bytes = Vec::new();
+        send(&mut bytes, &json!({"type": "cancel_session"})).unwrap();
+        assert_eq!(&bytes[..4], &25u32.to_ne_bytes());
+        assert_eq!(&bytes[4..], b"{\"type\":\"cancel_session\"}");
+        assert!(receive(&mut std::io::Cursor::new(2_000_000u32.to_ne_bytes())).is_err());
+        assert!(receive(&mut std::io::Cursor::new([2, 0, 0])).is_err());
     }
 }

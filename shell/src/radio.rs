@@ -265,17 +265,59 @@ pub fn flag(output: &str, key: &str) -> Option<bool> {
     })
 }
 
+/// A NetworkManager operation, with any secret kept out of its arguments.
+struct WifiStep {
+    args: Vec<String>,
+    input: Option<String>,
+}
+
+fn wifi_connection(ssid: &str, password: Option<&str>) -> Result<WifiStep, String> {
+    if password.is_some_and(|secret| secret.chars().any(char::is_control)) {
+        return Err("A Wi-Fi password cannot contain control characters".into());
+    }
+    let mut args = Vec::new();
+    if password.is_some() { args.push("--ask".to_string()); }
+    args.extend(["device", "wifi", "connect", ssid].map(str::to_string));
+    Ok(WifiStep { args, input: password.map(|secret| format!("{secret}\n")) })
+}
+
+fn run_wifi_step(program: &str, step: &WifiStep) -> Result<String, String> {
+    let args: Vec<&str> = step.args.iter().map(String::as_str).collect();
+    run_with_input(program, &args, step.input.as_deref())
+}
+
 /// Runs a tool and returns what it printed, or the first line of its complaint.
 fn run(program: &str, args: &[&str]) -> Result<String, String> {
-    // Neither tool should take long; a hung one must not hang a thread for good.
-    let output = Command::new("timeout")
-        .arg("30")
-        .arg(program)
+    run_with_input(program, args, None)
+}
+
+fn run_with_input(program: &str, args: &[&str], input: Option<&str>) -> Result<String, String> {
+    let mut child = Command::new("timeout")
+        .args(["--kill-after=5", "30", program])
         .args(args)
-        .stdin(std::process::Stdio::null())
-        .output()
+        .env("LC_ALL", "C")
+        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("cannot run {program}: {e}"))?;
-    let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).trim().to_string();
+    if let Some(secret) = input {
+        let sent = child.stdin.take().ok_or_else(|| "cannot open the tool's input".to_string())
+            .and_then(|mut stdin| stdin.write_all(secret.as_bytes()).map_err(|e| format!("cannot send the tool's input: {e}")));
+        if let Err(why) = sent {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(why);
+        }
+    }
+    let output = child.wait_with_output().map_err(|e| format!("cannot read {program}: {e}"))?;
+    let text = |bytes: &[u8]| {
+        let text = String::from_utf8_lossy(bytes).trim().to_string();
+        match input.map(|secret| secret.trim_end_matches('\n')).filter(|secret| !secret.is_empty()) {
+            Some(secret) => text.replace(secret, "[redacted]"),
+            None => text,
+        }
+    };
     if output.status.success() {
         Ok(text(&output.stdout))
     } else {
@@ -449,6 +491,10 @@ impl Radio {
     /// Runs `steps` in the background while showing `doing`, then reads the networks
     /// again. A step that fails stops the rest and is reported.
     fn wifi_do(&self, doing: &str, steps: Vec<Vec<String>>, rescan: bool) {
+        self.wifi_steps(doing, steps.into_iter().map(|args| WifiStep { args, input: None }).collect(), rescan);
+    }
+
+    fn wifi_steps(&self, doing: &str, steps: Vec<WifiStep>, rescan: bool) {
         let shared = self.wifi.clone();
         let ctx = self.ctx.clone();
         {
@@ -462,8 +508,7 @@ impl Radio {
         std::thread::spawn(move || {
             let mut problem = None;
             for step in steps {
-                let args: Vec<&str> = step.iter().map(String::as_str).collect();
-                if let Err(e) = run("nmcli", &args) {
+                if let Err(e) = run_wifi_step("nmcli", &step) {
                     problem = Some(e);
                     break;
                 }
@@ -830,12 +875,13 @@ impl Radio {
                     let ready = !network.secured || self.password.len() >= 8;
                     go |= ui::button(ui, theme, "CONNECT", None, ready).clicked();
                     if go && ready {
-                        let mut step = args(&["device", "wifi", "connect", ssid]);
-                        if network.secured {
-                            step.extend(args(&["password", &self.password]));
-                        }
+                        let secret = network.secured.then_some(self.password.as_str());
+                        let step = wifi_connection(ssid, secret);
                         self.password.clear();
-                        self.wifi_do("CONNECTING", vec![step], false);
+                        match step {
+                            Ok(step) => self.wifi_steps("CONNECTING", vec![step], false),
+                            Err(why) => self.wifi.lock().unwrap().problem = Some(why),
+                        }
                     }
                 }
                 if network.known && ui::button(ui, theme, "FORGET", None, false).clicked() {
@@ -977,6 +1023,23 @@ fn row(ui: &mut Ui, theme: &Theme, name: &str, reading: &str, state: &str, live:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wifi_secret_is_sent_on_stdin_and_not_in_arguments_or_errors() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join(format!("des-wifi-test-{}.sh", std::process::id()));
+        std::fs::write(&path, "#!/bin/sh\nfor arg; do [ \"$arg\" != 'private-password' ] || exit 10; done\nIFS= read -r secret\n[ \"$secret\" = 'private-password' ] || exit 11\nprintf '%s' \"$*\"\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let step = wifi_connection("Coffee Shop", Some("private-password")).unwrap();
+        assert_eq!(run_wifi_step(path.to_str().unwrap(), &step).unwrap(), "--ask device wifi connect Coffee Shop");
+        std::fs::write(&path, "#!/bin/sh\nIFS= read -r secret\nprintf 'rejected %s' \"$secret\" >&2\nexit 1\n").unwrap();
+        let error = run_wifi_step(path.to_str().unwrap(), &step).unwrap_err();
+        assert!(!error.contains("private-password"));
+        assert!(wifi_connection("Cafe", Some("password\nnext-answer")).is_err());
+        assert!(wifi_connection("Cafe", Some("password\0extra")).is_err());
+        assert!(wifi_connection("Cafe", None).unwrap().input.is_none());
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn splits_terse_lines() {

@@ -1,7 +1,8 @@
 # Not yet tried on real hardware
 
-Things that are built and pass their automatic tests, but that nobody has yet
-watched work on a real machine. Tick them off, or note what went wrong.
+Features awaiting real-machine validation. Automated checks cover parts of these
+flows; a passing unit suite does not prove that each feature works on hardware.
+Tick them off, or note what went wrong.
 
 ## Display options (Settings → Displays)
 
@@ -142,3 +143,18 @@ watched work on a real machine. Tick them off, or note what went wrong.
 - [ ] Making someone an administrator, and stopping that
 - [ ] Removing a user, keeping files and with files
 - [ ] A wrong password of your own is refused with a clear message
+
+## Security and responsiveness changes
+
+- [ ] Lock with Super+L, then unlock with the correct password; a wrong one is refused
+- [ ] Run an ordinary application that sends `unlock` or `split` to `DES_COMP_SOCKET`;
+      neither command changes the desktop, locked or unlocked
+- [ ] On a text console, `des-ui --unlock` is refused; after administrator
+      authentication, `sudo -k -- des-ui --unlock` recovers the session
+- [ ] Restart the shell while locked; applications remain hidden and the new shell
+      draws the lock screen
+- [ ] Lock before suspend, then resume; no application content appears before unlock
+- [ ] Connect to a new secured Wi-Fi network; a wrong password reports an error,
+      a correct one connects, and process arguments never contain the password
+- [ ] Run a command producing continuous terminal output; typing, other tabs and
+      lock shortcuts remain responsive; stopping the command leaves its final output

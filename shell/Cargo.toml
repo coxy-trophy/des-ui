@@ -17,3 +17,4 @@ sysinfo = "0.38.4"
 vt100 = "0.16.2"
 des-common = { path = "../common" }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+rustix = { version = "1", features = ["process"] }

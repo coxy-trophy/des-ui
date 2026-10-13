@@ -9,7 +9,39 @@ use eframe::egui::{
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, TryRecvError, channel};
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
+
+const OUTPUT_CHUNK: usize = 8192;
+const OUTPUT_QUEUE: usize = 32;
+const CHUNKS_PER_FRAME: usize = 8;
+
+// A bounded writer queue keeps a child that is not reading input from blocking
+// the UI while output backpressure is active. Reject an entire input event when
+// busy; never paste only a prefix of a command.
+const MAX_INPUT_EVENT: usize = 64 * 1024;
+struct InputWriter { tx: SyncSender<Vec<u8>> }
+impl InputWriter {
+    fn new(mut writer: Box<dyn Write + Send>, ctx: egui::Context) -> Self {
+        let (tx, rx) = sync_channel::<Vec<u8>>(32);
+        std::thread::spawn(move || {
+            while let Ok(bytes) = rx.recv() {
+                if writer.write_all(&bytes).and_then(|()| writer.flush()).is_err() { break; }
+                ctx.request_repaint();
+            }
+        });
+        Self { tx }
+    }
+    fn send(&self, bytes: &[u8]) -> Result<(), &'static str> {
+        if bytes.len() > MAX_INPUT_EVENT {
+            return Err("Paste is too large. Split it into pieces smaller than 64 KiB.");
+        }
+        match self.tx.try_send(bytes.to_vec()) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => Err("Terminal input is busy. Wait and try again."),
+            Err(TrySendError::Disconnected(_)) => Err("Terminal input is unavailable."),
+        }
+    }
+}
 
 /// The shape of the terminal's cursor.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -35,10 +67,12 @@ pub struct TermLook {
 
 pub struct TermTab {
     parser: vt100::Parser,
-    writer: Box<dyn Write + Send>,
+    writer: InputWriter,
+    input_notice: Option<&'static str>,
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
     rx: Receiver<Vec<u8>>,
+    ctx: egui::Context,
     size: (u16, u16),
     scroll_accum: f32,
     /// Anchor and head of the mouse selection, as (row, col) cells of the visible grid.
@@ -68,10 +102,11 @@ impl TermTab {
         drop(pair.slave);
 
         let mut reader = pair.master.try_clone_reader()?;
-        let writer = pair.master.take_writer()?;
-        let (tx, rx) = channel();
+        let writer = InputWriter::new(pair.master.take_writer()?, ctx.clone());
+        let (tx, rx) = sync_channel(OUTPUT_QUEUE);
+        let reader_ctx = ctx.clone();
         std::thread::spawn(move || {
-            let mut buf = [0u8; 8192];
+            let mut buf = [0u8; OUTPUT_CHUNK];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => break,
@@ -79,19 +114,21 @@ impl TermTab {
                         if tx.send(buf[..n].to_vec()).is_err() {
                             break;
                         }
-                        ctx.request_repaint();
+                        reader_ctx.request_repaint();
                     }
                 }
             }
-            ctx.request_repaint();
+            reader_ctx.request_repaint();
         });
 
         Ok(TermTab {
             parser: vt100::Parser::new(rows, cols, scrollback),
             writer,
+            input_notice: None,
             master: pair.master,
             child,
             rx,
+            ctx,
             size: (rows, cols),
             scroll_accum: 0.0,
             selection: None,
@@ -101,24 +138,28 @@ impl TermTab {
 
     /// Feeds pending shell output into the parser and notices when the shell has exited.
     pub fn pump(&mut self) {
-        loop {
+        let mut exhausted_budget = true;
+        for _ in 0..CHUNKS_PER_FRAME {
             match self.rx.try_recv() {
                 Ok(bytes) => self.parser.process(&bytes),
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
-                    self.exited = true;
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => {
+                    exhausted_budget = false;
                     break;
                 }
             }
         }
+        // PTY EOF and process exit are independent: a running program can close
+        // its descriptors, and a background child can keep an exited shell's PTY.
+        // Reap the shell, but drain already-queued output before closing its tab.
         if let Ok(Some(_)) = self.child.try_wait() {
-            self.exited = true;
+            self.exited = !exhausted_budget;
         }
+        if exhausted_budget { self.ctx.request_repaint(); }
     }
 
     pub fn write(&mut self, bytes: &[u8]) {
-        let _ = self.writer.write_all(bytes);
-        let _ = self.writer.flush();
+        self.input_notice = self.writer.send(bytes).err();
+        self.ctx.request_repaint();
     }
 
     /// Working directory of the shell, used by the file browser and for new tabs.
@@ -355,6 +396,11 @@ impl TermTab {
                 );
             }
         }
+        if let Some(message) = self.input_notice {
+            let area = Rect::from_min_size(rect.left_bottom() - Vec2::new(0.0, 28.0), Vec2::new(rect.width(), 28.0));
+            painter.rect_filled(area, 0.0, crate::ui::GROUND);
+            painter.text(area.left_center() + Vec2::new(6.0, 0.0), egui::Align2::LEFT_CENTER, message, FontId::monospace(12.0), crate::ui::CAUTION);
+        }
     }
 }
 
@@ -507,6 +553,82 @@ fn key_bytes(key: Key, m: Modifiers, app_cursor: bool) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn blocked_pty_input_never_blocks_the_ui_and_queue_is_bounded() {
+        struct BlockedWriter {
+            started: std::sync::mpsc::Sender<()>,
+            release: Option<std::sync::mpsc::Receiver<()>>,
+        }
+        impl Write for BlockedWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                if let Some(release) = self.release.take() {
+                    self.started.send(()).unwrap();
+                    release.recv().unwrap();
+                }
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let (started, began) = std::sync::mpsc::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let writer = InputWriter::new(Box::new(BlockedWriter { started, release: Some(wait) }), egui::Context::default());
+        assert!(writer.send(b"first").is_ok());
+        began.recv_timeout(Duration::from_secs(1)).unwrap();
+        let before = Instant::now();
+        let mut refused = false;
+        for _ in 0..1000 {
+            if writer.send(b"more").is_err() { refused = true; break; }
+        }
+        assert!(refused, "blocked input grew without a limit");
+        assert!(before.elapsed() < Duration::from_secs(1), "input blocked the caller");
+        assert!(writer.send(&vec![b'x'; 100_000]).is_err());
+        release.send(()).unwrap();
+    }
+
+    #[test]
+    fn closing_terminal_descriptors_does_not_end_a_running_shell() {
+        let mut tab = TermTab::spawn("/bin/sh", Path::new("/tmp"), egui::Context::default(), 100).unwrap();
+        tab.write(b"exec 0<&- 1>&- 2>&-; exec sleep 2\r");
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            if matches!(tab.rx.try_recv(), Err(TryRecvError::Disconnected)) { break; }
+            assert!(Instant::now() < deadline, "PTY reader did not close");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(tab.child.try_wait().unwrap().is_none());
+        tab.pump();
+        assert!(!tab.exited, "output EOF killed a live process");
+    }
+
+    #[test]
+    fn shell_exit_is_detected_when_a_background_process_keeps_the_pty() {
+        let mut tab = TermTab::spawn("/bin/sh", Path::new("/tmp"), egui::Context::default(), 100).unwrap();
+        tab.write(b"sleep 2 & exit\r");
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while tab.child.try_wait().unwrap().is_none() {
+            assert!(Instant::now() < deadline, "shell did not exit");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        tab.pump();
+        assert!(tab.exited, "a background PTY holder prevented shell reaping");
+    }
+
+    #[test]
+    fn terminal_output_yields_between_frames_without_losing_bytes() {
+        let mut tab = TermTab::spawn("/bin/sh", Path::new("/tmp"), egui::Context::default(), 100).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        tab.rx = rx;
+        // Sustained output must leave work for the next frame, rather than drain
+        // an arbitrary amount on the UI thread.
+        for _ in 0..1000 { tx.send(vec![b'x'; 8192]).unwrap(); }
+        tx.send(b"\r\nend-of-output".to_vec()).unwrap();
+        tab.pump();
+        assert!(!tab.parser.screen().contents().contains("end-of-output"));
+        for _ in 0..1001 { tab.pump(); }
+        assert!(tab.parser.screen().contents().contains("end-of-output"));
+        tab.write(b"exit\r");
+    }
 
     #[test]
     fn encodes_keys() {

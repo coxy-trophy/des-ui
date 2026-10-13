@@ -403,6 +403,7 @@ impl DesComp {
             .spawn()
             .map_err(|e| format!("cannot start shell {}: {e}", spec.program.display()))?;
         tracing::info!(pid = child.id(), shell = %spec.program.display(), "started shell");
+        if let Some(ipc) = &mut self.ipc { ipc.authorize_shell(child.id()); }
         self.shell_pid = Some(child.id());
         self.shell_child = Some(child);
         Ok(())

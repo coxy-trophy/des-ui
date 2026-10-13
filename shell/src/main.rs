@@ -9,6 +9,7 @@ mod globe;
 mod greeter;
 mod launcher;
 mod lock;
+mod recovery;
 mod music;
 mod notify;
 mod panels;
@@ -60,7 +61,7 @@ Options:
                        keyboard, mouse, globe, sound, users, session)
   --list-apps          Print the applications the launcher would offer, and exit
   --unlock             Unlock a locked screen from outside it, such as from a text
-                       console you have signed in on
+                       console; run sudo -k -- des-ui --unlock
   --greeter            Run as the login screen (under greetd; alone, as a preview)
   --set-avatar <FILE>  Use this picture on the login screen
   --write-boot-splash <DIR>
@@ -1399,22 +1400,8 @@ fn main() -> eframe::Result {
             "--split-terminal" => split = Some(false),
             "--split-terminal=below" => split = Some(true),
             "--unlock" => {
-                // Every compositor of this user's: there is normally one.
-                let dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_default();
-                let mut reached = 0;
-                for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-                    let name = entry.file_name().to_string_lossy().into_owned();
-                    if name.starts_with("des-comp-") && name.ends_with(".sock") {
-                        if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(entry.path()) {
-                            use std::io::Write;
-                            if stream.write_all(Command::Unlock.encode().as_bytes()).is_ok() {
-                                reached += 1;
-                            }
-                        }
-                    }
-                }
-                if reached == 0 {
-                    eprintln!("des-ui: found no running desktop to unlock in {}", dir.display());
+                if let Err(why) = recovery::unlock() {
+                    eprintln!("des-ui: {why}");
                     std::process::exit(1);
                 }
                 println!("Unlocked.");
