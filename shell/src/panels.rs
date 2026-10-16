@@ -58,7 +58,7 @@ fn tile_pair(ui: &mut Ui, mut left: impl FnMut(&mut Ui), mut right: impl FnMut(&
 /// The clock, in the display face: hours and minutes large, seconds in the accent.
 fn clock(ui: &mut Ui, theme: &Theme, size: f32) {
     let now = chrono::Local::now();
-    let main = ui::galley(ui, &now.format("%H:%M").to_string(), ui::display(size), ui::TEXT, 1.0);
+    let main = ui::galley(ui, &crate::region::hours_minutes(&now), ui::display(size), ui::TEXT, 1.0);
     let seconds = ui::galley(ui, &now.format("%S").to_string(), ui::display(size * 0.35), theme.main, 0.0);
     let width = main.size().x + size * 0.12 + seconds.size().x;
     let height = main.size().y * 0.84;
@@ -69,7 +69,7 @@ fn clock(ui: &mut Ui, theme: &Theme, size: f32) {
     ui.painter().galley(seconds_pos, seconds, theme.main);
 }
 
-pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon) {
+pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon, pet: &mut crate::pet::Pet) {
     ui.spacing_mut().item_spacing.y = 7.0;
     let now = chrono::Local::now();
     // The clock is sized for a full-width column and shrinks with it.
@@ -142,6 +142,7 @@ pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon) {
         painter.text(rect.right_center(), Align2::RIGHT_CENTER, human_bytes(process.mem as f64), ui::mono(12.0), ui::SECONDARY);
         painter.hline(rect.x_range(), rect.bottom(), Stroke::new(1.0, ui::TRACK));
     }
+    pet.show(ui);
 }
 
 /// What each display is showing, for the right column.
@@ -229,10 +230,10 @@ pub fn right(
         .iter()
         .chain(mon.tx_hist.iter())
         .fold(1024.0_f32, |a, b| a.max(*b));
-    let traffic = |ui: &mut Ui, label: &str, total: u64, hist: &std::collections::VecDeque<f32>, color| {
+    let traffic = |ui: &mut Ui, symbol: Icon, total: u64, hist: &std::collections::VecDeque<f32>, color| {
         ui::tile(ui, theme, false, |ui| {
             ui.horizontal(|ui| {
-                ui::tracked(ui, label, ui::display(10.0), ui::LABEL, 2.0);
+                ui::icon(ui, symbol, 14.0, ui::LABEL);
                 // The running total, where the tile is wide enough for both.
                 if ui.available_width() > 78.0 {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -249,10 +250,10 @@ pub fn right(
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         ui.allocate_ui_with_layout(vec2(width, 0.0), Layout::top_down(Align::Min), |ui| {
-            traffic(ui, "DOWN", mon.rx_total, &mon.rx_hist, theme.main)
+            traffic(ui, Icon::Download, mon.rx_total, &mon.rx_hist, theme.main)
         });
         ui.allocate_ui_with_layout(vec2(width, 0.0), Layout::top_down(Align::Min), |ui| {
-            traffic(ui, "UP", mon.tx_total, &mon.tx_hist, ui::SECONDARY)
+            traffic(ui, Icon::Upload, mon.tx_total, &mon.tx_hist, ui::SECONDARY)
         });
     });
 
@@ -300,12 +301,20 @@ pub fn right(
         for (label, value) in readings {
             if let Some(value) = value {
                 // These are levels, not loads: a full battery is not a warning.
-                let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 16.0), Sense::hover());
+                let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 16.0), Sense::hover());
+                response.on_hover_text(format!("{label}: {value}%"));
                 let painter = ui.painter();
-                painter.text(rect.left_center(), Align2::LEFT_CENTER, label, ui::mono(12.0), ui::LABEL);
+                let symbol = match label {
+                    "VOLUME" if value == 0 => Icon::Muted,
+                    "VOLUME" => Icon::Volume,
+                    "BRIGHTNESS" => Icon::Brightness,
+                    _ if mon.power.is_some_and(|power| power.plugged) => Icon::Charging,
+                    _ => Icon::Battery,
+                };
+                ui::paint_icon(painter, Rect::from_center_size(rect.left_center() + vec2(8.0, 0.0), vec2(16.0,16.0)), symbol, ui::LABEL, false);
                 painter.text(rect.right_center(), Align2::RIGHT_CENTER, value.to_string(), ui::mono(12.0), ui::TEXT);
                 let track = Rect::from_min_max(
-                    pos2(rect.left() + 88.0, rect.center().y - 3.0),
+                    pos2(rect.left() + 30.0, rect.center().y - 3.0),
                     pos2(rect.right() - 40.0, rect.center().y + 3.0),
                 );
                 painter.rect_filled(track, 0.0, ui::TRACK);
@@ -361,25 +370,15 @@ pub fn status(
     ui.spacing_mut().item_spacing.x = 20.0;
     ui::tracked(ui, "DEs-UI", ui::display_bold(11.0), theme.main, 3.0);
     // The way into the settings, lit while they are open.
-    let way_in = |ui: &mut Ui, name: &str, hint: &str| {
-        let label = ui::galley(ui, name, ui::display(11.0), ui::SECONDARY, 2.0);
-        let (rect, response) = ui.allocate_exact_size(label.size() + vec2(0.0, 8.0), Sense::click());
-        let ink = if overlay == Some(name) {
-            theme.main
-        } else if response.hovered() {
-            ui::TEXT
-        } else {
-            ui::SECONDARY
-        };
-        ui.painter().galley(rect.left_center() - vec2(0.0, label.size().y / 2.0), label, ink);
-        response.on_hover_text(hint).clicked()
+    let way_in = |ui: &mut Ui, name: &str, icon: Icon, hint: &str| {
+        ui::icon_button(ui, theme, icon, 24.0, overlay == Some(name)).on_hover_text(hint).clicked()
     };
-    let settings_clicked = way_in(ui, "SETTINGS", "Settings (Super+,)");
-    let music_clicked = way_in(ui, "MUSIC", "Music (Super+M)");
-    let power_clicked = way_in(ui, "POWER", "Sleep, restart, shut down (Super+Escape, or the power key)");
-    let notices_clicked = way_in(ui, "NOTIFICATIONS", "Notifications (Super+N)");
+    let settings_clicked = way_in(ui, "SETTINGS", Icon::Settings, "Settings (Super+,)");
+    let music_clicked = way_in(ui, "MUSIC", Icon::Music, "Music (Super+M)");
+    let power_clicked = way_in(ui, "POWER", Icon::Power, "Sleep, restart, shut down (Super+Escape, or the power key)");
+    let notices_clicked = way_in(ui, "NOTIFICATIONS", Icon::Notifications, "Notifications (Super+N)");
     if notices > 0 {
-        // Close up to the word it counts.
+        // Keep the unread count next to the bell.
         ui.add_space(-14.0);
         ui::text(ui, &notices.to_string(), ui::mono(11.0), theme.main);
     }
@@ -411,21 +410,22 @@ pub fn status(
                 (true, None) => format!("MAINS {}%", battery.percent),
                 (false, _) => format!("BAT {}%{left}", battery.percent),
             };
-            ui::text(ui, &label, ui::mono(11.0), if low { ui::CAUTION } else { ui::TEXT });
+            let value = format!("{}%{left}", battery.percent);
+            ui::icon_value(ui, if battery.plugged { Icon::Charging } else { Icon::Battery }, &value,
+                if low { ui::CAUTION } else { ui::TEXT }, &label);
         }
         if let Some(volume) = mon.volume() {
-            ui::text(ui, &format!("VOL {volume}"), ui::mono(11.0), ui::SECONDARY);
+            ui::icon_value(ui, if volume == 0 { Icon::Muted } else { Icon::Volume }, &format!("{volume}%"), ui::SECONDARY, "Volume");
         }
         if let Some(wifi) = mon.wifi {
-            ui::text(ui, &format!("WIFI {wifi}%"), ui::mono(11.0), ui::SECONDARY);
+            ui::icon_value(ui, Icon::Wifi, &format!("{wifi}%"), ui::SECONDARY, "Wi-Fi signal strength");
         }
         if let Some(desktop) = desktop {
             if desktop.screens > 1 {
-                ui::text(ui, &format!("{} DISPLAYS", desktop.screens), ui::mono(11.0), ui::SECONDARY);
+                ui::icon_value(ui, Icon::Display, &desktop.screens.to_string(), ui::SECONDARY, "Connected displays");
             }
             let count = desktop.apps.len();
-            let plural = if count == 1 { "" } else { "S" };
-            ui::text(ui, &format!("{count} APPLICATION{plural}"), ui::mono(11.0), ui::SECONDARY);
+            ui::icon_value(ui, Icon::Apps, &count.to_string(), ui::SECONDARY, "Open applications");
         }
         ui.spacing_mut().item_spacing.x = 4.0;
         for (icon, panel, open) in [
@@ -473,7 +473,7 @@ pub fn backdrop(ui: &mut Ui, theme: &Theme, mon: &SysMon, number: usize) {
     // The clock takes about a third of the height, and never more than the width allows.
     let now = chrono::Local::now();
     let size = (rect.height() * 0.2).min(rect.width() * 0.16);
-    let time = ui::galley(ui, &now.format("%H:%M").to_string(), ui::display(size), ui::TEXT, 4.0);
+    let time = ui::galley(ui, &crate::region::hours_minutes(&now), ui::display(size), ui::TEXT, 4.0);
     let seconds = ui::galley(ui, &now.format("%S").to_string(), ui::display(size * 0.3), theme.main, 0.0);
     let total = time.size().x + size * 0.08 + seconds.size().x;
     let top = rect.center().y - time.size().y * 0.62;
@@ -719,5 +719,61 @@ mod tests {
         assert_eq!(truncate("abcdefghij", 5), "abcd…");
         assert_eq!(truncate_start("abcdefghij", 5), "…ghij");
         assert_eq!(truncate_start("short", 10), "short");
+    }
+}
+
+/// A minimized side column stays clickable; its tooltip also names the global shortcut.
+pub fn collapsed_rail(ui: &mut Ui, theme: &Theme, panel: Panel) -> bool {
+    let rect = ui.max_rect();
+    let (symbol, hint) = match panel {
+        Panel::Left => (Icon::PanelLeft, "Expand left panel (Super+[)"),
+        Panel::Right => (Icon::PanelRight, "Expand right panel (Super+])"),
+        Panel::Bottom => return false,
+    };
+    let response = ui.interact(rect, ui.id().with("expand-panel"), Sense::click());
+    response.widget_info(|| eframe::egui::WidgetInfo::labeled(eframe::egui::WidgetType::Button, ui.is_enabled(), hint));
+    let highlighted = response.hovered() || response.has_focus();
+    if highlighted { ui.painter().rect_filled(rect, 0.0, theme.tint()); }
+    let icon_rect = Rect::from_center_size(pos2(rect.center().x, rect.top() + 22.0), vec2(24.0, 24.0));
+    ui::paint_icon(ui.painter(), icon_rect, symbol, if highlighted { theme.main } else { ui::SECONDARY }, false);
+    // Small inward chevron makes the collapsed state visible without another label.
+    let d = if panel == Panel::Left { 1.0 } else { -1.0 };
+    let c = pos2(rect.center().x, rect.top() + 48.0);
+    ui.painter().line(vec![c + vec2(-2.0*d,-3.0), c + vec2(2.0*d,0.0), c + vec2(-2.0*d,3.0)], Stroke::new(1.2, ui::LABEL));
+    let clicked = response.clicked();
+    response.on_hover_text(hint);
+    clicked
+}
+
+#[cfg(test)]
+mod rail_interaction_tests {
+    use super::*;
+    use eframe::egui::{self, Event, Modifiers, PointerButton};
+
+    #[test]
+    fn either_minimized_column_can_be_reopened_by_clicking_its_rail() {
+        for panel in [Panel::Left, Panel::Right] {
+            let ctx = egui::Context::default();
+            let theme = Theme::load("signal");
+            let point = pos2(18.0, 200.0);
+            for phase in 0..3 {
+                let mut input = egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(pos2(0.0,0.0), vec2(800.0,600.0))),
+                    ..Default::default()
+                };
+                input.events.push(Event::PointerMoved(point));
+                if phase == 1 || phase == 2 {
+                    input.events.push(Event::PointerButton { pos: point, button: PointerButton::Primary, pressed: phase == 1, modifiers: Modifiers::NONE });
+                }
+                let mut clicked = false;
+                let _ = ctx.run(input, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let mut rail = ui.new_child(egui::UiBuilder::new().id_salt("rail").max_rect(Rect::from_min_size(pos2(0.0,0.0),vec2(des_common::COLLAPSED_SIDE_WIDTH, 572.0))));
+                        clicked = collapsed_rail(&mut rail, &theme, panel);
+                    });
+                });
+                assert_eq!(clicked, phase == 2, "{panel:?}, phase {phase}");
+            }
+        }
     }
 }

@@ -23,7 +23,11 @@ use std::time::{Duration, Instant};
 /// Something the user changed.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Change {
+    SaveSession,
+    RestoreSession,
+    OpenMusic,
     Theme(String),
+    Accent(Option<[u8; 3]>),
     FontSize(f32),
     GlobeRotation(bool),
     Lookups(bool),
@@ -92,11 +96,13 @@ enum Section {
     Pointer,
     Globe,
     Sound,
+    Region,
     Users,
     Session,
+    Health,
 }
 
-const SECTIONS: [(Section, &str); 12] = [
+const SECTIONS: [(Section, &str); 14] = [
     (Section::Appearance, "APPEARANCE"),
     (Section::Terminal, "TERMINAL"),
     (Section::Frame, "FRAME"),
@@ -107,15 +113,23 @@ const SECTIONS: [(Section, &str); 12] = [
     (Section::Pointer, "MOUSE & TOUCHPAD"),
     (Section::Globe, "GLOBE"),
     (Section::Sound, "SOUND & SCREEN"),
+    (Section::Region, "DATE & REGION"),
     (Section::Users, "USERS"),
     (Section::Session, "SESSION"),
+    (Section::Health, "HEALTH"),
 ];
+
+/// Canonical settings destinations used by the command palette.
+pub fn destinations() -> Vec<(&'static str, &'static str)> {
+    SECTIONS.iter().map(|(_, title)| (*title, *title)).collect()
+}
 
 pub struct Settings {
     pub open: bool,
     section: Section,
     /// Installed themes and their accents, read when the screen opens.
     themes: Vec<(String, Color32)>,
+    accent_draft: Option<([u8; 3], [u8; 3])>,
     location_text: String,
     location_error: bool,
     /// A level the user just set, shown until the system reports it back.
@@ -135,6 +149,10 @@ pub struct Settings {
     faces: Option<Faces>,
     sound: Option<crate::sound::Sound>,
     users: Option<crate::users::Users>,
+    region: Option<crate::region::Region>,
+    health: crate::health::Health,
+    desktop_connected: Option<bool>,
+    music_status: &'static str,
 }
 
 impl Default for Settings {
@@ -143,6 +161,7 @@ impl Default for Settings {
             open: false,
             section: Section::Appearance,
             themes: Vec::new(),
+            accent_draft: None,
             location_text: String::new(),
             location_error: false,
             volume_held: None,
@@ -157,6 +176,10 @@ impl Default for Settings {
             faces: None,
             sound: None,
             users: None,
+            region: None,
+            health: Default::default(),
+            desktop_connected: None,
+            music_status: "unknown",
         }
     }
 }
@@ -217,6 +240,12 @@ fn held(slot: &mut Option<(u8, Instant)>, reading: Option<u8>) -> Option<u8> {
 }
 
 impl Settings {
+    pub fn set_music_status(&mut self,status:&'static str){self.music_status=status;}
+
+    pub fn set_desktop_connected(&mut self, connected: bool) {
+        self.desktop_connected = Some(connected);
+    }
+
     pub fn open(&mut self, config: &Config) {
         self.themes = theme::installed();
         self.fonts = ui::monospace_fonts();
@@ -275,6 +304,8 @@ impl Settings {
                 ui.spacing_mut().item_spacing.x = 32.0;
                 // The sections, as a list down the left.
                 ui.allocate_ui_with_layout(vec2(200.0, ui.available_height()), Layout::top_down(Align::Min), |ui| {
+                    // On a short workspace the list is longer than there is room for.
+                    ScrollArea::vertical().id_salt("sections").auto_shrink([false, false]).show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     for (section, name) in SECTIONS {
                         let (row, response) = ui.allocate_exact_size(vec2(200.0, 36.0), Sense::click());
@@ -298,15 +329,20 @@ impl Settings {
                             self.log_out_armed = None;
                         }
                     }
+                    });
                 });
 
                 ui.allocate_ui_with_layout(ui.available_size(), Layout::top_down(Align::Min), |ui| {
                     ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
                         match self.section {
+                            Section::Health => {
+                                self.health.show(ui, theme, self.desktop_connected, self.music_status);
+                                if ui::button(ui,theme,"OPEN MUSIC",None,false).clicked(){changes.push(Change::OpenMusic);}
+                            },
                             Section::Appearance => self.appearance(ui, theme, config, &mut changes),
                             Section::Terminal => self.terminal(ui, theme, config, &mut changes),
-                            Section::Frame => self.frame(ui, theme, panels, &mut changes),
+                            Section::Frame => self.frame(ui, theme, config, panels, &mut changes),
                             Section::Network => {
                                 let radio = self.radio.get_or_insert_with(|| Radio::new(ui.ctx().clone()));
                                 radio.show_wifi(ui, theme);
@@ -321,6 +357,7 @@ impl Settings {
                             Section::Displays => self.displays(ui, theme, displays, &mut changes),
                             Section::Globe => self.globe(ui, theme, config, geo, &mut changes),
                             Section::Sound => self.sound(ui, theme, config, mon, &mut changes),
+                            Section::Region => self.region.get_or_insert_with(|| crate::region::Region::new(ui.ctx().clone())).show(ui, theme, config.twelve_hour, &mut changes),
                             Section::Users => self.users.get_or_insert_with(|| crate::users::Users::new(ui.ctx().clone())).show(ui, theme),
                             Section::Session => self.session(ui, theme, config, input, &mut changes),
                         }
@@ -342,6 +379,24 @@ impl Settings {
                 }
             }
         });
+        ui.add_space(20.0);
+        heading(ui, "ACCENT COLOUR", "Choose a custom accent, then apply it. It stays selected when you switch presets.");
+        let current = [theme.main.r(), theme.main.g(), theme.main.b()];
+        let (basis, draft) = self.accent_draft.get_or_insert((current, current));
+        if *basis != current { *basis = current; *draft = current; }
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Custom accent");
+            ui.color_edit_button_srgb(draft).on_hover_text("Choose accent colour");
+            ui.label(egui::RichText::new(format!("#{:02X}{:02X}{:02X}", draft[0], draft[1], draft[2])).font(ui::mono(12.0)));
+            if ui.add_enabled(*draft != current, egui::Button::new("Apply color")).clicked() {
+                changes.push(Change::Accent(Some(*draft)));
+            }
+            if ui.add_enabled(config.accent.is_some() || *draft != current, egui::Button::new("Reset to theme")).clicked() {
+                *draft = current;
+                changes.push(Change::Accent(None));
+            }
+        });
+        note(ui, "The swatch previews your colour. Apply saves it for future sessions.");
         ui.add_space(20.0);
         note(ui, "Fonts, text size and the cursor are under Terminal.");
     }
@@ -527,7 +582,7 @@ impl Settings {
         speed(ui, "mouse_speed", input.mouse_speed, changes);
     }
 
-    fn frame(&mut self, ui: &mut Ui, theme: &Theme, panels: Panels, changes: &mut Vec<Change>) {
+    fn frame(&mut self, ui: &mut Ui, theme: &Theme, config: &Config, panels: Panels, changes: &mut Vec<Change>) {
         heading(ui, "PANELS", "Which parts of the frame are open. The choice is kept for next time.");
         for (panel, open, name, what) in [
             (Panel::Left, panels.left, "Left column", "Clock, system, processor, memory, processes"),
@@ -540,6 +595,44 @@ impl Settings {
         }
         ui.add_space(16.0);
         note(ui, "Super+[  Super+]  Super+\\ switch them at any time, without changing what is kept.");
+        ui.add_space(26.0);
+
+        heading(ui, "MINIMIZED SIDE PANELS", "Keep a narrow rail, or hide the side columns completely.");
+        ui.horizontal(|ui| {
+            for (behavior, label, value) in [
+                (des_common::PanelBehavior::Collapse, "COLLAPSE", "collapse"),
+                (des_common::PanelBehavior::Hide, "HIDE", "hide"),
+            ] {
+                let selected = config.side_panel_behavior == behavior;
+                if ui::chip(ui, theme, label, None, selected).clicked() && !selected {
+                    changes.push(Change::Set("side_panel_behavior", Some(value.to_string())));
+                }
+            }
+        });
+        ui.add_space(26.0);
+
+        heading(ui, "DOCK", "Move to the bottom edge to show open and pinned apps. Super+D opens keyboard navigation.");
+        if switch_row(ui, theme, "Animate dock", "Slide in and out; turn off for reduced motion", config.dock_animation) {
+            changes.push(Change::Set("dock_animation", (!config.dock_animation).then_some("off".to_string())));
+        }
+        ui.add_space(26.0);
+
+        heading(ui, "COMPANION", "An animal at the foot of the left column, where there is room for one.");
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
+            let none = crate::pet::kind_named(&config.pet).is_none();
+            if ui::chip(ui, theme, "NONE", None, none).clicked() && !none {
+                changes.push(Change::Set("pet", Some("off".to_string())));
+            }
+            for kind in &crate::pet::KINDS {
+                let chosen = config.pet == kind.name;
+                if ui::chip(ui, theme, &kind.name.to_uppercase(), None, chosen).clicked() && !chosen {
+                    changes.push(Change::Set("pet", Some(kind.name.to_string())));
+                }
+            }
+        });
+        ui.add_space(8.0);
+        note(ui, "It paws at the pointer. The animals are from VS Code Pets.");
     }
 
     fn displays(&mut self, ui: &mut Ui, theme: &Theme, displays: Option<&Displays>, changes: &mut Vec<Change>) {
@@ -943,6 +1036,13 @@ impl Settings {
     }
 
     fn session(&mut self, ui: &mut Ui, theme: &Theme, config: &Config, input: &InputSettings, changes: &mut Vec<Change>) {
+        heading(ui, "SAVED SESSION", "Save application placement and terminal folders. Restore keeps existing terminals; documents and commands are not replayed.");
+        ui.horizontal_wrapped(|ui| {
+            if ui::button(ui, theme, "SAVE SESSION", None, false).clicked() { changes.push(Change::SaveSession); }
+            if ui::button(ui, theme, "RESTORE SESSION", None, false).clicked() { changes.push(Change::RestoreSession); }
+        });
+        ui.add_space(18.0);
+
         heading(ui, "SESSION", "");
         for (name, value) in [
             ("Version", env!("CARGO_PKG_VERSION")),
@@ -1057,7 +1157,7 @@ fn slider_row(ui: &mut Ui, theme: &Theme, name: &str, frac: f32, reading: &str) 
 }
 
 /// A group's title and, under it, what the group is for.
-fn heading(ui: &mut Ui, title: &str, about: &str) {
+pub(crate) fn heading(ui: &mut Ui, title: &str, about: &str) {
     ui::section(ui, title, |_| {});
     if !about.is_empty() {
         ui::text(ui, about, ui::mono(12.0), ui::SECONDARY);
@@ -1065,12 +1165,12 @@ fn heading(ui: &mut Ui, title: &str, about: &str) {
     ui.add_space(14.0);
 }
 
-fn note(ui: &mut Ui, text: &str) {
+pub(crate) fn note(ui: &mut Ui, text: &str) {
     ui::text(ui, text, ui::mono(12.0), ui::LABEL);
 }
 
 /// A named switch with a line of explanation. Returns true when it was clicked.
-fn switch_row(ui: &mut Ui, theme: &Theme, name: &str, what: &str, on: bool) -> bool {
+pub(crate) fn switch_row(ui: &mut Ui, theme: &Theme, name: &str, what: &str, on: bool) -> bool {
     let mut clicked = false;
     let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 52.0), Sense::hover());
     let mut inner = ui.new_child(UiBuilder::new().max_rect(row).layout(Layout::left_to_right(Align::Center)));
@@ -1089,6 +1189,56 @@ fn switch_row(ui: &mut Ui, theme: &Theme, name: &str, what: &str, on: bool) -> b
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accent_draft_requires_apply_and_reset_reports_default() {
+        fn render(settings: &mut Settings, ctx: &egui::Context, config: &Config, events: Vec<egui::Event>, width: f32)
+            -> (egui::FullOutput, Vec<Change>) {
+            let mut changes = Vec::new();
+            let output = ctx.run(egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(width, 700.0))),
+                events, ..Default::default()
+            }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    settings.appearance(ui, &config.resolved_theme(), config, &mut changes);
+                });
+            });
+            (output, changes)
+        }
+        fn button(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
+            output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(text) if text.galley.job.text == label =>
+                    Some(text.pos + text.galley.size() / 2.0),
+                _ => None,
+            }).unwrap_or_else(|| panic!("missing button {label}"))
+        }
+        let ctx = egui::Context::default();
+        crate::ui::install_fonts(&ctx, None, None);
+        let config = Config { accent: Some([12, 128, 255]), ..Config::default() };
+        let mut settings = Settings::default();
+        for width in [320.0, 900.0] {
+            let (_, changes) = render(&mut settings, &ctx, &config, Vec::new(), width);
+            assert!(changes.is_empty());
+        }
+        settings.accent_draft = Some(([12, 128, 255], [80, 90, 100]));
+        let (output, changes) = render(&mut settings, &ctx, &config, Vec::new(), 900.0);
+        assert!(changes.is_empty(), "editing the draft does not save");
+        let pos = button(&output, "Apply color");
+        for pressed in [true, false] {
+            let (_, changes) = render(&mut settings, &ctx, &config, vec![egui::Event::PointerMoved(pos), egui::Event::PointerButton {
+                pos, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE,
+            }], 900.0);
+            if !pressed { assert_eq!(changes, vec![Change::Accent(Some([80, 90, 100]))]); }
+        }
+        let (output, _) = render(&mut settings, &ctx, &config, Vec::new(), 900.0);
+        let pos = button(&output, "Reset to theme");
+        for pressed in [true, false] {
+            let (_, changes) = render(&mut settings, &ctx, &config, vec![egui::Event::PointerMoved(pos), egui::Event::PointerButton {
+                pos, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE,
+            }], 900.0);
+            if !pressed { assert_eq!(changes, vec![Change::Accent(None)]); }
+        }
+    }
 
     #[test]
     fn describes_what_a_monitor_offers() {

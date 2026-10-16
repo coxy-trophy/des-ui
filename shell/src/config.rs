@@ -18,6 +18,8 @@ const DEFAULT_FONT_SIZE: f32 = 14.0;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub theme: String,
+    /// Optional opaque sRGB accent, independent of the preset terminal palette.
+    pub accent: Option<[u8; 3]>,
     /// Size of the terminal's text.
     pub font_size: f32,
     /// A font file to draw the terminal with, instead of the bundled one.
@@ -41,14 +43,22 @@ pub struct Config {
     pub notification_sounds: bool,
     /// Whether notifications are kept off the screen as they arrive.
     pub do_not_disturb: bool,
+    /// The animal at the foot of the left column; "off" for none.
+    pub pet: String,
+    /// Whether the clocks count twelve hours twice, not twenty-four once.
+    pub twelve_hour: bool,
     /// Which panels are open when the desktop starts.
     pub panels: Panels,
+    pub side_panel_behavior: des_common::PanelBehavior,
+    pub dock_pins: Vec<String>,
+    pub dock_animation: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Config {
             theme: theme::DEFAULT_NAME.to_string(),
+            accent: None,
             font_size: DEFAULT_FONT_SIZE,
             terminal_font: None,
             line_height: 1.0,
@@ -63,7 +73,12 @@ impl Default for Config {
             lock_on_sleep: true,
             notification_sounds: true,
             do_not_disturb: false,
+            twelve_hour: false,
+            pet: "dog".to_string(),
             panels: Panels::default(),
+            side_panel_behavior: des_common::PanelBehavior::default(),
+            dock_pins: Vec::new(),
+            dock_animation: true,
         }
     }
 }
@@ -77,6 +92,7 @@ impl Config {
     /// default.
     pub fn parse(text: &str) -> Config {
         let mut config = Config::default();
+        config.side_panel_behavior = des_common::PanelBehavior::parse(text);
         for line in text.lines() {
             let Some((key, value)) = line.split('#').next().unwrap_or("").split_once('=') else {
                 continue;
@@ -84,6 +100,10 @@ impl Config {
             let value = value.trim();
             match key.trim() {
                 "theme" if !value.is_empty() => config.theme = value.to_string(),
+                "accent" => {
+                    config.accent = value.split(',').map(|part| part.trim().parse::<u8>())
+                        .collect::<Result<Vec<_>, _>>().ok().and_then(|rgb| rgb.try_into().ok());
+                }
                 "font_size" => {
                     if let Ok(size) = value.parse::<f32>() {
                         config.font_size = size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
@@ -114,6 +134,15 @@ impl Config {
                 "do_not_disturb" => config.do_not_disturb = value == "on",
                 "lock_on_sleep" => config.lock_on_sleep = value != "off",
                 "notification_sounds" => config.notification_sounds = value != "off",
+                "dock_animation" => config.dock_animation = value != "off",
+                "dock_pins" => {
+                    if let Ok(pins) = serde_json::from_str::<Vec<String>>(value) {
+                        let mut seen = std::collections::HashSet::new();
+                        config.dock_pins = pins.into_iter().filter(|id| !id.is_empty() && !id.chars().any(char::is_control) && seen.insert(id.clone())).take(128).collect();
+                    }
+                }
+                "clock" => config.twelve_hour = value == "12",
+                "pet" if !value.is_empty() => config.pet = value.to_string(),
                 "geo" => config.lookups = value != "off",
                 "location" => config.location = parse_location(value),
                 "panels" => {
@@ -135,6 +164,17 @@ impl Config {
             .and_then(|path| std::fs::read_to_string(path).ok())
             .map(|text| Config::parse(&text))
             .unwrap_or_default()
+    }
+
+    /// Resolve the preset and the user's accent through one path at startup and on edits.
+    pub fn resolved_theme(&self) -> theme::Theme {
+        let mut theme = theme::Theme::load(&self.theme);
+        if let Some([r, g, b]) = self.accent {
+            let accent = eframe::egui::Color32::from_rgb(r, g, b);
+            if theme.cursor == theme.main { theme.cursor = accent; }
+            theme.main = accent;
+        }
+        theme
     }
 
     /// How the terminal should look, from these settings.
@@ -163,7 +203,27 @@ impl Config {
 /// `None`, leaving every other line as it was.
 pub fn set(key: &str, value: Option<&str>) -> std::io::Result<PathBuf> {
     let path = path().ok_or_else(|| std::io::Error::other("no home directory"))?;
-    let old = std::fs::read_to_string(&path).unwrap_or_default();
+    set_at(&path, key, value)?;
+    Ok(path)
+}
+
+fn set_at(path: &std::path::Path, key: &str, value: Option<&str>) -> std::io::Result<()> {
+    use std::io::{ErrorKind, Write};
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let dir = path.parent().ok_or_else(|| std::io::Error::other("no config directory"))?;
+    std::fs::create_dir_all(dir)?;
+    // Lock a separate file: locking the config itself would lock the old inode
+    // after replacement and let another writer race the next update.
+    let lock = std::fs::OpenOptions::new()
+        .read(true).write(true).create(true).truncate(false).mode(0o600)
+        .open(dir.join("config.lock"))?;
+    lock.lock()?;
+    let old = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error),
+    };
     let mut lines: Vec<String> = old
         .lines()
         .filter(|line| line.split_once('=').is_none_or(|(k, _)| k.trim() != key))
@@ -172,20 +232,115 @@ pub fn set(key: &str, value: Option<&str>) -> std::io::Result<PathBuf> {
     if let Some(value) = value {
         lines.push(format!("{key} = {value}"));
     }
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
     let mut text = lines.join("\n");
     if !text.is_empty() {
         text.push('\n');
     }
-    std::fs::write(&path, text)?;
-    Ok(path)
+    let mut fresh = tempfile::NamedTempFile::new_in(dir)?;
+    fresh.write_all(text.as_bytes())?;
+    fresh.as_file().sync_all()?;
+    fresh.persist(path).map_err(|error| error.error)?;
+    std::fs::File::open(dir)?.sync_all()?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_accent_round_trips_and_invalid_values_use_theme() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config");
+        set_at(&path, "accent", Some("12, 128, 255")).unwrap();
+        let config = Config::parse(&std::fs::read_to_string(&path).unwrap());
+        assert_eq!(config.accent, Some([12, 128, 255]));
+        assert_eq!(config.resolved_theme().main, eframe::egui::Color32::from_rgb(12, 128, 255));
+        for invalid in ["", "256, 0, 0", "-1, 2, 3", "1, 2", "1, 2, 3, 4", "red"] {
+            assert_eq!(Config::parse(&format!("accent = {invalid}")).accent, None);
+        }
+        set_at(&path, "accent", None).unwrap();
+        assert_eq!(Config::parse(&std::fs::read_to_string(&path).unwrap()).accent, None);
+        let base = theme::Theme::load(&config.theme);
+        let resolved = config.resolved_theme();
+        assert_eq!(resolved.ansi, base.ansi);
+        assert_eq!(resolved.term_fg, base.term_fg);
+    }
+
+    #[test]
+    fn dock_pins_round_trip_and_invalid_preferences_are_safe() {
+        let dir=tempfile::tempdir().unwrap();
+        let path=dir.path().join("config");
+        let pins=vec!["firefox.desktop".to_string(),"org.example.Editor.desktop".to_string()];
+        set_at(&path,"dock_pins",Some(&serde_json::to_string(&pins).unwrap())).unwrap();
+        assert_eq!(Config::parse(&std::fs::read_to_string(&path).unwrap()).dock_pins,pins);
+        assert!(Config::parse("dock_pins = broken").dock_pins.is_empty());
+        assert_eq!(Config::parse(r#"dock_pins = ["a.desktop","a.desktop",""]"#).dock_pins,vec!["a.desktop"]);
+        assert!(!Config::parse("dock_animation = off").dock_animation);
+    }
+
+    #[test]
+    fn minimized_panel_preference_survives_saving_and_keeps_open_panels() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config");
+        std::fs::write(&path, "panels = right, bottom\n").unwrap();
+        for (value, wanted) in [("hide", des_common::PanelBehavior::Hide), ("collapse", des_common::PanelBehavior::Collapse)] {
+            set_at(&path, "side_panel_behavior", Some(value)).unwrap();
+            let config = Config::parse(&std::fs::read_to_string(&path).unwrap());
+            assert_eq!(config.side_panel_behavior, wanted);
+            assert_eq!(config.panels, Panels { left: false, right: true, bottom: true });
+        }
+    }
+
+    #[test]
+    fn updating_settings_replaces_the_file_without_truncating_existing_readers() {
+        use std::io::Read;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config");
+        let original = "# mine\nunknown = keep\ntheme = signal\n";
+        std::fs::write(&path, original).unwrap();
+        let mut reader = std::fs::File::open(&path).unwrap();
+        set_at(&path, "theme", Some("blade")).unwrap();
+        let mut old = String::new();
+        reader.read_to_string(&mut old).unwrap();
+        assert_eq!(old, original);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# mine\nunknown = keep\ntheme = blade\n");
+        set_at(&path, "theme", None).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# mine\nunknown = keep\n");
+    }
+
+    #[test]
+    fn concurrent_settings_updates_keep_every_key() {
+        use std::sync::{Arc, Barrier};
+        let dir = tempfile::tempdir().unwrap();
+        let path = Arc::new(dir.path().join("config"));
+        let ready = Arc::new(Barrier::new(24));
+        let writers: Vec<_> = (0..24).map(|index| {
+            let path = path.clone();
+            let ready = ready.clone();
+            std::thread::spawn(move || {
+                ready.wait();
+                set_at(&path, &format!("key{index}"), Some("kept")).unwrap();
+            })
+        }).collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        let text = std::fs::read_to_string(&*path).unwrap();
+        for index in 0..24 {
+            assert!(text.lines().any(|line| line == format!("key{index} = kept")));
+        }
+    }
+
+    #[test]
+    fn unreadable_existing_settings_are_not_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config");
+        let original = [0xff, 0xfe];
+        std::fs::write(&path, original).unwrap();
+        assert!(set_at(&path, "theme", Some("blade")).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
 
     #[test]
     fn missing_settings_keep_their_defaults() {
@@ -197,8 +352,9 @@ mod tests {
     fn reads_every_setting() {
         let config = Config::parse(
             "# mine\ntheme = matrix\nfont_size = 16\nglobe_rotation = off\ngeo = off # private\n\
-             location = 48.85, 2.35, Paris\npanels = left, bottom\n",
+             location = 48.85, 2.35, Paris\npanels = left, bottom\nclock = 12\n",
         );
+        assert!(config.twelve_hour);
         assert_eq!(config.theme, "matrix");
         assert_eq!(config.font_size, 16.0);
         assert!(!config.globe_rotation);

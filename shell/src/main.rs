@@ -1,23 +1,34 @@
 //! des-ui: a Rust rewrite of the eDEX-UI sci-fi terminal desktop.
 
 mod apps;
+mod app_icons;
+mod dock;
 mod capture;
 mod config;
 mod desktop;
 mod geo;
+mod health;
 mod globe;
 mod greeter;
 mod launcher;
+mod palette;
+mod file_search;
 mod lock;
 mod music;
 mod notify;
 mod panels;
+mod pet;
 mod power;
 mod bootsplash;
 mod radio;
+mod runtime;
+mod workflows;
+mod screen_views;
+mod region;
 mod sound;
 mod users;
 mod settings;
+mod session_restore;
 mod sysmon;
 mod term;
 mod theme;
@@ -57,10 +68,8 @@ Options:
   --music              Start with the music player open
   --power              Start with the power menu open
                        (appearance, terminal, frame, displays, network, bluetooth,
-                       keyboard, mouse, globe, sound, users, session)
+                       keyboard, mouse, globe, sound, date, users, session)
   --list-apps          Print the applications the launcher would offer, and exit
-  --unlock             Unlock a locked screen from outside it, such as from a text
-                       console you have signed in on
   --greeter            Run as the login screen (under greetd; alone, as a preview)
   --set-avatar <FILE>  Use this picture on the login screen
   --write-boot-splash <DIR>
@@ -73,6 +82,24 @@ Options:
                        service the public addresses this machine connects to
   --screenshot <FILE>  Save a PPM screenshot after 3 seconds and exit (for testing)
   -h, --help           Show this help";
+
+#[derive(Debug, PartialEq)]
+enum LockStep { Wait, Engage, Confirm, Release, Request }
+
+fn reconcile_lock(local_locked: bool, confirmed: bool, unlock_pending: bool, unlocked_ack: bool, compositor: Option<bool>) -> LockStep {
+    if unlock_pending {
+        return if unlocked_ack { LockStep::Release }
+            else if compositor == Some(true) { LockStep::Confirm }
+            else { LockStep::Wait };
+    }
+    match compositor {
+        Some(true) if !local_locked => LockStep::Engage,
+        Some(true) => LockStep::Confirm,
+        Some(false) if local_locked && confirmed => LockStep::Release,
+        Some(false) if local_locked => LockStep::Request,
+        _ => LockStep::Wait,
+    }
+}
 
 struct App {
     ctx: egui::Context,
@@ -88,10 +115,20 @@ struct App {
     /// Whether the panes are one above the other rather than side by side.
     stacked: bool,
     mon: SysMon,
+    /// The animal at the foot of the left column.
+    pet: pet::Pet,
     fs: FsView,
     /// The compositor connection; `None` when running as an ordinary window.
     desktop: Option<Desktop>,
     launcher: Launcher,
+    dock: dock::Dock,
+    secondary_docks: std::collections::BTreeMap<usize,dock::Dock>,
+    secondary_areas: std::collections::BTreeMap<usize,Option<(i32,i32,i32,i32)>>,
+    restore: Option<(session_restore::Restore, Vec<apps::AppEntry>, Instant)>,
+    restore_placements: std::collections::VecDeque<(session_restore::Placement,String)>,
+    restore_workspace: Option<usize>,
+    document_openers: Vec<std::sync::mpsc::Receiver<Result<(),String>>>,
+    dock_area: Option<Option<(i32, i32, i32, i32)>>,
     settings: settings::Settings,
     music: music::Music,
     notices: notify::Center,
@@ -109,6 +146,7 @@ struct App {
     lock: lock::Lock,
     /// Whether the compositor has confirmed the lock now showing.
     lock_confirmed: bool,
+    unlock_pending: bool,
     config: config::Config,
     /// The keyboard, mouse and touchpad settings, as last saved.
     input: des_common::input::InputSettings,
@@ -116,6 +154,7 @@ struct App {
     symbols: Option<PathBuf>,
     /// Whether the saved panel choice has been sent to the compositor yet.
     panels_synced: bool,
+    frame_synced: bool,
     /// Places for the globe, kept current in the background.
     geo: geo::Geo,
     /// Which panels are open when there is no compositor to say.
@@ -144,6 +183,7 @@ impl App {
         let power = power::Power::start(ctx.clone(), desktop.is_some());
         let mut notices = notify::Center::new(ctx.clone(), config.do_not_disturb, true);
         notices.sounds = config.notification_sounds;
+        region::set_twelve_hour(config.twelve_hour);
         Ok(App {
             ctx,
             theme,
@@ -154,9 +194,18 @@ impl App {
             side_focused: false,
             stacked: false,
             mon: SysMon::new(),
+            pet: pet::Pet::new(&config.pet),
             fs: FsView::new(),
             desktop,
             launcher: Launcher::default(),
+            dock: dock::Dock::default(),
+            secondary_docks: Default::default(),
+            secondary_areas: Default::default(),
+            restore: None,
+            restore_placements: Default::default(),
+            restore_workspace: None,
+            document_openers: Vec::new(),
+            dock_area: None,
             settings: settings::Settings::default(),
             music,
             notices,
@@ -168,16 +217,70 @@ impl App {
             toast_area: None,
             lock: lock::Lock::new(),
             lock_confirmed: false,
+            unlock_pending: false,
             geo: geo::Geo::start(config.lookups, config.location.clone()),
             local_panels: config.panels,
             config,
             input: des_common::input::InputSettings::load(),
             symbols,
             panels_synced: false,
+            frame_synced: false,
             screenshot,
             started: Instant::now(),
             screenshot_requested: false,
         })
+    }
+
+    fn apply_dock_action(&mut self, action: dock::Action) {
+        match action {
+            dock::Action::Command(command) => {
+                self.launcher.open=false;
+                self.settings.open=false;
+                self.music.open=false;
+                self.notices.open=false;
+                self.power_menu.open=false;
+                self.send(command);
+            }
+            dock::Action::Launcher => self.toggle_launcher(),
+            dock::Action::Unavailable(name) => self.notices.post("Application unavailable", &format!("{name} is no longer installed. Right-click its dock icon to unpin it."),false),
+            dock::Action::Launch(entry) => {
+                self.launcher.open=false;
+                self.settings.open=false;
+                self.music.open=false;
+                self.notices.open=false;
+                self.power_menu.open=false;
+                if entry.terminal {
+                    self.run_in_terminal(&entry);
+                    self.launcher.open=false;
+                    self.settings.open=false;
+                    self.music.open=false;
+                    self.notices.open=false;
+                    self.power_menu.open=false;
+                    self.send(Command::Terminal);
+                } else if let Err(error) = apps::launch(&entry) {
+                    self.notices.post("Could not open application", &format!("{}: {error}",entry.name),true);
+                }
+            }
+            action @ (dock::Action::Pin(_,_) | dock::Action::MovePin(_,_)) => {
+                let mut pins=self.config.dock_pins.clone();
+                match action {
+                    dock::Action::Pin(id,true) if !id.is_empty() && !pins.contains(&id) && pins.len()<128 => pins.push(id),
+                    dock::Action::Pin(id,false) => pins.retain(|pin| pin!=&id),
+                    dock::Action::MovePin(id,left) => {
+                        if let Some(index)=pins.iter().position(|pin| pin==&id) {
+                            let next=if left { index.saturating_sub(1) } else { (index+1).min(pins.len()-1) };
+                            pins.swap(index,next);
+                        }
+                    }
+                    _ => {}
+                }
+                if pins == self.config.dock_pins { return; }
+                match config::set("dock_pins",Some(&serde_json::to_string(&pins).unwrap())) {
+                    Ok(_) => self.config.dock_pins=pins,
+                    Err(error) => self.notices.post("Could not save dock pins",&error.to_string(),true),
+                }
+            }
+        }
     }
 
     /// Opens a new tab in the active tab's working directory.
@@ -263,9 +366,7 @@ impl App {
         self.notices.open = false;
         self.power_menu.open = false;
         self.settings.open(&self.config);
-        if let Some(desktop) = &mut self.desktop {
-            desktop.send(Command::Terminal);
-        }
+        self.send(Command::Terminal);
     }
 
     /// Opens or closes the music player, which also takes the terminal's place.
@@ -324,10 +425,11 @@ impl App {
 
     /// Locks the screen, if a password can be checked to unlock it again.
     fn lock_now(&mut self) {
-        if !lock::can_check() {
-            eprintln!("des-ui: not locking: this system has no way to check the password");
-            return;
-        }
+        self.lock.prepare(&self.ctx);
+    }
+
+    fn finish_lock(&mut self) {
+        self.unlock_pending = false;
         self.launcher.open = false;
         self.settings.open = false;
         self.music.open = false;
@@ -340,7 +442,10 @@ impl App {
 
     fn send(&mut self, command: Command) {
         if let Some(desktop) = &mut self.desktop {
-            desktop.send(command);
+            if let Err(error) = desktop.send(command) {
+                eprintln!("des-ui: desktop command could not be sent: {error}");
+                self.notices.post("Desktop reconnecting", "Try that action again once the desktop reconnects.", false);
+            }
         }
     }
 
@@ -354,11 +459,24 @@ impl App {
         };
         match change {
             Change::Theme(name) => {
-                let theme = Theme::load(&name);
+                let mut preview = self.config.clone();
+                preview.theme = name.clone();
+                let theme = preview.resolved_theme();
                 apply_style(ctx, &theme);
                 self.theme = theme;
                 save("theme", Some(&name));
                 self.config.theme = name;
+            }
+            Change::Accent(accent) => {
+                let value = accent.map(|[r, g, b]| format!("{r}, {g}, {b}"));
+                match config::set("accent", value.as_deref()) {
+                    Ok(_) => {
+                        self.config.accent = accent;
+                        self.theme = self.config.resolved_theme();
+                        apply_style(ctx, &self.theme);
+                    }
+                    Err(error) => self.notices.post("Could not save accent", &format!("{error}. Your previous colour is still active."), false),
+                }
             }
             Change::FontSize(size) => {
                 self.config.font_size = size;
@@ -400,9 +518,14 @@ impl App {
                 self.config = config::Config::load();
                 self.config.theme = theme;
                 self.notices.sounds = self.config.notification_sounds;
+                region::set_twelve_hour(self.config.twelve_hour);
+                self.pet.choose(&self.config.pet);
                 self.input = des_common::input::InputSettings::load();
                 if self.config.terminal_font != font {
                     ui::install_fonts(ctx, self.symbols.as_deref(), self.config.terminal_font.as_deref());
+                }
+                if key == "side_panel_behavior" {
+                    self.frame_synced = false;
                 }
                 // The compositor owns the devices these are about.
                 if ["keyboard_", "mouse_", "touchpad_", "lock_after", "screen_off_after"].iter().any(|prefix| key.starts_with(prefix)) {
@@ -418,6 +541,9 @@ impl App {
             Change::KeepDisplays => self.send(Command::KeepDisplays),
             Change::RevertDisplays => self.send(Command::RevertDisplays),
             Change::Lock => self.lock_now(),
+            Change::OpenMusic => self.toggle_music(),
+            Change::SaveSession => self.save_session(),
+            Change::RestoreSession => self.restore_session(),
             Change::Avatar(picture) => {
                 let outcome = match &picture {
                     Some(path) => greeter::set_avatar(path).map(|_| ()),
@@ -444,9 +570,7 @@ impl App {
         self.power_menu.open = false;
         self.launcher.toggle();
         if self.launcher.open {
-            if let Some(desktop) = &mut self.desktop {
-                desktop.send(Command::Terminal);
-            }
+            self.send(Command::Terminal);
         }
     }
 
@@ -457,7 +581,7 @@ impl App {
         let words: Vec<String> = entry.exec.iter().map(|word| panels::shell_quote(word)).collect();
         let line = format!("{}\n", words.join(" "));
         let tab = self.focus_tab();
-        self.tabs[tab].write(line.as_bytes());
+        self.tabs[tab].input(line.as_bytes());
     }
 
     /// Implements `--screenshot`: captures one frame, writes it as a PPM, then quits.
@@ -499,6 +623,10 @@ impl App {
             } = &event
             {
                 let count = self.tabs.len();
+                if modifiers.ctrl && modifiers.shift && *key == Key::D {
+                    self.dock.reveal_keyboard();
+                    continue;
+                }
                 if modifiers.ctrl && modifiers.shift && *key == Key::T {
                     self.new_tab();
                     continue;
@@ -600,6 +728,7 @@ struct BarActions {
     open_tab: bool,
     split_terminal: bool,
     toggle_launcher: bool,
+    find_terminal: bool,
 }
 
 /// How one tab in the top bar looks.
@@ -667,7 +796,7 @@ fn tab(ui: &mut Ui, theme: &Theme, tab: Tab) -> Response {
 }
 
 impl App {
-    /// Draws the top bar: terminal tabs, open applications, and the workspace controls.
+    /// Draws terminal tabs and workspace controls. Graphical apps live in the dock.
     fn top_bar(&mut self, ui: &mut Ui, theme: &Theme, state: Option<&DesktopState>) -> BarActions {
         let mut actions = BarActions::default();
         ui.spacing_mut().item_spacing.x = 4.0;
@@ -706,6 +835,8 @@ impl App {
             }
         }
 
+        if ui::icon_button(ui,theme,Icon::Search,28.0,self.tabs[self.focus_tab()].searching()).on_hover_text("Find in terminal (Ctrl+Shift+F)").clicked() { actions.find_terminal=true; actions.command=Some(Command::Terminal); }
+
         let split_hint = if self.side.is_some() {
             "Make the terminal whole again (Ctrl+Shift+E)"
         } else {
@@ -724,64 +855,22 @@ impl App {
             actions.command = Some(Command::Terminal);
         }
 
-        // Only the applications of the workspace in view have a tab; the others are
-        // reached through their workspace.
-        if let Some(state) = state.filter(|state| state.apps.iter().any(|app| app.workspace == state.workspace)) {
-            let (rule, _) = ui.allocate_exact_size(vec2(21.0, ui.available_height()), Sense::hover());
-            ui.painter()
-                .vline(rule.center().x, rule.shrink2(vec2(0.0, 10.0)).y_range(), Stroke::new(1.0, ui::LINE));
-            for (i, app) in state.apps.iter().enumerate().filter(|(_, app)| app.workspace == state.workspace) {
-                let look = Tab {
-                    number: None,
-                    name: &panels::truncate(&app.title, 20),
-                    detail: None,
-                    badge: (state.screens > 1).then(|| (app.screen + 1).to_string()),
-                    selected: app.place != Place::Hidden
-                        && !((self.launcher.open || self.settings.open || self.music.open || self.notices.open || self.power_menu.open) && app.screen == 0),
-                };
-                if tab(ui, theme, look).clicked() {
-                    self.launcher.open = false;
-                    self.settings.open = false;
-                    self.music.open = false;
-                    self.notices.open = false;
-                    self.power_menu.open = false;
-                    actions.command = Some(Command::Activate(i));
-                }
-                // The application in use carries its own controls.
-                if state.focus == Some(i) {
-                    if state.screens > 1
-                        && ui::icon_button(ui, theme, Icon::Send, 24.0, false)
-                            .on_hover_text("Send to the next display")
-                            .clicked()
-                    {
-                        actions.command = Some(Command::Move(i));
-                    }
-                    if ui::icon_button(ui, theme, Icon::Close, 24.0, false)
-                        .on_hover_text("Close this application")
-                        .clicked()
-                    {
-                        actions.command = Some(Command::Close(i));
-                    }
-                }
-            }
-        }
-
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
-            let hint = if self.launcher.open { "ESC" } else { "SUPER SPACE" };
-            if ui::button(ui, theme, "APPS", Some(hint), self.launcher.open).clicked() {
+            let hint = if self.launcher.open { "Close applications (Esc)" } else { "Applications (Super+Space)" };
+            if ui::icon_button(ui, theme, Icon::Apps, 28.0, self.launcher.open).on_hover_text(hint).clicked() {
                 actions.toggle_launcher = true;
             }
             if let Some(state) = state {
                 let split = state.apps.iter().any(|app| app.place == Place::Side);
-                if ui::button(ui, theme, "SPLIT", None, split)
+                if ui::icon_button(ui, theme, Icon::WindowSplit, 28.0, split)
                     .on_hover_text("Share the workspace between two windows (Super+S)")
                     .clicked()
                 {
                     actions.command = Some(Command::Split);
                 }
                 if state.apps.iter().any(|app| app.workspace == state.workspace)
-                    && ui::button(ui, theme, "FULL", None, false)
+                    && ui::icon_button(ui, theme, Icon::Fullscreen, 28.0, false)
                         .on_hover_text("Let the application cover the whole display (Super+F)")
                         .clicked()
                 {
@@ -824,462 +913,6 @@ impl App {
             }
         });
         actions
-    }
-}
-
-impl eframe::App for App {
-    fn clear_color(&self, _visuals: &Visuals) -> [f32; 4] {
-        ui::GROUND.to_normalized_gamma_f32()
-    }
-
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.mon.tick();
-        if let Some(desktop) = &mut self.desktop {
-            desktop.pump();
-            if std::mem::take(&mut desktop.launcher_requested) && !self.launcher.open {
-                self.settings.open = false;
-                self.music.open = false;
-                self.notices.open = false;
-                self.power_menu.open = false;
-                self.launcher.open();
-            }
-            if std::mem::take(&mut desktop.settings_requested) && !self.settings.open {
-                self.launcher.open = false;
-                self.music.open = false;
-                self.notices.open = false;
-                self.power_menu.open = false;
-                self.settings.open(&self.config);
-            }
-            if std::mem::take(&mut desktop.music_requested) && !self.music.open {
-                self.launcher.open = false;
-                self.settings.open = false;
-                self.notices.open = false;
-                self.power_menu.open = false;
-                self.music.open = true;
-            }
-            if std::mem::take(&mut desktop.power_requested) {
-                self.launcher.open = false;
-                self.settings.open = false;
-                self.music.open = false;
-                self.notices.open = false;
-                self.power_menu.open = true;
-            }
-            if std::mem::take(&mut desktop.notifications_requested) && !self.notices.open {
-                self.launcher.open = false;
-                self.settings.open = false;
-                self.music.open = false;
-                self.notices.open = true;
-            }
-            // Bring the frame in line with the saved choice of panels: once at the
-            // start, and again whenever that choice is changed in the settings.
-            if !self.panels_synced && desktop.connected() {
-                let (now, wanted) = (desktop.state.panels, self.config.panels);
-                for (panel, differs) in [
-                    (des_common::Panel::Left, now.left != wanted.left),
-                    (des_common::Panel::Right, now.right != wanted.right),
-                    (des_common::Panel::Bottom, now.bottom != wanted.bottom),
-                ] {
-                    if differs {
-                        desktop.send(Command::TogglePanel(panel));
-                    }
-                }
-                self.panels_synced = true;
-            }
-        }
-        for tab in &mut self.tabs {
-            tab.pump();
-        }
-        // Tabs whose shell has exited go; the ones in view keep their places, and a
-        // split whose pane lost its tab becomes whole again.
-        let alive: Vec<bool> = self.tabs.iter().map(|tab| !tab.exited).collect();
-        let (active, side) = remap_panes(&alive, self.active, self.side);
-        self.tabs.retain(|tab| !tab.exited);
-        if self.tabs.is_empty() {
-            ctx.send_viewport_cmd(ViewportCommand::Close);
-            return;
-        }
-        self.active = active;
-        self.side = side;
-        self.side_focused &= side.is_some();
-
-        self.handle_screenshot(ctx);
-
-        // The lock screen comes before everything else, and while it is up nothing
-        // else is drawn or given any input.
-        let (asked, compositor_locked) = match &mut self.desktop {
-            Some(desktop) => (std::mem::take(&mut desktop.lock_requested), Some(desktop.locked)),
-            None => (false, None),
-        };
-        if asked && !self.lock.locked {
-            self.lock_now();
-        }
-        match compositor_locked {
-            // A shell started while the screen is locked takes the lock over.
-            Some(true) if !self.lock.locked => self.lock.engage(),
-            Some(true) => self.lock_confirmed = true,
-            // Unlocked from outside, with `des-ui --unlock`.
-            Some(false) if self.lock.locked && self.lock_confirmed => self.lock.release(),
-            _ => {}
-        }
-        self.notices.pump();
-        if let Some(desktop) = &mut self.desktop {
-            for shot in std::mem::take(&mut desktop.shots) {
-                self.capture.take(shot);
-            }
-            for state in std::mem::take(&mut desktop.recording_news) {
-                self.capture.recording_is(state, &mut self.notices);
-            }
-        }
-        self.capture.report(&mut self.notices);
-        // Sleep is on its way, or the session was told to lock.
-        if self.power.lock_wanted() && !self.lock.locked {
-            let for_sleep = self.power.sleep_waiting();
-            if !for_sleep || self.config.lock_on_sleep {
-                self.lock_now();
-            }
-        }
-        if self.power.sleep_waiting() {
-            // The machine may sleep once the lock is what is on screen, or at once if
-            // there is to be no lock.
-            let up = self.lock.locked && (self.lock_confirmed || self.desktop.is_none());
-            if up || !self.lock.locked {
-                self.power.let_sleep();
-            } else {
-                ctx.request_repaint_after(Duration::from_millis(30));
-            }
-        }
-        let held = self.power.holding();
-        if held != self.idle_held {
-            self.idle_held = held;
-            self.send(Command::HoldIdle(held));
-        }
-        let screens = self.desktop.as_ref().filter(|desktop| desktop.connected()).map(|desktop| desktop.state.screens);
-        if self.watch.check(&mut self.notices, self.mon.power, !self.mon.ip.is_empty(), screens) {
-            power::Act::Suspend.run();
-        }
-        if self.lock.locked {
-            self.capture.cancel();
-            // Nothing is shown over the lock; what arrives waits in the list.
-            if self.toast_area != Some(None) {
-                self.toast_area = Some(None);
-                self.send(Command::Toast(None));
-            }
-            let theme = self.theme.clone();
-            let music = &mut self.music;
-            if self.lock.show(ctx, &theme, |ui, within| music.lock_card(ui, &theme, within)) {
-                self.send(Command::Unlock);
-            }
-            return;
-        }
-        let events = self.take_shortcuts(ctx);
-        let theme = self.theme.clone();
-        let screen = ctx.screen_rect();
-        let state = self.desktop.as_ref().map(|desktop| desktop.state.clone());
-        // The compositor decides which panels are open; alone, the shell does.
-        let open = state.as_ref().map_or(self.local_panels, |state| state.panels);
-        let places = self.geo.snapshot();
-        // Still, the globe faces this machine's side of the world.
-        let rotation = if self.config.globe_rotation {
-            self.started.elapsed().as_secs_f32() * globe::SPEED
-        } else {
-            places.home.as_ref().map_or(20.0, |home| -home.lon)
-        };
-        let overlay = if self.launcher.open {
-            Some("LAUNCHER")
-        } else if self.settings.open {
-            Some("SETTINGS")
-        } else if self.music.open {
-            Some("MUSIC")
-        } else if self.notices.open {
-            Some("NOTIFICATIONS")
-        } else if self.power_menu.open {
-            Some("POWER")
-        } else {
-            None
-        };
-        let mut command = None;
-
-        // Every region is placed from the shared geometry, so that the workspace is
-        // exactly where the compositor puts application windows.
-        let area = des_common::workspace(screen.width(), screen.height(), open);
-        let workspace = Rect::from_min_size(
-            screen.min + vec2(area.x, area.y),
-            vec2(area.width, area.height),
-        );
-        let status_top = screen.bottom() - des_common::STATUS_HEIGHT;
-        CentralPanel::default()
-            .frame(Frame::new().fill(ui::GROUND))
-            .show(ctx, |ui| {
-                let status = Rect::from_min_max(pos2(screen.left(), status_top), screen.max);
-                let toggled = region(ui, status, vec2(24.0, 0.0), Layout::left_to_right(Align::Center), |ui| {
-                    panels::status(ui, &theme, &self.mon, state.as_ref(), open, overlay, self.notices.count(), self.capture.recording.map(|since| since.elapsed()))
-                });
-                let (toggled, settings_clicked, music_clicked, notices_clicked, power_clicked, stop_clicked) = toggled;
-                if stop_clicked {
-                    self.toggle_recording();
-                }
-                if power_clicked {
-                    self.toggle_power();
-                }
-                if notices_clicked {
-                    self.toggle_notices();
-                }
-                if settings_clicked {
-                    self.toggle_settings();
-                }
-                if music_clicked {
-                    self.toggle_music();
-                }
-                if let Some(panel) = toggled {
-                    match &self.desktop {
-                        Some(_) => command = Some(Command::TogglePanel(panel)),
-                        None => self.local_panels.toggle(panel),
-                    }
-                }
-
-                let column = vec2(24.0, 24.0);
-                if open.left {
-                    let rect = Rect::from_min_max(screen.min, pos2(workspace.left(), status_top));
-                    region(ui, rect, column, Layout::top_down(Align::Min), |ui| {
-                        panels::left(ui, &theme, &self.mon)
-                    });
-                }
-                if open.right {
-                    let rect = Rect::from_min_max(pos2(workspace.right(), screen.top()), pos2(screen.right(), status_top));
-                    region(ui, rect, column, Layout::top_down(Align::Min), |ui| {
-                        let music = &mut self.music;
-                        let mut wanted = false;
-                        panels::right(ui, &theme, &self.mon, state.as_ref(), rotation, &places, |ui| {
-                            wanted = music.panel(ui, &theme);
-                        });
-                        wanted
-                    })
-                    .then(|| self.toggle_music());
-                }
-                let mut typed = None;
-                if open.bottom {
-                    let rect = Rect::from_min_max(workspace.left_bottom(), pos2(workspace.right(), status_top));
-                    typed = region(ui, rect, vec2(24.0, 16.0), Layout::top_down(Align::Min), |ui| {
-                        let cwd = self.tabs[self.focus_tab()].cwd();
-                        self.fs.show(ui, &theme, cwd.as_deref())
-                    });
-                }
-
-                // The top bar stays in view while an application covers what is below
-                // it, so it is also the way back to the terminal.
-                let bar = Rect::from_min_max(pos2(workspace.left(), screen.top()), workspace.right_top());
-                let actions = region(ui, bar, vec2(16.0, 0.0), Layout::left_to_right(Align::Center), |ui| {
-                    self.top_bar(ui, &theme, state.as_ref())
-                });
-                if actions.open_tab {
-                    self.new_tab();
-                }
-                if actions.split_terminal {
-                    self.split_terminal(false);
-                }
-                if actions.toggle_launcher {
-                    self.toggle_launcher();
-                }
-                command = actions.command.or(command.take());
-
-                let mut mine = workspace;
-                if state.as_ref().is_some_and(|state| state.terminal_split) {
-                    // An application has the right half; keep the terminal out from under it.
-                    let (left, _) = area.halves();
-                    mine.set_width(left.width);
-                }
-                let inner = mine.shrink2(vec2(24.0, 18.0));
-                let inner = Rect::from_min_max(inner.min, inner.max.max(inner.min));
-
-                if self.settings.open {
-                    let changes = region(ui, mine, vec2(0.0, 0.0), Layout::top_down(Align::Min), |ui| {
-                        let displays = self.desktop.as_ref().map(|desktop| &desktop.displays);
-                        self.settings.show(ui, mine, &theme, &self.config, open, &self.mon, &places, displays, &self.input)
-                    });
-                    for change in changes {
-                        self.apply(ctx, change);
-                    }
-                    return;
-                }
-                if self.music.open {
-                    region(ui, mine, vec2(0.0, 0.0), Layout::top_down(Align::Min), |ui| {
-                        self.music.show(ui, mine, &theme)
-                    });
-                    return;
-                }
-                if self.power_menu.open {
-                    let act = region(ui, mine, vec2(0.0, 0.0), Layout::top_down(Align::Min), |ui| {
-                        self.power_menu.show(ui, mine, &theme, self.mon.power)
-                    });
-                    match act {
-                        Some(power::Act::Lock) => self.lock_now(),
-                        Some(power::Act::LogOut) => ctx.send_viewport_cmd(ViewportCommand::Close),
-                        Some(act) => act.run(),
-                        None => {}
-                    }
-                    return;
-                }
-                if self.notices.open {
-                    let (chosen, quiet) = region(ui, mine, vec2(0.0, 0.0), Layout::top_down(Align::Min), |ui| {
-                        self.notices.show(ui, mine, &theme)
-                    });
-                    if let Some(quiet) = quiet {
-                        if let Err(e) = config::set("do_not_disturb", quiet.then_some("on")) {
-                            eprintln!("des-ui: cannot save the setting: {e}");
-                        }
-                    }
-                    if let Some(chosen) = chosen {
-                        self.follow(chosen);
-                    }
-                    return;
-                }
-                if self.launcher.open {
-                    let picked = region(ui, mine, vec2(0.0, 0.0), Layout::top_down(Align::Min), |ui| {
-                        self.launcher.show(ui, mine, &theme)
-                    });
-                    if let Some(entry) = picked {
-                        self.run_in_terminal(&entry);
-                    }
-                    return;
-                }
-
-                // One pane, or two with a gap and a rule between them.
-                let panes: Vec<(usize, Rect)> = match self.side {
-                    None => vec![(self.active, inner)],
-                    Some(side) => {
-                        let gap = 25.0;
-                        let (first, second) = if self.stacked {
-                            let height = ((inner.height() - gap) / 2.0).floor().max(1.0);
-                            let rule = inner.top() + height + gap / 2.0;
-                            ui.painter().hline(inner.x_range(), rule, Stroke::new(1.0, ui::LINE));
-                            (
-                                Rect::from_min_size(inner.min, vec2(inner.width(), height)),
-                                Rect::from_min_max(pos2(inner.left(), inner.top() + height + gap), inner.max),
-                            )
-                        } else {
-                            let width = ((inner.width() - gap) / 2.0).floor().max(1.0);
-                            let rule = inner.left() + width + gap / 2.0;
-                            ui.painter().vline(rule, inner.y_range(), Stroke::new(1.0, ui::LINE));
-                            (
-                                Rect::from_min_size(inner.min, vec2(width, inner.height())),
-                                Rect::from_min_max(pos2(inner.left() + width + gap, inner.top()), inner.max),
-                            )
-                        };
-                        vec![(self.active, first), (side, second)]
-                    }
-                };
-                let responses: Vec<Response> = panes
-                    .iter()
-                    .enumerate()
-                    .map(|(n, (_, rect))| ui.interact(*rect, ui.id().with(("terminal-pane", n)), Sense::click_and_drag()))
-                    .collect();
-                // A click in a pane gives it the keyboard.
-                for (n, response) in responses.iter().enumerate() {
-                    if panes.len() > 1 && (response.clicked() || response.drag_started()) {
-                        self.side_focused = n == 1;
-                    }
-                }
-                let focused = if self.side_focused && panes.len() > 1 { 1 } else { 0 };
-                if panes.len() > 1 {
-                    // A mark over the pane in use.
-                    let rect = panes[focused].1;
-                    let mark = Rect::from_min_size(pos2(rect.left(), rect.top() - 10.0), vec2(36.0, 2.0));
-                    ui.painter().rect_filled(mark, 0.0, theme.main);
-                }
-                let response = &responses[focused];
-
-                // The terminal owns the keyboard: keep focus on it and stop egui from
-                // using Tab, arrows and Escape for its own widget navigation.
-                ui.memory_mut(|m| {
-                    m.request_focus(response.id);
-                    m.set_focus_lock_filter(
-                        response.id,
-                        EventFilter {
-                            tab: true,
-                            horizontal_arrows: true,
-                            vertical_arrows: true,
-                            escape: true,
-                        },
-                    );
-                });
-
-                let (alt_held, shift_held) = ui.input(|i| (i.modifiers.alt, i.modifiers.shift));
-                let tab = &mut self.tabs[panes[focused].0];
-                tab.handle_events(&events, alt_held, shift_held, ctx);
-                if let Some(text) = typed.take() {
-                    tab.write(text.as_bytes());
-                }
-                let look = self.config.term_look();
-                for (n, (index, rect)) in panes.iter().enumerate() {
-                    self.tabs[*index].show(ui, *rect, &theme, &responses[n], &look, n == focused);
-                }
-            });
-        if let (Some(command), Some(desktop)) = (command, self.desktop.as_mut()) {
-            desktop.send(command);
-        }
-
-        // The one-pixel lines between the frame's regions, drawn over all of them.
-        let lines = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("frame-lines")));
-        let line = Stroke::new(1.0, ui::LINE);
-        lines.hline(screen.x_range(), status_top, line);
-        if open.left {
-            lines.vline(workspace.left(), screen.top()..=status_top, line);
-        }
-        if open.right {
-            lines.vline(workspace.right(), screen.top()..=status_top, line);
-        }
-        if workspace.is_positive() {
-            lines.hline(workspace.x_range(), workspace.top(), line);
-            if open.bottom {
-                lines.hline(workspace.x_range(), workspace.bottom(), line);
-            }
-        }
-
-        // Toasts hang from the top right corner of the workspace. The compositor is
-        // told where, so that it shows them above whatever application is open.
-        let (mut covered, chosen) = self.notices.toasts(ctx, &theme, workspace.right_top() + vec2(-16.0, 12.0));
-        // Marking out a piece for a screenshot takes the whole display, above everything.
-        if self.capture.marking() {
-            if self.capture.mark(ctx, theme.main) {
-                self.toggle_recording();
-            }
-            covered = Some(screen);
-        }
-        let area = covered.map(|rect| {
-            (rect.left().floor() as i32, rect.top().floor() as i32, rect.width().ceil() as i32 + 1, rect.height().ceil() as i32 + 1)
-        });
-        if self.toast_area != Some(area) {
-            self.toast_area = Some(area);
-            self.send(Command::Toast(area));
-        }
-        if let Some(chosen) = chosen {
-            self.follow(chosen);
-        }
-
-        // Every further display gets a window of its own, which the compositor puts
-        // behind the applications there.
-        let screens = state.as_ref().map_or(1, |state| state.screens);
-        for number in 2..=screens {
-            ctx.show_viewport_immediate(
-                egui::ViewportId::from_hash_of(("des-display", number)),
-                ViewportBuilder::default()
-                    .with_title(format!("des-ui display {number}"))
-                    .with_app_id("des-ui"),
-                |ctx, class| {
-                    // Without support for extra windows there is nowhere to draw this.
-                    if class == egui::ViewportClass::Embedded {
-                        return;
-                    }
-                    CentralPanel::default()
-                        .frame(Frame::new().fill(ui::GROUND))
-                        .show(ctx, |ui| panels::backdrop(ui, &theme, &self.mon, number));
-                },
-            );
-        }
-
-        // The globe turns continuously; without it, the clock sets the pace.
-        let pace = if open.right && self.config.globe_rotation { 66 } else { 500 };
-        ctx.request_repaint_after(Duration::from_millis(pace));
     }
 }
 
@@ -1399,32 +1032,14 @@ fn main() -> eframe::Result {
             "--split-terminal" => split = Some(false),
             "--split-terminal=below" => split = Some(true),
             "--unlock" => {
-                // Every compositor of this user's: there is normally one.
-                let dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_default();
-                let mut reached = 0;
-                for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-                    let name = entry.file_name().to_string_lossy().into_owned();
-                    if name.starts_with("des-comp-") && name.ends_with(".sock") {
-                        if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(entry.path()) {
-                            use std::io::Write;
-                            if stream.write_all(Command::Unlock.encode().as_bytes()).is_ok() {
-                                reached += 1;
-                            }
-                        }
-                    }
-                }
-                if reached == 0 {
-                    eprintln!("des-ui: found no running desktop to unlock in {}", dir.display());
-                    std::process::exit(1);
-                }
-                println!("Unlocked.");
-                return Ok(());
+                eprintln!("des-ui: unlock the desktop with your password on the lock screen");
+                std::process::exit(2);
             }
             "--write-boot-splash" => {
                 let outcome = match args.next() {
                     Some(dir) => {
                         let config = config::Config::load();
-                        bootsplash::write(std::path::Path::new(&dir), &Theme::load(&config.theme))
+                        bootsplash::write(std::path::Path::new(&dir), &config.resolved_theme())
                     }
                     None => Err("--write-boot-splash needs a folder".to_string()),
                 };
@@ -1516,7 +1131,7 @@ fn main() -> eframe::Result {
         }
     }
 
-    let theme = Theme::load(&config.theme);
+    let theme = config.resolved_theme();
     if greeter {
         let options = eframe::NativeOptions {
             viewport: ViewportBuilder::default()
@@ -1576,7 +1191,19 @@ fn main() -> eframe::Result {
 
 #[cfg(test)]
 mod tests {
-    use super::remap_panes;
+    use super::{remap_panes, reconcile_lock, LockStep};
+
+    #[test]
+    fn reconnect_unlock_confirmation_does_not_relock_the_session() {
+        assert_eq!(reconcile_lock(true, false, true, true, Some(false)), LockStep::Release);
+        assert_eq!(reconcile_lock(true, false, true, true, None), LockStep::Release);
+    }
+
+    #[test]
+    fn cached_unlocked_state_cannot_confirm_a_new_unlock_request() {
+        assert_eq!(reconcile_lock(true, false, true, false, Some(false)), LockStep::Wait);
+        assert_eq!(reconcile_lock(true, true, true, false, Some(false)), LockStep::Wait);
+    }
 
     #[test]
     fn tabs_in_view_keep_their_places_when_others_close() {

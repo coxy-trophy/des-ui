@@ -360,7 +360,7 @@ impl Greeter {
         painter.text(
             pos2(inner.right() - date_width - 10.0, inner.top() + 30.0),
             Align2::RIGHT_BOTTOM,
-            now.format("%H:%M").to_string(),
+            crate::region::hours_minutes(&now),
             ui::display(28.0),
             ui::TEXT,
         );
