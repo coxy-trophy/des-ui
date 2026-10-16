@@ -44,6 +44,9 @@ leave() {
     # The music service runs apart from the shell, so that restarting the shell does
     # not stop the music; it ends with the session.
     pkill -u "$(id -u)" -x des-music 2>/dev/null
+    # The portal backend is started by D-Bus when an application first asks; it too
+    # ends with the session.
+    pkill -u "$(id -u)" -x des-portal 2>/dev/null
     systemctl --user unset-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE 2>/dev/null
     exit "$1"
 }

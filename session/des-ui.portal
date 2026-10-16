@@ -1,0 +1,4 @@
+[portal]
+DBusName=org.freedesktop.impl.portal.desktop.des-ui
+Interfaces=org.freedesktop.impl.portal.Screenshot
+UseIn=des-ui

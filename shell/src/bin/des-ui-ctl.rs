@@ -22,6 +22,9 @@ Asks the DEs-UI shell of this login session for one of these:
   music toggle|next|prev                 control the music player
   panel left|right|bottom                open or collapse a panel
   screenshot [screen|window|region]      take a screenshot
+  screenshot-file [screen|window|region] take one and answer with its file, as JSON,
+                                         once it is saved; the desktop portal uses it
+  pick-color                             the colour of a pixel you then click, as JSON
 
 Prints the shell's answer: ok, ok <json>, or error <why>. Exits 0 on ok, 1 on
 error, and 2 when the shell is not running. DES_UI_CONTROL_SOCKET names another
@@ -46,7 +49,9 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(15)));
+    // What waits on a person choosing gets the time a person takes.
+    let waits_on_user = matches!(words[0].as_str(), "screenshot-file" | "pick-color");
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(if waits_on_user { 130 } else { 15 })));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
     if let Err(error) = (&stream).write_all(format!("{line}\n").as_bytes()) {
         eprintln!("des-ui-ctl: could not ask the shell: {error}");

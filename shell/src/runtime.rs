@@ -539,6 +539,8 @@ impl App {
                     Answer::Ok
                 }
                 _ if locked => Answer::Error("locked".into()),
+                // Answered once the user has chosen; see docs/superpowers/handoff/L.md.
+                Request::ScreenshotFile(_) | Request::PickColor => Answer::Error("not available yet".into()),
                 Request::Dock | Request::Screenshot(_) if self.capture.marking() => Answer::Error("a screenshot is being marked".into()),
                 Request::Workspace(_) | Request::Panel(_) | Request::Screenshot(_) if !compositor => Answer::Error("no compositor".into()),
                 Request::Workspace(n) => { self.send(Command::Workspace(n)); Answer::Ok }

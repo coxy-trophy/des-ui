@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
-    "music","shell", "common", "compositor"]
+    "music", "shell", "common", "compositor", "portal"]
 
 # Debug info and incremental caches cost gigabytes of disk for this dependency tree.
 [profile.dev]

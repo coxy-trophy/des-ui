@@ -25,9 +25,12 @@ sudo install -Dm755 target/release/des-ui /usr/local/bin/des-ui
 sudo install -Dm755 target/release/des-ui-ctl /usr/local/bin/des-ui-ctl
 sudo install -Dm755 target/release/des-comp /usr/local/bin/des-comp
 sudo install -Dm755 target/release/des-music /usr/local/bin/des-music
+sudo install -Dm755 target/release/des-portal /usr/local/bin/des-portal
 sudo install -Dm755 session/des-ui-session /usr/local/bin/des-ui-session
 sudo install -Dm644 session/des-ui.desktop /usr/share/wayland-sessions/des-ui.desktop
 sudo install -Dm644 session/des-ui-portals.conf /usr/share/xdg-desktop-portal/des-ui-portals.conf
+sudo install -Dm644 session/des-ui.portal /usr/share/xdg-desktop-portal/portals/des-ui.portal
+sudo install -Dm644 session/org.freedesktop.impl.portal.desktop.des-ui.service /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.des-ui.service
 sudo install -d /usr/local/share/des-ui/themes
 sudo install -m644 themes/*.json /usr/local/share/des-ui/themes/
 

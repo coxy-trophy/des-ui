@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.freedesktop.impl.portal.desktop.des-ui
+Exec=/usr/local/bin/des-portal

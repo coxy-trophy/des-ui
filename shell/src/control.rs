@@ -22,6 +22,8 @@ const MAX_CLIENTS: usize = 8;
 const MAX_LINE: usize = 4096;
 /// How long a client may take to send a line, and the shell to answer it.
 const REQUEST_TIME: Duration = Duration::from_secs(10);
+/// How long an answer may wait on the user: a picture being marked out, a pixel chosen.
+const INTERACTION_TIME: Duration = Duration::from_secs(120);
 const WRITE_TIME: Duration = Duration::from_secs(5);
 const MAX_TOAST: usize = 512;
 const MAX_SECTION: usize = 32;
@@ -52,6 +54,23 @@ pub enum Request {
     Music(MusicWord),
     Panel(Panel),
     Screenshot(ShotMode),
+    /// A screenshot whose saved file the client is told of: the answer is
+    /// `{"uri": "file:///..."}` once the picture is on disk, or `error cancelled`.
+    ScreenshotFile(ShotMode),
+    /// The colour of a pixel the user picks: `{"r": 0-255, "g": 0-255, "b": 0-255}`,
+    /// or `error cancelled`.
+    PickColor,
+}
+
+impl Request {
+    /// How long the interface may take over this before the client is told it did not
+    /// answer. Requests that wait on the user get the time a person takes.
+    pub fn deadline(&self) -> Duration {
+        match self {
+            Request::ScreenshotFile(_) | Request::PickColor => INTERACTION_TIME,
+            _ => REQUEST_TIME,
+        }
+    }
 }
 
 /// What the client is told.
@@ -124,6 +143,13 @@ pub fn parse(line: &str) -> Result<Request, String> {
             "region" => Ok(Request::Screenshot(ShotMode::Region)),
             _ => Err("'screenshot' takes screen, window or region".to_string()),
         },
+        "screenshot-file" => match rest {
+            "" | "screen" => Ok(Request::ScreenshotFile(ShotMode::Screen)),
+            "window" => Ok(Request::ScreenshotFile(ShotMode::Window)),
+            "region" => Ok(Request::ScreenshotFile(ShotMode::Region)),
+            _ => Err("'screenshot-file' takes screen, window or region".to_string()),
+        },
+        "pick-color" => none(Request::PickColor),
         "" => Err("nothing asked".to_string()),
         other => Err(format!("unknown request '{}'; des-ui-ctl --help lists them", other.chars().take(32).collect::<String>())),
     }
@@ -137,6 +163,20 @@ pub fn sanitize_toast(text: &str) -> String {
         .collect::<String>()
         .trim()
         .to_string()
+}
+
+/// A local path as a `file://` URI, every byte but the unreserved ones and `/`
+/// percent-encoded, as the desktop portal hands it to applications.
+pub fn file_uri(path: &Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+    let mut uri = String::from("file://");
+    for &byte in path.as_os_str().as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => uri.push(byte as char),
+            _ => uri.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    uri
 }
 
 /// Whether a connection may be answered: the kernel must say it is this user's.
@@ -264,10 +304,11 @@ fn serve(stream: UnixStream, sender: &SyncSender<(Request, Reply)>, ctx: &egui::
             Err(why) => Answer::Error(why),
             Ok(request) => {
                 let (reply, answered) = mpsc::sync_channel(1);
+                let deadline = request.deadline();
                 match sender.try_send((request, Reply(reply))) {
                     Ok(()) => {
                         ctx.request_repaint();
-                        match answered.recv_timeout(REQUEST_TIME) {
+                        match answered.recv_timeout(deadline) {
                             Ok(answer) => answer,
                             Err(mpsc::RecvTimeoutError::Timeout) => Answer::Error("the shell did not answer in time".into()),
                             Err(mpsc::RecvTimeoutError::Disconnected) => Answer::Error("the shell did not answer".into()),
@@ -373,8 +414,11 @@ mod tests {
         assert_eq!(parse("panel bottom"), Ok(Request::Panel(Panel::Bottom)));
         assert_eq!(parse("screenshot"), Ok(Request::Screenshot(ShotMode::Screen)));
         assert_eq!(parse("screenshot window"), Ok(Request::Screenshot(ShotMode::Window)));
+        assert_eq!(parse("screenshot-file"), Ok(Request::ScreenshotFile(ShotMode::Screen)));
+        assert_eq!(parse("screenshot-file region"), Ok(Request::ScreenshotFile(ShotMode::Region)));
+        assert_eq!(parse("pick-color"), Ok(Request::PickColor));
         for bad in ["", "reboot", "workspace 4", "workspace x", "workspace", "toast", "toast \t\n",
-                    "music loud", "panel top", "screenshot pick", "settings $(id)", "lock now", "ping pong",
+                    "music loud", "panel top", "screenshot pick", "screenshot-file pick", "pick-color now", "settings $(id)", "lock now", "ping pong",
                     &format!("settings {}", "a".repeat(33))] {
             assert!(parse(bad).is_err(), "{bad:?} should be refused");
         }
@@ -382,10 +426,25 @@ mod tests {
     }
 
     #[test]
+    fn what_waits_on_the_user_is_given_the_time_a_person_takes() {
+        assert_eq!(Request::Ping.deadline(), REQUEST_TIME);
+        assert_eq!(Request::Screenshot(ShotMode::Screen).deadline(), REQUEST_TIME);
+        assert_eq!(Request::ScreenshotFile(ShotMode::Region).deadline(), INTERACTION_TIME);
+        assert_eq!(Request::PickColor.deadline(), INTERACTION_TIME);
+    }
+
+    #[test]
     fn toast_text_loses_control_characters_and_its_tail() {
         assert_eq!(sanitize_toast(" one\x1b[31m two\n"), "one [31m two");
         let long = "é".repeat(MAX_TOAST + 50);
         assert_eq!(sanitize_toast(&long).chars().count(), MAX_TOAST);
+    }
+
+    #[test]
+    fn saved_files_are_uris_that_survive_any_name() {
+        assert_eq!(file_uri(Path::new("/home/me/Pictures/Screenshots/a.png")), "file:///home/me/Pictures/Screenshots/a.png");
+        assert_eq!(file_uri(Path::new("/tmp/my shot é.png")), "file:///tmp/my%20shot%20%C3%A9.png");
+        assert_eq!(file_uri(Path::new("/x/a#b?c%")), "file:///x/a%23b%3Fc%25");
     }
 
     #[test]
