@@ -11,6 +11,9 @@ use std::process::{Command, Stdio};
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppEntry {
     pub name: String,
+    pub desktop_id: String,
+    pub icon: Option<String>,
+    pub startup_wm_class: Option<String>,
     /// The program and its arguments.
     pub exec: Vec<String>,
     /// Whether it must run inside a terminal.
@@ -39,9 +42,13 @@ fn entry_dirs() -> Vec<PathBuf> {
 
 /// Every application the user could start, sorted by name.
 pub fn scan() -> Vec<AppEntry> {
+    scan_dirs(entry_dirs())
+}
+
+fn scan_dirs(dirs: Vec<PathBuf>) -> Vec<AppEntry> {
     let mut seen = HashSet::new();
     let mut entries = Vec::new();
-    for dir in entry_dirs() {
+    for dir in dirs {
         let Ok(listing) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -52,10 +59,11 @@ pub fn scan() -> Vec<AppEntry> {
             }
             // An entry in an earlier directory overrides the same file in a later one,
             // even if it only exists to hide the application.
-            if !seen.insert(name) {
+            if !seen.insert(name.clone()) {
                 continue;
             }
-            if let Some(entry) = std::fs::read_to_string(file.path()).ok().and_then(|text| parse(&text)) {
+            if let Some(mut entry) = std::fs::read_to_string(file.path()).ok().and_then(|text| parse(&text)) {
+                entry.desktop_id = name.to_string_lossy().into_owned();
                 entries.push(entry);
             }
         }
@@ -68,6 +76,7 @@ pub fn scan() -> Vec<AppEntry> {
 /// Reads one desktop entry. Returns `None` for anything that should not be listed.
 pub fn parse(text: &str) -> Option<AppEntry> {
     let (mut name, mut exec, mut terminal) = (None, None, false);
+    let (mut icon, mut startup_wm_class) = (None, None);
     let mut in_main_group = false;
     for line in text.lines() {
         let line = line.trim();
@@ -90,12 +99,17 @@ pub fn parse(text: &str) -> Option<AppEntry> {
             "Name" => name = Some(value.to_string()),
             "Exec" => exec = Some(split_exec(value)),
             "Terminal" => terminal = value == "true",
+            "Icon" if !value.is_empty() => icon = Some(value.to_owned()),
+            "StartupWMClass" if !value.is_empty() => startup_wm_class = Some(value.to_owned()),
             _ => {}
         }
     }
     let exec = exec.filter(|exec| !exec.is_empty())?;
     Some(AppEntry {
         name: name?,
+        desktop_id: String::new(),
+        icon,
+        startup_wm_class,
         exec,
         terminal,
     })
@@ -198,9 +212,45 @@ fn output_log(command_line: &str) -> Option<(Stdio, Stdio)> {
     Some((Stdio::from(file.try_clone().ok()?), Stdio::from(file)))
 }
 
+/// Open a local document without a shell and report the viewer's exit asynchronously.
+pub fn open_document(path:PathBuf,ctx:eframe::egui::Context)->std::sync::mpsc::Receiver<Result<(),String>>{
+    let (tx,rx)=std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move||{
+        let result=open_document_using(std::ffi::OsStr::new("xdg-open"),&path).map_err(|e|format!("Could not open document: {e}. Check the default viewer."));
+        let _=tx.send(result);ctx.request_repaint();
+    });rx
+}
+fn open_document_using(program:&std::ffi::OsStr,path:&std::path::Path)->std::io::Result<()>{
+    if !path.is_absolute(){return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,"document path must be absolute"));}
+    let status=Command::new(program).arg(path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status()?;
+    if status.success(){Ok(())}else{Err(std::io::Error::other(format!("viewer exited unsuccessfully ({status})")))}
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn document_opener_preserves_path_arguments_and_reports_viewer_failure(){
+        use std::os::unix::{fs::PermissionsExt,ffi::OsStringExt};
+        let dir=tempfile::tempdir().unwrap();let program=dir.path().join("viewer");
+        std::fs::write(&program,"#!/bin/sh\nprintf '%s' \"$1\" > \"$0.args\"\n").unwrap();
+        std::fs::set_permissions(&program,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path=dir.path().join(std::ffi::OsString::from_vec(b"literal-$(no-exec)-\xff.txt".to_vec()));
+        open_document_using(program.as_os_str(),&path).unwrap();
+        use std::os::unix::ffi::OsStrExt;
+        assert_eq!(std::fs::read(program.with_extension("args")).unwrap(),path.as_os_str().as_bytes());
+        std::fs::write(&program,"#!/bin/sh\nexit 7\n").unwrap();
+        assert!(open_document_using(program.as_os_str(),&path).is_err());
+        assert!(open_document_using(program.as_os_str(),std::path::Path::new("relative")).is_err());
+    }
+
+    #[test]
+    fn parses_icon_and_window_identity() {
+        let entry = parse("[Desktop Entry]\nName=Editor\nExec=editor\nIcon=org.example.Editor\nStartupWMClass=editor-window\n").unwrap();
+        assert_eq!(entry.icon.as_deref(), Some("org.example.Editor"));
+        assert_eq!(entry.startup_wm_class.as_deref(), Some("editor-window"));
+    }
 
     #[test]
     fn splits_exec_lines() {
@@ -228,6 +278,7 @@ mod tests {
             entry,
             Some(AppEntry {
                 name: "Text Editor".into(),
+                desktop_id: String::new(), icon: None, startup_wm_class: None,
                 exec: vec!["gnome-text-editor".into()],
                 terminal: false,
             })
@@ -250,6 +301,7 @@ mod tests {
         let _ = std::fs::remove_file(&marker);
         let entry = AppEntry {
             name: "touch".into(),
+            desktop_id: String::new(), icon: None, startup_wm_class: None,
             exec: vec!["touch".into(), marker.to_string_lossy().into_owned()],
             terminal: false,
         };
@@ -261,6 +313,23 @@ mod tests {
         let _ = std::fs::remove_file(&marker);
         assert!(appeared);
         assert!(launch(&AppEntry { exec: vec!["/nonexistent/program".into()], ..entry }).is_err());
+    }
+
+    #[test]
+    fn user_desktop_entries_override_system_and_keep_filename_identity() {
+        let fixture = tempfile::tempdir().unwrap();
+        let user = fixture.path().join("user");
+        let system = fixture.path().join("system");
+        for dir in [&user, &system] { std::fs::create_dir(dir).unwrap(); }
+        std::fs::write(system.join("editor.desktop"), "[Desktop Entry]\nName=System Editor\nExec=system-editor\n").unwrap();
+        std::fs::write(user.join("editor.desktop"), "[Desktop Entry]\nName=User Editor\nExec=user-editor\nIcon=user-editor\n").unwrap();
+        std::fs::write(system.join("hidden.desktop"), "[Desktop Entry]\nName=Hidden\nExec=hidden\n").unwrap();
+        std::fs::write(user.join("hidden.desktop"), "[Desktop Entry]\nHidden=true\n").unwrap();
+        let entries = scan_dirs(vec![user, system]);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].desktop_id, "editor.desktop");
+        assert_eq!(entries[0].name, "User Editor");
+        assert_eq!(entries[0].icon.as_deref(), Some("user-editor"));
     }
 
     #[test]
