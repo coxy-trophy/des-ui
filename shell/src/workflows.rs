@@ -17,6 +17,7 @@ impl App {
             palette::Action::Notifications=>self.toggle_notices(),
             palette::Action::Power=>self.toggle_power(),
             palette::Action::Lock=>self.lock_now(),
+            palette::Action::Scratchpad=>{self.launcher.open=false;self.scratchpad.toggle();}
             palette::Action::FindTerminal=>{self.launcher.open=false;self.send(Command::Terminal);let i=self.focus_tab();self.tabs[i].open_search();}
             palette::Action::CopyLastOutput=>{self.launcher.open=false;self.copy_last_output();}
             palette::Action::SaveSession=>self.save_session(),

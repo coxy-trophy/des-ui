@@ -25,6 +25,7 @@ Asks the DEs-UI shell of this login session for one of these:
   screenshot-file [screen|window|region] take one and answer with its file, as JSON,
                                          once it is saved; the desktop portal uses it
   pick-color                             the colour of a pixel you then click, as JSON
+  scratchpad                             drop the scratchpad terminal, or put it away
 
 Prints the shell's answer: ok, ok <json>, or error <why>. Exits 0 on ok, 1 on
 error, and 2 when the shell is not running. DES_UI_CONTROL_SOCKET names another

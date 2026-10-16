@@ -31,6 +31,7 @@ mod remote;
 mod runtime;
 mod workflows;
 mod screen_views;
+mod scratchpad;
 mod region;
 mod sound;
 mod users;
@@ -183,6 +184,10 @@ struct App {
     remote: remote::Remote,
     /// The keys along the foot of the shell, for a touchscreen or a missing keyboard.
     osk: osk::Osk,
+    /// The terminal that drops from the top of the workspace.
+    scratchpad: scratchpad::Scratchpad,
+    /// Where the compositor was last told the scratchpad is; `None` when unknown.
+    overlay_area: Option<Option<(i32, i32, i32, i32)>>,
 }
 
 impl App {
@@ -268,6 +273,8 @@ impl App {
             widgets,
             remote: remote::Remote::new(),
             osk,
+            scratchpad: scratchpad::Scratchpad::default(),
+            overlay_area: None,
             // Alone in a window there is no splash to wait for.
             powerup: if desktop_present { powerup::PowerUp::under_splash() } else { powerup::PowerUp::new(Duration::ZERO) },
         })
@@ -696,6 +703,10 @@ impl App {
             } = &event
             {
                 let count = self.tabs.len();
+                if modifiers.ctrl && modifiers.shift && *key == Key::Backtick {
+                    self.scratchpad.toggle();
+                    continue;
+                }
                 if modifiers.ctrl && modifiers.shift && *key == Key::K {
                     self.toggle_osk();
                     continue;

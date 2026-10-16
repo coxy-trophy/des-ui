@@ -60,6 +60,8 @@ pub enum Request {
     /// The colour of a pixel the user picks: `{"r": 0-255, "g": 0-255, "b": 0-255}`,
     /// or `error cancelled`.
     PickColor,
+    /// Drop the scratchpad terminal, or put it away.
+    Scratchpad,
 }
 
 impl Request {
@@ -150,6 +152,7 @@ pub fn parse(line: &str) -> Result<Request, String> {
             _ => Err("'screenshot-file' takes screen, window or region".to_string()),
         },
         "pick-color" => none(Request::PickColor),
+        "scratchpad" => none(Request::Scratchpad),
         "" => Err("nothing asked".to_string()),
         other => Err(format!("unknown request '{}'; des-ui-ctl --help lists them", other.chars().take(32).collect::<String>())),
     }
@@ -416,6 +419,8 @@ mod tests {
         assert_eq!(parse("screenshot window"), Ok(Request::Screenshot(ShotMode::Window)));
         assert_eq!(parse("screenshot-file"), Ok(Request::ScreenshotFile(ShotMode::Screen)));
         assert_eq!(parse("screenshot-file region"), Ok(Request::ScreenshotFile(ShotMode::Region)));
+        assert_eq!(parse("scratchpad"), Ok(Request::Scratchpad));
+        assert!(parse("scratchpad now").is_err());
         assert_eq!(parse("pick-color"), Ok(Request::PickColor));
         for bad in ["", "reboot", "workspace 4", "workspace x", "workspace", "toast", "toast \t\n",
                     "music loud", "panel top", "screenshot pick", "screenshot-file pick", "pick-color now", "settings $(id)", "lock now", "ping pong",
