@@ -291,3 +291,14 @@ watched work on a real machine. Tick them off, or note what went wrong.
   Ctrl+C in the terminal, typing into the launcher and a settings field, and that a
   key never takes the keyboard away from the field.
 - The keyboard with an application in view (it is covered, by design).
+
+## Scratchpad terminal
+
+- [ ] Ctrl+Shift+` over a full-screen application: the scratchpad slides down above it
+      and the application keeps its size
+- [ ] Keys go to the scratchpad and not to the application, Escape included; the same
+      shortcut puts it away and the application has the keyboard again
+- [ ] Locking puts it away and nothing of it shows on the lock screen
+- [ ] Super+Shift+R (shell restart) with it down: the compositor drops the overlay and
+      the new shell starts with it up
+- [ ] `exit` in it puts it away; the next Ctrl+Shift+` starts a fresh shell

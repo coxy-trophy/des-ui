@@ -305,6 +305,12 @@ reach only by typing a password shows NEEDS A KEY and the panels stay on this ma
 Tunnels (`ssh -N`, `ssh -W`) are not followed. Temperatures, fans and the GPU are not
 read over ssh, so those sections fold away.
 
+**Ctrl+Shift+`** drops a scratchpad terminal from the top of the workspace, over
+whatever is in view, full screen applications included; the same keys put it away
+again, and its shell keeps running meanwhile. Escape goes to the shell inside, not to
+the scratchpad. "Scratchpad terminal" in the palette and `des-ui-ctl scratchpad` do
+the same. Locking puts it away.
+
 Ctrl+Shift+T opens a tab and Ctrl+Tab moves between them. The terminal can also be
 split in two, each half showing a tab of its own:
 

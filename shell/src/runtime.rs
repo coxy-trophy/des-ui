@@ -34,7 +34,7 @@ impl eframe::App for App {
         self.answer_control();
         self.clipboard.poll(self.launcher.open);
         if let Some(desktop) = &mut self.desktop {
-            if !desktop.connected() { self.dock_area = None; self.secondary_areas.clear(); }
+            if !desktop.connected() { self.dock_area = None; self.overlay_area = None; self.secondary_areas.clear(); }
             if let Some(screen)=desktop.dock_screen_requested.take(){
                 if screen==0{self.dock.reveal_keyboard();}else if screen<desktop.state.screens{self.secondary_docks.entry(screen).or_default().reveal_keyboard();}
             }
@@ -98,6 +98,7 @@ impl eframe::App for App {
         for tab in &mut self.tabs {
             tab.pump();
         }
+        self.scratchpad.pump();
         // Tabs whose shell has exited go; the ones in view keep their places, and a
         // split whose pane lost its tab becomes whole again.
         let alive: Vec<bool> = self.tabs.iter().map(|tab| !tab.exited).collect();
@@ -184,6 +185,11 @@ impl eframe::App for App {
                 self.send(Command::Dock(None));
             }
             self.capture.cancel();
+            self.scratchpad.close_now();
+            if self.overlay_area != Some(None) {
+                self.overlay_area = Some(None);
+                self.send(Command::Overlay(None));
+            }
             // Nothing is shown over the lock; what arrives waits in the list.
             if self.toast_area != Some(None) {
                 self.toast_area = Some(None);
@@ -244,6 +250,8 @@ impl eframe::App for App {
         let keys_top = status_top - osk_height;
         let workspace = Rect::from_min_max(workspace.min, pos2(workspace.max.x, (workspace.max.y - osk_height).max(workspace.min.y)));
         let dock_keys = self.dock.reserve_keyboard(ctx);
+        // While the scratchpad is down it has the keyboard, not the panes.
+        let scratch_keys = self.scratchpad.visible();
         CentralPanel::default()
             .frame(Frame::new().fill(ui::GROUND))
             .show(ctx, |ui| {
@@ -448,7 +456,7 @@ impl eframe::App for App {
 
                 // The terminal owns the keyboard: keep focus on it and stop egui from
                 // using Tab, arrows and Escape for its own widget navigation.
-                if !self.dock.captures_keyboard() && !self.tabs[panes[focused].0].searching() { ui.memory_mut(|m| {
+                if !self.dock.captures_keyboard() && !scratch_keys && !self.tabs[panes[focused].0].searching() { ui.memory_mut(|m| {
                     m.request_focus(response.id);
                     m.set_focus_lock_filter(
                         response.id,
@@ -464,7 +472,7 @@ impl eframe::App for App {
                 }
                 let (alt_held, shift_held) = ui.input(|i| (i.modifiers.alt, i.modifiers.shift));
                 let tab = &mut self.tabs[panes[focused].0];
-                if !self.dock.captures_keyboard() { tab.handle_events(&events, alt_held, shift_held, ctx); }
+                if !self.dock.captures_keyboard() && !scratch_keys { tab.handle_events(&events, alt_held, shift_held, ctx); }
                 if let Some(text) = typed.take() {
                     tab.input(text.as_bytes());
                 }
@@ -474,6 +482,15 @@ impl eframe::App for App {
                 }
             });
         if let Some(command) = command { self.send(command); }
+
+        let look = self.config.term_look();
+        let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
+        let scratch = self.scratchpad.show(ctx, workspace, screen, &theme, &look, self.config.animate,
+            (&self.shell, &home, self.config.scrollback), &events);
+        let overlay_area = scratch.map(scratchpad::area);
+        if scratchpad::changed(&mut self.overlay_area, overlay_area) {
+            self.send(Command::Overlay(overlay_area));
+        }
 
         // The one-pixel lines between the frame's regions, drawn over all of them.
         let lines = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("frame-lines")));
@@ -570,6 +587,7 @@ impl App {
                     self.send(Command::Terminal);
                     Answer::Ok
                 }
+                Request::Scratchpad => { self.scratchpad.toggle(); Answer::Ok }
                 Request::Music(word) => { self.music.command(word.word()); Answer::Ok }
                 Request::Panel(panel) => { self.send(Command::TogglePanel(panel)); Answer::Ok }
                 Request::Screenshot(mode) => { self.send(Command::Shot(mode)); Answer::Ok }
