@@ -18,6 +18,7 @@ impl eframe::App for App {
             desktop.pump();
         }
         self.answer_control();
+        self.clipboard.poll(self.launcher.open);
         if let Some(desktop) = &mut self.desktop {
             if !desktop.connected() { self.dock_area = None; self.secondary_areas.clear(); }
             if let Some(screen)=desktop.dock_screen_requested.take(){

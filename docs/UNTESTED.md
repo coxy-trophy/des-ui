@@ -218,3 +218,10 @@ watched work on a real machine. Tick them off, or note what went wrong.
 - [ ] While locked, `launcher` is refused and `lock` is a no-op; `ping` still answers
 - [ ] A second user on the machine is refused at the socket
 - [ ] The socket comes back after the shell restarts (Super+Shift+R)
+
+## Clipboard history (the palette)
+
+- [ ] Copy from a Wayland app and from an X11 app (through Xwayland); both appear
+- [ ] A password copied from KeePassXC or another manager that sets the hint does not appear
+- [ ] Without `wl-clipboard` the palette says so under `clip` and nothing else changes
+- [ ] A pin survives 50 further copies; Clear history empties it

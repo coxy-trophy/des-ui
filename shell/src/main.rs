@@ -169,6 +169,8 @@ struct App {
     screenshot_requested: bool,
     /// The socket `des-ui-ctl` speaks to; `None` when it could not be made.
     control: Option<control::Control>,
+    /// What was copied lately, in memory only, for the palette.
+    clipboard: clipboard::Clipboard,
 }
 
 impl App {
@@ -196,6 +198,9 @@ impl App {
                 None
             }
         };
+        let clipboard = clipboard::Clipboard::start(ctx.clone());
+        let mut launcher = Launcher::default();
+        launcher.set_clipboard(clipboard.handle());
         notices.sounds = config.notification_sounds;
         region::set_twelve_hour(config.twelve_hour);
         Ok(App {
@@ -211,7 +216,7 @@ impl App {
             pet: pet::Pet::new(&config.pet),
             fs: FsView::new(),
             desktop,
-            launcher: Launcher::default(),
+            launcher,
             dock: dock::Dock::default(),
             secondary_docks: Default::default(),
             secondary_areas: Default::default(),
@@ -243,6 +248,7 @@ impl App {
             started: Instant::now(),
             screenshot_requested: false,
             control,
+            clipboard,
         })
     }
 

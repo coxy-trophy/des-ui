@@ -223,6 +223,12 @@ units (system units only where polkit allows it). Your own entries go in
 (split like a desktop entry, never through a shell), `terminal = yes|no` and
 `keywords`.
 
+Type `clip` (or `clipboard`) for what you copied lately, newest first; `clip <words>`
+narrows it. Enter copies an entry back; right-click pins it, removes it, or clears the
+history. Up to 50 entries of text are kept, each up to 64 KB, in memory only: nothing
+is written to disk and all of it is gone at logout. What a password manager copies is
+never kept. It needs `wl-clipboard` (`wl-paste`).
+
 **Settings → Session → SAVE SESSION** records installed application identities,
 workspace/display placement and terminal folders/layout. **RESTORE SESSION** reuses
 existing windows and terminals, opens recognized installed apps, and waits up to 30
