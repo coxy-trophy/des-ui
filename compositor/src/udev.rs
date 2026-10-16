@@ -73,6 +73,7 @@ render_elements! {
     ClientCursor=WaylandSurfaceRenderElement<GlesRenderer>,
     Toast=crate::toast::ToastElement,
     Solid=smithay::backend::renderer::element::solid::SolidColorRenderElement,
+    Phosphor=smithay::backend::renderer::gles::element::TextureShaderElement,
 }
 
 /// The pointer as something to draw at `position` on a display: the arrow, or the
@@ -131,6 +132,7 @@ pub fn splash_elements(
             crate::splash::TopElements::Toast(toast) => OutputElements::Toast(toast),
             crate::splash::TopElements::Space(space) => OutputElements::Space(space),
             crate::splash::TopElements::Moving(moving) => OutputElements::Moving(moving),
+            crate::splash::TopElements::Phosphor(frame) => OutputElements::Phosphor(frame),
             crate::splash::TopElements::_GenericCatcher(never) => match never {},
         })
         .collect()
@@ -818,6 +820,7 @@ impl DesComp {
         let primary = self.screens.first().map(|screen| screen.loc);
         let now = Instant::now();
         let beneath: Vec<&smithay::desktop::Window> = self.shell.iter().chain(self.backdrops.iter()).collect();
+        self.phosphor.begin_frame();
         let Some(udev) = self.udev.as_mut() else {
             return;
         };
@@ -834,6 +837,10 @@ impl DesComp {
             cursor,
             ..
         } = udev;
+
+        // A display that was unplugged lets go of its off-screen frame.
+        let names: Vec<String> = monitors.iter().map(|monitor| monitor.output.name()).collect();
+        self.phosphor.retain(&names);
 
         for monitor in monitors.iter_mut() {
             // A page flip that never completes must not freeze the screen for good.
@@ -865,6 +872,19 @@ impl DesComp {
                 elements.extend(crate::toast::elements(renderer,Some(shell),Some(*area),Some(*origin),id,geometry.loc,scale).into_iter().map(OutputElements::Toast));
             }
             elements.extend(crate::motion::window_elements::<OutputElements>(renderer, &self.space, &monitor.output, &self.motions, &beneath, now));
+
+            // Glow, scanlines and the night light: the frame drawn off screen, then shown
+            // through one shader. With none of them on, the scene is drawn as it is.
+            let size = monitor
+                .output
+                .current_mode()
+                .map(|mode| monitor.output.current_transform().transform_size(mode.size))
+                .unwrap_or_default();
+            match self.phosphor.process(renderer, &monitor.output.name(), size, geometry.size, scale, &elements, false) {
+                crate::phosphor::Pass::Direct => {}
+                crate::phosphor::Pass::Unchanged => continue,
+                crate::phosphor::Pass::Draw(frame) => elements = vec![OutputElements::Phosphor(frame)],
+            }
 
             let drawn = monitor
                 .surface
