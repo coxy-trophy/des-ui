@@ -352,7 +352,7 @@ impl Settings {
                                 let radio = self.radio.get_or_insert_with(|| Radio::new(ui.ctx().clone()));
                                 radio.show_bluetooth(ui, theme);
                             }
-                            Section::Keyboard => self.keyboard(ui, theme, input, &mut changes),
+                            Section::Keyboard => self.keyboard(ui, theme, config, input, &mut changes),
                             Section::Pointer => self.pointer(ui, theme, input, &mut changes),
                             Section::Displays => self.displays(ui, theme, displays, &mut changes),
                             Section::Globe => self.globe(ui, theme, config, geo, &mut changes),
@@ -485,7 +485,12 @@ impl Settings {
         });
     }
 
-    fn keyboard(&mut self, ui: &mut Ui, theme: &Theme, input: &InputSettings, changes: &mut Vec<Change>) {
+    fn keyboard(&mut self, ui: &mut Ui, theme: &Theme, config: &Config, input: &InputSettings, changes: &mut Vec<Change>) {
+        heading(ui, "ON SCREEN", "Keys along the foot of the desktop, for a touchscreen or without a keyboard.");
+        if switch_row(ui, theme, "On-screen keyboard", "Types into the terminal and the desktop's own fields (Super+K)", config.osk) {
+            changes.push(Change::Set("osk", (!config.osk).then(|| "on".to_string())));
+        }
+        ui.add_space(24.0);
         heading(ui, "LAYOUT", "Which characters the keys produce.");
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
@@ -1210,7 +1215,10 @@ pub(crate) fn switch_row(ui: &mut Ui, theme: &Theme, name: &str, what: &str, on:
         ui::text(ui, what, ui::mono(11.0), ui::LABEL);
     });
     inner.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        clicked = ui::toggle(ui, theme, on).clicked();
+        let response = ui::toggle(ui, theme, on);
+        // The switch is named by its row, so a screen reader says what it turns on.
+        response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), on, name));
+        clicked = response.clicked();
     });
     ui.painter().hline(row.x_range(), row.bottom(), Stroke::new(1.0, ui::TRACK));
     clicked
@@ -1219,6 +1227,22 @@ pub(crate) fn switch_row(ui: &mut Ui, theme: &Theme, name: &str, what: &str, on:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_switch_is_read_by_the_name_of_its_row() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let theme = Theme::load("signal");
+        let output = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                switch_row(ui, &theme, "On-screen keyboard", "Keys along the foot", true);
+            });
+        });
+        let tree = output.platform_output.accesskit_update.expect("accesskit is on");
+        let switch = tree.nodes.iter().map(|(_, node)| node).find(|node| node.label() == Some("On-screen keyboard")).expect("the switch is named");
+        assert_eq!(switch.role(), egui::accesskit::Role::CheckBox);
+        assert_eq!(switch.toggled(), Some(egui::accesskit::Toggled::True));
+    }
 
     #[test]
     fn accent_draft_requires_apply_and_reset_reports_default() {

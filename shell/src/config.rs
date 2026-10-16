@@ -66,6 +66,8 @@ pub struct Config {
     /// Windows, workspaces and the dock move; off for reduced motion. The compositor
     /// reads the same key.
     pub animate: bool,
+    /// The on-screen keyboard along the foot of the shell.
+    pub osk: bool,
 }
 
 impl Default for Config {
@@ -94,6 +96,7 @@ impl Default for Config {
             side_panel_behavior: des_common::PanelBehavior::default(),
             dock_pins: Vec::new(),
             animate: true,
+            osk: false,
         }
     }
 }
@@ -157,6 +160,7 @@ impl Config {
                 }
                 // The key before windows moved too; `animate` wins when both are present.
                 "dock_animation" if !parsed_animate => config.animate = value != "off",
+                "osk" => config.osk = value == "on",
                 "dock_pins" => {
                     if let Ok(pins) = serde_json::from_str::<Vec<String>>(value) {
                         let mut seen = std::collections::HashSet::new();

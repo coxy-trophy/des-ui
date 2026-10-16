@@ -135,6 +135,7 @@ impl Launcher {
                 for row in range{
                     let item=&items[row];let selected=row==self.selected;
                     let (rect,response)=ui.allocate_exact_size(vec2(ui.available_width(),52.0),Sense::click());
+                    response.widget_info(||egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel,true,selected,format!("{}, {}: {}",item.label,item.kind,item.detail)));
                     let painter=ui.painter_at(rect);
                     painter.rect_filled(rect,0.0,if selected{theme.tint()}else if response.hovered(){ui::PANEL}else{ui::GROUND});
                     if selected{painter.rect_stroke(rect,0.0,Stroke::new(1.0,theme.main),StrokeKind::Inside);}
@@ -161,6 +162,19 @@ impl Launcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn screen_readers_hear_each_result_with_its_kind(){
+        let ctx=egui::Context::default();ui::install_fonts(&ctx,None,None);ctx.enable_accesskit();
+        let mut launcher=Launcher{open:true,..Default::default()};
+        frame(&mut launcher,&ctx,vec![]);
+        frame(&mut launcher,&ctx,vec![egui::Event::Text("health".into())]);
+        let output=ctx.run(egui::RawInput{screen_rect:Some(Rect::from_min_size(egui::Pos2::ZERO,vec2(900.0,600.0))),..Default::default()},|ctx|{
+            egui::CentralPanel::default().show(ctx,|ui|{launcher.show(ui,ui.max_rect(),&Theme::load("signal"));});
+        });
+        let tree=output.platform_output.accesskit_update.expect("accesskit is on");
+        let labels:Vec<&str>=tree.nodes.iter().filter_map(|(_,node)|node.label()).collect();
+        assert!(labels.iter().any(|l|l.contains("Settings")&&l.contains("SETTING")),"{labels:?}");
+    }
     fn frame(launcher:&mut Launcher,ctx:&egui::Context,events:Vec<egui::Event>)->Option<Action>{ frame_copying(launcher,ctx,events).0 }
     fn frame_copying(launcher:&mut Launcher,ctx:&egui::Context,events:Vec<egui::Event>)->(Option<Action>,Option<String>){
         let mut picked=None;

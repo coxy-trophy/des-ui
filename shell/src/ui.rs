@@ -262,6 +262,7 @@ pub fn keycap(ui: &mut Ui, key: &str) -> Response {
     ui.painter()
         .rect_stroke(rect, 0.0, Stroke::new(1.0, LINE_STRONG), StrokeKind::Inside);
     ui.painter().galley(rect.min + vec2(8.0, 4.0), galley, TEXT);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, key));
     response
 }
 
@@ -275,6 +276,7 @@ pub fn key_row(ui: &mut Ui, action: &str, key: &str) {
 
 /// A bordered text button, filled with the accent while what it controls is engaged.
 pub fn button(ui: &mut Ui, theme: &Theme, label: &str, hint: Option<&str>, engaged: bool) -> Response {
+    let name = label.to_string();
     let (ink, hint_ink) = if engaged {
         (GROUND, theme.muted_on_accent())
     } else {
@@ -299,6 +301,7 @@ pub fn button(ui: &mut Ui, theme: &Theme, label: &str, hint: Option<&str>, engag
     if let Some(hint) = hint {
         painter.galley(pos2(x, rect.center().y - hint.size().y / 2.0), hint, hint_ink);
     }
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), engaged, &name));
     response
 }
 
@@ -314,6 +317,7 @@ pub fn toggle(ui: &mut Ui, theme: &Theme, on: bool) -> Response {
         vec2(14.0, 12.0),
     );
     painter.rect_filled(knob, 0.0, if on { theme.main } else { LABEL });
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), on, "Switch"));
     response
 }
 
@@ -338,12 +342,14 @@ pub fn slider(ui: &mut Ui, theme: &Theme, width: f32, value: f32) -> Option<f32>
     let ink = if response.hovered() || response.dragged() { TEXT } else { theme.main };
     painter.rect_filled(knob, 0.0, GROUND);
     painter.rect_stroke(knob, 0.0, Stroke::new(1.5, ink), StrokeKind::Inside);
+    response.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), value as f64, "Level"));
     picked
 }
 
 /// One choice among several: a bordered label, filled with the accent when chosen.
 /// `swatch` shows a colour beside the label.
 pub fn chip(ui: &mut Ui, theme: &Theme, label: &str, swatch: Option<Color32>, chosen: bool) -> Response {
+    let name = label.to_string();
     let ink = if chosen { GROUND } else { TEXT };
     let font = if chosen { display_bold(12.0) } else { display(12.0) };
     let label = galley(ui, label, font, ink, 1.5);
@@ -362,6 +368,7 @@ pub fn chip(ui: &mut Ui, theme: &Theme, label: &str, swatch: Option<Color32>, ch
         painter.rect_stroke(square, 0.0, Stroke::new(1.0, GROUND), StrokeKind::Inside);
     }
     painter.galley(pos2(rect.left() + 12.0 + lead, rect.center().y - label.size().y / 2.0), label, ink);
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::RadioButton, ui.is_enabled(), chosen, &name));
     response
 }
 
