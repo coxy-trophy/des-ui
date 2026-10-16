@@ -258,7 +258,7 @@ pub fn pair_actions(flat: &[String]) -> Vec<(String, String)> {
 }
 
 fn clock_now() -> String {
-    chrono::Local::now().format("%H:%M").to_string()
+    crate::region::time_of_day(&chrono::Local::now())
 }
 
 /// What the D-Bus side hands over to the interface.

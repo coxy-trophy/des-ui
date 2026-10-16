@@ -96,7 +96,7 @@ pub struct Step {
     pub input: Option<String>,
 }
 
-fn step(args: &[&str]) -> Step {
+pub(crate) fn step(args: &[&str]) -> Step {
     Step { args: args.iter().map(|arg| arg.to_string()).collect(), input: None }
 }
 
@@ -145,7 +145,7 @@ pub fn run_as_admin(sudo: &str, password: &str, steps: &[Step]) -> Result<(), St
             return Err(if said.contains("incorrect password") || said.contains("try again") || said.contains("no password was provided") {
                 "That password was not accepted.".to_string()
             } else if said.contains("not in the sudoers") || said.contains("not allowed") {
-                "Your account may not make changes to users: it is not an administrator.".to_string()
+                "Your account may not make this change: it is not an administrator.".to_string()
             } else {
                 // The tool's own last word, which is usually the reason.
                 said.lines().last().map(str::to_string).filter(|line| !line.is_empty()).unwrap_or_else(|| "It did not work, and nothing said why.".to_string())
@@ -458,7 +458,7 @@ impl Users {
 }
 
 /// A one-line text field. Returns true when Enter was pressed in it.
-fn field(ui: &mut Ui, theme: &Theme, text: &mut String, hint: &str, secret: bool, width: f32) -> bool {
+pub(crate) fn field(ui: &mut Ui, theme: &Theme, text: &mut String, hint: &str, secret: bool, width: f32) -> bool {
     let (rect, _) = ui.allocate_exact_size(vec2(width.min(ui.available_width()), 28.0), Sense::hover());
     ui.painter().rect_filled(rect, 0.0, ui::PANEL);
     ui.painter().rect_stroke(rect, 0.0, Stroke::new(1.0, theme.main), StrokeKind::Inside);
