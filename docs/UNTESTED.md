@@ -211,3 +211,10 @@ watched work on a real machine. Tick them off, or note what went wrong.
       and after the window is resized
 - [ ] Ctrl+Shift+Up/Down inside `less` or `vim`: no prompts, no movement
 - [ ] A failed command's square is amber and hover shows its status
+
+## des-ui-ctl
+
+- [ ] Each word from a terminal inside the session, and `state` printing the open apps
+- [ ] While locked, `launcher` is refused and `lock` is a no-op; `ping` still answers
+- [ ] A second user on the machine is refused at the socket
+- [ ] The socket comes back after the shell restarts (Super+Shift+R)

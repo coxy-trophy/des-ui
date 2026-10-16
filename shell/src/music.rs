@@ -664,6 +664,11 @@ impl Music {
         shared.sign_in = Some(arguments);
     }
 
+    /// One of the words `des-music send` takes: `toggle`, `next`, `prev`.
+    pub fn command(&mut self, word: &str) {
+        self.send(json!({ "cmd": word }));
+    }
+
     fn send(&self, request: Value) {
         let _ = self.commands.send(format!("{request}\n"));
     }

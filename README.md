@@ -237,6 +237,14 @@ helpers and log locations without changing system settings. Refresh reruns the
 checks; recent log excerpts are bounded and common secret-bearing lines hidden.
 OPEN LOG opens the full local log with your configured viewer.
 
+**`des-ui-ctl`** drives the desktop from a script or a key binding: `lock`,
+`workspace 2`, `toast "build done"`, `dock`, `launcher`, `settings [section]`,
+`music toggle|next|prev`, `panel left|right|bottom`, `screenshot [screen|window|region]`,
+and `state`, which prints what is open as JSON. It speaks to the shell over a private
+socket of its own (`$XDG_RUNTIME_DIR/des-ui-control.sock`, yours alone); the
+compositor still accepts commands only from its shell. While the screen is locked
+only `lock`, `ping` and `state` are answered.
+
 ## The terminal
 
 **Ctrl+Shift+F**, the magnifying-glass button in the terminal toolbar, or “Find in terminal” in the palette

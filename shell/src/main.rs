@@ -166,6 +166,8 @@ struct App {
     screenshot: Option<PathBuf>,
     started: Instant,
     screenshot_requested: bool,
+    /// The socket `des-ui-ctl` speaks to; `None` when it could not be made.
+    control: Option<control::Control>,
 }
 
 impl App {
@@ -186,6 +188,13 @@ impl App {
         let capture = capture::Capture::new(ctx.clone());
         let power = power::Power::start(ctx.clone(), desktop.is_some());
         let mut notices = notify::Center::new(ctx.clone(), config.do_not_disturb, true);
+        let control = match control::Control::start(ctx.clone()) {
+            Ok(control) => Some(control),
+            Err(error) => {
+                eprintln!("des-ui: no control socket: {error}");
+                None
+            }
+        };
         notices.sounds = config.notification_sounds;
         region::set_twelve_hour(config.twelve_hour);
         Ok(App {
@@ -232,6 +241,7 @@ impl App {
             screenshot,
             started: Instant::now(),
             screenshot_requested: false,
+            control,
         })
     }
 

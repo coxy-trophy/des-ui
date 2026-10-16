@@ -16,6 +16,9 @@ impl eframe::App for App {
         self.pump_documents();
         if let Some(desktop) = &mut self.desktop {
             desktop.pump();
+        }
+        self.answer_control();
+        if let Some(desktop) = &mut self.desktop {
             if !desktop.connected() { self.dock_area = None; self.secondary_areas.clear(); }
             if let Some(screen)=desktop.dock_screen_requested.take(){
                 if screen==0{self.dock.reveal_keyboard();}else if screen<desktop.state.screens{self.secondary_docks.entry(screen).or_default().reveal_keyboard();}
@@ -516,3 +519,47 @@ impl eframe::App for App {
     }
 }
 
+impl App {
+    /// Answers what `des-ui-ctl` asked. Locked, only the lock itself, `ping` and
+    /// `state` are allowed, so no script opens anything over the lock screen.
+    fn answer_control(&mut self) {
+        use control::{Answer, Request};
+        let requests = self.control.as_mut().map(|control| control.take()).unwrap_or_default();
+        for (request, reply) in requests {
+            let locked = self.lock_confirmed || self.unlock_pending;
+            let compositor = self.desktop.as_ref().is_some_and(Desktop::connected);
+            let answer = match request {
+                Request::Ping => Answer::Ok,
+                Request::State => Answer::Json(control::state_json(
+                    self.desktop.as_ref().filter(|desktop| desktop.connected()).map(|desktop| &desktop.state),
+                    locked,
+                )),
+                Request::Lock => {
+                    if !locked { self.lock_now(); }
+                    Answer::Ok
+                }
+                _ if locked => Answer::Error("locked".into()),
+                Request::Dock | Request::Screenshot(_) if self.capture.marking() => Answer::Error("a screenshot is being marked".into()),
+                Request::Workspace(_) | Request::Panel(_) | Request::Screenshot(_) if !compositor => Answer::Error("no compositor".into()),
+                Request::Workspace(n) => { self.send(Command::Workspace(n)); Answer::Ok }
+                Request::Toast(text) => { self.notices.post("des-ui-ctl", &text, false); Answer::Ok }
+                Request::Dock => { self.dock.reveal_keyboard(); Answer::Ok }
+                Request::Launcher => { if !self.launcher.open { self.toggle_launcher(); } Answer::Ok }
+                Request::Settings(None) => { if !self.settings.open { self.toggle_settings(); } Answer::Ok }
+                Request::Settings(Some(section)) => {
+                    self.launcher.open = false;
+                    self.music.open = false;
+                    self.notices.open = false;
+                    self.power_menu.open = false;
+                    self.settings.open_at(&self.config, &section);
+                    self.send(Command::Terminal);
+                    Answer::Ok
+                }
+                Request::Music(word) => { self.music.command(word.word()); Answer::Ok }
+                Request::Panel(panel) => { self.send(Command::TogglePanel(panel)); Answer::Ok }
+                Request::Screenshot(mode) => { self.send(Command::Shot(mode)); Answer::Ok }
+            };
+            reply.send(answer);
+        }
+    }
+}
