@@ -56,9 +56,9 @@ const BLOCK_GAP: i32 = 4;
 /// From the bottom of the name to the bar.
 const BAR_BELOW: i32 = 44;
 
-/// How long the bar stays full before the splash goes.
-const FULL_FOR: Duration = Duration::from_millis(180);
-const FADE: Duration = Duration::from_millis(260);
+/// How long the bar stays full before the splash goes, and how long the going takes:
+/// shared with the shell, whose power-up starts as the fade does.
+use des_common::splash::{FADE, FULL_FOR};
 /// When, in each stretch of this length, the name glitches: from, and for how long,
 /// in milliseconds.
 const GLITCH_EVERY: u128 = 2400;
