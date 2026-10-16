@@ -148,7 +148,9 @@ impl eframe::App for App {
                 self.capture.recording_is(state, &mut self.notices);
             }
         }
-        self.capture.report(&mut self.notices);
+        let saved = self.capture.report(&mut self.notices);
+        let called_off = self.capture.take_called_off();
+        self.answer_held(Some(saved), called_off);
         // Sleep is on its way, or the session was told to lock.
         if self.power.lock_wanted() && !self.lock.locked {
             let for_sleep = self.power.sleep_waiting();
@@ -508,8 +510,15 @@ impl eframe::App for App {
         let (mut covered, chosen) = self.notices.toasts(ctx, &theme, workspace.right_top() + vec2(-16.0, 12.0));
         // Marking out a piece for a screenshot takes the whole display, above everything.
         if self.capture.marking() {
-            if self.capture.mark(ctx, theme.main) {
-                self.toggle_recording();
+            match self.capture.mark(ctx, theme.main) {
+                capture::Marked::Record => self.toggle_recording(),
+                capture::Marked::Colour(rgb) => {
+                    if let Some(reply) = self.pending_color.take() {
+                        reply.send(control::colour_answer(Some(rgb)));
+                    }
+                }
+                capture::Marked::Cancelled => self.answer_held(None, true),
+                capture::Marked::Going => {}
             }
             covered = Some(screen);
         }
@@ -552,10 +561,22 @@ impl App {
                     Answer::Ok
                 }
                 _ if locked => Answer::Error("locked".into()),
-                // Answered once the user has chosen; see docs/superpowers/handoff/L.md.
-                Request::ScreenshotFile(_) | Request::PickColor => Answer::Error("not available yet".into()),
-                Request::Dock | Request::Screenshot(_) if self.capture.marking() => Answer::Error("a screenshot is being marked".into()),
-                Request::Workspace(_) | Request::Panel(_) | Request::Screenshot(_) if !compositor => Answer::Error("no compositor".into()),
+                Request::Dock | Request::Screenshot(_) | Request::ScreenshotFile(_) | Request::PickColor if self.capture.marking() => Answer::Error("a screenshot is being marked".into()),
+                Request::Workspace(_) | Request::Panel(_) | Request::Screenshot(_) | Request::ScreenshotFile(_) | Request::PickColor if !compositor => Answer::Error("no compositor".into()),
+                // These two are answered once the user has chosen, so the reply is held.
+                Request::ScreenshotFile(_) if !self.pending_shot_replies.is_empty() => Answer::Error("busy".into()),
+                Request::PickColor if self.pending_color.is_some() => Answer::Error("busy".into()),
+                Request::ScreenshotFile(mode) => {
+                    self.pending_shot_replies.push(reply);
+                    self.send(Command::Shot(mode));
+                    continue;
+                }
+                Request::PickColor => {
+                    self.pending_color = Some(reply);
+                    self.capture.pick_colour_next();
+                    self.send(Command::Shot(des_common::ipc::ShotMode::Region));
+                    continue;
+                }
                 Request::Workspace(n) => { self.send(Command::Workspace(n)); Answer::Ok }
                 Request::Toast(text) => { self.notices.post("des-ui-ctl", &text, false); Answer::Ok }
                 Request::Dock => { self.dock.reveal_keyboard(); Answer::Ok }
@@ -575,6 +596,25 @@ impl App {
                 Request::Screenshot(mode) => { self.send(Command::Shot(mode)); Answer::Ok }
             };
             reply.send(answer);
+        }
+    }
+
+    /// Answers programs waiting on a screenshot: with the files just saved, and with
+    /// "cancelled" when marking was called off.
+    pub(super) fn answer_held(&mut self, saved: Option<Vec<Result<PathBuf, String>>>, called_off: bool) {
+        for result in saved.unwrap_or_default() {
+            if self.pending_shot_replies.is_empty() {
+                break;
+            }
+            self.pending_shot_replies.remove(0).send(control::shot_answer(&result));
+        }
+        if called_off {
+            for reply in self.pending_shot_replies.drain(..) {
+                reply.send(control::Answer::Error("cancelled".into()));
+            }
+            if let Some(reply) = self.pending_color.take() {
+                reply.send(control::colour_answer(None));
+            }
         }
     }
 }

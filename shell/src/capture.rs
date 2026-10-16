@@ -38,6 +38,19 @@ impl Picture {
         }
         Some(Picture { width, height, rgba })
     }
+
+    /// The colour at (`x`, `y`), the nearest edge pixel when outside; black when empty.
+    pub fn pixel(&self, x: u32, y: u32) -> [u8; 3] {
+        if self.width == 0 || self.height == 0 {
+            return [0, 0, 0];
+        }
+        let (x, y) = (x.min(self.width - 1), y.min(self.height - 1));
+        let start = ((y * self.width + x) * 4) as usize;
+        match self.rgba.get(start..start + 3) {
+            Some(rgb) => [rgb[0], rgb[1], rgb[2]],
+            None => [0, 0, 0],
+        }
+    }
 }
 
 fn home() -> PathBuf {
@@ -104,6 +117,8 @@ struct Marking {
     /// Still being asked what to take, as opposed to marking out a piece.
     choosing: bool,
     from: Option<Pos2>,
+    /// A click picks one pixel's colour rather than marking a piece.
+    colour: bool,
 }
 
 /// What the user settled on.
@@ -112,7 +127,21 @@ enum Choice {
     Window,
     Piece(Rect),
     Record,
+    Colour([u8; 3]),
     Cancel,
+}
+
+/// What became of marking, for whoever is waiting on it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Marked {
+    /// Still marking, or a piece is on its way to being saved.
+    Going,
+    /// A recording was asked for instead.
+    Record,
+    /// One pixel's colour was picked.
+    Colour([u8; 3]),
+    /// Called off, or nothing usable was marked.
+    Cancelled,
 }
 
 pub struct Capture {
@@ -123,11 +152,15 @@ pub struct Capture {
     /// The file the recording is going into, or went into.
     film: Option<PathBuf>,
     ctx: egui::Context,
+    /// The next area shot asks for a colour instead.
+    colour_next: bool,
+    /// Marking was called off since last asked, outside `mark` (the key again, a lock).
+    called_off: bool,
 }
 
 impl Capture {
     pub fn new(ctx: egui::Context) -> Capture {
-        Capture { marking: None, saved: channel(), recording: None, film: None, ctx }
+        Capture { marking: None, saved: channel(), recording: None, film: None, ctx, colour_next: false, called_off: false }
     }
 
     /// Takes over a screenshot the compositor took.
@@ -136,17 +169,23 @@ impl Capture {
         let _ = std::fs::remove_file(&shot.path);
         // The key pressed again while asking calls it off.
         if shot.mode == ShotMode::Pick && self.marking.take().is_some() {
+            self.called_off = true;
             return;
         }
-        let Ok(rgba) = read else { return };
+        let Ok(rgba) = read else {
+            self.called_off = true;
+            return;
+        };
         if rgba.len() != (shot.width as usize) * (shot.height as usize) * 4 || rgba.is_empty() {
+            self.called_off = true;
             return;
         }
         let picture = Picture { width: shot.width, height: shot.height, rgba };
         match shot.mode {
             ShotMode::Pick | ShotMode::Region => {
                 let choosing = shot.mode == ShotMode::Pick;
-                self.marking = Some(Marking { picture, texture: None, window: shot.window, choosing, from: None });
+                let colour = shot.mode == ShotMode::Region && std::mem::take(&mut self.colour_next);
+                self.marking = Some(Marking { picture, texture: None, window: shot.window, choosing, from: None, colour });
             }
             ShotMode::Screen | ShotMode::Window => self.keep(picture),
         }
@@ -166,18 +205,35 @@ impl Capture {
     }
 
     pub fn cancel(&mut self) {
-        self.marking = None;
+        if self.marking.take().is_some() {
+            self.called_off = true;
+        }
+        self.colour_next = false;
     }
 
-    /// Says what became of screenshots saved since last asked.
-    pub fn report(&mut self, notices: &mut Center) {
+    /// The next area shot is for picking a colour with one click.
+    pub fn pick_colour_next(&mut self) {
+        self.colour_next = true;
+    }
+
+    /// Whether marking was called off outside `mark` since last asked.
+    pub fn take_called_off(&mut self) -> bool {
+        std::mem::take(&mut self.called_off)
+    }
+
+    /// Says what became of screenshots saved since last asked, and hands back where
+    /// each went, for a program waiting on one.
+    pub fn report(&mut self, notices: &mut Center) -> Vec<Result<PathBuf, String>> {
+        let mut saved = Vec::new();
         while let Ok(result) = self.saved.1.try_recv() {
+            saved.push(result.clone().map(|(path, _)| path));
             match result {
                 Ok((path, true)) => notices.post("Screenshot saved", &format!("{}\nAlso copied, ready to paste.", spoken(&path)), false),
                 Ok((path, false)) => notices.post("Screenshot saved", &spoken(&path), false),
                 Err(why) => notices.post("Screenshot not saved", &why, true),
             }
         }
+        saved
     }
 
     /// Starts a recording, or ends the one under way. Returns what to tell the compositor.
@@ -218,11 +274,12 @@ impl Capture {
 
     /// Shows the still and asks what of it to keep: all of it, the window in use, or
     /// a piece marked out by dragging. A click beside the choices, the other button or
-    /// Escape calls it off. Returns whether a recording was asked for instead.
-    pub fn mark(&mut self, ctx: &egui::Context, accent: Color32) -> bool {
+    /// Escape calls it off. Says whether a recording or a colour was asked for, or it
+    /// was called off.
+    pub fn mark(&mut self, ctx: &egui::Context, accent: Color32) -> Marked {
         let recording = self.recording.is_some();
         let Some(marking) = self.marking.as_mut() else {
-            return false;
+            return Marked::Going;
         };
         let screen = ctx.screen_rect();
         let texture = marking.texture.get_or_insert_with(|| {
@@ -264,6 +321,41 @@ impl Capture {
                 painter.rect_stroke(piece, 0.0, Stroke::new(1.0, accent), StrokeKind::Outside);
                 ui::corners(&painter, piece, 10.0, Stroke::new(2.0, accent));
             };
+            let picking = marking.colour;
+            let colour_at = |at: Pos2| {
+                let to_pixel = |value: f32| (value * scale).round().max(0.0) as u32;
+                marking.picture.pixel(to_pixel(at.x - screen.left()), to_pixel(at.y - screen.top()))
+            };
+            if picking {
+                painter.rect_filled(rect, 0.0, Color32::from_black_alpha(60));
+                let hint = "CLICK TO PICK A COLOUR  ·  ESC TO CANCEL";
+                let galley = ui::galley(ui, hint, ui::display_bold(13.0), ui::TEXT, 2.0);
+                let plate = Rect::from_center_size(rect.center_top() + vec2(0.0, 60.0), galley.size() + vec2(36.0, 22.0));
+                painter.rect_filled(plate, 0.0, ui::PANEL);
+                painter.rect_stroke(plate, 0.0, Stroke::new(1.0, accent), StrokeKind::Inside);
+                painter.galley(plate.center() - galley.size() / 2.0, galley, ui::TEXT);
+                if let Some(at) = pointer {
+                    let [r, g, b] = colour_at(at);
+                    let stroke = Stroke::new(1.0, accent);
+                    painter.hline((at.x - 14.0)..=(at.x - 4.0), at.y, stroke);
+                    painter.hline((at.x + 4.0)..=(at.x + 14.0), at.y, stroke);
+                    painter.vline(at.x, (at.y - 14.0)..=(at.y - 4.0), stroke);
+                    painter.vline(at.x, (at.y + 4.0)..=(at.y + 14.0), stroke);
+                    let swatch = Rect::from_min_size(at + vec2(18.0, 18.0), vec2(28.0, 28.0));
+                    painter.rect_filled(swatch, 0.0, Color32::from_rgb(r, g, b));
+                    painter.rect_stroke(swatch, 0.0, stroke, StrokeKind::Outside);
+                    painter.text(swatch.right_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, format!("#{r:02X}{g:02X}{b:02X}"), ui::mono(11.0), ui::TEXT);
+                }
+                if response.clicked() || response.drag_stopped() {
+                    done = Some(match pointer {
+                        Some(at) => Choice::Colour(colour_at(at)),
+                        None => Choice::Cancel,
+                    });
+                } else if response.secondary_clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+                    done = Some(Choice::Cancel);
+                }
+                return;
+            }
             match chosen {
                 Some(piece) => {
                     spotlight(piece);
@@ -365,7 +457,7 @@ impl Capture {
         });
         ctx.request_repaint();
         let Some(choice) = done else {
-            return false;
+            return Marked::Going;
         };
         let marking = self.marking.take().unwrap();
         let picture = marking.picture;
@@ -376,13 +468,17 @@ impl Capture {
             Choice::Piece(piece) => {
                 picture.crop(at(piece.left() - screen.left()), at(piece.top() - screen.top()), at(piece.width()), at(piece.height()))
             }
-            Choice::Record => return true,
+            Choice::Record => return Marked::Record,
+            Choice::Colour(rgb) => return Marked::Colour(rgb),
             Choice::Cancel => None,
         };
-        if let Some(kept) = kept {
-            self.keep(kept);
+        match kept {
+            Some(kept) => {
+                self.keep(kept);
+                Marked::Going
+            }
+            None => Marked::Cancelled,
         }
-        false
     }
 }
 
@@ -403,6 +499,84 @@ mod tests {
         assert_eq!(reds(&clipped), [5]);
         assert!(picture.crop(3, 0, 1, 1).is_none());
         assert!(picture.crop(0, 0, 0, 5).is_none());
+    }
+
+    #[test]
+    fn reads_one_pixel_and_stays_inside_the_picture() {
+        // Two by two: red, green / blue, white.
+        let rgba = vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255];
+        let picture = Picture { width: 2, height: 2, rgba };
+        assert_eq!(picture.pixel(0, 0), [255, 0, 0]);
+        assert_eq!(picture.pixel(1, 0), [0, 255, 0]);
+        assert_eq!(picture.pixel(0, 1), [0, 0, 255]);
+        assert_eq!(picture.pixel(9, 9), [255, 255, 255]);
+        assert_eq!(Picture { width: 0, height: 0, rgba: vec![] }.pixel(0, 0), [0, 0, 0]);
+    }
+
+    /// Runs one frame of `mark` over a 100 × 100 point screen with these events.
+    fn frame(capture: &mut Capture, ctx: &egui::Context, events: Vec<egui::Event>) -> Marked {
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(100.0, 100.0))),
+            events,
+            ..Default::default()
+        };
+        let mut marked = Marked::Going;
+        let _ = ctx.run(input, |ctx| marked = capture.mark(ctx, Color32::WHITE));
+        marked
+    }
+
+    fn colour_marking(ctx: &egui::Context) -> Capture {
+        ui::install_fonts(ctx, None, None);
+        let mut capture = Capture::new(ctx.clone());
+        // The left half red, the right half blue, at one pixel a point.
+        let rgba = (0..100 * 100).flat_map(|n| if n % 100 < 50 { [200, 10, 10, 255] } else { [10, 10, 200, 255] }).collect();
+        let picture = Picture { width: 100, height: 100, rgba };
+        capture.marking = Some(Marking { picture, texture: None, window: None, choosing: false, from: None, colour: true });
+        capture
+    }
+
+    #[test]
+    fn a_click_picks_the_colour_under_the_pointer() {
+        let ctx = egui::Context::default();
+        let mut capture = colour_marking(&ctx);
+        let at = pos2(75.0, 40.0);
+        let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        // A new area is laid out once before it takes the pointer.
+        assert_eq!(frame(&mut capture, &ctx, vec![]), Marked::Going);
+        assert_eq!(frame(&mut capture, &ctx, vec![egui::Event::PointerMoved(at)]), Marked::Going);
+        assert_eq!(frame(&mut capture, &ctx, vec![button(true)]), Marked::Going);
+        assert_eq!(frame(&mut capture, &ctx, vec![button(false)]), Marked::Colour([10, 10, 200]));
+        assert!(!capture.marking());
+    }
+
+    #[test]
+    fn escape_calls_off_a_colour_pick_and_a_lock_says_so() {
+        let ctx = egui::Context::default();
+        let mut capture = colour_marking(&ctx);
+        let escape = egui::Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() };
+        assert_eq!(frame(&mut capture, &ctx, vec![escape]), Marked::Cancelled);
+        let mut capture = colour_marking(&ctx);
+        capture.cancel();
+        assert!(capture.take_called_off());
+        assert!(!capture.take_called_off());
+    }
+
+    #[test]
+    fn only_the_next_area_shot_picks_a_colour() {
+        let ctx = egui::Context::default();
+        let mut capture = Capture::new(ctx);
+        capture.pick_colour_next();
+        let dir = tempfile::tempdir().unwrap();
+        let shot = |name: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, [1u8, 2, 3, 255]).unwrap();
+            Shot { mode: ShotMode::Region, width: 1, height: 1, window: None, path: path.to_string_lossy().into_owned() }
+        };
+        capture.take(shot("a"));
+        assert!(capture.marking.as_ref().unwrap().colour);
+        capture.marking = None;
+        capture.take(shot("b"));
+        assert!(!capture.marking.as_ref().unwrap().colour);
     }
 
     #[test]

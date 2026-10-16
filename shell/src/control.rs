@@ -179,6 +179,22 @@ pub fn file_uri(path: &Path) -> String {
     uri
 }
 
+/// The answer to a held `screenshot-file`, once the picture is saved or was not.
+pub fn shot_answer(saved: &Result<std::path::PathBuf, String>) -> Answer {
+    match saved {
+        Ok(path) => Answer::Json(serde_json::json!({ "uri": file_uri(path) }).to_string()),
+        Err(why) => Answer::Error(why.clone()),
+    }
+}
+
+/// The answer to a held `pick-color`: the colour, or that it was called off.
+pub fn colour_answer(picked: Option<[u8; 3]>) -> Answer {
+    match picked {
+        Some([r, g, b]) => Answer::Json(serde_json::json!({ "r": r, "g": g, "b": b }).to_string()),
+        None => Answer::Error("cancelled".into()),
+    }
+}
+
 /// Whether a connection may be answered: the kernel must say it is this user's.
 pub fn peer_allowed(peer_uid: Option<u32>, own_uid: u32) -> bool {
     peer_uid == Some(own_uid)
@@ -445,6 +461,13 @@ mod tests {
         assert_eq!(file_uri(Path::new("/home/me/Pictures/Screenshots/a.png")), "file:///home/me/Pictures/Screenshots/a.png");
         assert_eq!(file_uri(Path::new("/tmp/my shot é.png")), "file:///tmp/my%20shot%20%C3%A9.png");
         assert_eq!(file_uri(Path::new("/x/a#b?c%")), "file:///x/a%23b%3Fc%25");
+        assert_eq!(
+            shot_answer(&Ok(std::path::PathBuf::from("/tmp/a b.png"))),
+            Answer::Json(r#"{"uri":"file:///tmp/a%20b.png"}"#.into())
+        );
+        assert_eq!(shot_answer(&Err("disk full".into())), Answer::Error("disk full".into()));
+        assert_eq!(colour_answer(Some([1, 2, 3])), Answer::Json(r#"{"b":3,"g":2,"r":1}"#.into()));
+        assert_eq!(colour_answer(None), Answer::Error("cancelled".into()));
     }
 
     #[test]

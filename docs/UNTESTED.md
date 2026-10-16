@@ -291,3 +291,16 @@ watched work on a real machine. Tick them off, or note what went wrong.
   Ctrl+C in the terminal, typing into the launcher and a settings field, and that a
   key never takes the keyboard away from the field.
 - The keyboard with an application in view (it is covered, by design).
+
+## Screenshot portal
+
+- [ ] Firefox: a screenshot through the portal (e.g. `flatpak run` an app that asks, or
+      `gdbus call --session --dest org.freedesktop.portal.Desktop --object-path
+      /org/freedesktop/portal/desktop --method org.freedesktop.portal.Screenshot.Screenshot
+      "" "{'interactive': <true>}"`), the chooser appears and the file is returned
+- [ ] Chromium and a Flatpak app the same way; GIMP's or Inkscape's colour picker via PickColor
+- [ ] Escape in the chooser makes the application see "cancelled", not a failure
+- [ ] `journalctl --user -u xdg-desktop-portal` shows des-ui chosen for Screenshot and
+      gtk for the rest; no 25-second waits on start
+- [ ] Locked: a portal request is refused at once and nothing is captured
+- [ ] A file name with spaces or non-ASCII letters arrives intact as a URI

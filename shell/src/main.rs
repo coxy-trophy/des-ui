@@ -183,6 +183,10 @@ struct App {
     remote: remote::Remote,
     /// The keys along the foot of the shell, for a touchscreen or a missing keyboard.
     osk: osk::Osk,
+    /// A program waiting for a screenshot's file, answered once it is saved.
+    pending_shot_replies: Vec<control::Reply>,
+    /// A program waiting for a colour picked with one click.
+    pending_color: Option<control::Reply>,
 }
 
 impl App {
@@ -268,6 +272,8 @@ impl App {
             widgets,
             remote: remote::Remote::new(),
             osk,
+            pending_shot_replies: Vec::new(),
+            pending_color: None,
             // Alone in a window there is no splash to wait for.
             powerup: if desktop_present { powerup::PowerUp::under_splash() } else { powerup::PowerUp::new(Duration::ZERO) },
         })
@@ -495,6 +501,9 @@ impl App {
         self.music.open = false;
         self.notices.open = false;
         self.power_menu.open = false;
+        // Nothing is captured over the lock; whoever waited is told so.
+        self.capture.cancel();
+        self.answer_held(None, true);
         self.lock.engage();
         self.lock_confirmed = false;
         self.send(Command::Lock);
