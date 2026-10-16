@@ -11,15 +11,20 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError, sync_channel};
 use std::time::{Duration, Instant};
+use blocks::Block;
 
 mod wheel;
 mod links;
 mod search;
+mod blocks;
+mod integration;
 
 const OUTPUT_CHUNK_BYTES: usize = 8192;
 const OUTPUT_QUEUE_CHUNKS: usize = 32;
 const PUMP_BYTES: usize = 32 * 1024;
 const PUMP_TIME: Duration = Duration::from_millis(4);
+/// Width of the strip at the left of the grid that carries the command marks.
+pub const GUTTER: f32 = 10.0;
 
 /// The shape of the terminal's cursor.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -45,6 +50,9 @@ pub struct TermLook {
 
 pub struct TermTab {
     parser: vt100::Parser,
+    blocks: blocks::Blocks,
+    /// Output of one command, chosen from the gutter, as absolute lines.
+    block_selection: Option<(u64, u64)>,
     search: search::Search,
     revision: u64,
     writer: Box<dyn Write + Send>,
@@ -65,9 +73,20 @@ pub struct TermTab {
 impl TermTab {
     /// Spawns `shell` as a login shell in `cwd`. `ctx` is woken whenever output arrives.
     pub fn spawn(shell: &str, cwd: &Path, ctx: egui::Context, scrollback: usize) -> anyhow::Result<TermTab> {
+        Self::spawn_shell(shell, cwd, ctx, scrollback, &[])
+    }
+
+    /// As `spawn`, with more environment for the shell; tests point HOME elsewhere.
+    fn spawn_shell(shell: &str, cwd: &Path, ctx: egui::Context, scrollback: usize, env: &[(&str, &std::ffi::OsStr)]) -> anyhow::Result<TermTab> {
         let mut cmd = CommandBuilder::new(shell);
-        cmd.arg("-l");
+        match integration::prepare(shell) {
+            Some(integration) => integration.apply(&mut cmd),
+            None => cmd.arg("-l"),
+        }
         cmd.cwd(cwd);
+        for (key, value) in env {
+            cmd.env(key, value);
+        }
         Self::spawn_with(cmd, ctx, scrollback)
     }
 
@@ -121,6 +140,8 @@ impl TermTab {
 
         Ok(TermTab {
             parser: vt100::Parser::new(rows, cols, scrollback),
+            blocks: blocks::Blocks::new(scrollback),
+            block_selection: None,
             search: search::Search::default(),
             revision: 0,
             writer,
@@ -143,6 +164,7 @@ impl TermTab {
         let started = Instant::now();
         let mut consumed = 0;
         let mut chunks = 0;
+        let mut drained = false;
         loop {
             if consumed >= PUMP_BYTES || chunks >= OUTPUT_QUEUE_CHUNKS || started.elapsed() >= PUMP_TIME {
                 // Reader repaint requests may have coalesced into this frame.
@@ -157,9 +179,13 @@ impl TermTab {
                         self.pending_offset = 0;
                         chunks += 1;
                     }
-                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Empty) => {
+                        drained = true;
+                        break;
+                    }
                     Err(TryRecvError::Disconnected) => {
                         self.exited = true;
+                        drained = true;
                         break;
                     }
                 }
@@ -168,10 +194,14 @@ impl TermTab {
             let end = (self.pending_offset + 4096)
                 .min(self.pending_output.len())
                 .min(self.pending_offset + PUMP_BYTES - consumed);
-            self.parser.process(&self.pending_output[self.pending_offset..end]);
+            self.blocks.feed(&mut self.parser, &self.pending_output[self.pending_offset..end]);
             self.revision = self.revision.wrapping_add(1);
             consumed += end - self.pending_offset;
             self.pending_offset = end;
+        }
+        // A sequence cut off at the end of a chunk has nothing more coming now.
+        if drained {
+            self.blocks.flush(&mut self.parser);
         }
         // Reap the child, but let reader EOF after draining every queued byte
         // close the tab. Child exit can precede delivery of its final output.
@@ -187,6 +217,7 @@ impl TermTab {
     pub fn input(&mut self, bytes: &[u8]) {
         if bytes.is_empty() { return; }
         self.selection = None;
+        self.block_selection = None;
         self.wheel.reset();
         self.input_this_frame = true;
         self.parser.screen_mut().set_scrollback(0);
@@ -221,10 +252,83 @@ impl TermTab {
         Some(if a <= b { (a, b) } else { (b, a) })
     }
 
-    fn selected_text(&self) -> Option<String> {
+    fn selected_text(&mut self) -> Option<String> {
+        if let Some((from, to)) = self.block_selection {
+            return self.history_text(from, to);
+        }
         let ((r0, c0), (r1, c1)) = self.selection_range()?;
         let text = self.parser.screen().contents_between(r0, c0, r1, c1 + 1);
         (!text.is_empty()).then_some(text)
+    }
+
+    /// Scrolls to the prompt before (or after) the one at the top of the view.
+    pub fn jump_prompt(&mut self, previous: bool) {
+        let top = self.blocks.top_line(self.parser.screen());
+        let target = if previous { self.blocks.prompt_before(top) } else { self.blocks.prompt_after(top) };
+        if let Some(line) = target {
+            let offset = self.blocks.offset_for(line);
+            self.selection = None;
+            self.block_selection = None;
+            self.wheel.reset();
+            self.parser.screen_mut().set_scrollback(offset);
+        }
+    }
+
+    /// Selects the output of the command whose prompt (or output) is on this
+    /// visible row, so that Ctrl+Shift+C copies it.
+    fn select_block_output(&mut self, row: u16) {
+        let rows = u64::from(self.parser.screen().size().0);
+        let line = self.blocks.top_line(self.parser.screen()) + u64::from(row);
+        let block = self.blocks.at_prompt(line).or_else(|| self.blocks.covering(line));
+        self.block_selection = block
+            .and_then(Block::output_lines)
+            .map(|(from, to)| (from, to.min(self.blocks.scrolled + rows)));
+    }
+
+    /// The output of the last command that finished, for a toolbar or palette action.
+    pub fn copy_last_output(&mut self) -> Option<String> {
+        let (from, to) = self.blocks.last_output()?;
+        self.history_text(from, to)
+    }
+
+    /// The text of these absolute lines, as far as the history still holds them;
+    /// soft-wrapped rows are joined.
+    fn history_text(&mut self, from: u64, to: u64) -> Option<String> {
+        const MAX_ROWS: u64 = 10_000;
+        const MAX_BYTES: usize = 1 << 20;
+        let scrolled = self.blocks.scrolled;
+        let screen = self.parser.screen_mut();
+        let (rows, cols) = screen.size();
+        let saved = screen.scrollback();
+        let retained = blocks::history_len(screen) as u64;
+        let from = from.max(scrolled.saturating_sub(retained));
+        let to = to.min(scrolled + u64::from(rows)).min(from.saturating_add(MAX_ROWS));
+        let mut text = String::new();
+        let mut line = from;
+        'pages: while line < to && text.len() < MAX_BYTES {
+            screen.set_scrollback(usize::try_from(scrolled.saturating_sub(line)).unwrap_or(usize::MAX));
+            let top = scrolled.saturating_sub(screen.scrollback() as u64);
+            if line < top {
+                break;
+            }
+            let first = usize::try_from(line - top).unwrap_or(usize::MAX);
+            if first >= usize::from(rows) {
+                break;
+            }
+            let page: Vec<String> = screen.rows(0, cols).collect();
+            for (row, contents) in page.iter().enumerate().skip(first) {
+                if line >= to || text.len() >= MAX_BYTES {
+                    break 'pages;
+                }
+                text.push_str(contents);
+                if !screen.row_wrapped(row as u16) {
+                    text.push('\n');
+                }
+                line += 1;
+            }
+        }
+        screen.set_scrollback(saved);
+        (!text.trim().is_empty()).then_some(text)
     }
 
     fn resize(&mut self, rows: u16, cols: u16) {
@@ -311,6 +415,11 @@ impl TermTab {
                     modifiers,
                     ..
                 } => {
+                    // Ctrl+Shift+Up and Down walk the prompts; they are the terminal's.
+                    if modifiers.ctrl && modifiers.shift && matches!(key, Key::ArrowUp | Key::ArrowDown) {
+                        self.jump_prompt(*key == Key::ArrowUp);
+                        continue;
+                    }
                     if let Some(bytes) = key_bytes(*key, *modifiers, app_cursor) {
                         out.extend_from_slice(&bytes);
                     }
@@ -373,6 +482,8 @@ impl TermTab {
                 self.search.dirty = false;
             }
         }
+        let gutter = Rect::from_min_size(rect.min, Vec2::new(GUTTER, rect.height()));
+        rect.min.x = (rect.min.x + GUTTER).min(rect.max.x - 1.0);
         let font = FontId::monospace(look.font_size);
         let pixels_per_point = ui.ctx().pixels_per_point();
         let (cw, natural) = ui.fonts(|f| (cell_width(f, &font, pixels_per_point), f.row_height(&font)));
@@ -398,6 +509,26 @@ impl TermTab {
             }
         } else if response.clicked() {
             self.selection = None;
+            self.block_selection = None;
+            // A click on a prompt's mark takes that command's output.
+            if let Some(pos) = pointer.filter(|p| gutter.contains(*p)) {
+                let row = ((pos.y - rect.min.y) / ch).floor().clamp(0.0, (rows - 1) as f32) as u16;
+                self.select_block_output(row);
+            }
+        }
+        if response.hovered() {
+            if let Some(pos) = ui.ctx().pointer_hover_pos().filter(|p| gutter.contains(*p)) {
+                let row = ((pos.y - rect.min.y) / ch).floor().clamp(0.0, (rows - 1) as f32) as u16;
+                let line = self.blocks.top_line(self.parser.screen()) + u64::from(row);
+                if let Some(block) = self.blocks.at_prompt(line).or_else(|| self.blocks.covering(line)) {
+                    let text = match block.status() {
+                        Some(0) => "Finished without error\nClick to select its output".to_string(),
+                        Some(status) => format!("Exit status {status}\nClick to select its output"),
+                        None => "Running".to_string(),
+                    };
+                    response.clone().on_hover_text(text);
+                }
+            }
         }
         // Modifier-click opens links; ordinary dragging continues to select text.
         if response.hovered() {
@@ -458,6 +589,34 @@ impl TermTab {
                 let min = rect.min + Vec2::new(from as f32 * cw, row as f32 * ch);
                 let size = Vec2::new(to.saturating_sub(from) as f32 * cw, ch);
                 painter.rect_filled(Rect::from_min_size(min, size), 0.0, theme.selection());
+            }
+        }
+
+        // The marks in the gutter: a bar at each prompt, a square where a command
+        // ended, in the caution colour when it failed; and a chosen output.
+        let retained = blocks::history_len(self.parser.screen_mut()) as u64;
+        self.blocks.prune(self.blocks.scrolled.saturating_sub(retained));
+        let top = self.blocks.top_line(self.parser.screen());
+        let visible = |line: u64| (line >= top && line < top + u64::from(rows)).then(|| (line - top) as f32 * ch);
+        if let Some((from, to)) = self.block_selection {
+            for line in from.max(top)..to.min(top + u64::from(rows)) {
+                let min = Pos2::new(rect.min.x, rect.min.y + (line - top) as f32 * ch);
+                painter.rect_filled(Rect::from_min_size(min, Vec2::new(rect.width(), ch)), 0.0, theme.selection());
+            }
+        }
+        let gutter_painter = ui.painter_at(gutter);
+        gutter_painter.rect_filled(gutter, 0.0, crate::ui::GROUND);
+        for block in self.blocks.iter() {
+            let failed = block.status().is_some_and(|status| status != 0);
+            if let Some(y) = visible(block.prompt) {
+                let color = if failed { crate::ui::CAUTION } else { theme.main };
+                let bar = Rect::from_min_size(Pos2::new(gutter.min.x + 2.0, gutter.min.y + y + 2.0), Vec2::new(2.0, (ch - 4.0).max(2.0)));
+                gutter_painter.rect_filled(bar, 0.0, color);
+            }
+            if let Some(y) = block.badge_line().and_then(visible) {
+                let color = if failed { crate::ui::CAUTION } else { crate::ui::LABEL };
+                let badge = Rect::from_center_size(Pos2::new(gutter.min.x + 7.0, gutter.min.y + y + ch / 2.0), Vec2::splat(4.0));
+                gutter_painter.rect_filled(badge, 0.0, color);
             }
         }
 
@@ -783,8 +942,8 @@ mod tests {
             let font = FontId::monospace(14.0);
             (cell_width(fonts, &font, 1.0), fonts.row_height(&font).round())
         });
-        let rect = Rect::from_min_size(Pos2::new(40.0, 40.0), Vec2::new(cw * 40.0, ch * 3.0));
-        let pos = rect.min + Vec2::new(cw * 2.5, ch * 1.5);
+        let rect = Rect::from_min_size(Pos2::new(40.0, 40.0), Vec2::new(GUTTER + cw * 40.0, ch * 3.0));
+        let pos = rect.min + Vec2::new(GUTTER + cw * 2.5, ch * 1.5);
         let mut tab = TermTab::spawn("/bin/sh", Path::new("/tmp"), ctx.clone(), 100).unwrap();
         tab.resize(3, 40);
         tab.parser.process(b"first\r\nsecond\r\nthird\r\nfourth\r\nfifth\r\nsixth\r\n");
@@ -796,7 +955,7 @@ mod tests {
     fn dragging_keeps_the_original_press_cell() {
         let (mut tab, ctx, rect, _) = terminal_frame_setup();
         tab.parser.process(b"\x1b[2J\x1b[Hhttps://example.org");
-        let start = rect.min + Vec2::new(1.0, 5.0);
+        let start = rect.min + Vec2::new(GUTTER + 1.0, 5.0);
         let end = start + Vec2::new(90.0, 0.0);
         frame(&mut tab, &ctx, rect, vec![Event::PointerMoved(start), Event::PointerButton {
             pos: start, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE,
@@ -810,7 +969,7 @@ mod tests {
     fn ctrl_click_emits_url_and_plain_click_does_not() {
         let (mut tab, ctx, rect, _) = terminal_frame_setup();
         tab.parser.process(b"\x1b[2J\x1b[Hhttps://example.org");
-        let pos = rect.min + Vec2::new(30.0, 5.0);
+        let pos = rect.min + Vec2::new(GUTTER + 30.0, 5.0);
         let look = TermLook { font_size: 14.0, line_height: 1.0, cursor: CursorShape::Block,
             cursor_blink: false, bold_bright: true, copy_on_select: false };
         let theme = Theme::load("signal");
@@ -1080,5 +1239,115 @@ mod tests {
             assert!(Instant::now() < deadline, "shell did not exit");
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    fn blocks_frame_setup() -> (TermTab, egui::Context, Rect) {
+        let ctx = egui::Context::default();
+        crate::ui::install_fonts(&ctx, None, None);
+        let _ = ctx.run(Default::default(), |_| {});
+        let (cw, ch) = ctx.fonts(|fonts| {
+            let font = FontId::monospace(14.0);
+            (cell_width(fonts, &font, 1.0), fonts.row_height(&font).round())
+        });
+        let rect = Rect::from_min_size(Pos2::new(40.0, 40.0), Vec2::new(GUTTER + cw * 40.0, ch * 3.0));
+        let mut tab = TermTab::spawn("/bin/sh", Path::new("/tmp"), ctx.clone(), 100).unwrap();
+        tab.resize(3, 40);
+        // egui attributes a press to the widgets of the frame before it.
+        let away = Pos2::new(10.0, 10.0);
+        for _ in 0..2 { frame(&mut tab, &ctx, rect, vec![Event::PointerMoved(away)], false, 0.0); }
+        (tab, ctx, rect)
+    }
+
+    fn top_row(tab: &TermTab) -> String {
+        tab.parser.screen().rows(0, 40).next().unwrap_or_default()
+    }
+
+    #[test]
+    fn ctrl_shift_arrows_walk_the_prompts_without_reaching_the_pty() {
+        use std::sync::{Arc, Mutex};
+        struct Capture(Arc<Mutex<Vec<u8>>>);
+        impl Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> { self.0.lock().unwrap().extend_from_slice(bytes); Ok(bytes.len()) }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let (mut tab, ctx, rect) = blocks_frame_setup();
+        let written = Arc::new(Mutex::new(Vec::new()));
+        tab.writer = Box::new(Capture(written.clone()));
+        for n in 0..3 {
+            tab.blocks.feed(&mut tab.parser, format!("\x1b]133;A\x07$ cmd{n}\r\n\x1b]133;C\x07out{n}\r\n\x1b]133;D;{n}\x07").as_bytes());
+        }
+        tab.blocks.feed(&mut tab.parser, b"\x1b]133;A\x07$ ");
+        assert!(top_row(&tab).starts_with("$ cmd2"));
+        let key = |key, modifiers| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
+        let walk = Modifiers::CTRL | Modifiers::SHIFT;
+        frame(&mut tab, &ctx, rect, vec![key(Key::ArrowUp, walk)], true, 0.0);
+        assert!(top_row(&tab).starts_with("$ cmd1"), "{:?}", top_row(&tab));
+        frame(&mut tab, &ctx, rect, vec![key(Key::ArrowUp, walk)], true, 0.0);
+        assert!(top_row(&tab).starts_with("$ cmd0"));
+        frame(&mut tab, &ctx, rect, vec![key(Key::ArrowUp, walk)], true, 0.0);
+        assert!(top_row(&tab).starts_with("$ cmd0"), "the first prompt stays put");
+        frame(&mut tab, &ctx, rect, vec![key(Key::ArrowDown, walk)], true, 0.0);
+        assert!(top_row(&tab).starts_with("$ cmd1"));
+        assert!(written.lock().unwrap().is_empty(), "prompt walking reached the shell");
+        frame(&mut tab, &ctx, rect, vec![key(Key::ArrowUp, Modifiers::SHIFT)], true, 0.0);
+        assert_eq!(&*written.lock().unwrap(), b"\x1b[1;2A");
+        assert_eq!(tab.parser.screen().scrollback(), 0, "typing returns to the live grid");
+    }
+
+    #[test]
+    fn a_click_on_a_prompts_mark_selects_its_output_and_the_last_output_copies() {
+        let (mut tab, ctx, rect) = blocks_frame_setup();
+        tab.blocks.feed(&mut tab.parser, b"\x1b]133;A\x07$ cmd0\r\n\x1b]133;C\x07alpha\r\nbeta\r\n\x1b]133;D;0\x07\x1b]133;A\x07$ cmd1\r\n\x1b]133;C\x07gamma\r\n\x1b]133;D;2\x07\x1b]133;A\x07$ ");
+        assert_eq!(tab.copy_last_output().as_deref(), Some("gamma\n"));
+        assert_eq!(tab.blocks.at_prompt(3).unwrap().status(), Some(2));
+        let click = |tab: &mut TermTab, pos: Pos2| {
+            let press = Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE };
+            let release = Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE };
+            frame(tab, &ctx, rect, vec![Event::PointerMoved(pos), press], true, 0.0);
+            frame(tab, &ctx, rect, vec![release], true, 0.0);
+        };
+        // The gutter beside the top row, which shows the second prompt.
+        click(&mut tab, rect.min + Vec2::new(3.0, 5.0));
+        assert_eq!(tab.block_selection, Some((4, 5)));
+        assert_eq!(tab.selected_text().as_deref(), Some("gamma\n"));
+        // A click in the grid lets it go; the first command's output spans two lines.
+        click(&mut tab, rect.min + Vec2::new(GUTTER + 30.0, 5.0));
+        assert_eq!(tab.block_selection, None);
+        tab.jump_prompt(true);
+        tab.jump_prompt(true);
+        assert!(top_row(&tab).starts_with("$ cmd0"));
+        click(&mut tab, rect.min + Vec2::new(3.0, 5.0));
+        assert_eq!(tab.selected_text().as_deref(), Some("alpha\nbeta\n"));
+        tab.input(b"x");
+        assert_eq!(tab.block_selection, None);
+    }
+
+    #[test]
+    fn bash_marks_its_prompts_and_exit_statuses() {
+        let bash = Path::new("/usr/bin/bash");
+        if !bash.exists() || std::env::var_os(integration::OPT_OUT).is_some_and(|v| v == "0") {
+            eprintln!("bash integration is not checked here");
+            return;
+        }
+        // An empty home keeps this machine's own shell files out of the check.
+        let home = tempfile::tempdir().unwrap();
+        let ctx = egui::Context::default();
+        let mut tab = TermTab::spawn_shell("/usr/bin/bash", home.path(), ctx, 1000, &[("HOME", home.path().as_os_str())]).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let wait = |tab: &mut TermTab, done: &dyn Fn(&TermTab) -> bool, what: &str| loop {
+            tab.pump();
+            if done(tab) { break; }
+            assert!(Instant::now() < deadline, "{what}: {:?}", tab.parser.screen().contents());
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        wait(&mut tab, &|t| t.blocks.iter().next().is_some(), "no prompt mark from bash");
+        tab.write(b"false\r");
+        wait(&mut tab, &|t| t.blocks.iter().any(|b| b.status() == Some(1)), "no exit status for false");
+        tab.write(b"echo out-marker\r");
+        wait(&mut tab, &|t| t.blocks.iter().filter(|b| b.end.is_some()).count() >= 2, "echo did not finish");
+        let output = tab.copy_last_output().unwrap_or_default();
+        assert!(output.contains("out-marker") && !output.contains("echo"), "{output:?}");
+        tab.write(b"exit\r");
+        wait(&mut tab, &|t| t.exited, "bash did not exit");
     }
 }
