@@ -258,6 +258,8 @@ fn links_for(remotes: &[IpAddr], cache: &Cache) -> Vec<Place> {
 /// Keeps a [`Snapshot`] up to date from a background thread.
 pub struct Geo {
     shared: Arc<Mutex<Snapshot>>,
+    /// Another machine's connections, drawn in place of this one's while it is followed.
+    remote: Arc<Mutex<Option<Vec<IpAddr>>>>,
 }
 
 impl Geo {
@@ -266,6 +268,8 @@ impl Geo {
     pub fn start(lookups: bool, location: Option<Place>) -> Geo {
         let shared = Arc::new(Mutex::new(Snapshot::default()));
         let writer = shared.clone();
+        let remote: Arc<Mutex<Option<Vec<IpAddr>>>> = Arc::new(Mutex::new(None));
+        let remote_reader = remote.clone();
         std::thread::spawn(move || {
             let home_is_set = location.is_some();
             if let Ok(mut snapshot) = writer.lock() {
@@ -290,7 +294,8 @@ impl Geo {
                     }
                 }
 
-                let remotes = current_connections();
+                let followed = remote_reader.lock().ok().and_then(|followed| followed.clone());
+                let remotes = followed.unwrap_or_else(current_connections);
                 let unknown: Vec<IpAddr> = remotes
                     .iter()
                     .filter(|ip| !cache.known.contains_key(ip))
@@ -313,7 +318,16 @@ impl Geo {
                 std::thread::sleep(Duration::from_secs(5));
             }
         });
-        Geo { shared }
+        Geo { shared, remote }
+    }
+
+    /// Draws these connections instead of this machine's, or this machine's again with
+    /// `None`; public addresses only, as many as this machine's own would be.
+    pub fn set_remote_connections(&self, connections: Option<Vec<IpAddr>>) {
+        let connections = connections.map(|list| list.into_iter().filter(is_public).take(64).collect());
+        if let Ok(mut remote) = self.remote.lock() {
+            *remote = connections;
+        }
     }
 
     pub fn snapshot(&self) -> Snapshot {

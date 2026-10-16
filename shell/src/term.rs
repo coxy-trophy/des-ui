@@ -246,6 +246,20 @@ impl TermTab {
         Some(comm.trim().to_string())
     }
 
+    /// The command line of what is running in the foreground, word by word; read only
+    /// to see where it went, never run.
+    pub fn foreground_command_line(&self) -> Option<Vec<String>> {
+        let pid = self.master.process_group_leader()?;
+        let bytes = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+        let words: Vec<String> = bytes
+            .split(|byte| *byte == 0)
+            .filter(|word| !word.is_empty())
+            .take(64)
+            .map(|word| String::from_utf8_lossy(word).into_owned())
+            .collect();
+        (!words.is_empty()).then_some(words)
+    }
+
     /// The selection with its ends in reading order.
     fn selection_range(&self) -> Option<((u16, u16), (u16, u16))> {
         let (a, b) = self.selection?;

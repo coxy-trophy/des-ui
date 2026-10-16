@@ -25,6 +25,7 @@ mod pet;
 mod power;
 mod bootsplash;
 mod radio;
+mod remote;
 mod runtime;
 mod workflows;
 mod screen_views;
