@@ -528,6 +528,10 @@ impl App {
                 if key == "side_panel_behavior" {
                     self.frame_synced = false;
                 }
+                if key == "palette" {
+                    self.theme = self.config.resolved_theme();
+                    apply_style(ctx, &self.theme);
+                }
                 // The compositor owns the devices these are about.
                 if ["keyboard_", "mouse_", "touchpad_", "lock_after", "screen_off_after"].iter().any(|prefix| key.starts_with(prefix)) {
                     self.send(Command::ReloadInput);
