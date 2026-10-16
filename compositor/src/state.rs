@@ -168,6 +168,8 @@ pub struct DesComp {
     pub screenshot: Option<PathBuf>,
     /// Where windows are on their way to, for drawing them on the way.
     pub motions: crate::motion::Motions<Window>,
+    /// Glow, scanlines and the night light, applied to each frame on its way out.
+    pub phosphor: crate::phosphor::Phosphor,
 }
 
 /// A length of time in milliseconds that a test may set through the environment.
@@ -275,6 +277,7 @@ impl DesComp {
             display_pending: None,
             screenshot: None,
             motions: crate::motion::Motions::new(crate::motion::wanted()),
+            phosphor: crate::phosphor::Phosphor::new(),
         }
     }
 

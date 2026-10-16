@@ -8,6 +8,7 @@ description = "Wayland compositor for the DEs-UI desktop"
 [dependencies]
 des-common = { path = "../common" }
 tracing = "0.1"
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dependencies.smithay]

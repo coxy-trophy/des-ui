@@ -33,6 +33,7 @@ render_elements! {
     Solid=SolidColorRenderElement,
     Space=smithay::desktop::space::SpaceRenderElements<GlesRenderer, smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement<GlesRenderer>>,
     Moving=smithay::backend::renderer::element::utils::RescaleRenderElement<smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement<GlesRenderer>>,
+    Phosphor=smithay::backend::renderer::gles::element::TextureShaderElement,
 }
 
 /// The name, drawn at twice the size it is shown at: two bytes a pixel, how much of
@@ -121,7 +122,7 @@ pub fn accent_in(theme: &str) -> Option<[u8; 3]> {
 }
 
 /// The accent of the theme the user chose, as the shell would find it.
-fn chosen_accent() -> [u8; 3] {
+pub(crate) fn chosen_accent() -> [u8; 3] {
     let Some(config) = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())

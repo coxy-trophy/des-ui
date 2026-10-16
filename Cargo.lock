@@ -821,6 +821,7 @@ dependencies = [
 name = "des-comp"
 version = "0.1.1"
 dependencies = [
+ "chrono",
  "des-common",
  "smithay",
  "tracing",

@@ -15,6 +15,7 @@ mod state;
 mod splash;
 mod toast;
 mod motion;
+mod phosphor;
 mod udev;
 mod winit;
 mod displays;

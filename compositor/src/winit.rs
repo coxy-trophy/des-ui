@@ -181,6 +181,13 @@ pub fn init_winit(
                         &beneath,
                         std::time::Instant::now(),
                     ));
+                    // Glow, scanlines and the night light, as on the hardware. A window
+                    // always presents a frame, so one is drawn even when nothing changed.
+                    state.phosphor.begin_frame();
+                    let logical = size.to_f64().to_logical(scale).to_i32_round();
+                    if let crate::phosphor::Pass::Draw(frame) = state.phosphor.process(renderer, "winit", size, logical, scale, &toasts, true) {
+                        toasts = vec![crate::splash::TopElements::Phosphor(frame)];
+                    }
                     damage_tracker
                         .render_output(renderer, &mut framebuffer, 0, &toasts, [0.0, 0.0, 0.0, 1.0])
                         .unwrap();
