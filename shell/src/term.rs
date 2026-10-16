@@ -9,7 +9,17 @@ use eframe::egui::{
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, TryRecvError, channel};
+use std::sync::mpsc::{Receiver, TryRecvError, sync_channel};
+use std::time::{Duration, Instant};
+
+mod wheel;
+mod links;
+mod search;
+
+const OUTPUT_CHUNK_BYTES: usize = 8192;
+const OUTPUT_QUEUE_CHUNKS: usize = 32;
+const PUMP_BYTES: usize = 32 * 1024;
+const PUMP_TIME: Duration = Duration::from_millis(4);
 
 /// The shape of the terminal's cursor.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -35,12 +45,18 @@ pub struct TermLook {
 
 pub struct TermTab {
     parser: vt100::Parser,
+    search: search::Search,
+    revision: u64,
     writer: Box<dyn Write + Send>,
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
     rx: Receiver<Vec<u8>>,
+    pending_output: Vec<u8>,
+    pending_offset: usize,
+    ctx: egui::Context,
     size: (u16, u16),
-    scroll_accum: f32,
+    wheel: wheel::WheelState,
+    input_this_frame: bool,
     /// Anchor and head of the mouse selection, as (row, col) cells of the visible grid.
     selection: Option<((u16, u16), (u16, u16))>,
     pub exited: bool,
@@ -69,9 +85,12 @@ impl TermTab {
 
         let mut reader = pair.master.try_clone_reader()?;
         let writer = pair.master.take_writer()?;
-        let (tx, rx) = channel();
+        // Blocking send propagates backpressure through the PTY instead of
+        // allocating an ever-growing queue when the UI cannot keep up.
+        let (tx, rx) = sync_channel(OUTPUT_QUEUE_CHUNKS);
+        let reader_ctx = ctx.clone();
         std::thread::spawn(move || {
-            let mut buf = [0u8; 8192];
+            let mut buf = [0u8; OUTPUT_CHUNK_BYTES];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => break,
@@ -79,21 +98,27 @@ impl TermTab {
                         if tx.send(buf[..n].to_vec()).is_err() {
                             break;
                         }
-                        ctx.request_repaint();
+                        reader_ctx.request_repaint();
                     }
                 }
             }
-            ctx.request_repaint();
+            reader_ctx.request_repaint();
         });
 
         Ok(TermTab {
             parser: vt100::Parser::new(rows, cols, scrollback),
+            search: search::Search::default(),
+            revision: 0,
             writer,
             master: pair.master,
             child,
             rx,
+            pending_output: Vec::new(),
+            pending_offset: 0,
+            ctx,
             size: (rows, cols),
-            scroll_accum: 0.0,
+            wheel: wheel::WheelState::default(),
+            input_this_frame: false,
             selection: None,
             exited: false,
         })
@@ -101,25 +126,67 @@ impl TermTab {
 
     /// Feeds pending shell output into the parser and notices when the shell has exited.
     pub fn pump(&mut self) {
+        let started = Instant::now();
+        let mut consumed = 0;
+        let mut chunks = 0;
         loop {
-            match self.rx.try_recv() {
-                Ok(bytes) => self.parser.process(&bytes),
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
-                    self.exited = true;
-                    break;
+            if consumed >= PUMP_BYTES || chunks >= OUTPUT_QUEUE_CHUNKS || started.elapsed() >= PUMP_TIME {
+                // Reader repaint requests may have coalesced into this frame.
+                // Always schedule the next frame when we stop at a budget.
+                self.ctx.request_repaint();
+                break;
+            }
+            if self.pending_offset == self.pending_output.len() {
+                match self.rx.try_recv() {
+                    Ok(bytes) => {
+                        self.pending_output = bytes;
+                        self.pending_offset = 0;
+                        chunks += 1;
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        self.exited = true;
+                        break;
+                    }
                 }
             }
+            // Small slices let the time budget be checked even in large chunks.
+            let end = (self.pending_offset + 4096)
+                .min(self.pending_output.len())
+                .min(self.pending_offset + PUMP_BYTES - consumed);
+            self.parser.process(&self.pending_output[self.pending_offset..end]);
+            self.revision = self.revision.wrapping_add(1);
+            consumed += end - self.pending_offset;
+            self.pending_offset = end;
         }
-        if let Ok(Some(_)) = self.child.try_wait() {
-            self.exited = true;
-        }
+        // Reap the child, but let reader EOF after draining every queued byte
+        // close the tab. Child exit can precede delivery of its final output.
+        let _ = self.child.try_wait();
     }
 
     pub fn write(&mut self, bytes: &[u8]) {
         let _ = self.writer.write_all(bytes);
         let _ = self.writer.flush();
     }
+
+    /// User input returns to the live grid; protocol replies do not.
+    pub fn input(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() { return; }
+        self.selection = None;
+        self.wheel.reset();
+        self.input_this_frame = true;
+        self.parser.screen_mut().set_scrollback(0);
+        self.write(bytes);
+    }
+
+    /// Open the visible find bar from a toolbar or desktop action.
+    pub fn open_search(&mut self) {
+        self.search.open = true;
+        self.search.focus = true;
+    }
+
+    /// Whether this pane owns a find field instead of terminal keyboard input.
+    pub fn searching(&self) -> bool { self.search.open }
 
     /// Working directory of the shell, used by the file browser and for new tabs.
     pub fn cwd(&self) -> Option<PathBuf> {
@@ -151,6 +218,7 @@ impl TermTab {
             return;
         }
         self.size = (rows, cols);
+        self.revision = self.revision.wrapping_add(1);
         self.parser.screen_mut().set_size(rows, cols);
         let _ = self.master.resize(PtySize {
             rows,
@@ -170,6 +238,33 @@ impl TermTab {
         shift_held: bool,
         ctx: &egui::Context,
     ) {
+        // Keep the entire frame isolated, including events following Escape.
+        let shortcut = events.iter().any(|event| matches!(event,
+            Event::Key { key: Key::F, pressed: true, modifiers, .. } if modifiers.ctrl && modifiers.shift));
+        if self.search.open || shortcut {
+            if shortcut { self.search.open = true; self.search.focus = true; }
+            let composing = self.search.composing || events.iter().any(|e| matches!(e, Event::Ime(_)));
+            for event in events {
+                if let Event::Ime(ime) = event {
+                    match ime {
+                        egui::ImeEvent::Preedit(text) => self.search.composing = !text.is_empty(),
+                        egui::ImeEvent::Commit(_) | egui::ImeEvent::Disabled => self.search.composing = false,
+                        egui::ImeEvent::Enabled => {}
+                    }
+                }
+            }
+            for event in events {
+                if let Event::Key { key, pressed: true, modifiers, .. } = event {
+                    match key {
+                        Key::Escape if !composing => self.search.open = false,
+                        Key::Escape => { self.search.composing = false; self.search.focus = true; },
+                        Key::Enter if !composing => { self.search.advance(modifiers.shift); self.search.focus = true; },
+                        _ => {}
+                    }
+                }
+            }
+            return;
+        }
         let app_cursor = self.parser.screen().application_cursor();
         let bracketed = self.parser.screen().bracketed_paste();
         let mut out: Vec<u8> = Vec::new();
@@ -210,9 +305,7 @@ impl TermTab {
             }
         }
         if !out.is_empty() {
-            self.selection = None;
-            self.parser.screen_mut().set_scrollback(0);
-            self.write(&out);
+            self.input(&out);
         }
     }
 
@@ -228,8 +321,47 @@ impl TermTab {
         look: &TermLook,
         focused: bool,
     ) {
+        let mut rect = rect;
+        if self.search.open {
+            let bar_height = if rect.width() < 420.0 { 96.0 } else if rect.width() < 700.0 { 64.0 } else { 34.0 };
+            let bar = Rect::from_min_size(rect.min, Vec2::new(rect.width(), bar_height));
+            rect.min.y = (rect.min.y + bar_height + 2.0).min(rect.max.y - 1.0);
+            ui.painter().rect_filled(bar, 0.0, crate::ui::PANEL);
+            ui.scope_builder(egui::UiBuilder::new().max_rect(bar.shrink(4.0)), |ui| {
+                ui.set_clip_rect(bar);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new("FIND").font(crate::ui::display(12.0)).color(crate::ui::SECONDARY));
+                    let field = ui.add(egui::TextEdit::singleline(&mut self.search.query)
+                        .hint_text("Search scrollback").char_limit(4096).font(crate::ui::mono(12.0))
+                        .desired_width((bar.width() - 320.0).max(60.0)));
+                    if self.search.focus { field.request_focus(); self.search.focus = false; }
+                    if field.changed() { self.search.restart(self.parser.screen()); self.search.revision = self.revision; }
+                    let total = self.search.matches.len();
+                    ui.label(egui::RichText::new(format!("{}/{}{}", if total == 0 { 0 } else { self.search.current + 1 }, total, if self.search.truncated { "+ · refine search" } else if self.search.pending() { "…" } else { "" })).font(crate::ui::mono(12.0)));
+                    if ui.button("Previous").on_hover_text("Shift+Enter").clicked() { self.search.advance(true); }
+                    if ui.button("Next").on_hover_text("Enter").clicked() { self.search.advance(false); }
+                    if ui.add_enabled(total > 0, egui::Button::new("Copy")).clicked() {
+                        ui.ctx().copy_text(self.search.matches[self.search.current].text.clone());
+                    }
+                    if ui.button("Clear").clicked() { self.search.query.clear(); self.search.restart(self.parser.screen()); self.search.focus = true; }
+                    if ui.button("Close").on_hover_text("Escape").clicked() { self.search.open = false; self.search.composing = false; response.request_focus(); }
+                });
+            });
+            if self.search.revision != self.revision && !self.search.pending() {
+                self.search.restart(self.parser.screen()); self.search.revision = self.revision;
+            }
+            self.search.scan();
+            if self.search.pending() { ui.ctx().request_repaint(); }
+            if self.search.dirty {
+                if let Some(found) = self.search.matches.get(self.search.current) {
+                    self.parser.screen_mut().set_scrollback(self.search.history.saturating_sub(found.cells[0].0));
+                }
+                self.search.dirty = false;
+            }
+        }
         let font = FontId::monospace(look.font_size);
-        let (cw, natural) = ui.fonts(|f| (f.glyph_width(&font, 'M'), f.row_height(&font)));
+        let pixels_per_point = ui.ctx().pixels_per_point();
+        let (cw, natural) = ui.fonts(|f| (cell_width(f, &font, pixels_per_point), f.row_height(&font)));
         let ch = (natural * look.line_height).round().max(1.0);
         // Text sits in the middle of a taller or shorter row.
         let inset = (ch - natural) / 2.0;
@@ -244,7 +376,8 @@ impl TermTab {
         };
         let pointer = response.interact_pointer_pos();
         if response.drag_started() {
-            self.selection = pointer.map(|p| (cell_at(p), cell_at(p)));
+            self.selection = ui.input(|i| i.pointer.press_origin()).filter(|p| rect.contains(*p))
+                .map(|p| (cell_at(p), cell_at(pointer.unwrap_or(p))));
         } else if response.dragged() {
             if let (Some(p), Some((anchor, _))) = (pointer, self.selection) {
                 self.selection = Some((anchor, cell_at(p)));
@@ -252,26 +385,58 @@ impl TermTab {
         } else if response.clicked() {
             self.selection = None;
         }
+        // Modifier-click opens links; ordinary dragging continues to select text.
+        if response.hovered() {
+            if let Some(pos) = ui.ctx().pointer_hover_pos().filter(|p| rect.contains(*p)) {
+                let (row, col) = cell_at(pos);
+                if let Some(url) = links::at(self.parser.screen(), row, col) {
+                    response.clone().on_hover_text(format!("Ctrl+click to open\n{url}"));
+                    if ui.input(|i| i.modifiers.ctrl) {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        if response.clicked() {
+                            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                        }
+                    }
+                }
+            }
+        }
         if response.drag_stopped() && look.copy_on_select {
             if let Some(text) = self.selected_text() {
                 ui.ctx().copy_text(text);
             }
         }
 
-        if response.hovered() {
-            self.scroll_accum += ui.input(|i| i.smooth_scroll_delta.y);
-            let lines = (self.scroll_accum / ch).trunc();
-            if lines != 0.0 {
-                self.scroll_accum -= lines * ch;
-                let current = self.parser.screen().scrollback() as f32;
-                let target = (current + lines).max(0.0) as usize;
-                self.selection = None;
-                self.parser.screen_mut().set_scrollback(target);
+        let typed = std::mem::take(&mut self.input_this_frame);
+        if response.hovered() && !typed && !self.search.open {
+            if let Some(pos) = ui.ctx().pointer_hover_pos() {
+                let cell = cell_at(pos);
+                for event in ui.input(|input| input.events.clone()) {
+                    if !matches!(event, Event::MouseWheel { .. }) { continue; }
+                    let before = self.parser.screen().scrollback();
+                    let bytes = self.wheel.handle(self.parser.screen_mut(), &event, cell, ch, rows);
+                    if !bytes.is_empty() || self.parser.screen().scrollback() != before {
+                        self.selection = None;
+                    }
+                    if !bytes.is_empty() { self.write(&bytes); }
+                }
             }
         }
 
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, crate::ui::GROUND);
+        // Backgrounds and selections use terminal cells, not font glyph advances.
+        for row in 0..rows {
+            for col in 0..cols {
+                let Some(cell) = self.parser.screen().cell(row, col) else { continue };
+                if cell.is_wide_continuation() { continue; }
+                let style = CellStyle::of(cell, theme, look.bold_bright);
+                if style.bg != Color32::TRANSPARENT {
+                    let width = if cell.is_wide() { 2.0 * cw } else { cw };
+                    let min = rect.min + Vec2::new(col as f32 * cw, row as f32 * ch);
+                    painter.rect_filled(Rect::from_min_size(min, Vec2::new(width, ch)), 0.0, style.bg);
+                }
+            }
+        }
         if let Some(((r0, c0), (r1, c1))) = self.selection_range() {
             for row in r0..=r1.min(rows - 1) {
                 let from = if row == r0 { c0 } else { 0 };
@@ -282,6 +447,17 @@ impl TermTab {
             }
         }
 
+        if self.search.open {
+            if let Some(found) = self.search.matches.get(self.search.current) {
+                let top = self.search.history.saturating_sub(self.parser.screen().scrollback());
+                for &(row, col, width) in &found.cells {
+                    if row >= top && row < top + rows as usize {
+                        let min = rect.min + Vec2::new(col as f32 * cw, (row - top) as f32 * ch);
+                        painter.rect_filled(Rect::from_min_size(min, Vec2::new(width as f32 * cw, ch)), 0.0, theme.selection());
+                    }
+                }
+            }
+        }
         let screen = self.parser.screen();
 
         // A blinking cursor is on for half of each second.
@@ -291,9 +467,23 @@ impl TermTab {
         }
         let cursor = (!screen.hide_cursor() && screen.scrollback() == 0 && lit).then(|| {
             let (crow, ccol) = screen.cursor_position();
-            let cell = Rect::from_min_size(rect.min + Vec2::new(ccol as f32 * cw, crow as f32 * ch), Vec2::new(cw, ch));
+            let crow = crow.min(rows - 1);
+            let mut ccol = ccol.min(cols - 1);
+            if screen.cell(crow, ccol).is_some_and(|cell| cell.is_wide_continuation()) {
+                ccol = ccol.saturating_sub(1);
+            }
+            let width = if screen.cell(crow, ccol).is_some_and(vt100::Cell::is_wide) { 2.0 * cw } else { cw };
+            let cell = Rect::from_min_size(rect.min + Vec2::new(ccol as f32 * cw, crow as f32 * ch), Vec2::new(width, ch));
             (crow, ccol, cell)
         });
+
+        for row in 0..rows {
+            let job = ui.fonts(|fonts| row_job(fonts, screen, row, cols, theme, look, &font, cw, pixels_per_point));
+            let galley = ui.fonts(|f| f.layout_job(job));
+            let pos = Pos2::new(rect.min.x, rect.min.y + row as f32 * ch + inset);
+            painter.galley(pos, galley, theme.term_fg);
+        }
+
         if let Some((_, _, cell)) = cursor {
             let shape = match look.cursor {
                 CursorShape::Block => cell,
@@ -306,40 +496,6 @@ impl TermTab {
                 // Without the keyboard, the cursor is an outline.
                 painter.rect_stroke(cell, 0.0, Stroke::new(1.0, theme.cursor), egui::StrokeKind::Inside);
             }
-        }
-
-        for row in 0..rows {
-            let mut job = LayoutJob::default();
-            job.wrap.max_width = f32::INFINITY;
-            let mut run = String::new();
-            let mut run_style: Option<CellStyle> = None;
-            for col in 0..cols {
-                let Some(cell) = screen.cell(row, col) else {
-                    continue;
-                };
-                if cell.is_wide_continuation() {
-                    continue;
-                }
-                let style = CellStyle::of(cell, theme, look.bold_bright);
-                if run_style != Some(style) {
-                    if let Some(prev) = run_style {
-                        job.append(&run, 0.0, prev.format(&font));
-                        run.clear();
-                    }
-                    run_style = Some(style);
-                }
-                if cell.has_contents() {
-                    run.push_str(cell.contents());
-                } else {
-                    run.push(' ');
-                }
-            }
-            if let Some(prev) = run_style {
-                job.append(&run, 0.0, prev.format(&font));
-            }
-            let galley = ui.fonts(|f| f.layout_job(job));
-            let pos = Pos2::new(rect.min.x, rect.min.y + row as f32 * ch + inset);
-            painter.galley(pos, galley, theme.term_fg);
         }
 
         // Under a block cursor the character is drawn again, dark on the cursor's
@@ -356,6 +512,43 @@ impl TermTab {
             }
         }
     }
+}
+
+fn cell_width(fonts: &egui::text::Fonts, font: &FontId, pixels_per_point: f32) -> f32 {
+    // Match the renderer's per-glyph pixel rounding before sizing the PTY/grid.
+    (fonts.glyph_width(font, 'M') * pixels_per_point).round().max(1.0) / pixels_per_point
+}
+
+fn row_job(fonts: &egui::text::Fonts, screen: &vt100::Screen, row: u16, cols: u16, theme: &Theme, look: &TermLook, font: &FontId, cw: f32, pixels_per_point: f32) -> LayoutJob {
+    let mut job = LayoutJob::default();
+    job.wrap.max_width = f32::INFINITY;
+    let mut pen = 0.0;
+    for col in 0..cols {
+        let Some(cell) = screen.cell(row, col) else { continue };
+        if cell.is_wide_continuation() { continue; }
+        let text = if cell.has_contents() { cell.contents() } else { " " };
+        let style = CellStyle::of(cell, theme, look.bold_bright);
+        let mut format = style.format(font);
+        format.background = Color32::TRANSPARENT;
+        // A section per VT cell prevents kerning/fallback widths from moving the
+        // following column. Combining characters stay together inside their cell.
+        let mut chars = text.chars();
+        let first = chars.next().unwrap();
+        let end = if chars.next().is_none() {
+            // Most cells are one glyph: use its cached advance without allocating
+            // a measurement galley for every space or ASCII character.
+            fonts.glyph_width(font, first)
+        } else {
+            let glyphs = fonts.layout_no_wrap(text.to_string(), font.clone(), Color32::WHITE);
+            glyphs.rows.first().and_then(|row| row.glyphs.last())
+                .map_or(0.0, |glyph| glyph.pos.x + glyph.advance_width)
+        };
+        let advance = (end * pixels_per_point).round() / pixels_per_point;
+        let target = col as f32 * cw;
+        job.append(text, target - pen, format);
+        pen = target + advance;
+    }
+    job
 }
 
 impl Drop for TermTab {
@@ -507,6 +700,319 @@ fn key_bytes(key: Key, m: Modifiers, app_cursor: bool) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    fn grid_check(text: &str, size: f32, scale: f32) {
+        let ctx = egui::Context::default();
+        crate::ui::install_fonts(&ctx, None, None);
+        ctx.set_pixels_per_point(scale);
+        let mut parser = vt100::Parser::new(2, 160, 0);
+        parser.process(text.as_bytes());
+        let cursor_col = parser.screen().cursor_position().1;
+        parser.process(b"|");
+        let font = FontId::monospace(size);
+        let look = TermLook { font_size: size, line_height: 1.0, cursor: CursorShape::Block,
+            cursor_blink: false, bold_bright: true, copy_on_select: false };
+        let theme = Theme::load("signal");
+        let _ = ctx.run(Default::default(), |ctx| {
+            let pixels_per_point = ctx.pixels_per_point();
+            assert!((pixels_per_point - scale).abs() < 0.001);
+            ctx.fonts(|fonts| {
+                let cw = cell_width(fonts, &font, pixels_per_point);
+                let galley = fonts.layout_job(row_job(fonts, parser.screen(), 0, 160, &theme, &look, &font, cw, pixels_per_point));
+                let marker = galley.rows[0].glyphs.iter().find(|glyph| glyph.chr == '|').unwrap();
+                let cursor_x = cursor_col as f32 * cw;
+                assert!((marker.pos.x - cursor_x).abs() <= 0.51 / pixels_per_point,
+                    "text drift at font {size}, scale {scale}: marker x {}, cursor x {cursor_x}, cell {cw}", marker.pos.x);
+            });
+        });
+    }
+
+    #[test]
+    fn grid_aligns_long_ascii_input_with_cursor_at_display_scales() {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            for size in [14.0, 16.0, 18.0] { grid_check(&"M".repeat(100), size, scale); }
+        }
+    }
+
+    #[test]
+    fn grid_preserves_columns_after_wide_and_combining_characters() {
+        for scale in [1.0, 1.25, 2.0] {
+            grid_check("prompt 中文 🚀 e\u{301} tail ", 14.0, scale);
+            grid_check("\x1b[31mred\x1b[0m ⚙ \u{e0b0} next ", 16.0, scale);
+        }
+    }
+
+    fn frame(tab: &mut TermTab, ctx: &egui::Context, rect: Rect, events: Vec<Event>, focused: bool, smooth: f32) -> bool {
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 500.0))), events, ..Default::default() };
+        let look = TermLook { font_size: 14.0, line_height: 1.0, cursor: CursorShape::Block,
+            cursor_blink: false, bold_bright: true, copy_on_select: false };
+        let theme = Theme::load("signal");
+        let mut hovered = false;
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let response = ui.interact(rect, egui::Id::new("test-terminal"), egui::Sense::click_and_drag());
+                hovered = response.hovered();
+                tab.handle_events(&ui.input(|i| i.events.clone()), false, false, ctx);
+                // Simulate another widget consuming scroll, or a leftover smooth tail.
+                ui.input_mut(|input| input.smooth_scroll_delta.y = smooth);
+                tab.show(ui, rect, &theme, &response, &look, focused);
+            });
+        });
+        hovered
+    }
+
+    fn terminal_frame_setup() -> (TermTab, egui::Context, Rect, Pos2) {
+        let ctx = egui::Context::default();
+        crate::ui::install_fonts(&ctx, None, None);
+        let _ = ctx.run(Default::default(), |_| {});
+        let (cw, ch) = ctx.fonts(|fonts| {
+            let font = FontId::monospace(14.0);
+            (cell_width(fonts, &font, 1.0), fonts.row_height(&font).round())
+        });
+        let rect = Rect::from_min_size(Pos2::new(40.0, 40.0), Vec2::new(cw * 40.0, ch * 3.0));
+        let pos = rect.min + Vec2::new(cw * 2.5, ch * 1.5);
+        let mut tab = TermTab::spawn("/bin/sh", Path::new("/tmp"), ctx.clone(), 100).unwrap();
+        tab.resize(3, 40);
+        tab.parser.process(b"first\r\nsecond\r\nthird\r\nfourth\r\nfifth\r\nsixth\r\n");
+        for _ in 0..2 { frame(&mut tab, &ctx, rect, vec![Event::PointerMoved(pos)], false, 0.0); }
+        (tab, ctx, rect, pos)
+    }
+
+    #[test]
+    fn dragging_keeps_the_original_press_cell() {
+        let (mut tab, ctx, rect, _) = terminal_frame_setup();
+        tab.parser.process(b"\x1b[2J\x1b[Hhttps://example.org");
+        let start = rect.min + Vec2::new(1.0, 5.0);
+        let end = start + Vec2::new(90.0, 0.0);
+        frame(&mut tab, &ctx, rect, vec![Event::PointerMoved(start), Event::PointerButton {
+            pos: start, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE,
+        }], true, 0.0);
+        frame(&mut tab, &ctx, rect, vec![Event::PointerMoved(end)], true, 0.0);
+        assert_eq!(tab.selection.unwrap().0, (0, 0));
+        assert!(tab.selected_text().unwrap().starts_with("https://"));
+    }
+
+    #[test]
+    fn ctrl_click_emits_url_and_plain_click_does_not() {
+        let (mut tab, ctx, rect, _) = terminal_frame_setup();
+        tab.parser.process(b"\x1b[2J\x1b[Hhttps://example.org");
+        let pos = rect.min + Vec2::new(30.0, 5.0);
+        let look = TermLook { font_size: 14.0, line_height: 1.0, cursor: CursorShape::Block,
+            cursor_blink: false, bold_bright: true, copy_on_select: false };
+        let theme = Theme::load("signal");
+        for ctrl in [false, true] {
+            let modifiers = Modifiers { ctrl, ..Modifiers::NONE };
+            for pressed in [true, false] {
+                let input = egui::RawInput { modifiers,
+                    events: vec![Event::PointerMoved(pos), Event::PointerButton {
+                        pos, button: egui::PointerButton::Primary, pressed, modifiers }],
+                    ..Default::default() };
+                let output = ctx.run(input, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let response = ui.interact(rect, egui::Id::new("test-terminal"), egui::Sense::click_and_drag());
+                        tab.show(ui, rect, &theme, &response, &look, true);
+                    });
+                });
+                let urls: Vec<_> = output.platform_output.commands.iter().filter_map(|command| {
+                    if let egui::OutputCommand::OpenUrl(url) = command { Some(url.url.as_str()) } else { None }
+                }).collect();
+                if ctrl && !pressed {
+                    assert_eq!(urls, vec!["https://example.org"]);
+                } else { assert!(urls.is_empty()); }
+            }
+        }
+    }
+
+    #[test]
+    fn wheel_scrolls_hovered_unfocused_pane_even_after_smooth_delta_is_consumed() {
+        let (mut tab, ctx, rect, pos) = terminal_frame_setup();
+        let events = vec![Event::PointerMoved(pos), Event::MouseWheel { unit: egui::MouseWheelUnit::Line,
+            delta: Vec2::new(0.0, 1.0), modifiers: Modifiers::NONE }];
+        assert!(frame(&mut tab, &ctx, rect, events, false, 0.0));
+        assert_eq!(tab.parser.screen().scrollback(), 1);
+        let events = vec![Event::PointerMoved(Pos2::new(10.0, 10.0)), Event::MouseWheel { unit: egui::MouseWheelUnit::Line,
+            delta: Vec2::new(0.0, 1.0), modifiers: Modifiers::NONE }];
+        assert!(!frame(&mut tab, &ctx, rect, events, false, 0.0));
+        assert_eq!(tab.parser.screen().scrollback(), 1);
+    }
+
+    #[test]
+    fn typing_returns_to_live_grid_and_cannot_be_undone_by_scroll_tail() {
+        let (mut tab, ctx, rect, pos) = terminal_frame_setup();
+        tab.parser.screen_mut().set_scrollback(2);
+        frame(&mut tab, &ctx, rect, vec![Event::PointerMoved(pos), Event::Text("x".into())], true, 80.0);
+        assert_eq!(tab.parser.screen().scrollback(), 0);
+        frame(&mut tab, &ctx, rect, vec![], true, 60.0);
+        assert_eq!(tab.parser.screen().scrollback(), 0);
+        let events = vec![Event::PointerMoved(pos), Event::MouseWheel { unit: egui::MouseWheelUnit::Point,
+            delta: Vec2::new(0.0, 1.0), modifiers: Modifiers::NONE }];
+        frame(&mut tab, &ctx, rect, events, true, 0.0);
+        assert_eq!(tab.parser.screen().scrollback(), 0);
+    }
+
+    #[test]
+    fn hovered_application_receives_wheel_with_actual_grid_coordinates() {
+        use std::sync::{Arc, Mutex};
+        struct Capture(Arc<Mutex<Vec<u8>>>);
+        impl Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> { self.0.lock().unwrap().extend_from_slice(bytes); Ok(bytes.len()) }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let (mut tab, ctx, rect, pos) = terminal_frame_setup();
+        tab.parser.process(b"\x1b[?1049h\x1b[?1000h\x1b[?1006h");
+        let written = Arc::new(Mutex::new(Vec::new()));
+        tab.writer = Box::new(Capture(written.clone()));
+        let events = vec![Event::PointerMoved(pos), Event::MouseWheel { unit: egui::MouseWheelUnit::Line,
+            delta: Vec2::new(0.0, 1.0), modifiers: Modifiers::NONE }];
+        assert!(frame(&mut tab, &ctx, rect, events, false, 0.0));
+        assert_eq!(&*written.lock().unwrap(), b"\x1b[<64;3;2M");
+    }
+
+    #[test]
+    fn noisy_output_yields_each_frame_and_keeps_order() {
+        let ctx = egui::Context::default();
+        let mut tab = TermTab::spawn("/bin/sh", Path::new("/tmp"), ctx.clone(), 100).unwrap();
+        // Control the input boundary while retaining a real PTY and parser.
+        let (tx, rx) = std::sync::mpsc::channel();
+        tab.rx = rx;
+        let mut expected = vt100::Parser::new(24, 80, 100);
+        for i in 0..32 {
+            let mut bytes = vec![b'a' + i % 26; 8192];
+            bytes.extend_from_slice(format!("\x1b[Hchunk-{i:02}").as_bytes());
+            expected.process(&bytes);
+            tx.send(bytes).unwrap();
+        }
+        drop(tx);
+        let _ = ctx.run(Default::default(), |_| tab.pump());
+        assert!(!tab.exited, "one frame drained the entire noisy output queue");
+        assert_ne!(tab.parser.screen().contents(), expected.screen().contents());
+        assert!(ctx.has_requested_repaint(), "pending output must schedule another frame");
+        for _ in 0..100 {
+            tab.pump();
+            if tab.exited {
+                break;
+            }
+        }
+        assert!(tab.exited, "output never finished draining");
+        assert_eq!(tab.parser.screen().contents_formatted(), expected.screen().contents_formatted());
+    }
+
+    #[test]
+    fn stalled_ui_backpressures_noisy_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        let done = dir.path().join("done");
+        let mut tab = TermTab::spawn("/bin/sh", dir.path(), egui::Context::default(), 0).unwrap();
+        tab.write(b"dd if=/dev/zero bs=8192 count=512 2>/dev/null; printf done > done\r");
+        let deadline = Instant::now() + Duration::from_millis(300);
+        while Instant::now() < deadline {
+            assert!(!done.exists(), "shell wrote 4 MiB while UI consumed no output");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done.exists() {
+            tab.pump();
+            assert!(Instant::now() < deadline, "backpressure never released");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(std::fs::read(done).unwrap(), b"done");
+    }
+
+    #[test]
+    fn pump_limits_parser_bytes_even_for_one_large_chunk() {
+        let mut tab = TermTab::spawn("/bin/sh", Path::new("/tmp"), egui::Context::default(), 0).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        tab.rx = rx;
+        tx.send(vec![b'x'; 128 * 1024]).unwrap();
+        tab.pump();
+        assert!(tab.pending_offset > 0);
+        assert!(tab.pending_offset <= 32 * 1024, "parser exceeded the frame byte budget");
+        assert!(tab.pending_offset < tab.pending_output.len(), "partial chunk was discarded");
+    }
+
+    #[test]
+    fn exited_child_does_not_discard_buffered_output() {
+        let mut tab = TermTab::spawn("/bin/sh", Path::new("/tmp"), egui::Context::default(), 0).unwrap();
+        tab.write(b"exit\r");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while tab.child.try_wait().unwrap().is_none() {
+            assert!(Instant::now() < deadline, "child did not exit");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        tab.rx = rx;
+        let mut expected = vt100::Parser::new(24, 80, 0);
+        for i in 0..16 {
+            let mut bytes = vec![b'x'; 8192];
+            bytes.extend_from_slice(format!("\x1b[Hfinal-{i:02}").as_bytes());
+            expected.process(&bytes);
+            tx.send(bytes).unwrap();
+        }
+        drop(tx);
+        tab.pump();
+        assert!(!tab.exited, "tab closed with buffered output still unread");
+        for _ in 0..100 {
+            tab.pump();
+            if tab.exited {
+                break;
+            }
+        }
+        assert!(tab.exited, "drained terminal did not finish");
+        assert_eq!(tab.parser.screen().contents_formatted(), expected.screen().contents_formatted());
+    }
+
+    #[test]
+    fn ime_composition_blocks_navigation_across_frames() {
+        let (mut tab, ctx, _, _) = terminal_frame_setup();
+        tab.open_search();
+        tab.search.query = "i".into();
+        tab.search.restart(tab.parser.screen());
+        while tab.search.pending() { tab.search.scan(); }
+        assert!(tab.search.matches.len() > 1);
+        let enter = Event::Key { key: Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE };
+        tab.handle_events(&[Event::Ime(egui::ImeEvent::Preedit("文".into()))], false, false, &ctx);
+        tab.handle_events(&[enter.clone()], false, false, &ctx);
+        assert_eq!(tab.search.current, 0);
+        tab.handle_events(&[Event::Ime(egui::ImeEvent::Commit("文".into())), enter.clone()], false, false, &ctx);
+        assert_eq!(tab.search.current, 0);
+        tab.handle_events(&[enter], false, false, &ctx);
+        assert_eq!(tab.search.current, 1);
+    }
+
+    #[test]
+    fn find_field_edits_unicode_and_keeps_focus_after_enter() {
+        let (mut tab, ctx, rect, _) = terminal_frame_setup();
+        let key = |key, modifiers| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
+        frame(&mut tab, &ctx, rect, vec![key(Key::F, Modifiers::CTRL | Modifiers::SHIFT)], true, 0.0);
+        frame(&mut tab, &ctx, rect, vec![Event::Text("first".into())], true, 0.0);
+        assert_eq!(tab.search.query, "first");
+        assert_eq!(tab.search.matches.len(), 1);
+        frame(&mut tab, &ctx, rect, vec![key(Key::Enter, Modifiers::NONE)], true, 0.0);
+        frame(&mut tab, &ctx, rect, vec![Event::Text("文".into())], true, 0.0);
+        assert_eq!(tab.search.query, "first文");
+        assert!(tab.search.matches.is_empty());
+    }
+
+    #[test]
+    fn search_isolates_shortcut_text_enter_escape_and_ime_from_pty() {
+        use std::sync::{Arc, Mutex};
+        struct Capture(Arc<Mutex<Vec<u8>>>);
+        impl Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> { self.0.lock().unwrap().extend_from_slice(bytes); Ok(bytes.len()) }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let ctx = egui::Context::default();
+        let mut tab = TermTab::spawn("/bin/sh", Path::new("/tmp"), ctx.clone(), 100).unwrap();
+        let written = Arc::new(Mutex::new(Vec::new()));
+        tab.writer = Box::new(Capture(written.clone()));
+        let key = |key, modifiers| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
+        tab.handle_events(&[key(Key::F, Modifiers::CTRL | Modifiers::SHIFT), Event::Text("needle".into()), Event::Ime(egui::ImeEvent::Commit("文".into())), key(Key::Enter, Modifiers::NONE)], false, false, &ctx);
+        assert!(tab.searching());
+        tab.handle_events(&[key(Key::Escape, Modifiers::NONE), Event::Text("same-frame".into())], false, false, &ctx);
+        assert!(!tab.searching());
+        assert!(written.lock().unwrap().is_empty());
+        tab.handle_events(&[Event::Text("live".into())], false, false, &ctx);
+        assert_eq!(&*written.lock().unwrap(), b"live");
+    }
 
     #[test]
     fn encodes_keys() {
