@@ -1,0 +1,40 @@
+# Native desktop interaction contract
+
+Authority: the current user request and `docs/superpowers/specs/2026-10-15-desktop-workflows-design.md`; system boundaries come from `common/src/ipc.rs`. This is a native egui desktop, not a browser document. Queries are transient and never placed in URLs or logs. The interface remains English as in the existing shell; user-entered Unicode and IME composition are preserved.
+
+## Canonical owners
+
+| Capability | Owner | Behavior |
+|---|---|---|
+| Palette | launcher.rs, palette.rs | Super+Space / Apps; typed result kinds; Up/Down, Enter, Escape; explicit Clear; bounded list |
+| File lookup | file_search.rs, launcher worker | Explicit selected folders, names only, no symlink traversal, hidden/build exclusions, stale generation rejection |
+| Settings navigation | settings.rs::destinations/open_at | One authoritative section list, including Health and Session |
+| Feedback | notify.rs::Center | Existing persistent notification history; failures identify operation and recovery |
+| Buttons and visual tokens | ui.rs, theme.rs | Existing egui controls / Signal primitives; keyboard focus and disabled states follow native behavior |
+| Terminal find | term.rs, term/search.rs | Ctrl+Shift+F or Find; field owns input; Enter/Shift+Enter navigate; IME confirmation never dispatches a terminal command |
+| Session persistence | session_restore.rs, workflows.rs | Explicit Save/Restore; only installed desktop IDs, placement, terminal folders/layout; private atomic file |
+| Multi-display overlays | screen_views.rs, dock.rs, compositor/toast.rs | Per-viewport state, display-local coordinates, shared pins, no dock while locked or picking a screenshot |
+| Document opening | apps.rs::open_document | Shared asynchronous native viewer, exact OS path arguments, failed-exit feedback and bounded pending requests |
+| Health | health.rs | Read-only background probes, bounded excerpts, clear missing/unknown/failure states and Refresh |
+
+## Search states
+
+Palette results distinguish applications, windows, settings, actions and files. Running application results focus an existing window; right-click can pin an installed app. File search waits briefly after typing, works in one background worker, rejects stale results and indicates partial/limited results and unreadable folders. At most eight absolute roots, 20,000 visited entries, depth five below each root, 32 results and 400 ms per lookup. Network-mounted filesystems can still stall kernel I/O; the worker never blocks the interface. Folders are saved only by the explicit Save Folders button.
+
+Terminal find scans configured scrollback in frame budgets and supports literal Unicode lowercase matching, soft wraps and wide cells. It stores at most 10,000 matches and 262,144 matched cells, shows truncation, and offers refinement. Searches snapshot existing VT history for stable coordinates. That snapshot can be expensive with unusually large configured history. Closing find returns focus without forwarding its closing-frame keys to the PTY.
+
+## Session behavior
+
+Save overwrites the explicit snapshot in `$XDG_STATE_HOME/des-ui-sessions/session.json` or `~/.local/state/des-ui-sessions/session.json`. Directory/file permissions are 0700/0600. No automatic session launch is enabled. Restore keeps current terminals, reuses matching folders/windows, launches only recognized installed entries and reports missing apps/folders. It never resurrects running terminal processes, replays commands or restores unsaved document contents. Placement waits at most 30 seconds for arriving windows and sends changes in batches so the IPC queue is not flooded. Disconnected displays fall back to an available display.
+
+## Lock, capture and displays
+
+Each display has independent dock animation, pointer corridor, selection and menu state. Pins are shared. Super+D addresses the pointer's display; selecting Terminal/Apps opens the main shell workflow. The compositor uses the selected backdrop surface and its own display origin for rendering/input. Lock hides applications and secondary backdrops immediately. Screenshot picking clears dock keyboard capture and overlays before taking exclusive input; safe clear messages remain accepted without changing screenshot focus.
+
+## Verification boundary
+
+Headless egui tests exercise find and palette typing, selection and IME. Unit tests cover protocol, restore policy/storage, file bounds, health logs and lock/capture policy. Physical DRM outputs, display scaling/rotation, actual IME engines, launching real desktop apps and suspend still require the hardware acceptance matrix. Static UI audits do not certify those flows.
+
+Terminal links: hover an HTTP/HTTPS URL for its destination and Ctrl+click hint; Ctrl+click opens it in the default browser. Plain drag selects text from the original press position; Ctrl+Shift+C copies. Soft-wrapped visible URLs are recognized; other schemes are not opened.
+
+Theme accent: Settings → Appearance owns a draft opaque sRGB colour using the native egui picker, a hex readout, Apply color and Reset to theme. Editing does not write configuration. Apply persists `accent = r, g, b` before changing the active theme; save failure uses the existing notification center and preserves the active colour. The override survives preset changes and restart. Reset removes it. config.rs::resolved_theme combines the preset with the accent at startup and when changed; terminal ANSI colours and fixed interface greys remain controlled by their existing owners.

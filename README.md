@@ -186,7 +186,58 @@ Otherwise the frame is on a laptop's own panel and the others extend to its righ
 Each further display shows its applications at full size, split or not.
 Applications open on the display the pointer is on.
 
+Side panels can minimize to a narrow rail; click the rail to reopen them. In
+**Settings → Frame → Minimized side panels**, choose **Collapse** (the default)
+or **Hide** to reclaim their entire width. The file browser still hides completely.
+Action icons show their names and shortcuts on hover; status icons keep their readings.
+
+Graphical applications appear in the bottom dock instead of the terminal tab bar.
+Move the pointer to the bottom edge to reveal it; it slides away after you leave.
+The dock grows to fit its icons, wrapping to another row at the screen edge without a scrollbar.
+Click an app to focus it (repeated clicks cycle through its windows). Right-click to
+pin/unpin, change pin order, open another window, close a window or send it to another
+display. The launcher also offers **Pin to dock** on right-click. Pins are saved.
+
+**Super+D** (or **Ctrl+Alt+D**) opens dock keyboard navigation: use **Left/Right**,
+**Enter**, and **Escape**. In the terminal, **Ctrl+Shift+D** also opens it. Terminal
+and launcher shortcuts remain available in the dock. **Settings → Frame → Animate
+dock** turns the sliding motion off. Each display has its own dock, showing windows on that display and the same saved pins. Super+D opens keyboard navigation on the display under the pointer.
+Launcher and dock use installed app icons; missing icons use a generic app symbol.
+
+## Command palette, sessions and health
+
+**Super+Space** opens the command palette. Search installed apps, open windows,
+settings sections, desktop actions and local filenames. App results focus an
+existing window where possible; right-click still pins an app. Use Up/Down and
+Enter, Escape to close, or CLEAR to start again. **FOLDERS** lets you choose up to
+eight absolute folders separated by semicolons. By default it searches Documents,
+Downloads and Desktop. Filename lookup is bounded, skips hidden/build folders and
+symlinks, and never reads file contents. Refine the query when results are limited.
+
+**Settings → Session → SAVE SESSION** records installed application identities,
+workspace/display placement and terminal folders/layout. **RESTORE SESSION** reuses
+existing windows and terminals, opens recognized installed apps, and waits up to 30
+seconds for their windows. These actions are also searchable in the palette. The
+snapshot is private at `~/.local/state/des-ui-sessions/session.json` (or under
+`XDG_STATE_HOME`). Restore is explicit; commands, running terminal processes and
+unsaved document contents are not recovered. Saved dock pins remain in the usual
+configuration file.
+
+**Settings → Health** (or search “health”) checks compositor/music service status, native
+helpers and log locations without changing system settings. Refresh reruns the
+checks; recent log excerpts are bounded and common secret-bearing lines hidden.
+OPEN LOG opens the full local log with your configured viewer.
+
 ## The terminal
+
+**Ctrl+Shift+F**, the magnifying-glass button in the terminal toolbar, or “Find in terminal” in the palette
+opens pane-local scrollback search. Enter and Shift+Enter move between literal
+case-insensitive matches; Copy copies the match, CLEAR resets, and Escape returns
+to the terminal. IME input stays in the field. A `+ · refine search` counter means
+the match-storage limit was reached.
+
+The wheel scrolls history in the pane under the pointer and scrolls inside terminal
+applications. Hold Shift to use local history. Typing returns to the live prompt.
 
 Ctrl+Shift+T opens a tab and Ctrl+Tab moves between them. The terminal can also be
 split in two, each half showing a tab of its own:
@@ -206,7 +257,7 @@ workspace with an application.
 Each of these opens for the details.
 
 <details>
-<summary><b>Settings</b> — theme, terminal, displays, network, Bluetooth, sound, and more</summary>
+<summary><b>Settings</b> — theme, terminal, displays, network, Bluetooth, sound, date and language, and more</summary>
 
 **Super+,** or `SETTINGS` in the status strip opens them in place of the terminal;
 Esc closes. Changes apply at once and are saved.
@@ -214,7 +265,9 @@ Esc closes. Changes apply at once and are saved.
 - **Appearance** — theme
 - **Terminal** — font, text size, line height, cursor shape and blink, bold in
   bright colours, copy on select, scrollback
-- **Frame** — which panels are open, now and at every start
+- **Frame** — which panels are open, now and at every start; and the companion,
+  an animal that walks along the foot of the left column where there is room
+  (a dog, fox, crab, duck, snake or turtle, or none)
 - **Displays** — each monitor's resolution and refresh rate, how large things are
   drawn on it (100% to 200%), which way it is turned, their order left to right,
   which one is the main display, and whether each other one is a desktop of its
@@ -230,6 +283,10 @@ Esc closes. Changes apply at once and are saved.
 - **Sound & screen** — volume and brightness; which device plays and which
   microphone listens, each with its level and a mute; and the volume of each
   application that is making sound
+- **Date & region** — the time zone, whether the network sets the time or you do,
+  a 12 or 24 hour clock, and the language and formats programs use. All but the
+  clock's hours are the system's, changed with `timedatectl` and `localectl`
+  through `sudo`, and ask for your own password
 - **Users** — the people who can sign in: adding one, changing a name or a
   password, making someone an administrator, and removing an account, with or
   without its files. Each change asks for your own password and is carried out by
@@ -244,8 +301,9 @@ monitors, and come before GNOME's saved layout.
 
 The rest are kept in `~/.config/des-ui/config` as `key = value` lines, which can also
 be edited by hand. The compositor reads the keyboard, mouse and touchpad
-settings from the same file. Network and Bluetooth go through `nmcli` and
-`bluetoothctl`; a Wi-Fi password is handed to `nmcli` on its command line. Two can be set from a terminal:
+settings from the same file. Network scanning and saved connections use `nmcli`; Bluetooth uses
+`bluetoothctl`. New Wi-Fi connections send credentials directly to NetworkManager
+over the system D-Bus, without putting passwords in process arguments. Two can be set from a terminal:
 
     des-ui --set-location 48.8566,2.3522,Paris   # or: --set-location auto
     des-ui --geo off                             # no lookups at all; on to resume
@@ -277,8 +335,8 @@ It also locks by itself:
   lock screen (this too can be turned off there);
 - when the system asks, as `loginctl lock-session` does.
 
-If the lock screen ever cannot be unlocked, press Ctrl+Alt+F3, sign in on the text
-console, and run `des-ui --unlock`.
+Unlocking requires your password on the lock screen. Command-line clients cannot
+unlock the compositor; it accepts desktop commands only from its current shell.
 
 </details>
 
@@ -467,6 +525,10 @@ run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`
 <details>
 <summary><b>Where things are in the source</b> — file by file</summary>
 
+- `shell/src/runtime.rs` — per-frame shell coordination and rendering
+- `shell/src/radio/wifi.rs` — new Wi-Fi connections over NetworkManager D-Bus
+- `music/src/service.rs` — playback state and service lifecycle
+- `music/src/ipc.rs`, `socket.rs` — bounded music transport and private socket setup
 - `shell/src/term.rs` — shell on a PTY, VT parsing, grid rendering, key encoding
 - `shell/src/sysmon.rs` — CPU, memory, process and network sampling
 - `shell/src/ui.rs` — the interface language: colours, typefaces, shared parts
@@ -476,6 +538,8 @@ run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`
 - `shell/src/radio.rs` — Wi-Fi, wired and VPN connections, Bluetooth
 - `shell/src/sound.rs` — output and input devices, levels, per-application volume
 - `shell/src/users.rs` — the accounts on the machine
+- `shell/src/region.rs` — the date, the time zone and the language
+- `shell/src/pet.rs` — the companion in the left column
 - `shell/src/greeter.rs`, `lock.rs` — the login screen and the lock screen
 - `shell/src/power.rs` — locking before sleep, and what holds off the idle lock
 - `common/src/input.rs` — keyboard, mouse and touchpad settings
@@ -500,7 +564,6 @@ run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`
 
 ## Not done yet
 
-- Keyboard layout setting
 - Dialogs at their natural size; sharing the middle-click selection with X11 applications
 - Placing displays above one another
 - VPNs that ask for a password each time they connect
@@ -509,14 +572,37 @@ run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`
   to and editing playlists, podcasts
 - In notifications: icons that exist only as SVG drawings
 - On the login screen: accounts that need more than a password
-- From the original: on-screen keyboard, sound effects, mouse reporting to
+- From the original: on-screen keyboard, sound effects, mouse click and motion reporting to
   terminal apps
+
+## Validation
+
+`./scripts/verify.sh` checks installation-script syntax, runs every workspace test,
+and builds all three programs. Run it on a Linux host that permits Unix sockets;
+restricted sandboxes can fail the socket integration tests. Those failures must not
+be treated as passing tests.
+
+`python3 scripts/validation-snapshot.py > /tmp/des-ui-source.json` records the exact
+working source, including uncommitted and untracked files, without changing Git.
+Use [docs/validation/HARDWARE.md](docs/validation/HARDWARE.md) with
+[docs/UNTESTED.md](docs/UNTESTED.md) to attach real-machine evidence before a release.
+
+The music socket requires an absolute path in a directory owned by the current user
+with mode 0700; the socket itself is mode 0600. Without `XDG_RUNTIME_DIR`, it uses
+`$TMPDIR/des-music-<uid>/des-music.sock` (normally under `/tmp`). Set
+`DES_MUSIC_SOCKET` to try another private socket. Clients must finish requests within
+60 seconds; the shell sends an idle heartbeat every 20 seconds.
 
 ## Licence
 
 MIT; see `LICENSE`. `compositor/` is derived from Smithay's `smallvil` example, also
 MIT. The bundled typefaces, Chakra Petch and JetBrains Mono (`shell/assets/fonts/`),
 are under the SIL Open Font License.
+
+The companions (`shell/assets/pets/`) are from
+[VS Code Pets](https://github.com/tonybaloney/vscode-pets) and keep their own terms:
+see `CREDITS.md` there. The dog is under Creative Commons Attribution-NoDerivatives
+4.0, so its pictures are used unchanged.
 
 eDEX-UI's own theme files are GPL-3.0 and are not part of this repository. They
 work as themes here: copy them into `~/.config/des-ui/themes/`.
