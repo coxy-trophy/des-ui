@@ -1,5 +1,6 @@
 //! Loads eDEX-UI theme files (the original JSON format) into egui colors.
 
+use crate::oklch::{self, Oklch};
 use eframe::egui::Color32;
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -54,6 +55,17 @@ pub struct Theme {
     pub term_fg: Color32,
     pub cursor: Color32,
     pub ansi: [Color32; 16],
+    /// The warning colour: `ui::CAUTION` for a preset, drawn from the accent for a
+    /// derived palette.
+    pub caution: Color32,
+    /// The accent as light: what a glow or a bloom around it is drawn in.
+    pub glow: Color32,
+}
+
+/// The accent lifted and slightly softened, as a glow around it would look.
+fn glow_of(accent: Color32) -> Color32 {
+    let accent = Oklch::from_srgb(accent);
+    Oklch::new((accent.l + 0.12).min(0.97), accent.c * 0.8, accent.h).to_srgb()
 }
 
 const XTERM_16: [(u8, u8, u8); 16] = [
@@ -74,6 +86,12 @@ const XTERM_16: [(u8, u8, u8); 16] = [
     (0x34, 0xe2, 0xe2),
     (0xee, 0xee, 0xec),
 ];
+
+/// The OKLCH hues of red, green, yellow, blue, magenta and cyan, in ANSI order: where
+/// a derived palette starts from before leaning towards the accent.
+const ANSI_HUES: [f32; 6] = [29.0, 142.0, 105.0, 264.0, 328.0, 195.0];
+/// Amber, which reads as a warning whatever the accent.
+const CAUTION_HUE: f32 = 75.0;
 
 /// See [`Theme::list`].
 pub fn installed() -> Vec<(String, Color32)> {
@@ -149,7 +167,41 @@ impl Theme {
             term_fg: col(&t.foreground, crate::ui::TEXT),
             cursor: col(&t.cursor, main),
             ansi,
+            caution: crate::ui::CAUTION,
+            glow: glow_of(main),
         })
+    }
+
+    /// The palette one accent implies: every terminal colour, the caution colour and
+    /// the glow, drawn from it in OKLCH so that they share its character. The ANSI
+    /// hues keep their names (red stays red) but lean a little towards the accent's
+    /// hue, and all sit at one lightness and chroma, the bright ones lighter. Every
+    /// colour that carries text reads at 4.5:1 or better against the ground.
+    pub fn derived(&self) -> Theme {
+        let accent = Oklch::from_srgb(self.main);
+        // A grey accent has no hue to lean towards.
+        let lean = if accent.c < 0.02 { 0.0 } else { 0.12 };
+        let chroma = accent.c.clamp(0.09, 0.14);
+        let hue = |name: f32| name + (oklch::hue_turn(name, accent.h) * lean).clamp(-25.0, 25.0);
+        let ground = crate::ui::GROUND;
+        let text = |l: f32, c: f32, h: f32| oklch::legible(Oklch::new(l, c, h), ground, 4.5).to_srgb();
+        let mut ansi = [Color32::BLACK; 16];
+        ansi[0] = Oklch::new(0.27, 0.02, accent.h).to_srgb();
+        ansi[8] = Oklch::new(0.48, 0.025, accent.h).to_srgb();
+        ansi[7] = text(0.86, 0.012, accent.h);
+        ansi[15] = text(0.96, 0.006, accent.h);
+        for (i, name) in ANSI_HUES.iter().enumerate() {
+            ansi[1 + i] = text(0.74, chroma, hue(*name));
+            ansi[9 + i] = text(0.84, chroma * 0.85, hue(*name));
+        }
+        Theme {
+            main: self.main,
+            term_fg: text(0.92, 0.01, accent.h),
+            cursor: self.cursor,
+            ansi,
+            caution: text(0.82, 0.15, hue(CAUTION_HUE)),
+            glow: glow_of(self.main),
+        }
     }
 
     /// Directories searched for `<name>.json`, in priority order.
@@ -276,6 +328,63 @@ mod tests {
         assert_eq!(parse_color("rgb(1, 2, 3)"), Some(Color32::from_rgb(1, 2, 3)));
         assert!(parse_color("rgba(170,207,209,0.3)").is_some());
         assert_eq!(parse_color("nonsense"), None);
+    }
+
+    #[test]
+    fn presets_keep_the_fixed_caution_and_a_lighter_glow() {
+        let theme = Theme::load(DEFAULT_NAME);
+        assert_eq!(theme.caution, crate::ui::CAUTION);
+        assert_ne!(theme.glow, theme.main);
+        assert!(Oklch::from_srgb(theme.glow).l > Oklch::from_srgb(theme.main).l);
+    }
+
+    #[test]
+    fn a_derived_palette_keeps_the_accent_and_reads_against_the_ground() {
+        let accents = [
+            Theme::load(DEFAULT_NAME).main,
+            Color32::from_rgb(0x80, 0x80, 0x80),
+            Color32::from_rgb(0x10, 0x10, 0x10),
+            Color32::from_rgb(255, 0, 0),
+            Color32::from_rgb(0, 0, 255),
+            Color32::from_rgb(255, 255, 255),
+            Color32::from_rgb(0xF5, 0xB8, 0x5A),
+        ];
+        for accent in accents {
+            let mut base = Theme::load(DEFAULT_NAME);
+            base.main = accent;
+            base.cursor = accent;
+            let theme = base.derived();
+            assert_eq!(theme.main, accent);
+            assert_eq!(theme.cursor, accent);
+            let carries_text = theme.ansi[1..8].iter().chain(&theme.ansi[9..]).chain([&theme.term_fg, &theme.caution]);
+            for color in carries_text {
+                let ratio = oklch::contrast(*color, crate::ui::GROUND);
+                assert!(ratio >= 4.5, "accent {accent:?}: {color:?} reads at only {ratio:.2}:1");
+            }
+            for i in 1..7 {
+                let (normal, bright) = (Oklch::from_srgb(theme.ansi[i]), Oklch::from_srgb(theme.ansi[i + 8]));
+                assert!(bright.l > normal.l, "accent {accent:?}: bright {i} is not lighter");
+            }
+        }
+    }
+
+    #[test]
+    fn derived_hues_keep_their_names_and_lean_towards_the_accent() {
+        let base = Theme::load(DEFAULT_NAME);
+        let theme = base.derived();
+        let accent = Oklch::from_srgb(base.main);
+        for (i, name) in ANSI_HUES.iter().enumerate() {
+            let derived = Oklch::from_srgb(theme.ansi[1 + i]);
+            let turn = oklch::hue_turn(*name, derived.h);
+            assert!(turn.abs() <= 30.0, "colour {} turned {turn:.0} degrees", i + 1);
+            // Towards the accent, or not at all when it already sits that way.
+            let towards = oklch::hue_turn(*name, accent.h);
+            assert!(turn == 0.0 || turn.signum() == towards.signum() || turn.abs() < 2.0, "colour {} leaned away", i + 1);
+        }
+        assert_ne!(theme.ansi, base.ansi);
+        assert_ne!(theme.caution, crate::ui::CAUTION);
+        let caution = Oklch::from_srgb(theme.caution);
+        assert!(oklch::hue_turn(CAUTION_HUE, caution.h).abs() <= 30.0, "caution is no longer amber: {caution:?}");
     }
 
     #[test]

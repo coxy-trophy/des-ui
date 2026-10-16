@@ -15,11 +15,23 @@ pub const LINE_HEIGHT_RANGE: (f32, f32) = (0.9, 1.6);
 pub const SCROLLBACK_CHOICES: [usize; 4] = [1000, 5000, 20000, 100000];
 const DEFAULT_FONT_SIZE: f32 = 14.0;
 
+/// Where the terminal's colours come from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Palette {
+    /// The theme file's own.
+    Preset,
+    /// Drawn from the accent, so that every colour agrees with it.
+    Derived,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub theme: String,
     /// Optional opaque sRGB accent, independent of the preset terminal palette.
     pub accent: Option<[u8; 3]>,
+    /// Whether the terminal's colours, the caution colour and the glow are the
+    /// preset's own or drawn from the accent.
+    pub palette: Palette,
     /// Size of the terminal's text.
     pub font_size: f32,
     /// A font file to draw the terminal with, instead of the bundled one.
@@ -59,6 +71,7 @@ impl Default for Config {
         Config {
             theme: theme::DEFAULT_NAME.to_string(),
             accent: None,
+            palette: Palette::Preset,
             font_size: DEFAULT_FONT_SIZE,
             terminal_font: None,
             line_height: 1.0,
@@ -104,6 +117,7 @@ impl Config {
                     config.accent = value.split(',').map(|part| part.trim().parse::<u8>())
                         .collect::<Result<Vec<_>, _>>().ok().and_then(|rgb| rgb.try_into().ok());
                 }
+                "palette" => config.palette = if value == "derived" { Palette::Derived } else { Palette::Preset },
                 "font_size" => {
                     if let Ok(size) = value.parse::<f32>() {
                         config.font_size = size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
@@ -173,6 +187,9 @@ impl Config {
             let accent = eframe::egui::Color32::from_rgb(r, g, b);
             if theme.cursor == theme.main { theme.cursor = accent; }
             theme.main = accent;
+        }
+        if self.palette == Palette::Derived {
+            theme = theme.derived();
         }
         theme
     }
@@ -265,6 +282,22 @@ mod tests {
         let resolved = config.resolved_theme();
         assert_eq!(resolved.ansi, base.ansi);
         assert_eq!(resolved.term_fg, base.term_fg);
+    }
+
+    #[test]
+    fn a_derived_palette_follows_the_accent_and_anything_else_keeps_the_preset() {
+        assert_eq!(Config::parse("palette = derived").palette, Palette::Derived);
+        for other in ["preset", "", "theme", "Derived"] {
+            assert_eq!(Config::parse(&format!("palette = {other}")).palette, Palette::Preset, "{other:?}");
+        }
+        let config = Config::parse("palette = derived\naccent = 12, 128, 255\n");
+        let resolved = config.resolved_theme();
+        let accent = eframe::egui::Color32::from_rgb(12, 128, 255);
+        assert_eq!(resolved.main, accent);
+        let preset = Config::parse("accent = 12, 128, 255\n").resolved_theme();
+        assert_ne!(resolved.ansi, preset.ansi);
+        assert_eq!(resolved.ansi, preset.derived().ansi);
+        assert_eq!(resolved.caution, preset.derived().caution);
     }
 
     #[test]

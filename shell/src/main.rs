@@ -16,6 +16,7 @@ mod file_search;
 mod lock;
 mod music;
 mod notify;
+mod oklch;
 mod panels;
 mod pet;
 mod power;

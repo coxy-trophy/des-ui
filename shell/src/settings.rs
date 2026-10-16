@@ -2,7 +2,7 @@
 //! the user asked for; applying and saving a change is the caller's job.
 
 use eframe::egui;
-use crate::config::{Config, LINE_HEIGHT_RANGE, MAX_FONT_SIZE, MIN_FONT_SIZE, SCROLLBACK_CHOICES};
+use crate::config::{Config, LINE_HEIGHT_RANGE, MAX_FONT_SIZE, MIN_FONT_SIZE, Palette, SCROLLBACK_CHOICES};
 use crate::radio::Radio;
 use crate::term::CursorShape;
 use des_common::input::{InputSettings, REPEAT_DELAY_RANGE, REPEAT_RATE_RANGE};
@@ -397,6 +397,14 @@ impl Settings {
             }
         });
         note(ui, "The swatch previews your colour. Apply saves it for future sessions.");
+        ui.add_space(20.0);
+        heading(ui, "PALETTE", "The terminal's colours, the caution colour and the glow can be drawn from the accent, so that everything agrees.");
+        let derived = config.palette == Palette::Derived;
+        if switch_row(ui, theme, "Derive the palette from the accent", "Off keeps the preset's own terminal colours", derived) {
+            changes.push(Change::Set("palette", (!derived).then(|| "derived".to_string())));
+        }
+        ui.add_space(10.0);
+        swatches(ui, theme);
         ui.add_space(20.0);
         note(ui, "Fonts, text size and the cursor are under Terminal.");
     }
@@ -1157,6 +1165,28 @@ fn slider_row(ui: &mut Ui, theme: &Theme, name: &str, frac: f32, reading: &str) 
 }
 
 /// A group's title and, under it, what the group is for.
+/// The palette in use: the sixteen terminal colours in two rows, then the caution
+/// colour and the glow, as squares.
+fn swatches(ui: &mut Ui, theme: &Theme) {
+    const SIDE: f32 = 18.0;
+    const GAP: f32 = 4.0;
+    let row = |ui: &mut Ui, colors: &[Color32], caption: &str| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = GAP;
+            for color in colors {
+                let (rect, _) = ui.allocate_exact_size(vec2(SIDE, SIDE), Sense::hover());
+                ui.painter().rect_filled(rect, 0.0, *color);
+                ui.painter().rect_stroke(rect, 0.0, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
+            }
+            ui.add_space(8.0);
+            ui::text(ui, caption, ui::mono(10.0), ui::LABEL);
+        });
+    };
+    row(ui, &theme.ansi[..8], "TERMINAL");
+    row(ui, &theme.ansi[8..], "BRIGHT");
+    row(ui, &[theme.caution, theme.glow], "CAUTION · GLOW");
+}
+
 pub(crate) fn heading(ui: &mut Ui, title: &str, about: &str) {
     ui::section(ui, title, |_| {});
     if !about.is_empty() {
@@ -1237,6 +1267,45 @@ mod tests {
                 pos, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE,
             }], 900.0);
             if !pressed { assert_eq!(changes, vec![Change::Accent(None)]); }
+        }
+    }
+
+    #[test]
+    fn the_palette_switch_saves_derived_and_back_and_shows_swatches() {
+        let ctx = egui::Context::default();
+        crate::ui::install_fonts(&ctx, None, None);
+        let mut settings = Settings::default();
+        let mut render = |config: &Config, events: Vec<egui::Event>| {
+            let mut changes = Vec::new();
+            let output = ctx.run(egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(900.0, 900.0))),
+                events, ..Default::default()
+            }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    settings.appearance(ui, &config.resolved_theme(), config, &mut changes);
+                });
+            });
+            (output, changes)
+        };
+        let label = "Derive the palette from the accent";
+        for (palette, expected) in [(Palette::Preset, Some("derived".to_string())), (Palette::Derived, None)] {
+            let config = Config { palette, ..Config::default() };
+            let (output, changes) = render(&config, Vec::new());
+            assert!(changes.is_empty());
+            let name = output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(text) if text.galley.job.text == label => Some(text.pos + text.galley.size() / 2.0),
+                _ => None,
+            }).expect("the switch is labelled");
+            let filled = output.shapes.iter().filter(|shape| matches!(&shape.shape, egui::epaint::Shape::Rect(rect) if rect.rect.size() == vec2(18.0, 18.0) && rect.fill.a() == 255)).count();
+            assert!(filled >= 18, "{filled} swatches: sixteen terminal colours, caution and glow are shown");
+            // The toggle sits at the right end of the row, level with its name.
+            let pos = egui::pos2(900.0 - 28.0, name.y + 12.0);
+            for pressed in [true, false] {
+                let (_, changes) = render(&config, vec![egui::Event::PointerMoved(pos), egui::Event::PointerButton {
+                    pos, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE,
+                }]);
+                if !pressed { assert_eq!(changes, vec![Change::Set("palette", expected.clone())]); }
+            }
         }
     }
 
