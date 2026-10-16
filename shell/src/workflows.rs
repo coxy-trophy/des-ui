@@ -20,6 +20,35 @@ impl App {
             palette::Action::FindTerminal=>{self.launcher.open=false;self.send(Command::Terminal);let i=self.focus_tab();self.tabs[i].open_search();}
             palette::Action::SaveSession=>self.save_session(),
             palette::Action::RestoreSession=>self.restore_session(),
+            palette::Action::RunInTerminal(argv)=>self.run_argv(&argv),
+            // The palette already put it on the clipboard; this just says so.
+            palette::Action::Copy(text)=>self.notices.post("Copied",&text,false),
+            palette::Action::Terminate(pid)=>match commands::terminate(pid){
+                Ok(())=>self.notices.post("Process asked to end",&format!("SIGTERM sent to process {pid}."),false),
+                Err(e)=>self.notices.post("Process not ended",&e,true),
+            },
+            palette::Action::Unit{name,user,op}=>{
+                let outcomes=self.launcher.outcomes();let ctx=self.ctx.clone();
+                std::thread::spawn(move ||{
+                    let outcome=match commands::act_on_unit(&name,user,op){
+                        Ok(())=>("Unit changed".to_string(),format!("{name}: {} done.",op.word()),false),
+                        Err(e)=>(format!("Could not {} {name}",op.word()),e,true),
+                    };
+                    outcomes.lock().unwrap_or_else(|e|e.into_inner()).push(outcome);ctx.request_repaint();
+                });
+            }
+        }
+    }
+    /// Opens a terminal tab running a program with its arguments, no shell between;
+    /// the tab closes with the program. With no room for a tab, only a notice.
+    pub(super) fn run_argv(&mut self,argv:&[String]){
+        self.launcher.open=false;
+        let program=argv.first().map_or("",String::as_str);
+        if self.tabs.len()>=MAX_TABS{self.notices.post("No room for another tab",&format!("Close a terminal tab to run {program}."),true);return;}
+        let cwd=self.tabs.get(self.focus_tab()).and_then(|t|t.cwd()).unwrap_or_else(||PathBuf::from("/"));
+        match TermTab::spawn_command(argv,&cwd,self.ctx.clone(),self.config.scrollback){
+            Ok(tab)=>{self.tabs.push(tab);self.show_tab(self.tabs.len()-1);self.send(Command::Terminal);}
+            Err(e)=>self.notices.post("Could not run program",&format!("{program}: {e}"),true),
         }
     }
     pub(super) fn pump_documents(&mut self){
@@ -30,6 +59,7 @@ impl App {
             Err(std::sync::mpsc::TryRecvError::Empty)=>true,
         });
         for error in errors{self.notices.post("Could not open document",&error,true);}
+        for (title,body,urgent) in self.launcher.take_outcomes(){self.notices.post(&title,&body,urgent);}
     }
     pub(super) fn save_session(&mut self){
         let home=std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(||PathBuf::from("/"));

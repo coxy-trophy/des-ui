@@ -65,6 +65,23 @@ pub struct TermTab {
 impl TermTab {
     /// Spawns `shell` as a login shell in `cwd`. `ctx` is woken whenever output arrives.
     pub fn spawn(shell: &str, cwd: &Path, ctx: egui::Context, scrollback: usize) -> anyhow::Result<TermTab> {
+        let mut cmd = CommandBuilder::new(shell);
+        cmd.arg("-l");
+        cmd.cwd(cwd);
+        Self::spawn_with(cmd, ctx, scrollback)
+    }
+
+    /// Spawns a program with its arguments in `cwd`, with no shell between: the tab
+    /// ends when the program does. `argv[0]` is the program.
+    pub fn spawn_command(argv: &[String], cwd: &Path, ctx: egui::Context, scrollback: usize) -> anyhow::Result<TermTab> {
+        let (program, args) = argv.split_first().ok_or_else(|| anyhow::anyhow!("nothing to run"))?;
+        let mut cmd = CommandBuilder::new(program);
+        cmd.args(args);
+        cmd.cwd(cwd);
+        Self::spawn_with(cmd, ctx, scrollback)
+    }
+
+    fn spawn_with(mut cmd: CommandBuilder, ctx: egui::Context, scrollback: usize) -> anyhow::Result<TermTab> {
         let (rows, cols) = (24, 80);
         let pair = native_pty_system().openpty(PtySize {
             rows,
@@ -73,9 +90,6 @@ impl TermTab {
             pixel_height: 0,
         })?;
 
-        let mut cmd = CommandBuilder::new(shell);
-        cmd.arg("-l");
-        cmd.cwd(cwd);
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         cmd.env("TERM_PROGRAM", "des-ui");
