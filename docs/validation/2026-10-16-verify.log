@@ -1,0 +1,266 @@
+    Finished `test` profile [unoptimized] target(s) in 0.48s
+     Running unittests src/lib.rs (target/debug/deps/des_common-cf1d0060c13d5762)
+
+running 25 tests
+test dock_geometry_tests::trigger_covers_exactly_the_primary_bottom_edge ... ok
+test input::tests::defaults_match_what_laptops_usually_do ... ok
+test input::tests::bad_values_are_ignored_or_clamped ... ok
+test ipc::tests::covering_is_the_main_app_on_the_main_display ... ok
+test input::tests::reads_every_setting ... ok
+test ipc::tests::app_ids_round_trip_and_old_states_have_no_identity ... ok
+test ipc::tests::dock_commands_round_trip_and_reject_malformed_rectangles ... ok
+test ipc::tests::displays_round_trip ... ok
+test ipc::tests::reads_state_from_before_workspaces ... ok
+test ipc::tests::rejects_malformed_state ... ok
+test ipc::tests::screen_docks_and_saved_placements_round_trip_and_reject_bad_input ... ok
+test ipc::tests::retained_places_round_trip_and_old_wire_remains_unchanged ... ok
+test ipc::tests::events_and_commands_round_trip ... ok
+test ipc::tests::state_round_trips ... ok
+test rail_tests::minimized_side_rails_reserve_space_without_changing_bottom_behavior ... ok
+test ipc::tests::titles_cannot_break_framing ... ok
+test rail_tests::panel_behavior_defaults_and_config_values ... ok
+test tests::halves_cover_the_area_with_a_gap ... ok
+test tests::panels_round_trip_as_bits ... ok
+test tests::workspace_never_collapses ... ok
+test tests::workspace_sits_between_the_panels ... ok
+test transport::tests::partial_writes_resume_without_losing_or_repeating_bytes ... ok
+test tests::collapsed_panels_give_their_space_to_the_workspace ... ok
+test transport::tests::queue_overflow_keeps_existing_bytes_and_rejects_new_message ... ok
+test transport::tests::writing_has_a_per_poll_budget ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/des_comp-334549d25d959069)
+
+running 23 tests
+test capture::tests::an_unlocked_screen_can_be_captured ... ok
+test capture::tests::a_locked_screen_is_rejected_before_rendering_or_reading_pixels ... ok
+test displays::tests::lays_monitors_out_left_to_right ... ok
+test displays::tests::rejects_layouts_that_do_not_fit ... ok
+test displays::tests::there_is_always_exactly_one_main_display ... ok
+test displays::tests::mirrors_and_dark_monitors_take_no_room_and_are_never_main ... ok
+test displays::tests::turned_and_scaled_monitors_take_the_room_they_come_to ... ok
+test ipc::tests::accepts_shell_commands_and_rejects_the_previous_shell ... ok
+test ipc::tests::rejects_commands_from_other_processes_and_unknown_peers ... ok
+test monitors::tests::a_bad_line_spoils_only_its_own_layout ... ok
+test ipc::tests::refuses_socket_clients_without_the_shell_identity ... ok
+test ipc::tests::serves_state_and_receives_commands ... ok
+test monitors::tests::parses_configurations ... ok
+test monitors::tests::own_layouts_round_trip ... ok
+test monitors::tests::translates_connector_names ... ok
+test monitors::tests::picks_the_configuration_for_the_connected_set ... ok
+test policy::lock_command_tests::already_locked_requests_can_receive_their_confirmation ... ok
+test policy::lock_command_tests::docks_cannot_override_lock_or_screenshot_and_clears_are_screen_local ... ok
+test splash::tests::reads_a_theme_s_accent ... ok
+test splash::tests::the_bar_only_fills_when_the_shell_is_there ... ok
+test policy::lock_command_tests::restore_collisions_use_live_slots_only_on_active_workspace ... ok
+test splash::tests::the_name_is_still_between_glitches ... ok
+test splash::tests::the_name_s_picture_is_the_size_it_says ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src/main.rs (target/debug/deps/des_music-b26d2c6d8106e767)
+
+running 19 tests
+test ipc::tests::excess_clients_are_rejected_and_disconnect_releases_a_slot ... ok
+test ipc::tests::reads_fragmented_requests_without_consuming_the_next_one ... ok
+test ipc::tests::rejects_a_request_before_allocating_an_unbounded_line ... ok
+test ipc::tests::rejects_malformed_and_unterminated_requests ... ok
+test protocol::tests::parses_requests ... ok
+test protocol::tests::rejects_what_it_cannot_act_on ... ok
+test ipc::tests::state_updates_do_not_discard_a_partial_request ... ok
+test protocol::tests::state_is_one_line_of_json ... ok
+test socket::tests::creates_private_parent_and_rejects_shared_directories_and_symlinks ... ok
+test socket::tests::only_one_service_can_own_an_endpoint_even_before_it_listens ... ok
+test web::tests::encodes_for_addresses ... ok
+test socket::tests::stale_cleanup_never_deletes_a_regular_file_or_symlink ... ok
+test web::tests::picks_pictures_by_size ... ok
+test web::tests::reads_a_track_s_words ... ok
+test web::tests::reads_albums_and_artists ... ok
+test web::tests::reads_playlists_in_both_shapes ... ok
+test web::tests::reads_tracks_in_both_shapes ... ok
+test ipc::tests::slow_readers_cannot_hold_a_writer_indefinitely ... ok
+test ipc::tests::partial_and_stalled_operations_release_the_connection ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running unittests src/main.rs (target/debug/deps/des_ui-52edb7c6d48c82c0)
+
+running 164 tests
+test app_icons::tests::resolves_svg_and_pixmap_filenames ... ok
+test app_icons::tests::finds_theme_icons_and_prefers_user_root ... ok
+test app_icons::tests::decodes_real_pixels_and_rejects_invalid_files ... ok
+test apps::tests::parses_an_application ... ok
+test apps::tests::parses_icon_and_window_identity ... ok
+test apps::tests::reads_terminal_flag ... ok
+test apps::tests::splits_exec_lines ... ok
+test apps::tests::skips_what_should_not_be_listed ... ok
+test apps::tests::user_desktop_entries_override_system_and_keep_filename_identity ... ok
+test capture::tests::cuts_a_piece_and_keeps_inside_the_picture ... ok
+test capture::tests::says_paths_from_home ... ok
+test apps::tests::document_opener_preserves_path_arguments_and_reports_viewer_failure ... ok
+test config::tests::custom_accent_round_trips_and_invalid_values_use_theme ... ok
+test config::tests::dock_pins_round_trip_and_invalid_preferences_are_safe ... ok
+test config::tests::font_size_stays_readable ... ok
+test config::tests::minimized_panel_preference_survives_saving_and_keeps_open_panels ... ok
+test config::tests::missing_settings_keep_their_defaults ... ok
+test config::tests::panels_round_trip ... ok
+test config::tests::reads_every_setting ... ok
+test config::tests::reads_terminal_settings ... ok
+test config::tests::unreadable_existing_settings_are_not_replaced ... ok
+test config::tests::updating_settings_replaces_the_file_without_truncating_existing_readers ... ok
+test desktop::tests::a_new_lock_intent_waits_for_the_previous_request_confirmation ... ok
+test desktop::tests::lock_requests_survive_disconnect_until_acknowledged ... ok
+test desktop::tests::reconnect_discards_stale_window_commands_but_keeps_authenticated_unlock ... ok
+test desktop::tests::stale_security_confirmations_cannot_complete_a_new_request ... ok
+test config::tests::concurrent_settings_updates_keep_every_key ... ok
+test desktop::tests::waits_for_authoritative_state_before_unlocking ... ok
+test dock::tests::disabled_animation_snaps_after_dwell ... ok
+test dock::tests::display_docks_keep_shared_pins_but_only_their_own_window_indices ... ok
+test apps::tests::launches_a_program ... ok
+test dock::tests::edge_dwell_reveals_and_exit_hides_without_interrupting_menu ... ok
+test dock::tests::keyboard_dismissal_cannot_reopen_until_pointer_leaves_and_keeps_capture_until_hidden ... ok
+test dock::tests::keyboard_ui_reveals_activates_and_finishes_closing_without_leaking_keys ... ok
+test dock::tests::dock_grows_with_apps_and_keeps_every_item_visible_when_wrapping ... ok
+test dock::tests::matches_real_app_identity_without_guessing_from_titles ... ok
+test dock::tests::pins_keep_order_and_running_windows_group_without_duplicates ... ok
+test dock::tests::two_icon_dock_does_not_scroll_when_wheel_is_used ... ok
+test file_search::tests::cancellation_and_result_limit_bound_work ... ok
+test file_search::tests::finds_unicode_names_and_skips_hidden_build_and_symlink_trees ... ok
+test file_search::tests::folder_selection_requires_absolute_owned_choices_and_is_bounded ... ok
+test geo::tests::nearby_links_are_one_mark ... ok
+test geo::tests::reads_locations ... ok
+test geo::tests::reads_the_connection_tables ... ok
+test geo::tests::reads_the_service_answer ... ok
+test geo::tests::tells_public_addresses_apart ... ok
+test globe::tests::arcs_join_their_ends_and_rise_between ... ok
+test globe::tests::knows_land_from_sea ... ok
+test globe::tests::projects_the_near_side_only ... ok
+test dock::tests::launcher_cannot_consume_dock_escape_or_text ... ok
+test greeter::tests::reads_a_picture_whose_name_says_nothing ... ok
+test greeter::tests::reads_sessions_and_users ... ok
+test greeter::tests::sigils_are_stable_symmetric_and_distinct ... ok
+test greeter::tests::signs_in_through_the_login_service ... ok
+test health::tests::excerpt_is_bounded_and_redacts_sensitive_lines ... ok
+test health::tests::rejects_relative_roots_and_non_regular_logs ... ok
+test health::tests::tail_reads_recent_lines_and_bounds_bytes ... ok
+test greeter::tests::lists_pictures_newest_first ... ok
+test desktop::tests::transport_reconnects_and_retries_unacknowledged_lock ... ok
+test bootsplash::tests::writes_every_strip_and_both_blocks ... ok
+test launcher::tests::keyboard_palette_opens_settings_and_composition_cannot_execute ... ok
+test lock::tests::helper_status_distinguishes_mismatch_from_system_failure ... ok
+test lock::tests::blocked_input_times_out_and_helper_is_reaped ... ok
+test lock::tests::hung_helper_times_out_after_reading_input ... ok
+test lock::tests::password_is_sent_only_on_stdin_with_nul_terminator ... ok
+test music::tests::a_playing_track_moves_on_but_not_past_its_end ... ok
+test music::tests::finds_the_line_being_sung ... ok
+test music::tests::formats_times_and_names_lists ... ok
+test music::tests::reads_what_the_service_says ... ok
+test notify::tests::a_nearly_empty_battery_warns_then_asks_for_sleep_once ... ok
+test notify::tests::a_replacement_takes_the_place_of_what_it_replaces ... ok
+test notify::tests::finds_icons_by_name_and_sounds_by_hint ... ok
+test notify::tests::pairs_actions ... ok
+test notify::tests::quiet_keeps_all_but_the_urgent_off_the_screen ... ok
+test lock::tests::readiness_requires_executable_and_readable_account ... ok
+test notify::tests::sounds_only_for_what_shows_and_not_in_bursts ... ok
+test lock::tests::signaled_helper_fails_closed ... ok
+test notify::tests::strips_markup_and_entities ... ok
+test palette::tests::prefix_apps_rank_before_substrings_and_queries_are_not_executed ... ok
+test palette::tests::running_application_focuses_existing_window_and_settings_are_searchable ... ok
+test panels::tests::formats_sizes_and_names ... ok
+test panels::tests::quotes_for_the_shell ... ok
+test lock::tests::a_wrong_password_is_refused ... ok
+test pet::tests::goes_round_an_animation_by_each_picture_s_length ... ok
+test pet::tests::paws_for_a_moment_and_goes_back_to_what_it_was_doing ... ok
+test pet::tests::stays_put_without_room_and_only_lies_if_it_can ... ok
+test pet::tests::walks_to_each_side_and_never_leaves_the_strip ... ok
+test power::tests::writes_durations_and_the_battery ... ok
+test notify::tests::reads_pictures_sent_as_pixels ... ok
+test radio::tests::follows_a_pairing_conversation ... ok
+test panels::rail_interaction_tests::either_minimized_column_can_be_reopened_by_clicking_its_rail ... ok
+test radio::tests::reads_bluetooth_output ... ok
+test radio::tests::reads_cables_and_vpns ... ok
+test radio::tests::reads_networks ... ok
+test radio::tests::splits_terse_lines ... ok
+test radio::wifi::tests::builds_a_connection_without_interpreting_ssid_or_secret_as_arguments ... ok
+test radio::wifi::tests::invalid_ssids_and_control_characters_never_reach_networkmanager ... ok
+test radio::wifi::tests::open_network_has_no_secret_and_wep_uses_its_own_property ... ok
+test region::tests::finds_names_by_any_words_typed ... ok
+test region::tests::lists_and_names_the_locales_that_can_be_made ... ok
+test region::tests::makes_a_locale_by_listing_it_once_and_generating ... ok
+test region::tests::reads_how_the_clock_is_kept ... ok
+test region::tests::reads_the_locale_file_and_builds_what_replaces_it ... ok
+test region::tests::takes_a_typed_date_and_time_or_refuses_it ... ok
+test region::tests::writes_the_time_in_either_count_of_hours ... ok
+test session_restore::tests::atomic_private_storage_and_symlinks ... ok
+test session_restore::tests::capture_retains_inactive_workspace_layout ... ok
+test session_restore::tests::malformed_and_bounded ... ok
+test session_restore::tests::privacy_and_restore_lifecycle ... ok
+test settings::tests::a_level_just_set_is_held_then_follows_the_system ... ok
+test settings::tests::accent_draft_requires_apply_and_reset_reports_default ... ok
+test settings::tests::describes_what_a_monitor_offers ... ok
+test sound::tests::reads_devices_and_streams ... ok
+test sound::tests::reads_levels ... ok
+test radio::tests::a_refused_code_does_not_pair ... ok
+test sysmon::tests::network_rates_use_sampling_interval_and_require_a_baseline ... ok
+test sysmon::tests::reads_volume ... ok
+test sysmon::tests::samples_have_sane_values ... ok
+test sysmon::tests::stalled_sampler_does_not_block_ticks_and_stops_after_drop ... ok
+test sysmon::tests::tick_does_not_take_a_sample_on_the_calling_thread ... ok
+test sysmon::tests::works_out_the_time_left ... ok
+test term::links::tests::detects_urls_by_cell_and_trims_prose ... ok
+test term::links::tests::joins_soft_wrapped_urls_but_not_separate_lines ... ok
+test term::links::tests::preserves_balanced_parentheses_and_rejects_other_schemes ... ok
+test term::search::tests::common_character_results_stop_at_explicit_limit ... ok
+test term::search::tests::history_unicode_literal_and_wrap_navigation ... ok
+test term::search::tests::large_history_yields_and_query_changes_discard_stale_results ... ok
+test pet::tests::every_bundled_animation_can_be_read ... ok
+test term::search::tests::repeated_matches_keep_nonoverlapping_alignment_across_wraps ... ok
+test term::search::tests::soft_wrapped_text_and_wide_cells_keep_coordinates ... ok
+test term::tests::ctrl_click_emits_url_and_plain_click_does_not ... ok
+test sysmon::tests::latest_snapshot_preserves_history_when_ui_skips_samples ... ok
+test term::tests::encodes_keys ... ok
+test term::tests::dragging_keeps_the_original_press_cell ... ok
+test term::tests::find_field_edits_unicode_and_keeps_focus_after_enter ... ok
+test term::tests::exited_child_does_not_discard_buffered_output ... ok
+test term::tests::grid_aligns_long_ascii_input_with_cursor_at_display_scales ... ok
+test term::tests::grid_preserves_columns_after_wide_and_combining_characters ... ok
+test term::tests::hovered_application_receives_wheel_with_actual_grid_coordinates ... ok
+test term::tests::ime_composition_blocks_navigation_across_frames ... ok
+test term::search::tests::long_queries_also_bound_total_stored_match_cells ... ok
+test term::tests::pump_limits_parser_bytes_even_for_one_large_chunk ... ok
+test term::tests::search_isolates_shortcut_text_enter_escape_and_ime_from_pty ... ok
+test term::tests::shell_output_reaches_the_grid ... ok
+test term::tests::typing_returns_to_live_grid_and_cannot_be_undone_by_scroll_tail ... ok
+test term::tests::noisy_output_yields_each_frame_and_keeps_order ... ok
+test term::wheel::tests::alternate_fallback_horizontal_and_route_remainder ... ok
+test term::wheel::tests::application_encodings_and_modifiers ... ok
+test term::wheel::tests::history_fractional_shift_reset_and_bounds ... ok
+test term::wheel::tests::local_clamps_and_reporting_preserves_history ... ok
+test tests::a_split_ends_when_one_of_its_tabs_closes ... ok
+test tests::cached_unlocked_state_cannot_confirm_a_new_unlock_request ... ok
+test tests::reconnect_unlock_confirmation_does_not_relock_the_session ... ok
+test tests::tabs_in_view_keep_their_places_when_others_close ... ok
+test tests::without_a_split_the_tab_in_view_follows_its_neighbours ... ok
+test theme::tests::every_bundled_theme_parses ... ok
+test theme::tests::parses_color_formats ... ok
+test users::tests::checks_what_is_typed_before_running_anything ... ok
+test users::tests::passwords_go_to_a_tool_s_input_and_never_its_arguments ... ok
+test users::tests::reads_the_people_who_sign_in ... ok
+test users::tests::runs_each_step_with_the_password_and_stops_at_a_failure ... ok
+test term::tests::wheel_scrolls_hovered_unfocused_pane_even_after_smooth_delta_is_consumed ... ok
+test term::tests::stalled_ui_backpressures_noisy_shell ... ok
+test radio::tests::pairs_once_the_code_is_confirmed ... ok
+
+test result: ok. 164 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.11s
+
+   Doc-tests des_common
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling des-comp v0.1.1 (/home/coxy/Locker/desui/des-ui/compositor)
+   Compiling des-ui v0.1.1 (/home/coxy/Locker/desui/des-ui/shell)
+   Compiling des-music v0.1.1 (/home/coxy/Locker/desui/des-ui/music)
+    Finished `dev` profile [unoptimized] target(s) in 25.18s
