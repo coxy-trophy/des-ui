@@ -28,6 +28,7 @@ watched work on a real machine. Tick them off, or note what went wrong.
 - [ ] A real recording (needs `ffmpeg`): starts, shows `REC` in the status strip,
       stops, and plays back with the pointer in it
 - [ ] The toast when `ffmpeg` is missing
+- [ ] Locking during a recording stops it; no locked screen is captured
 - [ ] Screenshots and recordings of a second display
 
 ## Power and battery
@@ -142,3 +143,36 @@ watched work on a real machine. Tick them off, or note what went wrong.
 - [ ] Making someone an administrator, and stopping that
 - [ ] Removing a user, keeping files and with files
 - [ ] A wrong password of your own is refused with a clear message
+
+## Date and region (Settings → Date & region)
+
+- [ ] The network switch: turning it on and off, and the line under it saying
+      whether the clock agrees with the time servers
+- [ ] Setting the clock by hand with the network off, and that it is not offered
+      with the network on
+- [ ] Finding a time zone by typing, choosing it, and every clock following at once
+- [ ] 12 HOURS and 24 HOURS on the desktop, the lock screen and in notifications
+- [ ] Changing the language, and its showing after signing in again
+- [ ] Formats from another country than the language, and SAME AS THE LANGUAGE
+- [ ] A language that is not on the machine yet being made first (Ubuntu, or
+      Debian without `locales-all`)
+- [ ] A wrong password of your own is refused with a clear message
+
+## The companion (Settings → Frame)
+
+- [ ] It shows at the foot of the left column on the real display, clear of the
+      process list, and not at all where there is no room
+- [ ] It sits, lies, walks and runs to both sides, and turns round at each
+- [ ] It paws when the pointer is over it
+- [ ] Each animal, and NONE
+- [ ] How much the processor is used with it showing and the globe still
+
+## Desktop workflow expansion (15 October 2026)
+
+- [ ] Palette: focus existing apps, settings navigation, file opening and explicit folder selection with real input/IME
+- [ ] Session: save on each supported distribution; restore existing/new apps across four workspaces and several displays
+- [ ] Session: missing app/folder, disconnected display, 30-second expiry, repeated restore without duplicate app instances
+- [ ] Docks: pointer and Super+D on each physical display, mixed scale/rotation, context menus, shared pins, hotplug
+- [ ] Lock and screenshot picking suppress every dock and return keyboard focus correctly
+- [ ] Health: real helper paths, fresh/missing logs, open full log, refresh and failure states
+- [ ] Terminal find: large scrollback, wide/combining text, a real IME, two panes, live output and keyboard focus

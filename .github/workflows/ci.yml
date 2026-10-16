@@ -1,0 +1,39 @@
+name: Rust CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libudev-dev libinput-dev libgbm-dev libseat-dev libxkbcommon-dev libssl-dev libwayland-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify scripts, tests and programs
+        shell: bash
+        run: ./scripts/verify.sh 2>&1 | tee "$RUNNER_TEMP/validation.log"
+      - name: Record exact source snapshot
+        if: always()
+        run: python3 scripts/validation-snapshot.py > "$RUNNER_TEMP/validation-source.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-source
+          path: |
+            ${{ runner.temp }}/validation-source.json
+            ${{ runner.temp }}/validation.log
