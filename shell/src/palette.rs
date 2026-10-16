@@ -6,7 +6,7 @@ use des_common::ipc::{Command, DesktopState};
 #[derive(Debug,Clone,PartialEq)]
 pub enum Action {
     Launch(AppEntry), Command(Command), Settings(&'static str), File(std::path::PathBuf),
-    Music, Notifications, Power, Lock, SaveSession, RestoreSession, FindTerminal,
+    Music, Notifications, Power, Lock, SaveSession, RestoreSession, FindTerminal, CopyLastOutput,
     /// Run this program with these arguments in a new terminal tab; no shell between.
     RunInTerminal(Vec<String>),
     /// Put this text on the clipboard, which the palette does itself before reporting it.
@@ -39,6 +39,7 @@ pub fn results(query:&str, entries:&[AppEntry], state:Option<&DesktopState>, cat
     let mut commands=vec![
         ("Show terminal",Action::Command(Command::Terminal)),
         ("Find in terminal",Action::FindTerminal),
+        ("Copy last command output",Action::CopyLastOutput),
         ("Split workspace",Action::Command(Command::Split)),
         ("Toggle fullscreen",Action::Command(Command::Fullscreen)),
         ("Take screenshot",Action::Command(Command::Shot(des_common::ipc::ShotMode::Pick))),

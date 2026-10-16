@@ -291,6 +291,14 @@ impl TermTab {
         self.history_text(from, to)
     }
 
+    /// Puts the last command's output on the clipboard; how many lines, when there was one.
+    pub fn copy_last_output_to_clipboard(&mut self) -> Option<usize> {
+        let text = self.copy_last_output()?;
+        let lines = text.lines().count();
+        self.ctx.copy_text(text);
+        Some(lines)
+    }
+
     /// The text of these absolute lines, as far as the history still holds them;
     /// soft-wrapped rows are joined.
     fn history_text(&mut self, from: u64, to: u64) -> Option<String> {

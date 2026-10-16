@@ -248,6 +248,14 @@ the match-storage limit was reached.
 The wheel scrolls history in the pane under the pointer and scrolls inside terminal
 applications. Hold Shift to use local history. Typing returns to the live prompt.
 
+The terminal knows where each command begins and ends. bash, zsh and fish get a
+small script sourced after your own files (it steps aside if another prompt
+integration is already there; `DES_UI_SHELL_INTEGRATION=0` turns it off). A bar in
+the gutter marks each prompt and a square its exit status, amber when it failed;
+hover it for the number. **Ctrl+Shift+Up** and **Down** walk between prompts, a
+click on a prompt's mark selects that command's output for Ctrl+Shift+C, and
+"Copy last command output" in the palette copies it outright.
+
 Ctrl+Shift+T opens a tab and Ctrl+Tab moves between them. The terminal can also be
 split in two, each half showing a tab of its own:
 

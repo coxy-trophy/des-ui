@@ -393,6 +393,8 @@ pub enum Icon {
     PanelRight,
     /// A frame divided down the middle: split the terminal.
     SplitPane,
+    /// Two sheets, one behind the other: copy.
+    Copy,
 }
 
 /// A small square button drawn with lines. `lit` draws it in the accent.
@@ -422,6 +424,7 @@ impl Icon {
             Self::Volume => "Volume", Self::Muted => "Muted", Self::Brightness => "Brightness",
             Self::Battery => "Battery", Self::Charging => "Charging", Self::Wifi => "Wi-Fi signal",
             Self::Download => "Download", Self::Upload => "Upload", Self::Display => "Displays",
+            Self::Copy => "Copy last command output",
         }
     }
 }
@@ -458,6 +461,10 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color3
             }
         }
         Icon::Search => {painter.circle_stroke(c+vec2(-2.0,-2.0),4.5,stroke);line((1.0,1.0),(6.0,6.0));}
+        Icon::Copy => {
+            painter.rect_stroke(Rect::from_min_max(c + vec2(-6.0, -6.0), c + vec2(2.0, 2.0)), 1.0, stroke, StrokeKind::Middle);
+            painter.rect_stroke(Rect::from_min_max(c + vec2(-2.0, -2.0), c + vec2(6.0, 6.0)), 1.0, stroke, StrokeKind::Middle);
+        }
         Icon::Music => {
             path(&[(-3.0,4.0),(-3.0,-5.0),(5.0,-7.0),(5.0,2.0)]);
             line((-3.0,-2.0),(5.0,-4.0));

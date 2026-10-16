@@ -427,6 +427,15 @@ impl App {
     }
 
     /// Locks the screen, if a password can be checked to unlock it again.
+    /// The output of the last command in the terminal in use goes to the clipboard.
+    fn copy_last_output(&mut self) {
+        let index = self.focus_tab();
+        match self.tabs[index].copy_last_output_to_clipboard() {
+            Some(lines) => self.notices.post("Copied", &format!("The last command's output: {lines} lines."), false),
+            None => self.notices.post("Nothing to copy", "No command has finished in this terminal yet.", false),
+        }
+    }
+
     fn lock_now(&mut self) {
         self.lock.prepare(&self.ctx);
     }
@@ -846,6 +855,7 @@ impl App {
             }
         }
 
+        if ui::icon_button(ui, theme, Icon::Copy, 28.0, false).on_hover_text("Copy last command output").clicked() { self.copy_last_output(); }
         if ui::icon_button(ui,theme,Icon::Search,28.0,self.tabs[self.focus_tab()].searching()).on_hover_text("Find in terminal (Ctrl+Shift+F)").clicked() { actions.find_terminal=true; actions.command=Some(Command::Terminal); }
 
         let split_hint = if self.side.is_some() {

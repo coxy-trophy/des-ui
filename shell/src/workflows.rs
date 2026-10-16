@@ -18,6 +18,7 @@ impl App {
             palette::Action::Power=>self.toggle_power(),
             palette::Action::Lock=>self.lock_now(),
             palette::Action::FindTerminal=>{self.launcher.open=false;self.send(Command::Terminal);let i=self.focus_tab();self.tabs[i].open_search();}
+            palette::Action::CopyLastOutput=>{self.launcher.open=false;self.copy_last_output();}
             palette::Action::SaveSession=>self.save_session(),
             palette::Action::RestoreSession=>self.restore_session(),
             palette::Action::RunInTerminal(argv)=>self.run_argv(&argv),

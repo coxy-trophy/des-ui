@@ -202,3 +202,12 @@ watched work on a real machine. Tick them off, or note what went wrong.
 - [ ] The alerts: a hot CPU, a disk past 95%, memory past 95%, a unit that fails;
       each once, and again only after it has cleared
 - [ ] The per-core bars on 2, 8 and 32 cores, and the companion still has its room
+
+## Command blocks (the terminal)
+
+- [ ] Prompt marks in a real bash, zsh and fish session; a user whose `.zshenv` sets
+      `ZDOTDIR`; starship and powerlevel10k prompts
+- [ ] Marks stay in place through `yes | head -100000` once the scrollback is full,
+      and after the window is resized
+- [ ] Ctrl+Shift+Up/Down inside `less` or `vim`: no prompts, no movement
+- [ ] A failed command's square is amber and hover shows its status
