@@ -16,3 +16,5 @@ librespot-oauth = { version = "0.8", default-features = false, features = ["nati
 http = "1"
 bytes = "1"
 http-body-util = "0.1"
+
+rustix = { version = "1", features = ["process", "fs"] }

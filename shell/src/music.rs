@@ -229,7 +229,7 @@ fn socket_path() -> PathBuf {
     }
     std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
+        .unwrap_or_else(|| std::env::temp_dir().join(format!("des-music-{}", rustix::process::geteuid().as_raw())))
         .join("des-music.sock")
 }
 
@@ -332,6 +332,7 @@ fn connection(shared: Arc<Mutex<Shared>>, commands: Receiver<String>, ctx: egui:
         let Ok(mut writer) = stream.try_clone() else {
             continue;
         };
+        if writer.set_write_timeout(Some(Duration::from_secs(5))).is_err() { continue; }
         let reading = shared.clone();
         let repaint = ctx.clone();
         let reader = std::thread::spawn(move || {
@@ -375,8 +376,14 @@ fn connection(shared: Arc<Mutex<Shared>>, commands: Receiver<String>, ctx: egui:
                 repaint.request_repaint();
             }
         });
+        // Keep an idle subscription within the service's request deadline.
+        let mut heartbeat = Instant::now();
         // Pass commands on until the service goes away.
         while !reader.is_finished() {
+            if heartbeat.elapsed() >= Duration::from_secs(20) {
+                if writer.write_all(b"{\"cmd\":\"state\"}\n").is_err() { break; }
+                heartbeat = Instant::now();
+            }
             match commands.recv_timeout(Duration::from_millis(250)) {
                 Ok(command) => {
                     if writer.write_all(command.as_bytes()).is_err() {
@@ -618,6 +625,13 @@ pub struct Music {
 }
 
 impl Music {
+    pub fn connection_status(&self)->&'static str {
+        match &self.shared.lock().unwrap().link {
+            Link::Starting=>"starting",Link::Connected=>"connected",Link::NotSignedIn=>"not signed in",
+            Link::SigningIn=>"signing in",Link::Unavailable(_)=>"unavailable — open Music for details",
+        }
+    }
+
     pub fn new(ctx: egui::Context) -> Music {
         let shared = Arc::new(Mutex::new(Shared {
             link: Link::Starting,
