@@ -21,6 +21,23 @@ const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 /// Space between a column's sections.
 const SECTION_GAP: f32 = 22.0;
 
+/// What the left column keeps for the process list and the companion, so that the
+/// optional instrument sections above them never crowd them out.
+const LEFT_RESERVE: f32 = 3.0 * 27.0 + SECTION_GAP + 30.0 + 100.0;
+
+/// How many of the optional sections, in order and each of the given height, fit in
+/// `available` while leaving `reserve` for what must follow.
+fn sections_that_fit(available: f32, reserve: f32, heights: &[f32]) -> usize {
+    let mut left = available - reserve;
+    heights
+        .iter()
+        .take_while(|height| {
+            left -= **height;
+            left >= 0.0
+        })
+        .count()
+}
+
 fn human_bytes(bytes: f64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut value = bytes;
@@ -89,7 +106,14 @@ pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon, pet: &mut crate::pet::Pet)
     });
 
     ui.add_space(SECTION_GAP);
-    ui::section(ui, "SYSTEM", |ui| ui::meta(ui, &truncate(&mon.host, 18), ui::LABEL));
+    ui::section(ui, "SYSTEM", |ui| {
+        ui::meta(ui, &truncate(&mon.host, 18), ui::LABEL);
+        // Failed units are the one thing here that asks for a look.
+        if !mon.failed_units.is_empty() {
+            let count = mon.failed_units.len();
+            ui::meta(ui, &format!("{count} FAILED"), ui::CAUTION);
+        }
+    });
     tile_pair(
         ui,
         |ui| ui::value_tile(ui, theme, "OS", &truncate(&mon.os, 14)),
@@ -98,12 +122,19 @@ pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon, pet: &mut crate::pet::Pet)
 
     ui.add_space(SECTION_GAP);
     let load = mon.cpu_hist.back().copied().unwrap_or(0.0);
-    ui::section(ui, "PROCESSOR", |ui| ui::meta(ui, &format!("{load:.0}%"), ui::TEXT));
+    ui::section(ui, "PROCESSOR", |ui| {
+        ui::meta(ui, &format!("{load:.0}%"), ui::TEXT);
+        if let Some(average) = mon.load {
+            ui::meta(ui, &format!("LOAD {:.2}", average[0]), ui::LABEL);
+        }
+    });
     ui::sparkline(ui, &mon.cpu_hist, 100.0, vec2(ui.available_width(), 56.0), theme.main, true);
     ui.add_space(3.0);
-    // Past eight cores the list would crowd out everything below it.
-    for (i, usage) in mon.cores.iter().take(8).enumerate() {
-        ui::meter(ui, theme, &format!("C{}", i + 1), 22.0, usage / 100.0, &format!("{usage:.0}"));
+    // One bar per core, however many there are; the pointer reads any one of them.
+    ui::bar_grid(ui, theme, &mon.cores, 100.0, 28.0, |i, usage| format!("Core {}: {usage:.0}%", i + 1));
+    if let Some(gpu) = &mon.gpu {
+        ui.add_space(3.0);
+        ui::meter(ui, theme, "GPU", 30.0, gpu.busy as f32 / 100.0, &format!("{}", gpu.busy));
     }
 
     ui.add_space(SECTION_GAP);
@@ -112,6 +143,8 @@ pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon, pet: &mut crate::pet::Pet)
         ui::meta(ui, &total, ui::LABEL);
         ui::meta(ui, &format!("{:.1}", mon.mem_used as f64 / GIB), ui::TEXT);
     });
+    ui::sparkline(ui, &mon.mem_hist, 100.0, vec2(ui.available_width(), 30.0), theme.main, true);
+    ui.add_space(3.0);
     ui::bar(ui, theme, 10.0, mon.mem_used as f32 / mon.mem_total.max(1) as f32, 0.0);
     ui.horizontal(|ui| {
         ui::text(ui, "USED", ui::mono(11.0), ui::SECONDARY);
@@ -120,6 +153,53 @@ pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon, pet: &mut crate::pet::Pet)
             ui::text(ui, &swap, ui::mono(11.0), ui::SECONDARY);
         });
     });
+
+    // The instruments that need hardware to speak, and room to be seen.
+    let temps = mon.temps.len().min(4);
+    let fans = mon.fans.len().min(2);
+    let thermal_height = if temps > 0 { SECTION_GAP + 24.0 + (temps + fans) as f32 * 23.0 } else { 0.0 };
+    let filesystems = mon.filesystems.len().min(3);
+    let storage_height = SECTION_GAP + 24.0 + 36.0 + 7.0 + filesystems as f32 * 23.0;
+    let fitting = sections_that_fit(ui.available_height(), LEFT_RESERVE, &[thermal_height, storage_height]);
+    if temps > 0 && fitting >= 1 {
+        ui.add_space(SECTION_GAP);
+        let hottest = mon.temps[0].degrees;
+        ui::section(ui, "THERMAL", |ui| {
+            let color = if hottest >= 100.0 * ui::CAUTION_ABOVE { ui::CAUTION } else { ui::TEXT };
+            ui::meta(ui, &format!("{hottest:.0}°C"), color);
+        });
+        for reading in mon.temps.iter().take(temps) {
+            ui::meter(ui, theme, &reading.label, 44.0, reading.degrees / 100.0, &format!("{:.0}°", reading.degrees));
+        }
+        for fan in mon.fans.iter().take(fans) {
+            ui.horizontal(|ui| {
+                ui::text(ui, &truncate(&fan.label, 12), ui::mono(12.0), ui::LABEL);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let reading = if fan.rpm == 0 { "STILL".to_string() } else { format!("{} RPM", fan.rpm) };
+                    ui::text(ui, &reading, ui::mono(12.0), ui::TEXT);
+                });
+            });
+        }
+    }
+    if fitting >= 2 {
+        ui.add_space(SECTION_GAP);
+        let read = mon.disk_read_hist.back().copied().unwrap_or(0.0);
+        let written = mon.disk_write_hist.back().copied().unwrap_or(0.0);
+        ui::section(ui, "STORAGE", |ui| {
+            ui::meta(ui, &format!("W {}/s", human_bytes(written as f64)), ui::SECONDARY);
+            ui::meta(ui, &format!("R {}/s", human_bytes(read as f64)), ui::TEXT);
+        });
+        // Reads above the line, writes below, on one scale.
+        let peak = mon
+            .disk_read_hist
+            .iter()
+            .chain(mon.disk_write_hist.iter())
+            .fold(1024.0_f32 * 1024.0, |a, b| a.max(*b));
+        ui::waterfall(ui, &mon.disk_read_hist, &mon.disk_write_hist, peak, vec2(ui.available_width(), 36.0), theme.main, ui::SECONDARY);
+        for fs in mon.filesystems.iter().take(filesystems) {
+            ui::meter(ui, theme, &truncate(&fs.mount, 9), 60.0, fs.used, &format!("{:.0}%", fs.used * 100.0));
+        }
+    }
 
     ui.add_space(SECTION_GAP);
     ui::section(ui, "PROCESSES", |ui| ui::meta(ui, "CPU · MEM", ui::LABEL));
@@ -230,7 +310,7 @@ pub fn right(
         .iter()
         .chain(mon.tx_hist.iter())
         .fold(1024.0_f32, |a, b| a.max(*b));
-    let traffic = |ui: &mut Ui, symbol: Icon, total: u64, hist: &std::collections::VecDeque<f32>, color| {
+    let traffic = |ui: &mut Ui, symbol: Icon, total: u64, hist: &std::collections::VecDeque<f32>, color: eframe::egui::Color32| {
         ui::tile(ui, theme, false, |ui| {
             ui.horizontal(|ui| {
                 ui::icon(ui, symbol, 14.0, ui::LABEL);
@@ -242,8 +322,7 @@ pub fn right(
                 }
             });
             let rate = hist.back().copied().unwrap_or(0.0);
-            ui::text(ui, &format!("{}/s", human_bytes(rate as f64)), ui::mono(14.0), ui::TEXT);
-            ui::sparkline(ui, hist, peak, vec2(ui.available_width(), 26.0), color, false);
+            ui::text(ui, &format!("{}/s", human_bytes(rate as f64)), ui::mono(14.0), color);
         });
     };
     let width = (ui.available_width() - 8.0) / 2.0;
@@ -256,6 +335,8 @@ pub fn right(
             traffic(ui, Icon::Upload, mon.tx_total, &mon.tx_hist, ui::SECONDARY)
         });
     });
+    // What comes in rises from the line, what goes out hangs from it.
+    ui::waterfall(ui, &mon.rx_hist, &mon.tx_hist, peak, vec2(ui.available_width(), 48.0), theme.main, ui::SECONDARY);
 
     ui.add_space(SECTION_GAP);
     ui::section(ui, "WORLD VIEW", |ui| {
@@ -302,7 +383,11 @@ pub fn right(
             if let Some(value) = value {
                 // These are levels, not loads: a full battery is not a warning.
                 let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 16.0), Sense::hover());
-                response.on_hover_text(format!("{label}: {value}%"));
+                let hint = match (label, mon.battery_health) {
+                    ("BATTERY", Some(health)) => format!("{label}: {value}% · holds {health}% of what it did when new"),
+                    _ => format!("{label}: {value}%"),
+                };
+                response.on_hover_text(hint);
                 let painter = ui.painter();
                 let symbol = match label {
                     "VOLUME" if value == 0 => Icon::Muted,
@@ -709,6 +794,19 @@ mod tests {
     fn quotes_for_the_shell() {
         assert_eq!(shell_quote("/tmp/a b"), "'/tmp/a b'");
         assert_eq!(shell_quote("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn optional_sections_yield_to_what_must_follow() {
+        // Both fit with room to spare.
+        assert_eq!(sections_that_fit(1000.0, 300.0, &[120.0, 110.0]), 2);
+        // Only the first fits once the reserve is kept.
+        assert_eq!(sections_that_fit(500.0, 300.0, &[120.0, 110.0]), 1);
+        // Neither: the reserve comes first.
+        assert_eq!(sections_that_fit(350.0, 300.0, &[120.0, 110.0]), 0);
+        // A section of no height takes nothing and stops nothing.
+        assert_eq!(sections_that_fit(420.0, 300.0, &[0.0, 110.0]), 2);
+        assert_eq!(sections_that_fit(100.0, 300.0, &[]), 0);
     }
 
     #[test]

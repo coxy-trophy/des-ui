@@ -29,6 +29,7 @@ mod sound;
 mod users;
 mod settings;
 mod session_restore;
+mod sensors;
 mod sysmon;
 mod term;
 mod theme;

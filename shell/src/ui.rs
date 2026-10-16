@@ -598,3 +598,111 @@ pub fn corners(painter: &egui::Painter, rect: Rect, arm: f32, stroke: Stroke) {
         painter.line_segment([corner, corner + vec2(0.0, arm * dy)], stroke);
     }
 }
+
+/// Lays `count` bars across `width` in rows: how many to a row, how many rows, and
+/// each bar's width. A bar is at least 5 points wide and at most 18, with 2 between.
+pub fn bar_grid_layout(count: usize, width: f32) -> (usize, usize, f32) {
+    const GAP: f32 = 2.0;
+    const NARROWEST: f32 = 5.0;
+    const WIDEST: f32 = 18.0;
+    if count == 0 || width < NARROWEST {
+        return (0, 0, 0.0);
+    }
+    let per_row = (((width + GAP) / (NARROWEST + GAP)).floor() as usize).clamp(1, count);
+    let rows = count.div_ceil(per_row);
+    let bar = ((width - GAP * (per_row - 1) as f32) / per_row as f32).min(WIDEST);
+    (per_row, rows, bar)
+}
+
+/// One bar per value in rows as wide as the column, each against `max`; the bar
+/// under the pointer names its reading through `name`.
+pub fn bar_grid(ui: &mut Ui, theme: &Theme, values: &[f32], max: f32, row_height: f32, name: impl Fn(usize, f32) -> String) {
+    const GAP: f32 = 2.0;
+    let (per_row, rows, bar) = bar_grid_layout(values.len(), ui.available_width());
+    if rows == 0 {
+        return;
+    }
+    let height = rows as f32 * row_height + (rows - 1) as f32 * GAP;
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+    let pointer = response.hover_pos();
+    let painter = ui.painter();
+    let mut hovered = None;
+    for (i, value) in values.iter().enumerate() {
+        let (row, column) = (i / per_row, i % per_row);
+        let left = rect.left() + column as f32 * (bar + GAP);
+        let top = rect.top() + row as f32 * (row_height + GAP);
+        let track = Rect::from_min_size(pos2(left, top), vec2(bar, row_height));
+        painter.rect_filled(track, 0.0, TRACK);
+        let frac = if max > 0.0 { (value / max).clamp(0.0, 1.0) } else { 0.0 };
+        let filled = Rect::from_min_max(pos2(left, track.bottom() - row_height * frac), track.right_bottom());
+        painter.rect_filled(filled, 0.0, if frac > CAUTION_ABOVE { CAUTION } else { theme.main });
+        if pointer.is_some_and(|p| track.contains(p)) {
+            hovered = Some((i, *value));
+        }
+    }
+    if let Some((i, value)) = hovered {
+        response.on_hover_text(name(i, value));
+    }
+}
+
+/// Two histories about one axis, both against `max`: `above` rises from it and
+/// `below` hangs from it, so that traffic in and out, or reads and writes, can be
+/// seen against each other.
+pub fn waterfall(ui: &mut Ui, above: &VecDeque<f32>, below: &VecDeque<f32>, max: f32, size: egui::Vec2, above_color: Color32, below_color: Color32) {
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 0.0, GROUND);
+    painter.rect_stroke(rect, 0.0, Stroke::new(1.0, LINE), StrokeKind::Inside);
+    let axis = rect.center().y;
+    painter.hline(rect.x_range(), axis, Stroke::new(1.0, LINE_STRONG));
+    if max <= 0.0 {
+        return;
+    }
+    let reach = rect.height() / 2.0 - 2.0;
+    let draw = |values: &VecDeque<f32>, sign: f32, color: Color32| {
+        if values.len() < 2 {
+            return;
+        }
+        let step = rect.width() / (values.len() - 1) as f32;
+        let points: Vec<Pos2> = values
+            .iter()
+            .enumerate()
+            .map(|(i, value)| {
+                let frac = (value / max).clamp(0.0, 1.0);
+                pos2(rect.left() + i as f32 * step, axis - sign * frac * reach)
+            })
+            .collect();
+        // The area under the line, as fine strokes: the instrument's texture.
+        let fill = color.gamma_multiply(0.35);
+        for point in &points {
+            painter.line_segment([pos2(point.x, axis), *point], Stroke::new(1.0, fill));
+        }
+        painter.line(points, Stroke::new(1.5, color));
+    };
+    draw(above, 1.0, above_color);
+    draw(below, -1.0, below_color);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bar_grids_fit_their_column() {
+        assert_eq!(bar_grid_layout(0, 200.0), (0, 0, 0.0));
+        assert_eq!(bar_grid_layout(4, 1.0), (0, 0, 0.0));
+        // Four cores in a wide column: one row of bars no wider than the widest.
+        assert_eq!(bar_grid_layout(4, 272.0), (4, 1, 18.0));
+        // Sixty-four cores in a narrow column wrap into rows, each bar at the narrowest.
+        let (per_row, rows, bar) = bar_grid_layout(64, 100.0);
+        assert_eq!(per_row, 14);
+        assert_eq!(rows, 5);
+        assert!(bar >= 5.0 && per_row as f32 * bar + (per_row - 1) as f32 * 2.0 <= 100.0);
+        // A row never asks for more width than it has.
+        for (count, width) in [(3, 40.0), (12, 90.0), (128, 272.0)] {
+            let (per_row, rows, bar) = bar_grid_layout(count, width);
+            assert!(per_row as f32 * bar + (per_row - 1) as f32 * 2.0 <= width + 0.01);
+            assert!(per_row * rows >= count && per_row * (rows - 1) < count);
+        }
+    }
+}
