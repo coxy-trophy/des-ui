@@ -35,6 +35,7 @@ mod users;
 mod settings;
 mod session_restore;
 mod sensors;
+mod widgets;
 mod sysmon;
 mod term;
 mod theme;

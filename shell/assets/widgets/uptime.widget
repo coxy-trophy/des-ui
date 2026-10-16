@@ -1,0 +1,6 @@
+# How long the machine has been up. Copy into ~/.config/des-ui/widgets/ to use it.
+name = Uptime
+exec = uptime -p
+every = 1m
+panel = left
+kind = text

@@ -1,0 +1,6 @@
+# The running kernel; it rarely changes, so once an hour is plenty.
+name = Kernel
+exec = uname -r
+every = 1h
+panel = right
+kind = text
