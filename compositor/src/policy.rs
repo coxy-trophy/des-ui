@@ -33,6 +33,9 @@ pub struct App {
     pub workspace: usize,
     /// Where it was when its workspace was last in view, to go back to.
     pub kept: Place,
+    /// The application it opened on top of, which comes back when this one closes:
+    /// a dialog gives the window that asked for it its place back.
+    pub over: Option<Window>,
 }
 
 /// How a display's workspace is being used.
@@ -56,6 +59,46 @@ pub fn focus_of(window: &Window) -> Option<Focus> {
     }
 }
 
+fn occupies_restored_slot(active:usize,workspace:usize,live:Place,kept:Place,target:Place)->bool{
+    (if workspace==active{live}else{kept})==target
+}
+fn dismisses_dock_keyboard(keyboard_screen:usize,cleared_screen:usize,area_none:bool)->bool{
+    area_none && keyboard_screen==cleared_screen
+}
+fn command_allowed(locked: bool, picking:bool, command: &Command) -> bool {
+    (!locked || matches!(command, Command::Lock | Command::Unlock | Command::ReloadInput)) && (!picking || !matches!(command,Command::Dock(Some(_))|Command::DockOn(_,Some(_))))
+}
+
+#[cfg(test)]
+mod lock_command_tests {
+    use super::*;
+    #[test]
+    fn docks_cannot_override_lock_or_screenshot_and_clears_are_screen_local(){
+        assert!(!command_allowed(true,false,&Command::DockOn(1,None)));
+        assert!(!command_allowed(false,true,&Command::DockOn(1,Some((1,2,3,4)))));
+        assert!(command_allowed(false,true,&Command::Dock(None)));
+        assert!(command_allowed(false,true,&Command::DockOn(1,None)));
+        assert!(command_allowed(false,true,&Command::Toast(None)));
+        assert!(!dismisses_dock_keyboard(1,0,true));
+        assert!(dismisses_dock_keyboard(1,1,true));
+        assert!(!dismisses_dock_keyboard(1,1,false));
+    }
+    #[test]
+    fn restore_collisions_use_live_slots_only_on_active_workspace(){
+        assert!(!occupies_restored_slot(0,0,Place::Main,Place::Side,Place::Side));
+        assert!(occupies_restored_slot(0,0,Place::Main,Place::Side,Place::Main));
+        assert!(occupies_restored_slot(0,1,Place::Hidden,Place::Side,Place::Side));
+    }
+    #[test]
+    fn already_locked_requests_can_receive_their_confirmation() {
+        assert!(command_allowed(true, false, &Command::Lock));
+        assert!(command_allowed(true, false, &Command::Unlock));
+        assert!(!command_allowed(true, false, &Command::Activate(0)));
+        assert!(!command_allowed(true, false, &Command::Dock(Some((0, 0, 100, 100)))));
+        assert!(!command_allowed(true, false, &Command::Dock(None)));
+    }
+}
+
 impl DesComp {
     /// Tells the policy which displays exist, the main one first. Called by the backend
     /// at startup and whenever a display is added, removed or resized.
@@ -70,6 +113,8 @@ impl DesComp {
                 app.place = Place::Hidden;
             }
         }
+        self.docks.retain(|screen,_|*screen<screens.len());
+        self.dock_keyboard_screen=self.dock_keyboard_screen.min(screens.len()-1);
         self.focus_screen = self.focus_screen.min(screens.len() - 1);
         if self.screens != screens {
             tracing::info!(?screens, "display layout");
@@ -183,6 +228,7 @@ impl DesComp {
 
     /// Brings the application at `index` into view and gives it the keyboard.
     fn activate(&mut self, index: usize) {
+        self.dock_keyboard = false;
         let Some(on) = self.apps.get(index).map(|app| app.workspace) else {
             return;
         };
@@ -212,7 +258,7 @@ impl DesComp {
             return rect;
         }
         to_rectangle(
-            des_common::workspace(rect.size.w as f32, rect.size.h as f32, self.panels),
+            des_common::workspace_with_behavior(rect.size.w as f32, rect.size.h as f32, self.panels, self.side_panel_behavior),
             rect.loc,
         )
     }
@@ -252,6 +298,7 @@ impl DesComp {
             self.space.map_element(shell, primary.loc, false);
         }
         for (i, backdrop) in self.backdrops.clone().into_iter().enumerate() {
+            if self.locked {self.space.unmap_elem(&backdrop);continue;}
             match self.screens.get(i + 1).copied() {
                 Some(rect) => {
                     configure(&backdrop, rect, true, false);
@@ -290,10 +337,9 @@ impl DesComp {
             }
         }
 
-        let focus = focus_app
-            .map(|i| &self.apps[i].window)
-            .or(self.shell.as_ref())
-            .and_then(focus_of);
+        let focus = focus_app.filter(|_| !self.dock_keyboard)
+            .and_then(|i|focus_of(&self.apps[i].window))
+            .or_else(||self.shell_on(if self.dock_keyboard{self.dock_keyboard_screen}else{0}).and_then(focus_of));
         let keyboard = self.seat.get_keyboard().unwrap();
         keyboard.set_focus(self, focus, SERIAL_COUNTER.next_serial());
     }
@@ -311,19 +357,24 @@ impl DesComp {
             tracing::info!(count = self.backdrops.len() + 1, "shell backdrop connected");
             self.backdrops.push(window);
         } else {
+            // A launched application owns the keyboard once its window arrives.
+            self.dock_keyboard = false;
             // Applications open on the display the pointer is on, in the half in use.
             let pointer = self.seat.get_pointer().unwrap().current_location();
             let screen = self.screen_at(pointer);
             tracing::info!(screen, "application window opened");
             let side = self.in_place(screen, Place::Side).is_some() && self.mode(screen).side_focused;
+            let place = if side { Place::Side } else { Place::Main };
+            let over = self.in_place(screen, place).map(|index| self.apps[index].window.clone());
             self.apps.push(App {
                 window,
                 screen,
                 place: Place::Hidden,
                 workspace: self.workspace,
                 kept: Place::Hidden,
+                over,
             });
-            self.place(self.apps.len() - 1, if side { Place::Side } else { Place::Main });
+            self.place(self.apps.len() - 1, place);
             self.focus_screen = screen;
         }
         self.arrange();
@@ -335,6 +386,9 @@ impl DesComp {
             // Whether this ends the session is decided when the shell's process exits.
             tracing::info!("shell window closed");
             self.toast = None;
+            self.dock = None;
+            self.docks.clear();
+            self.dock_keyboard = false;
             if let Some(window) = self.shell.take() {
                 self.space.unmap_elem(&window);
             }
@@ -342,12 +396,39 @@ impl DesComp {
             let window = self.backdrops.remove(index);
             self.space.unmap_elem(&window);
         } else if let Some(index) = self.apps.iter().position(|app| is_toplevel(&app.window, surface)) {
-            // What was behind the application comes back into view.
-            let app = self.apps.remove(index);
-            self.space.unmap_elem(&app.window);
+            self.forget_app(index);
             tracing::info!(remaining = self.apps.len(), "application window closed");
         }
         self.arrange();
+    }
+
+    /// Takes a closed application out of the desktop. The one it opened on top of
+    /// takes its place back, if that is still open and out of view; otherwise what
+    /// is behind shows, which is the terminal or the backdrop.
+    pub fn forget_app(&mut self, index: usize) {
+        let app = self.apps.remove(index);
+        self.space.unmap_elem(&app.window);
+        // Whatever opened on top of this one is now on top of what this one was on.
+        for other in self.apps.iter_mut().filter(|other| other.over.as_ref() == Some(&app.window)) {
+            other.over = app.over.clone();
+        }
+        let Some(under) = app.over.as_ref().and_then(|over| self.apps.iter().position(|other| &other.window == over)) else {
+            return;
+        };
+        if self.apps[under].screen != app.screen || self.apps[under].workspace != app.workspace {
+            return;
+        }
+        if app.workspace == self.workspace {
+            if app.place != Place::Hidden && self.apps[under].place == Place::Hidden && self.in_place(app.screen, app.place).is_none() {
+                self.apps[under].place = app.place;
+            }
+        } else if app.kept != Place::Hidden && self.apps[under].kept == Place::Hidden {
+            // On a workspace out of view, it is there when that one is come back to.
+            let taken = self.apps.iter().any(|other| other.workspace == app.workspace && other.screen == app.screen && other.kept == app.kept);
+            if !taken {
+                self.apps[under].kept = app.kept;
+            }
+        }
     }
 
     /// Switches the slot in use to the next application on its display. The main slot
@@ -541,6 +622,7 @@ impl DesComp {
 
     /// Uncovers the terminal and gives it the keyboard.
     fn show_terminal(&mut self) {
+        self.dock_keyboard = false;
         for app in self.apps.iter_mut().filter(|app| app.screen == 0 && app.place == Place::Main) {
             app.place = Place::Hidden;
         }
@@ -590,6 +672,10 @@ impl DesComp {
             tracing::info!(locked, "screen lock");
             self.locked = locked;
             if locked {
+                self.dock_keyboard = false;
+                self.dock = None;
+                self.docks.clear();
+                self.stop_recording();
                 self.focus_screen = 0;
             }
             self.arrange();
@@ -662,12 +748,12 @@ impl DesComp {
         let Some(mut ipc) = self.ipc.take() else {
             return;
         };
-        for command in ipc.poll() {
+        for command in ipc.poll(self.shell_pid) {
             if self.modes.is_empty() {
                 break;
             }
-            // Locked, the shell may only unlock: nothing else changes behind the lock.
-            if self.locked && !matches!(command, Command::Unlock | Command::ReloadInput) {
+            // Lock requests remain idempotent and acknowledged while already locked.
+            if !command_allowed(self.locked, self.picking, &command) {
                 continue;
             }
             match command {
@@ -677,6 +763,16 @@ impl DesComp {
                     self.arrange();
                 }
                 Command::Activate(_) => {}
+                Command::PlaceApp(index,screen,workspace,place) => {
+                    if index<self.apps.len() && screen<self.screens.len() && workspace<des_common::ipc::WORKSPACES {
+                        if place!=Place::Hidden { for (i,app) in self.apps.iter_mut().enumerate() {
+                            if i!=index && app.screen==screen && app.workspace==workspace && occupies_restored_slot(self.workspace,workspace,app.place,app.kept,place) {app.place=Place::Hidden;app.kept=Place::Hidden;}
+                        }}
+                        let app=&mut self.apps[index];app.screen=screen;app.workspace=workspace;app.kept=place;app.over=None;
+                        app.place=if workspace==self.workspace{place}else{Place::Hidden};
+                        self.arrange();
+                    }
+                }
                 Command::Close(index) => self.close(index),
                 Command::Move(index) => self.move_app(index),
                 Command::Workspace(workspace) => self.switch_workspace(workspace),
@@ -689,14 +785,38 @@ impl DesComp {
                 Command::KeepDisplays => self.keep_displays(),
                 Command::RevertDisplays => self.revert_displays(),
                 Command::ReloadInput => self.reload_input(),
-                Command::Lock => self.set_locked(true),
-                Command::Unlock => self.set_locked(false),
+                Command::ReloadFrame => {
+                    self.side_panel_behavior = des_common::PanelBehavior::load();
+                    self.arrange();
+                },
+                Command::Lock => {
+                    self.set_locked(true);
+                    self.tell(Event::locked(true));
+                }
+                Command::Unlock => {
+                    self.set_locked(false);
+                    self.tell(Event::locked(false));
+                }
                 Command::Shot(mode) => self.take_shot(mode),
                 Command::Record(path) => self.start_recording(&path),
                 Command::RecordStop => self.stop_recording(),
                 Command::HoldIdle(held) => {
                     tracing::info!(held, "an application is asking that the screen be left alone");
                     self.idle_held = held;
+                }
+                Command::DockOn(screen,area) => {
+                    if screen==0 { self.dock=area.map(|(x,y,w,h)|Rectangle::new((x,y).into(),(w,h).into())); }
+                    else if screen<self.screens.len() { match area {
+                        Some((x,y,w,h))=>{let id=self.docks.get(&screen).map(|(_,id)|id.clone()).unwrap_or_else(smithay::backend::renderer::element::Id::new);self.docks.insert(screen,(Rectangle::new((x,y).into(),(w,h).into()),id));},
+                        None=>{self.docks.remove(&screen);}
+                    }}
+                    if dismisses_dock_keyboard(self.dock_keyboard_screen,screen,area.is_none()) && std::mem::take(&mut self.dock_keyboard){if !self.picking{self.arrange();}}
+                }
+                Command::Dock(area) => {
+                    self.dock = area.map(|(x, y, w, h)| Rectangle::new((x, y).into(), (w, h).into()));
+                    if dismisses_dock_keyboard(self.dock_keyboard_screen,0,area.is_none()) && std::mem::take(&mut self.dock_keyboard) {
+                        if !self.picking {self.arrange();}
+                    }
                 }
                 Command::Toast(area) => {
                     self.toast = area.map(|(x, y, w, h)| Rectangle::new((x, y).into(), (w.max(0), h.max(0)).into()));
@@ -710,8 +830,14 @@ impl DesComp {
                 }
             }
         }
+        if !ipc.has_shell_client() {
+            self.dock = None;
+            self.docks.clear();
+            if std::mem::take(&mut self.dock_keyboard) { self.arrange(); }
+        }
         let last_screen = self.screens.len().saturating_sub(1);
         ipc.publish(&DesktopState {
+            saved_places:self.apps.iter().map(|app|if app.workspace==self.workspace{app.place}else{app.kept}).collect(),
             screens: self.screens.len().max(1),
             panels: self.panels,
             terminal_split: self.in_place(0, Place::Side).is_some() && self.in_place(0, Place::Main).is_none(),
@@ -721,6 +847,7 @@ impl DesComp {
                 .apps
                 .iter()
                 .map(|app| AppInfo {
+                    app_id: window_app_id(&app.window),
                     title: window_title(&app.window),
                     screen: app.screen.min(last_screen),
                     place: app.place,
@@ -751,6 +878,15 @@ fn to_rectangle(rect: des_common::Rect, origin: Point<i32, Logical>) -> Rectangl
         (origin.x + rect.x.round() as i32, origin.y + rect.y.round() as i32).into(),
         (rect.width.round() as i32, rect.height.round() as i32).into(),
     )
+}
+
+/// The protocol identity supplied by the application itself.
+fn window_app_id(window: &Window) -> String {
+    if let Some(x11) = window.x11_surface() { return x11.class(); }
+    let Some(toplevel) = window.toplevel() else { return String::new(); };
+    with_states(toplevel.wl_surface(), |states| {
+        states.data_map.get::<XdgToplevelSurfaceData>().unwrap().lock().unwrap().app_id.clone().unwrap_or_default()
+    })
 }
 
 /// The title a window gave itself, falling back to its application id.

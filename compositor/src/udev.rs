@@ -811,6 +811,7 @@ impl DesComp {
             return;
         }
         let toast_area = self.toast_area();
+        let docks = self.dock_layers();
         let primary = self.screens.first().map(|screen| screen.loc);
         let Some(udev) = self.udev.as_mut() else {
             return;
@@ -855,6 +856,9 @@ impl DesComp {
                     .into_iter()
                     .map(OutputElements::Toast),
             );
+            for (shell,area,origin,id) in &docks {
+                elements.extend(crate::toast::elements(renderer,Some(shell),Some(*area),Some(*origin),id,geometry.loc,scale).into_iter().map(OutputElements::Toast));
+            }
             match space_render_elements(renderer, [&self.space], &monitor.output, 1.0) {
                 Ok(space) => elements.extend(space.into_iter().map(OutputElements::Space)),
                 Err(e) => tracing::error!("cannot collect windows to draw: {e:?}"),

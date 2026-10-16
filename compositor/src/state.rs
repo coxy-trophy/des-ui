@@ -119,6 +119,13 @@ pub struct DesComp {
     pub idle_inhibitors: Vec<WlSurface>,
     /// Where in the shell's window its toasts are, to be shown above everything.
     pub toast: Option<Rectangle<i32, Logical>>,
+    /// The shell-local dock and its pointer corridor, independent of notifications.
+    pub dock: Option<Rectangle<i32, Logical>>,
+    /// Temporarily routes keys to the dock while preserving application selection.
+    pub dock_keyboard: bool,
+    pub dock_keyboard_screen: usize,
+    pub docks: std::collections::HashMap<usize,(Rectangle<i32, Logical>,smithay::backend::renderer::element::Id)>,
+    pub dock_id: smithay::backend::renderer::element::Id,
     /// The name the toasts go by when drawn.
     pub toast_id: smithay::backend::renderer::element::Id,
     /// The shell's backdrop windows: the nth covers display n + 1 behind its applications.
@@ -149,6 +156,7 @@ pub struct DesComp {
     /// the saved ones.
     /// The keyboard, mouse and touchpad settings in force.
     pub input_settings: des_common::input::InputSettings,
+    pub side_panel_behavior: des_common::PanelBehavior,
     /// The keyboard layout and variant last given to the keymap compiler.
     pub keymap_applied: Option<(String, String)>,
     /// While locked, only the shell is on screen, showing the lock screen, and the
@@ -236,6 +244,11 @@ impl DesComp {
             idle_held: false,
             idle_inhibitors: Vec::new(),
             toast: None,
+            dock: None,
+            dock_keyboard: false,
+            dock_keyboard_screen: 0,
+            docks: Default::default(),
+            dock_id: smithay::backend::renderer::element::Id::new(),
             // A session starts quickly enough to need none; a test may ask for one.
             splash: std::env::var_os("DES_TEST_SPLASH_MS").map(|_| crate::splash::Splash::new(Duration::from_millis(test_millis("DES_TEST_SPLASH_MS", 1400)))),
             toast_id: smithay::backend::renderer::element::Id::new(),
@@ -253,6 +266,7 @@ impl DesComp {
             ipc: None,
             fatal: None,
             input_settings: des_common::input::InputSettings::default(),
+            side_panel_behavior: des_common::PanelBehavior::load(),
             keymap_applied: None,
             locked: false,
             display_override: None,
@@ -309,13 +323,12 @@ impl DesComp {
     }
 
     pub fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
-        // A toast is the shell's, whatever window lies under it.
-        if let (Some(area), Some(shell), Some(primary)) = (self.toast_area(), &self.shell, self.screens.first()) {
-            if area.to_f64().contains(pos) {
-                let origin = primary.loc.to_f64();
-                return shell
-                    .surface_under(pos - origin, WindowSurfaceType::ALL)
-                    .map(|(surface, at)| (surface, (at.to_f64() + origin)));
+        // Notifications, the dock, and the reveal edge belong to the shell.
+        let screen=self.screen_at(pos);
+        if let (Some(shell),Some(display))=(self.shell_on(screen),self.screens.get(screen)) {
+            if self.shell_overlay_contains(pos) {
+                let origin=display.loc.to_f64();
+                return shell.surface_under(pos-origin,WindowSurfaceType::ALL).map(|(surface,at)|(surface,at.to_f64()+origin));
             }
         }
         self.space.element_under(pos).and_then(|(window, location)| {
@@ -377,6 +390,9 @@ impl DesComp {
 
     /// Starts the shell, pointed at this compositor.
     pub fn spawn_shell(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.dock = None;
+        self.docks.clear();
+        self.dock_keyboard = false;
         let Some(spec) = &self.shell_spec else {
             return Err("no shell configured".into());
         };
@@ -411,6 +427,9 @@ impl DesComp {
     /// Replaces the running shell with a fresh one, which picks up a newly installed
     /// build. Its terminal tabs go with it; applications are untouched.
     pub fn restart_shell(&mut self) {
+        self.dock = None;
+        self.docks.clear();
+        self.dock_keyboard = false;
         if let Some(child) = self.shell_child.as_mut() {
             tracing::info!("restarting the shell");
             self.shell_restarting = true;

@@ -20,6 +20,7 @@ enum Action {
     /// Move the current application to the next display.
     MoveDisplay,
     Launcher,
+    Dock,
     Settings,
     Music,
     Notifications,
@@ -243,6 +244,7 @@ impl DesComp {
                                 FilterResult::Intercept(Action::Quit)
                             }
                             Keysym::Tab => FilterResult::Intercept(Action::Cycle),
+                            Keysym::d | Keysym::D => FilterResult::Intercept(Action::Dock),
                             Keysym::space => FilterResult::Intercept(Action::Launcher),
                             Keysym::comma => FilterResult::Intercept(Action::Settings),
                             Keysym::m | Keysym::M => FilterResult::Intercept(Action::Music),
@@ -279,6 +281,14 @@ impl DesComp {
                     Some(Action::SendTo(workspace)) => self.send_active_to(workspace),
                     Some(Action::Close) => self.close_active(),
                     Some(Action::MoveDisplay) => self.move_active(),
+                    Some(Action::Dock) if self.picking => {},
+                    Some(Action::Dock) => {
+                        let pointer=self.seat.get_pointer().unwrap().current_location();
+                        self.dock_keyboard_screen=self.screen_at(pointer);
+                        self.dock_keyboard = true;
+                        self.arrange();
+                        self.tell(des_common::ipc::Event::dock_on(self.dock_keyboard_screen));
+                    }
                     Some(Action::Launcher) => self.open_launcher(),
                     Some(Action::Settings) => self.open_settings(),
                     Some(Action::Music) => self.open_music(),
@@ -360,9 +370,9 @@ impl DesComp {
                 let button_state = event.state();
 
                 // Click to focus: the keyboard follows the display that was clicked.
-                // A click on a toast is for the toast alone.
-                let on_toast = self.toast_area().is_some_and(|area| area.to_f64().contains(pointer.current_location()));
-                if ButtonState::Pressed == button_state && !pointer.is_grabbed() && !on_toast {
+                // Shell overlays own their clicks; only their explicit commands change focus.
+                let on_overlay = self.shell_overlay_contains(pointer.current_location());
+                if ButtonState::Pressed == button_state && !pointer.is_grabbed() && !on_overlay {
                     self.focus_at(pointer.current_location());
                 };
 

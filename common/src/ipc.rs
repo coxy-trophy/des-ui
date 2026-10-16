@@ -1,10 +1,12 @@
 //! The line protocol between the compositor and the shell, spoken over a Unix socket
-//! whose path the compositor passes to the shell in [`SOCKET_ENV`].
+//! whose path the compositor passes to the shell in [`SOCKET_ENV`]. Connections
+//! are accepted only from the current shell process, identified by kernel peer
+//! credentials; shell restarts revoke the previous process's connections.
 //!
 //! The compositor sends events, one per line:
 //! - `state <displays> <open panels, as bits> <0|1 terminal shares the workspace>
 //!   <application with the keyboard, or "-" for the terminal>` followed by one
-//!   tab-separated field per application, each `<display> <place> <title>`, whenever
+//!   tab-separated field per application, each `<display> <place>:<workspace>:<hex app_id> <title>`, whenever
 //!   any of that changes. A place is `0` hidden, `1` shown, `2` shown in the right half;
 //! - `launcher` when the user asks for the application launcher;
 //! - `settings` when the user asks for the settings;
@@ -13,14 +15,15 @@
 //! - `power` when the user asks for the power menu;
 //! - `lock` when the user asks for the screen to be locked, which the shell answers
 //!   with its own `lock` once it is ready to show the lock screen;
-//! - `locked <0|1>` whenever the screen becomes locked or unlocked;
+//! - `locked <0|1>` whenever the screen becomes locked or unlocked, and as an
+//!   acknowledgement of each `lock` or `unlock` command;
 //! - `displays <seconds left to confirm a change, or 0>` followed by one tab-separated
 //!   field per monitor, left to right, each `<name> <0|1 main> <x> <y> <mode in use>
 //!   <modes it offers, comma-separated>`. A mode is `<width>x<height>@<millihertz>`.
 //!
 //! The shell sends `activate <n>`, `close <n>`, `move <n>`, `terminal`, `split`,
-//! `toast <x y w h|none>`, `fullscreen`, `lock`, `unlock`, `panel <left|right|bottom>`, `reload-input` (the input settings in the
-//! configuration file changed), `displays-keep`, `displays-revert`, or
+//! `toast <x y w h|none>`, `dock <x y w h|none>`, `fullscreen`, `lock`, `unlock`, `panel <left|right|bottom>`, `reload-input` (the input settings in the
+//! configuration file changed), `reload-frame` (panel behavior changed), `displays-keep`, `displays-revert`, or
 //! `displays-apply` followed by one `<name>=<mode>` per monitor, left to right, with a
 //! `*` after the one that is to be the main display, then `/<scale>:<turn>:<use>`: the
 //! scale in percent, the turn in degrees, and `o` for a display of its own, `m` for one
@@ -46,6 +49,8 @@ pub const WORKSPACES: usize = 4;
 /// One open application.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppInfo {
+    /// Wayland app_id or X11 WM_CLASS; never inferred from a title.
+    pub app_id: String,
     pub title: String,
     /// Index of the display the application lives on; 0 is the one with the frame.
     pub screen: usize,
@@ -68,6 +73,9 @@ pub struct DesktopState {
     /// The workspace in view, counted from 0.
     pub workspace: usize,
     pub apps: Vec<AppInfo>,
+    /// Layout retained while an application is hidden on an inactive workspace.
+    /// Empty for peers predating this optional metadata.
+    pub saved_places: Vec<Place>,
 }
 
 impl Default for DesktopState {
@@ -79,6 +87,7 @@ impl Default for DesktopState {
             focus: None,
             workspace: 0,
             apps: Vec::new(),
+            saved_places: Vec::new(),
         }
     }
 }
@@ -103,13 +112,21 @@ impl DesktopState {
             self.terminal_split as u8,
             self.workspace
         );
-        for app in &self.apps {
+        for (index, app) in self.apps.iter().enumerate() {
             let place = match app.place {
                 Place::Hidden => 0,
                 Place::Main => 1,
                 Place::Side => 2,
             };
-            line.push_str(&format!("\t{} {place}:{} ", app.screen, app.workspace));
+            let app_id: String = app.app_id.chars().filter(|c| !c.is_control()).collect();
+            let encoded_id: String = app_id.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+            let saved = if self.saved_places.is_empty() { String::new() } else {
+                let value = match self.saved_places.get(index).copied().unwrap_or(app.place) {
+                    Place::Hidden => 0, Place::Main => 1, Place::Side => 2,
+                };
+                format!(":{value}")
+            };
+            line.push_str(&format!("\t{} {place}:{}:{encoded_id}{saved} ", app.screen, app.workspace));
             // Titles come from applications and must not break the framing.
             line.extend(app.title.chars().map(|c| if c.is_control() { ' ' } else { c }));
         }
@@ -140,11 +157,26 @@ impl DesktopState {
             return None;
         }
         let mut apps = Vec::new();
+        let mut saved_places = Vec::new();
+        let mut has_saved_places = false;
         for field in fields {
             let mut parts = field.splitn(3, ' ');
             let screen: usize = parts.next()?.parse().ok()?;
             let word = parts.next()?;
-            let (place, on) = match word.split_once(':') {
+            let mut metadata = word.split(':');
+            let place_word = metadata.next()?;
+            let workspace_word = metadata.next();
+            let app_id = match metadata.next() {
+                Some(hex) => {
+                    if hex.len() % 2 != 0 || !hex.is_ascii() { return None; }
+                    let bytes: Option<Vec<u8>> = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok()).collect();
+                    let id = String::from_utf8(bytes?).ok()?;
+                    if id.chars().any(char::is_control) { return None; }
+                    id
+                }
+                None => String::new(),
+            };
+            let (place, on) = match workspace_word.map(|on| (place_word, on)) {
                 Some((place, on)) => (place, on.parse::<usize>().ok().filter(|on| *on < WORKSPACES)?),
                 None => (word, 0),
             };
@@ -154,10 +186,20 @@ impl DesktopState {
                 "2" => Place::Side,
                 _ => return None,
             };
+            let saved_place = match metadata.next() {
+                Some("0") => { has_saved_places = true; Place::Hidden },
+                Some("1") => { has_saved_places = true; Place::Main },
+                Some("2") => { has_saved_places = true; Place::Side },
+                Some(_) => return None,
+                None => place,
+            };
+            if metadata.next().is_some() { return None; }
+            saved_places.push(saved_place);
             if screen >= screens {
                 return None;
             }
             apps.push(AppInfo {
+                app_id,
                 title: parts.next()?.to_string(),
                 screen,
                 place,
@@ -174,6 +216,7 @@ impl DesktopState {
             focus,
             workspace,
             apps,
+            saved_places: if has_saved_places { saved_places } else { Vec::new() },
         })
     }
 }
@@ -401,6 +444,9 @@ pub enum Recording {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     State(DesktopState),
+    /// The dock keyboard shortcut was pressed.
+    Dock,
+    DockOn(usize),
     /// The launcher shortcut was pressed.
     Launcher,
     /// The settings shortcut was pressed.
@@ -425,6 +471,10 @@ pub enum Event {
 }
 
 impl Event {
+    pub fn dock_on(screen: usize) -> String { format!("dock-screen {screen}\n") }
+
+    pub fn dock() -> String { "dock\n".to_string() }
+
     pub const LAUNCHER: &str = "launcher\n";
     pub const SETTINGS: &str = "settings\n";
     pub const MUSIC: &str = "music\n";
@@ -447,7 +497,10 @@ impl Event {
     }
 
     pub fn decode(line: &str) -> Option<Event> {
+        if let Some(screen)=line.trim_end().strip_prefix("dock-screen ") { return screen.parse::<usize>().ok().filter(|s|*s<32).map(Event::DockOn); }
+
         match line.trim_end_matches('\n') {
+            "dock" => return Some(Event::Dock),
             "launcher" => return Some(Event::Launcher),
             "settings" => return Some(Event::Settings),
             "music" => return Some(Event::Music),
@@ -513,6 +566,8 @@ pub enum Command {
     RevertDisplays,
     /// The keyboard, mouse or touchpad settings were changed: read them again.
     ReloadInput,
+    /// Re-read the side panel behavior and rearrange application windows.
+    ReloadFrame,
     /// Hide everything but the shell, which is showing the lock screen.
     Lock,
     /// The password was given: bring everything back.
@@ -520,6 +575,9 @@ pub enum Command {
     /// The shell is showing notifications in this part of its window (x, y, width,
     /// height), which is to be seen above any application; or is showing none.
     Toast(Option<(i32, i32, i32, i32)>),
+    Dock(Option<(i32, i32, i32, i32)>),
+    DockOn(usize, Option<(i32, i32, i32, i32)>),
+    PlaceApp(usize, usize, usize, Place),
     /// An application is showing something to watch (or no longer): do not lock the
     /// screen for want of input meanwhile.
     HoldIdle(bool),
@@ -547,8 +605,14 @@ impl Command {
             Command::KeepDisplays => "displays-keep\n".to_string(),
             Command::RevertDisplays => "displays-revert\n".to_string(),
             Command::ReloadInput => "reload-input\n".to_string(),
+            Command::ReloadFrame => "reload-frame\n".to_string(),
             Command::Lock => "lock\n".to_string(),
             Command::Unlock => "unlock\n".to_string(),
+            Command::DockOn(screen,None) => format!("dock-screen {screen} none\n"),
+            Command::DockOn(screen,Some((x,y,w,h))) => format!("dock-screen {screen} {x} {y} {w} {h}\n"),
+            Command::PlaceApp(index,screen,workspace,place) => format!("place {index} {screen} {workspace} {}\n",match place{Place::Hidden=>0,Place::Main=>1,Place::Side=>2}),
+            Command::Dock(None) => "dock none\n".to_string(),
+            Command::Dock(Some((x, y, w, h))) => format!("dock {x} {y} {w} {h}\n"),
             Command::Toast(None) => "toast none\n".to_string(),
             Command::HoldIdle(true) => "hold-idle on\n".to_string(),
             Command::HoldIdle(false) => "hold-idle off\n".to_string(),
@@ -569,6 +633,18 @@ impl Command {
     }
 
     pub fn decode(line: &str) -> Option<Command> {
+        if let Some(rest)=line.trim_end().strip_prefix("dock-screen ") {
+            let (screen,area)=rest.split_once(' ')?;let screen=screen.parse::<usize>().ok().filter(|s|*s<32)?;
+            return match Command::decode(&format!("dock {area}"))? {Command::Dock(area)=>Some(Command::DockOn(screen,area)),_=>None};
+        }
+        if let Some(rest)=line.trim_end().strip_prefix("place ") {
+            let n:Vec<usize>=rest.split_whitespace().map(str::parse).collect::<Result<_,_>>().ok()?;
+            let [index,screen,workspace,place]=n[..]else{return None};
+            if screen>=32 || workspace>=WORKSPACES{return None;}
+            let place=match place{0=>Place::Hidden,1=>Place::Main,2=>Place::Side,_=>return None};
+            return Some(Command::PlaceApp(index,screen,workspace,place));
+        }
+
         let mut words = line.split_whitespace();
         if line.split_whitespace().next() == Some("displays-apply") {
             let choices: Option<Vec<DisplayChoice>> = words
@@ -595,6 +671,13 @@ impl Command {
         }
         if let Some(path) = line.trim_end_matches('\n').strip_prefix("record ") {
             return (!path.is_empty()).then(|| Command::Record(path.to_string()));
+        }
+        if let Some(area) = line.trim_end().strip_prefix("dock ") {
+            if area == "none" { return Some(Command::Dock(None)); }
+            let numbers: Vec<i32> = area.split(' ').map(str::parse).collect::<Result<_, _>>().ok()?;
+            let [x, y, w, h] = numbers[..] else { return None };
+            if w <= 0 || h <= 0 || x.checked_add(w).is_none() || y.checked_add(h).is_none() { return None; }
+            return Some(Command::Dock(Some((x, y, w, h))));
         }
         if let Some(area) = line.trim_end().strip_prefix("toast ") {
             if area == "none" {
@@ -626,6 +709,7 @@ impl Command {
             ("displays-keep", None) => Command::KeepDisplays,
             ("displays-revert", None) => Command::RevertDisplays,
             ("reload-input", None) => Command::ReloadInput,
+            ("reload-frame", None) => Command::ReloadFrame,
             ("lock", None) => Command::Lock,
             ("unlock", None) => Command::Unlock,
             _ => return None,
@@ -640,10 +724,64 @@ mod tests {
 
     fn app(title: &str, screen: usize, place: Place) -> AppInfo {
         AppInfo {
+            app_id: String::new(),
             title: title.into(),
             screen,
             place,
             workspace: 0,
+        }
+    }
+
+    #[test]
+    fn screen_docks_and_saved_placements_round_trip_and_reject_bad_input() {
+        for command in [Command::DockOn(1,Some((2,700,300,60))),Command::DockOn(2,None),Command::PlaceApp(4,1,2,Place::Side)] {
+            assert_eq!(Command::decode(command.encode().trim_end()),Some(command));
+        }
+        for line in ["dock-screen 1 0 0 -1 20","dock-screen 1 0 0 20 0","place 0 1 4 1","place 0 1 0 9","dock-screen 33 none"] {assert!(Command::decode(line).is_none(),"{line}");}
+        assert_eq!(Event::decode(&Event::dock_on(1)),Some(Event::DockOn(1)));
+    }
+
+    #[test]
+    fn retained_places_round_trip_and_old_wire_remains_unchanged() {
+        let mut state = DesktopState::default();
+        state.apps = vec![app("inactive side", 0, Place::Hidden), app("inactive main", 0, Place::Hidden)];
+        state.apps[0].workspace = 1; state.apps[1].workspace = 2;
+        state.saved_places = vec![Place::Side, Place::Main];
+        assert_eq!(DesktopState::decode(&state.encode()), Some(state.clone()));
+        state.saved_places.clear();
+        assert_eq!(DesktopState::decode(&state.encode()), Some(state));
+        for suffix in ["3", "", "2:1"] {
+            assert!(DesktopState::decode(&format!("state 1 7 0 - 0\t0 0:1:6162:{suffix} Title\n")).is_none());
+        }
+    }
+
+    #[test]
+    fn app_ids_round_trip_and_old_states_have_no_identity() {
+        let mut state = DesktopState::default();
+        let mut application = app("Title", 0, Place::Main);
+        application.app_id = "org.example.Editor desktop:é".into();
+        state.apps.push(application);
+        assert_eq!(DesktopState::decode(&state.encode()), Some(state.clone()));
+        for line in ["state 1 7 0 -\t0 1 Old\n", "state 1 7 0 - 0\t0 1:0 Old\n"] {
+            assert_eq!(DesktopState::decode(line).unwrap().apps[0].app_id, "");
+        }
+        state.apps[0].app_id = "evil\tapp\nname\r".into();
+        let encoded = state.encode();
+        assert_eq!(encoded.matches('\t').count(), 1);
+        assert_eq!(encoded.matches('\n').count(), 1);
+        assert_eq!(DesktopState::decode(&encoded).unwrap().apps[0].app_id, "evilappname");
+        for token in ["0:0:z0", "0:0:f", "0:0:ff", "0:0:0a", "0:0:é"] {
+            assert!(DesktopState::decode(&format!("state 1 7 0 - 0\t0 {token} Title\n")).is_none());
+        }
+    }
+
+    #[test]
+    fn dock_commands_round_trip_and_reject_malformed_rectangles() {
+        for command in [Command::Dock(None), Command::Dock(Some((12, 800, 900, 200)))] {
+            assert_eq!(Command::decode(&command.encode()), Some(command));
+        }
+        for line in ["dock", "dock none extra", "dock 1 2 3", "dock 1 2 3 4 5", "dock 1 2 -3 4", "dock 1 2 0 4", "dock 1 2 3 0", "dock 2147483647 0 2 3", "dock 0 2147483647 2 3", "dock a 2 3 4"] {
+            assert_eq!(Command::decode(line), None, "{line}");
         }
     }
 
@@ -657,6 +795,7 @@ mod tests {
                 terminal_split: true,
                 focus: Some(1),
                 workspace: 2,
+                saved_places: Vec::new(),
                 apps: vec![
                     app("Text Editor", 0, Place::Side),
                     app("Files — Home", 1, Place::Main),
@@ -759,6 +898,7 @@ mod tests {
 
     #[test]
     fn events_and_commands_round_trip() {
+        assert_eq!(Event::decode(&Event::dock()), Some(Event::Dock));
         assert_eq!(Event::decode(Event::LAUNCHER), Some(Event::Launcher));
         assert_eq!(Event::decode(Event::SETTINGS), Some(Event::Settings));
         assert_eq!(Event::decode(Event::MUSIC), Some(Event::Music));
@@ -799,6 +939,7 @@ mod tests {
             Command::KeepDisplays,
             Command::RevertDisplays,
             Command::ReloadInput,
+            Command::ReloadFrame,
             Command::Lock,
             Command::Unlock,
             Command::Toast(None),

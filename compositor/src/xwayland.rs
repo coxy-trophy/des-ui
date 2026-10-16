@@ -79,8 +79,7 @@ impl DesComp {
             let window = self.x_popups.remove(index);
             self.space.unmap_elem(&window);
         } else if let Some(index) = self.x11_app(surface) {
-            let app = self.apps.remove(index);
-            self.space.unmap_elem(&app.window);
+            self.forget_app(index);
             tracing::info!(remaining = self.apps.len(), "X11 application window closed");
             self.arrange();
         }

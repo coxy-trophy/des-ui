@@ -150,6 +150,7 @@ pub fn init_winit(
 
                 let capture = state.screenshot.is_some() && state.start_time.elapsed() > Duration::from_millis(crate::state::test_millis("DES_TEST_SHOT_MS", 5000));
                 let toast_area = state.toast_area();
+                let docks = state.dock_layers();
                 let primary = state.screens.first().map(|screen| screen.loc);
                 let backend = state.backend.as_mut().unwrap();
                 let size = backend.window_size();
@@ -166,6 +167,9 @@ pub fn init_winit(
                             .into_iter()
                             .map(crate::splash::TopElements::Toast),
                     );
+                    for (shell,area,origin,id) in &docks {
+                        toasts.extend(crate::toast::elements(renderer,Some(shell),Some(*area),Some(*origin),id,(0,0).into(),scale).into_iter().map(crate::splash::TopElements::Toast));
+                    }
                     smithay::desktop::space::render_output::<_, crate::splash::TopElements, _, _>(
                         &output,
                         renderer,

@@ -42,6 +42,7 @@ Options:
   -h, --help           Show this help
 
 Keys (hold Super, or Ctrl+Alt):
+  D                    Open the dock for keyboard navigation
   Space                Open the application launcher
   ,                    Open the settings
   M                    Open the music player

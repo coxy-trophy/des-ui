@@ -83,6 +83,33 @@ fn encoder(size: (i32, i32), path: &str) -> std::io::Result<Child> {
         .spawn()
 }
 
+fn capture_when_unlocked<T>(locked: bool, capture: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    if locked { return Err("the screen is locked".to_string()); }
+    capture()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_locked_screen_is_rejected_before_rendering_or_reading_pixels() {
+        let mut rendered = false;
+        let result = capture_when_unlocked(true, || {
+            rendered = true;
+            Ok(Frame { width: 1, height: 1, rgba: vec![1, 2, 3, 4] })
+        });
+        assert!(result.is_err());
+        assert!(!rendered);
+    }
+
+    #[test]
+    fn an_unlocked_screen_can_be_captured() {
+        let frame = capture_when_unlocked(false, || Ok(Frame { width: 1, height: 1, rgba: vec![1, 2, 3, 4] })).unwrap();
+        assert_eq!(frame.rgba, [1, 2, 3, 4]);
+    }
+}
+
 impl DesComp {
     fn output_of(&self, screen: usize) -> Option<(Output, Rectangle<i32, Logical>)> {
         let rect = *self.screens.get(screen)?;
@@ -92,8 +119,13 @@ impl DesComp {
 
     /// Draws a display off screen and reads it back, with the pointer if wanted.
     pub fn grab(&mut self, screen: usize, pointer: bool) -> Result<Frame, String> {
+        capture_when_unlocked(self.locked, || self.grab_unlocked(screen, pointer))
+    }
+
+    fn grab_unlocked(&mut self, screen: usize, pointer: bool) -> Result<Frame, String> {
         let (output, rect) = self.output_of(screen).ok_or("there is no such display")?;
         let toast_area = self.toast_area();
+        let docks = self.dock_layers();
         let primary = self.screens.first().map(|screen| screen.loc);
         let at = self.seat.get_pointer().map(|pointer| pointer.current_location());
         let scale = output.current_scale().fractional_scale();
@@ -126,6 +158,9 @@ impl DesComp {
                     .into_iter()
                     .map(OutputElements::Toast),
             );
+            for (shell,area,origin,id) in &docks {
+                elements.extend(crate::toast::elements(renderer,Some(shell),Some(*area),Some(*origin),id,rect.loc,scale).into_iter().map(OutputElements::Toast));
+            }
             let space = space_render_elements(renderer, [&self.space], &output, 1.0).map_err(|e| format!("{e:?}"))?;
             elements.extend(space.into_iter().map(OutputElements::Space));
 
@@ -161,6 +196,7 @@ impl DesComp {
     /// use, or (for the shell to cut from, or to ask what is wanted) the display as it
     /// is now.
     pub fn take_shot(&mut self, mode: ShotMode) {
+        if self.locked { return; }
         let screen = self.focus_screen;
         // Where the window in use lies on its display, if there is one.
         let window = self.focused_on(screen).and_then(|index| {
@@ -202,6 +238,7 @@ impl DesComp {
             // and the one the keys go to.
             self.focus_screen = 0;
             self.picking = true;
+            self.dock=None;self.docks.clear();self.dock_keyboard=false;
             let shell = self.shell.as_ref().and_then(crate::policy::focus_of);
             if let Some(keyboard) = self.seat.get_keyboard() {
                 keyboard.set_focus(self, shell, SERIAL_COUNTER.next_serial());
@@ -214,6 +251,10 @@ impl DesComp {
 
     /// Starts recording the display in use into `path`, or says why not.
     pub fn start_recording(&mut self, path: &str) {
+        if self.locked {
+            self.tell_recording("failed");
+            return;
+        }
         if self.recording.is_some() {
             return;
         }
@@ -265,6 +306,10 @@ impl DesComp {
 
     /// Adds a picture to the recording under way, when one is due. Called once a frame.
     pub fn record_tick(&mut self) {
+        if self.locked {
+            self.stop_recording();
+            return;
+        }
         let Some(recording) = self.recording.as_ref() else {
             return;
         };

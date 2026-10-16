@@ -6,6 +6,7 @@
 
 pub mod input;
 pub mod ipc;
+pub mod transport;
 
 /// Height of the bar along the top of the workspace that lists terminal tabs and open
 /// applications. It stays visible while an application is shown.
@@ -99,6 +100,54 @@ pub fn bottom_height(screen_height: f32) -> f32 {
     (screen_height * 0.2333).clamp(160.0, 280.0).round()
 }
 
+/// Width retained by a minimized monitoring column in collapse mode.
+pub const COLLAPSED_SIDE_WIDTH: f32 = 36.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PanelBehavior {
+    Hide,
+    #[default]
+    Collapse,
+}
+
+impl PanelBehavior {
+    pub fn parse(text: &str) -> Self {
+        let mut behavior = Self::default();
+        for line in text.lines() {
+            if let Some((key, value)) = line.split('#').next().unwrap_or("").split_once('=') {
+                if key.trim() == "side_panel_behavior" {
+                    behavior = match value.trim() {
+                        "hide" => Self::Hide,
+                        "collapse" => Self::Collapse,
+                        _ => behavior,
+                    };
+                }
+            }
+        }
+        behavior
+    }
+
+    pub fn load() -> Self {
+        input::config_path().and_then(|path| std::fs::read_to_string(path).ok())
+            .map(|text| Self::parse(&text)).unwrap_or_default()
+    }
+}
+
+pub fn workspace_with_behavior(screen_width: f32, screen_height: f32, panels: Panels, behavior: PanelBehavior) -> Rect {
+    let mut area = workspace(screen_width, screen_height, panels);
+    if behavior == PanelBehavior::Collapse {
+        if !panels.left {
+            area.x += COLLAPSED_SIDE_WIDTH;
+            area.width -= COLLAPSED_SIDE_WIDTH;
+        }
+        if !panels.right {
+            area.width -= COLLAPSED_SIDE_WIDTH;
+        }
+        area.width = area.width.max(1.0);
+    }
+    area
+}
+
 /// The area between the open panels, below the top bar and above the status strip: the
 /// terminal's home, and where application windows are placed.
 pub fn workspace(screen_width: f32, screen_height: f32, panels: Panels) -> Rect {
@@ -162,5 +211,55 @@ mod tests {
     fn workspace_never_collapses() {
         let rect = workspace(100.0, 50.0, Panels::default());
         assert!(rect.width >= 1.0 && rect.height >= 1.0);
+    }
+}
+
+#[cfg(test)]
+mod rail_tests {
+    use super::*;
+
+    #[test]
+    fn minimized_side_rails_reserve_space_without_changing_bottom_behavior() {
+        let panels = Panels { left: false, right: false, bottom: false };
+        let area = workspace_with_behavior(1920.0, 1080.0, panels, PanelBehavior::Collapse);
+        assert_eq!(area.x, COLLAPSED_SIDE_WIDTH);
+        assert_eq!(area.width, 1920.0 - 2.0 * COLLAPSED_SIDE_WIDTH);
+        assert_eq!(area.y + area.height, 1080.0 - STATUS_HEIGHT);
+        assert_eq!(workspace_with_behavior(1920.0, 1080.0, panels, PanelBehavior::Hide), workspace(1920.0, 1080.0, panels));
+        let mixed = Panels { left: true, ..panels };
+        let area = workspace_with_behavior(1920.0, 1080.0, mixed, PanelBehavior::Collapse);
+        assert_eq!(area.x, side_width(1920.0));
+        assert_eq!(area.x + area.width, 1920.0 - COLLAPSED_SIDE_WIDTH);
+    }
+
+    #[test]
+    fn panel_behavior_defaults_and_config_values() {
+        assert_eq!(PanelBehavior::parse(""), PanelBehavior::Collapse);
+        assert_eq!(PanelBehavior::parse("side_panel_behavior = hide # preference"), PanelBehavior::Hide);
+        assert_eq!(PanelBehavior::parse("side_panel_behavior = collapse"), PanelBehavior::Collapse);
+        assert_eq!(PanelBehavior::parse("side_panel_behavior = nonsense"), PanelBehavior::Collapse);
+    }
+}
+
+/// Thickness of the primary display bottom edge that reveals the dock.
+pub const DOCK_TRIGGER_HEIGHT: f32 = 4.0;
+
+/// Primary-display-local logical coordinates; remains inside tiny displays.
+pub fn dock_trigger(width: f32, height: f32) -> Rect {
+    let height = height.max(0.0);
+    let thickness = height.min(DOCK_TRIGGER_HEIGHT);
+    Rect { x: 0.0, y: height - thickness, width: width.max(0.0), height: thickness }
+}
+
+#[cfg(test)]
+mod dock_geometry_tests {
+    use super::*;
+
+    #[test]
+    fn trigger_covers_exactly_the_primary_bottom_edge() {
+        assert_eq!(dock_trigger(1920.0, 1080.0), Rect { x: 0.0, y: 1076.0, width: 1920.0, height: 4.0 });
+        assert_eq!(dock_trigger(3840.0, 2160.0), Rect { x: 0.0, y: 2156.0, width: 3840.0, height: 4.0 });
+        assert_eq!(dock_trigger(2.0, 2.0), Rect { x: 0.0, y: 0.0, width: 2.0, height: 2.0 });
+        assert_eq!(dock_trigger(0.0, 0.0), Rect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 });
     }
 }
