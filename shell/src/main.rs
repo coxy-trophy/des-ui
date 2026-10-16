@@ -20,6 +20,7 @@ mod lock;
 mod music;
 mod notify;
 mod oklch;
+mod osk;
 mod panels;
 mod pet;
 mod power;
@@ -816,6 +817,11 @@ fn tab(ui: &mut Ui, theme: &Theme, tab: Tab) -> Response {
         width += badge.size().x + 10.0 + gap;
     }
     let (rect, response) = ui.allocate_exact_size(vec2(width + 28.0, ui.available_height()), Sense::click());
+    let spoken = match tab.detail {
+        Some(detail) => format!("{}, {detail}", tab.name),
+        None => tab.name.to_string(),
+    };
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, tab.selected, &spoken));
     let painter = ui.painter();
     let mut x = rect.left() + 14.0;
     let mut put = |galley: std::sync::Arc<egui::Galley>, color| {
