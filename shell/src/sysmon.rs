@@ -1,13 +1,25 @@
-//! Samples CPU, memory, process and network statistics once per second.
+//! Samples CPU, memory, process, network, disk and sensor readings once per second on
+//! a worker thread, and raises alerts when a reading crosses a line.
 
+use crate::sensors::{self, Fan, Filesystem, Gpu, Temperature};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::collections::VecDeque;
 use std::time::{Duration, Instant};
-use sysinfo::{Networks, ProcessesToUpdate, System};
+use sysinfo::{Disks, Networks, ProcessesToUpdate, System};
 
 pub const HISTORY: usize = 60;
 const TOP_PROCESSES: usize = 6;
+/// Per-core history is kept for this many cores; the rest still show their load.
+const CORE_HISTORIES: usize = 64;
+/// How often failed units are asked for, and the GPU through nvidia-smi.
+const UNITS_EVERY: Duration = Duration::from_secs(30);
+const NVIDIA_EVERY: Duration = Duration::from_secs(5);
+/// Filesystems shown, fullest first.
+const FILESYSTEMS: usize = 6;
+/// Alerts waiting to be shown; more than this and the oldest are dropped.
+const PENDING_ALERTS: usize = 16;
 
 #[derive(Clone)]
 pub struct ProcInfo {
@@ -26,6 +38,27 @@ pub struct SysMon {
     /// Overall CPU usage in percent, oldest first.
     pub cpu_hist: VecDeque<f32>,
     pub cores: Vec<f32>,
+    /// Each core's history, for the first CORE_HISTORIES cores.
+    pub core_hist: Vec<VecDeque<f32>>,
+    /// Memory in use as a percent of the total, oldest first.
+    pub mem_hist: VecDeque<f32>,
+    pub load: Option<[f32; 3]>,
+    pub temps: Vec<Temperature>,
+    pub fans: Vec<Fan>,
+    pub gpu: Option<Gpu>,
+    pub gpu_hist: VecDeque<f32>,
+    /// Disk traffic in bytes per second, oldest first, and the totals since boot.
+    pub disk_read_hist: VecDeque<f32>,
+    pub disk_write_hist: VecDeque<f32>,
+    pub disk_read_total: u64,
+    pub disk_write_total: u64,
+    /// Mounted filesystems, fullest first.
+    pub filesystems: Vec<Filesystem>,
+    /// What the battery still holds when full, as a percent of when it was new.
+    pub battery_health: Option<u8>,
+    pub failed_units: Vec<String>,
+    alarms: Alarms,
+    alerts: Vec<Alert>,
     pub mem_used: u64,
     pub mem_total: u64,
     pub swap_used: u64,
@@ -66,6 +99,22 @@ impl SysMon {
             kernel: System::kernel_version().unwrap_or_default(),
             cpu_hist: VecDeque::from(vec![0.0; HISTORY]),
             cores: Vec::new(),
+            core_hist: Vec::new(),
+            mem_hist: VecDeque::from(vec![0.0; HISTORY]),
+            load: None,
+            temps: Vec::new(),
+            fans: Vec::new(),
+            gpu: None,
+            gpu_hist: VecDeque::from(vec![0.0; HISTORY]),
+            disk_read_hist: VecDeque::from(vec![0.0; HISTORY]),
+            disk_write_hist: VecDeque::from(vec![0.0; HISTORY]),
+            disk_read_total: 0,
+            disk_write_total: 0,
+            filesystems: Vec::new(),
+            battery_health: None,
+            failed_units: Vec::new(),
+            alarms: Alarms::default(),
+            alerts: Vec::new(),
             mem_used: 0,
             mem_total: 0,
             swap_used: 0,
@@ -91,6 +140,20 @@ impl SysMon {
         let Some(snapshot) = snapshot else { return; };
         self.cpu_hist = snapshot.cpu_hist;
         self.cores = snapshot.cores;
+        self.core_hist = snapshot.core_hist;
+        self.mem_hist = snapshot.mem_hist;
+        self.load = snapshot.load;
+        self.temps = snapshot.temps;
+        self.fans = snapshot.fans;
+        self.gpu = snapshot.gpu;
+        self.gpu_hist = snapshot.gpu_hist;
+        self.disk_read_hist = snapshot.disk_read_hist;
+        self.disk_write_hist = snapshot.disk_write_hist;
+        self.disk_read_total = snapshot.disk_read_total;
+        self.disk_write_total = snapshot.disk_write_total;
+        self.filesystems = snapshot.filesystems;
+        self.battery_health = snapshot.battery_health;
+        self.failed_units = snapshot.failed_units;
         self.mem_used = snapshot.mem_used;
         self.mem_total = snapshot.mem_total;
         self.swap_used = snapshot.swap_used;
@@ -106,6 +169,27 @@ impl SysMon {
         self.battery = snapshot.battery;
         self.brightness = snapshot.brightness;
         self.wifi = snapshot.wifi;
+        let mem_frac = self.mem_used as f32 / self.mem_total.max(1) as f32;
+        let raised = self.alarms.evaluate(self.cpu_temperature(), mem_frac, &self.filesystems, &self.failed_units);
+        self.alerts.extend(raised);
+        while self.alerts.len() > PENDING_ALERTS {
+            self.alerts.remove(0);
+        }
+    }
+
+    /// The processor's temperature, or failing a sensor of its own the hottest there is.
+    pub fn cpu_temperature(&self) -> Option<f32> {
+        self.temps
+            .iter()
+            .find(|t| t.label == "CPU")
+            .or_else(|| self.temps.first())
+            .map(|t| t.degrees)
+    }
+
+    /// Alerts raised since the last call, oldest first; each is raised once until its
+    /// reading has come back down.
+    pub fn take_alerts(&mut self) -> Vec<Alert> {
+        std::mem::take(&mut self.alerts)
     }
 
     pub fn volume(&self) -> Option<u8> {
@@ -120,10 +204,113 @@ impl SysMon {
     }
 }
 
+/// Something the user should hear about, as the notification centre shows it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Alert {
+    pub title: String,
+    pub body: String,
+    pub urgent: bool,
+}
+
+/// Raised once when a reading passes `raise_at`, and not again until it has fallen
+/// below `clear_below`, so a reading hovering around the line does not nag.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+struct Latch(bool);
+
+impl Latch {
+    fn update(&mut self, value: f32, raise_at: f32, clear_below: f32) -> bool {
+        if self.0 {
+            if value < clear_below {
+                self.0 = false;
+            }
+            false
+        } else if value >= raise_at {
+            self.0 = true;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// The lines readings must not cross, and which of them have.
+#[derive(Debug, Default)]
+pub struct Alarms {
+    temperature: Latch,
+    memory: Latch,
+    disks: HashMap<String, Latch>,
+    failed: HashSet<String>,
+}
+
+impl Alarms {
+    pub const HOT: f32 = 90.0;
+    pub const COOLED: f32 = 80.0;
+    pub const DISK_FULL: f32 = 0.95;
+    pub const DISK_CLEARED: f32 = 0.90;
+    pub const MEMORY_FULL: f32 = 0.95;
+    pub const MEMORY_CLEARED: f32 = 0.85;
+
+    pub fn evaluate(&mut self, cpu_temperature: Option<f32>, memory: f32, filesystems: &[Filesystem], failed: &[String]) -> Vec<Alert> {
+        let mut raised = Vec::new();
+        if let Some(degrees) = cpu_temperature {
+            if self.temperature.update(degrees, Self::HOT, Self::COOLED) {
+                raised.push(Alert {
+                    title: "Processor running hot".into(),
+                    body: format!("{degrees:.0} °C. Check what is working it, and that the air can get through."),
+                    urgent: true,
+                });
+            }
+        }
+        if self.memory.update(memory, Self::MEMORY_FULL, Self::MEMORY_CLEARED) {
+            raised.push(Alert {
+                title: "Memory nearly full".into(),
+                body: format!("{:.0}% in use. The machine may start to swap and slow down.", memory * 100.0),
+                urgent: true,
+            });
+        }
+        for fs in filesystems {
+            let latch = self.disks.entry(fs.mount.clone()).or_default();
+            if latch.update(fs.used, Self::DISK_FULL, Self::DISK_CLEARED) {
+                raised.push(Alert {
+                    title: "Disk nearly full".into(),
+                    body: format!("{} is {:.0}% full.", fs.mount, fs.used * 100.0),
+                    urgent: false,
+                });
+            }
+        }
+        self.disks.retain(|mount, _| filesystems.iter().any(|fs| &fs.mount == mount));
+        for unit in failed {
+            if self.failed.insert(unit.clone()) {
+                raised.push(Alert {
+                    title: "A service failed".into(),
+                    body: format!("{unit} has failed. `systemctl status {unit}` says why."),
+                    urgent: false,
+                });
+            }
+        }
+        self.failed.retain(|unit| failed.contains(unit));
+        raised
+    }
+}
+
 #[derive(Clone)]
 struct Snapshot {
     cpu_hist: VecDeque<f32>,
     cores: Vec<f32>,
+    core_hist: Vec<VecDeque<f32>>,
+    mem_hist: VecDeque<f32>,
+    load: Option<[f32; 3]>,
+    temps: Vec<Temperature>,
+    fans: Vec<Fan>,
+    gpu: Option<Gpu>,
+    gpu_hist: VecDeque<f32>,
+    disk_read_hist: VecDeque<f32>,
+    disk_write_hist: VecDeque<f32>,
+    disk_read_total: u64,
+    disk_write_total: u64,
+    filesystems: Vec<Filesystem>,
+    battery_health: Option<u8>,
+    failed_units: Vec<String>,
     mem_used: u64,
     mem_total: u64,
     swap_used: u64,
@@ -146,6 +333,20 @@ impl Default for Snapshot {
         Self {
             cpu_hist: VecDeque::from(vec![0.0; HISTORY]),
             cores: Vec::new(),
+            core_hist: Vec::new(),
+            mem_hist: VecDeque::from(vec![0.0; HISTORY]),
+            load: None,
+            temps: Vec::new(),
+            fans: Vec::new(),
+            gpu: None,
+            gpu_hist: VecDeque::from(vec![0.0; HISTORY]),
+            disk_read_hist: VecDeque::from(vec![0.0; HISTORY]),
+            disk_write_hist: VecDeque::from(vec![0.0; HISTORY]),
+            disk_read_total: 0,
+            disk_write_total: 0,
+            filesystems: Vec::new(),
+            battery_health: None,
+            failed_units: Vec::new(),
             mem_used: 0,
             mem_total: 0,
             swap_used: 0,
@@ -168,7 +369,14 @@ impl Default for Snapshot {
 struct Sampler {
     sys: System,
     nets: Networks,
+    disks: Disks,
     last: Option<Instant>,
+    diskstats: Vec<(String, u64, u64)>,
+    /// Programs asked now and then, found once; absent programs are not looked for again.
+    systemctl: Option<PathBuf>,
+    nvidia_smi: Option<PathBuf>,
+    units_at: Option<Instant>,
+    nvidia_at: Option<Instant>,
     snapshot: Snapshot,
 }
 
@@ -177,7 +385,79 @@ impl Sampler {
         let mut sys = System::new();
         sys.refresh_cpu_usage();
         let nets = Networks::new_with_refreshed_list();
-        Self { sys, nets, last: None, snapshot: Snapshot::default() }
+        Self {
+            sys,
+            nets,
+            disks: Disks::new_with_refreshed_list(),
+            last: None,
+            diskstats: sensors::read_diskstats(),
+            systemctl: sensors::find_program("systemctl"),
+            nvidia_smi: sensors::find_program("nvidia-smi"),
+            units_at: None,
+            nvidia_at: None,
+            snapshot: Snapshot::default(),
+        }
+    }
+
+    /// Everything beyond sysinfo: sensors, disks, the load and the units.
+    fn sample_sensors(&mut self, now: Instant, elapsed: Option<Duration>) {
+        let devices = sensors::read_hwmon();
+        self.snapshot.temps = sensors::temperatures(&devices);
+        self.snapshot.fans = sensors::fans(&devices);
+        self.snapshot.load = sensors::read_loadavg();
+        self.snapshot.battery_health = sensors::read_battery_health();
+
+        let stats = sensors::read_diskstats();
+        let (read, written) = match elapsed {
+            Some(elapsed) => sensors::disk_rates(&self.diskstats, &stats, elapsed),
+            None => (0.0, 0.0),
+        };
+        push(&mut self.snapshot.disk_read_hist, read);
+        push(&mut self.snapshot.disk_write_hist, written);
+        self.snapshot.disk_read_total = stats.iter().map(|(_, r, _)| r).sum();
+        self.snapshot.disk_write_total = stats.iter().map(|(_, _, w)| w).sum();
+        self.diskstats = stats;
+
+        self.disks.refresh(true);
+        let mut filesystems: Vec<Filesystem> = self
+            .disks
+            .list()
+            .iter()
+            .filter(|disk| disk.total_space() > 0)
+            .map(|disk| Filesystem {
+                mount: disk.mount_point().to_string_lossy().into_owned(),
+                used: 1.0 - disk.available_space() as f32 / disk.total_space() as f32,
+            })
+            .collect();
+        filesystems.sort_by(|a, b| b.used.total_cmp(&a.used));
+        filesystems.dedup_by(|a, b| a.mount == b.mount);
+        filesystems.truncate(FILESYSTEMS);
+        self.snapshot.filesystems = filesystems;
+
+        // A GPU that tells the kernel is read every time; nvidia-smi is a program.
+        let drm = sensors::read_drm_gpu_at(std::path::Path::new("/sys/class/drm"));
+        let due = |at: Option<Instant>, every: Duration| at.is_none_or(|at| now.duration_since(at) >= every);
+        let gpu = match (drm, &self.nvidia_smi) {
+            (Some(gpu), _) => Some(gpu),
+            (None, Some(program)) if due(self.nvidia_at, NVIDIA_EVERY) => {
+                self.nvidia_at = Some(now);
+                sensors::run_bounded(program, &["--query-gpu=name,utilization.gpu", "--format=csv,noheader,nounits"], Duration::from_secs(1))
+                    .and_then(|text| sensors::parse_nvidia_smi(&text))
+            }
+            (None, Some(_)) => self.snapshot.gpu.clone(),
+            (None, None) => None,
+        };
+        push(&mut self.snapshot.gpu_hist, gpu.as_ref().map_or(0.0, |g| g.busy as f32));
+        self.snapshot.gpu = gpu;
+
+        if let Some(systemctl) = &self.systemctl {
+            if due(self.units_at, UNITS_EVERY) {
+                self.units_at = Some(now);
+                if let Some(units) = sensors::read_failed_units(systemctl) {
+                    self.snapshot.failed_units = units;
+                }
+            }
+        }
     }
 
     fn sample(&mut self) -> Snapshot {
@@ -191,8 +471,14 @@ impl Sampler {
 
         push(&mut self.snapshot.cpu_hist, self.sys.global_cpu_usage());
         self.snapshot.cores = self.sys.cpus().iter().map(|c| c.cpu_usage()).collect();
+        let kept = self.snapshot.cores.len().min(CORE_HISTORIES);
+        self.snapshot.core_hist.resize_with(kept, || VecDeque::from(vec![0.0; HISTORY]));
+        for (hist, usage) in self.snapshot.core_hist.iter_mut().zip(&self.snapshot.cores) {
+            push(hist, *usage);
+        }
         self.snapshot.mem_used = self.sys.used_memory();
         self.snapshot.mem_total = self.sys.total_memory();
+        push(&mut self.snapshot.mem_hist, self.snapshot.mem_used as f32 / self.snapshot.mem_total.max(1) as f32 * 100.0);
         self.snapshot.swap_used = self.sys.used_swap();
         self.snapshot.swap_total = self.sys.total_swap();
 
@@ -250,6 +536,7 @@ impl Sampler {
         self.snapshot.battery = self.snapshot.power.map(|battery| battery.percent);
         self.snapshot.brightness = read_brightness();
         self.snapshot.wifi = read_wifi();
+        self.sample_sensors(now, elapsed);
         self.snapshot.clone()
     }
 }
@@ -489,6 +776,55 @@ mod tests {
     }
 
     #[test]
+    fn alarms_raise_once_and_need_the_reading_to_come_down() {
+        let mut alarms = Alarms::default();
+        let fs = |used: f32| vec![Filesystem { mount: "/".into(), used }];
+        assert!(alarms.evaluate(Some(70.0), 0.5, &fs(0.5), &[]).is_empty());
+        let hot = alarms.evaluate(Some(91.0), 0.5, &fs(0.5), &[]);
+        assert_eq!(hot.len(), 1);
+        assert!(hot[0].urgent && hot[0].title.contains("hot"));
+        assert!(alarms.evaluate(Some(95.0), 0.5, &fs(0.5), &[]).is_empty(), "still hot: no repeat");
+        assert!(alarms.evaluate(Some(85.0), 0.5, &fs(0.5), &[]).is_empty(), "cooling but not cleared");
+        assert!(alarms.evaluate(Some(79.0), 0.5, &fs(0.5), &[]).is_empty(), "clearing raises nothing");
+        assert_eq!(alarms.evaluate(Some(90.0), 0.5, &fs(0.5), &[]).len(), 1, "hot again: raised again");
+
+        let full = alarms.evaluate(None, 0.96, &fs(0.96), &[]);
+        assert_eq!(full.iter().map(|a| a.title.as_str()).collect::<Vec<_>>(), ["Memory nearly full", "Disk nearly full"]);
+        assert!(alarms.evaluate(None, 0.96, &fs(0.96), &[]).is_empty());
+        assert!(alarms.evaluate(None, 0.80, &fs(0.80), &[]).is_empty());
+        assert_eq!(alarms.evaluate(None, 0.95, &fs(0.95), &[]).len(), 2);
+        assert!(alarms.evaluate(None, 0.0, &[], &[]).is_empty());
+        assert!(alarms.disks.is_empty(), "an unmounted filesystem is forgotten");
+
+        let failed = vec!["foo.service".to_string()];
+        assert_eq!(alarms.evaluate(None, 0.0, &[], &failed).len(), 1);
+        assert!(alarms.evaluate(None, 0.0, &[], &failed).is_empty(), "a unit that stays failed is told once");
+        assert!(alarms.evaluate(None, 0.0, &[], &[]).is_empty());
+        assert_eq!(alarms.evaluate(None, 0.0, &[], &failed).len(), 1, "failing again is news again");
+    }
+
+    #[test]
+    fn tick_queues_alerts_until_taken_and_bounds_them() {
+        let mut mon = SysMon::new();
+        assert!(mon.take_alerts().is_empty());
+        for i in 0..(PENDING_ALERTS + 4) {
+            mon.alerts.push(Alert { title: format!("{i}"), body: String::new(), urgent: false });
+        }
+        let mut snapshot = Snapshot::default();
+        snapshot.mem_total = 100;
+        snapshot.mem_used = 96;
+        // A slot of its own, so the real sampler cannot overwrite the planted sample.
+        mon.latest = Arc::new(Mutex::new(Some(snapshot)));
+        mon.tick();
+        let alerts = mon.take_alerts();
+        assert_eq!(alerts.len(), PENDING_ALERTS);
+        assert_eq!(alerts.last().unwrap().title, "Memory nearly full", "the newest alert is kept");
+        assert_eq!(alerts[0].title, "5", "the oldest are dropped");
+        assert!(mon.take_alerts().is_empty());
+        assert_eq!(mon.cpu_temperature(), None);
+    }
+
+    #[test]
     fn network_rates_use_sampling_interval_and_require_a_baseline() {
         assert_eq!(network_rate(600, Some(Duration::from_secs(2))), 300.0);
         assert_eq!(network_rate(600, Some(Duration::from_millis(500))), 1200.0);
@@ -509,5 +845,11 @@ mod tests {
         assert!(!mon.cores.is_empty());
         assert!(!mon.top.is_empty());
         assert_eq!(mon.cpu_hist.len(), HISTORY);
+        assert_eq!(mon.core_hist.len(), mon.cores.len().min(CORE_HISTORIES));
+        assert!(mon.core_hist.iter().all(|h| h.len() == HISTORY));
+        assert_eq!(mon.mem_hist.len(), HISTORY);
+        assert!(mon.mem_hist.back().is_some_and(|m| (0.0..=100.0).contains(m)));
+        assert!(mon.filesystems.iter().all(|fs| (0.0..=1.0).contains(&fs.used)));
+        assert!(mon.temps.windows(2).all(|w| w[0].degrees >= w[1].degrees), "hottest first");
     }
 }
