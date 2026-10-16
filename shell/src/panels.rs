@@ -98,7 +98,7 @@ pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon, pet: &mut crate::pet::Pet,
     ui.horizontal(|ui| {
         let date = now.format("%a %d %b %Y").to_string().to_uppercase();
         let date = ui::tracked(ui, &date, ui::display(13.0), ui::SECONDARY, 2.0);
-        let up = SysMon::uptime();
+        let up = mon.uptime_shown();
         let uptime = format!("UP {}D {}H", up / 86400, (up / 3600) % 24);
         let uptime = ui::galley(ui, &uptime, ui::display(13.0), ui::SECONDARY, 2.0);
         // On a narrow column the date alone has to do.
@@ -110,8 +110,17 @@ pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon, pet: &mut crate::pet::Pet,
     });
 
     ui.add_space(SECTION_GAP);
-    ui::section(ui, "SYSTEM", |ui| {
-        ui::meta(ui, &truncate(&mon.host, 18), ui::LABEL);
+    // Following a host through ssh: its name, and whether its readings are the ones shown.
+    let title = if mon.remote.is_some() { "REMOTE" } else { "SYSTEM" };
+    ui::section(ui, title, |ui| {
+        match &mon.remote {
+            Some(remote) if remote.live => ui::meta(ui, &truncate(&mon.host, 18), theme.main),
+            Some(remote) => {
+                ui::meta(ui, remote.word, ui::CAUTION);
+                ui::meta(ui, &truncate(&remote.name, 14), ui::LABEL);
+            }
+            None => ui::meta(ui, &truncate(&mon.host, 18), ui::LABEL),
+        }
         // Failed units are the one thing here that asks for a look.
         if !mon.failed_units.is_empty() {
             let count = mon.failed_units.len();
@@ -390,6 +399,10 @@ pub fn right(
     ];
     if readings.iter().any(|(_, value)| value.is_some()) {
         ui.add_space(SECTION_GAP);
+        // While another machine fills the panels, these stay this one's; say so quietly.
+        if mon.remote.as_ref().is_some_and(|remote| remote.live) {
+            ui::meta(ui, "LOCAL", ui::LABEL);
+        }
         ui::section(ui, "CONTROLS", |_| {});
         for (label, value) in readings {
             if let Some(value) = value {

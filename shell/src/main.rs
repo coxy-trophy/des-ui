@@ -27,6 +27,7 @@ mod power;
 mod powerup;
 mod bootsplash;
 mod radio;
+mod remote;
 mod runtime;
 mod workflows;
 mod screen_views;

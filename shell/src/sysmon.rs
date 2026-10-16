@@ -21,7 +21,7 @@ const FILESYSTEMS: usize = 6;
 /// Alerts waiting to be shown; more than this and the oldest are dropped.
 const PENDING_ALERTS: usize = 16;
 
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProcInfo {
     pub name: String,
     pub cpu: f32,
@@ -80,6 +80,23 @@ pub struct SysMon {
     pub wifi: Option<u8>,
     /// Output volume in percent, sampled in the background.
     volume: Arc<AtomicU8>,
+    /// The machine being followed through ssh, when there is one; see [`SysMon::set_remote`].
+    pub remote: Option<Following>,
+    /// This machine's last sample, kept while another is shown so it can come back at once.
+    local: Option<Snapshot>,
+    local_names: (String, String, String),
+    remote_uptime: Option<u64>,
+}
+
+/// The host the panels follow, as they should name it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Following {
+    /// `user@host` as typed, or the host's own name once it has answered.
+    pub name: String,
+    /// Whether its readings are the ones shown; otherwise this machine's are, and
+    /// `word` says why.
+    pub live: bool,
+    pub word: &'static str,
 }
 
 /// Stands for "not known" in the shared volume reading.
@@ -91,12 +108,16 @@ impl SysMon {
         let (latest, stop) = watch_samples(move || {
             sampler.get_or_insert_with(Sampler::new).sample()
         });
+        let host = System::host_name().unwrap_or_else(|| "localhost".into());
+        let os = System::name().unwrap_or_else(|| "Linux".into());
+        let kernel = System::kernel_version().unwrap_or_default();
         SysMon {
             latest,
             _stop: stop,
-            host: System::host_name().unwrap_or_else(|| "localhost".into()),
-            os: System::name().unwrap_or_else(|| "Linux".into()),
-            kernel: System::kernel_version().unwrap_or_default(),
+            local_names: (host.clone(), os.clone(), kernel.clone()),
+            host,
+            os,
+            kernel,
             cpu_hist: VecDeque::from(vec![0.0; HISTORY]),
             cores: Vec::new(),
             core_hist: Vec::new(),
@@ -131,6 +152,9 @@ impl SysMon {
             brightness: None,
             wifi: None,
             volume: watch_volume(),
+            remote: None,
+            local: None,
+            remote_uptime: None,
         }
     }
 
@@ -138,6 +162,31 @@ impl SysMon {
     pub fn tick(&mut self) {
         let snapshot = self.latest.try_lock().ok().and_then(|mut latest| latest.take());
         let Some(snapshot) = snapshot else { return; };
+        // Alarms are about this machine, whatever the panels are showing.
+        let mem_frac = snapshot.mem_used as f32 / snapshot.mem_total.max(1) as f32;
+        let cpu_temperature = snapshot.temps.iter().find(|t| t.label == "CPU").or_else(|| snapshot.temps.first()).map(|t| t.degrees);
+        let raised = self.alarms.evaluate(cpu_temperature, mem_frac, &snapshot.filesystems, &snapshot.failed_units);
+        self.alerts.extend(raised);
+        while self.alerts.len() > PENDING_ALERTS {
+            self.alerts.remove(0);
+        }
+        // What only this machine has always comes from it: power, the screen, sound.
+        self.power = snapshot.power;
+        self.battery = snapshot.battery;
+        self.brightness = snapshot.brightness;
+        self.wifi = snapshot.wifi;
+        self.battery_health = snapshot.battery_health;
+        if self.remote.as_ref().is_some_and(|remote| remote.live) {
+            self.local = Some(snapshot);
+            return;
+        }
+        self.local = Some(snapshot.clone());
+        self.show_local(snapshot);
+    }
+
+    /// Puts this machine's readings in view.
+    fn show_local(&mut self, snapshot: Snapshot) {
+        (self.host, self.os, self.kernel) = self.local_names.clone();
         self.cpu_hist = snapshot.cpu_hist;
         self.cores = snapshot.cores;
         self.core_hist = snapshot.core_hist;
@@ -165,16 +214,65 @@ impl SysMon {
         self.tx_hist = snapshot.tx_hist;
         self.rx_total = snapshot.rx_total;
         self.tx_total = snapshot.tx_total;
-        self.power = snapshot.power;
-        self.battery = snapshot.battery;
-        self.brightness = snapshot.brightness;
-        self.wifi = snapshot.wifi;
-        let mem_frac = self.mem_used as f32 / self.mem_total.max(1) as f32;
-        let raised = self.alarms.evaluate(self.cpu_temperature(), mem_frac, &self.filesystems, &self.failed_units);
-        self.alerts.extend(raised);
-        while self.alerts.len() > PENDING_ALERTS {
-            self.alerts.remove(0);
+    }
+
+    /// Shows another machine's readings in place of this one's, or this one's again
+    /// with `None`. Local sampling and its alarms carry on underneath either way, and
+    /// what only this machine has (battery, screen, sound) stays this machine's.
+    /// A host that is followed but not answering keeps this machine's readings in view.
+    pub fn set_remote(&mut self, following: Option<Following>, view: Option<&crate::remote::View>) {
+        let was_live = self.remote.as_ref().is_some_and(|remote| remote.live);
+        let view = view.filter(|_| following.as_ref().is_some_and(|f| f.live));
+        self.remote = following;
+        match view {
+            Some(view) => {
+                self.host = view.host.clone();
+                self.os = view.os.clone();
+                self.kernel = view.kernel.clone();
+                self.remote_uptime = Some(view.uptime);
+                self.cpu_hist = view.cpu_hist.clone();
+                self.cores = view.cores.clone();
+                self.core_hist = view.core_hist.clone();
+                self.mem_hist = view.mem_hist.clone();
+                self.load = view.load;
+                self.mem_used = view.mem_used;
+                self.mem_total = view.mem_total;
+                self.swap_used = view.swap_used;
+                self.swap_total = view.swap_total;
+                self.top = view.top.iter().map(|p| ProcInfo { name: p.name.clone(), cpu: p.cpu, mem: p.mem }).collect();
+                self.iface = view.iface.clone();
+                self.ip = view.ip.clone();
+                self.rx_hist = view.rx_hist.clone();
+                self.tx_hist = view.tx_hist.clone();
+                self.rx_total = view.rx_total;
+                self.tx_total = view.tx_total;
+                self.filesystems = view.filesystems.clone();
+                // Not read over ssh: these sections fold away rather than show this machine's.
+                self.temps.clear();
+                self.fans.clear();
+                self.gpu = None;
+                self.failed_units.clear();
+                self.disk_read_hist = VecDeque::from(vec![0.0; HISTORY]);
+                self.disk_write_hist = VecDeque::from(vec![0.0; HISTORY]);
+                self.disk_read_total = 0;
+                self.disk_write_total = 0;
+            }
+            None => {
+                self.remote_uptime = None;
+                if was_live {
+                    if let Some(local) = self.local.clone() {
+                        self.show_local(local);
+                    } else {
+                        (self.host, self.os, self.kernel) = self.local_names.clone();
+                    }
+                }
+            }
         }
+    }
+
+    /// Time since boot of the machine in view.
+    pub fn uptime_shown(&self) -> u64 {
+        self.remote_uptime.unwrap_or_else(SysMon::uptime)
     }
 
     /// The processor's temperature, or failing a sensor of its own the hottest there is.
@@ -745,6 +843,60 @@ mod tests {
         release.send(()).unwrap();
         stopped.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(started.try_recv().is_err(), "sampling continued after monitor drop");
+    }
+
+    #[test]
+    fn a_followed_host_takes_the_panels_and_hands_them_back_with_local_history() {
+        // A monitor fed by hand: no worker, one slot it reads from on each tick.
+        let (stop, _) = mpsc::channel();
+        let mut mon = SysMon::new();
+        mon.latest = Arc::new(Mutex::new(None));
+        mon._stop = stop;
+        let local = |used: u64| {
+            let mut snapshot = Snapshot::default();
+            snapshot.mem_total = 100;
+            snapshot.mem_used = used;
+            push(&mut snapshot.cpu_hist, used as f32);
+            snapshot.battery = Some(80);
+            snapshot.iface = "wlan0".into();
+            snapshot
+        };
+        let feed = |mon: &mut SysMon, snapshot: Snapshot| {
+            *mon.latest.lock().unwrap() = Some(snapshot);
+            mon.tick();
+        };
+        feed(&mut mon, local(10));
+        let host = mon.host.clone();
+        assert_eq!(mon.mem_used, 10);
+
+        let mut view = crate::remote::View::default();
+        view.host = "build".into();
+        view.mem_total = 1000;
+        view.mem_used = 900;
+        view.iface = "eth0".into();
+        view.uptime = 42;
+        let live = || Some(Following { name: "me@build".into(), live: true, word: "" });
+
+        // Connecting: still this machine in view.
+        mon.set_remote(Some(Following { name: "me@build".into(), live: false, word: "CONNECTING" }), None);
+        assert_eq!(mon.mem_used, 10);
+        assert_eq!(mon.host, host);
+
+        mon.set_remote(live(), Some(&view));
+        assert_eq!((mon.host.as_str(), mon.mem_used, mon.iface.as_str()), ("build", 900, "eth0"));
+        assert_eq!(mon.uptime_shown(), 42);
+        // This machine keeps sampling underneath; its battery stays in view, its memory does not.
+        feed(&mut mon, local(20));
+        assert_eq!(mon.mem_used, 900, "a local sample does not push the host aside");
+        assert_eq!(mon.battery, Some(80));
+
+        mon.set_remote(None, None);
+        assert_eq!(mon.host, host);
+        assert_eq!(mon.mem_used, 20, "the latest local sample comes straight back");
+        assert_eq!(mon.iface, "wlan0");
+        let recent: Vec<f32> = mon.cpu_hist.iter().rev().take(1).copied().collect();
+        assert_eq!(recent, vec![20.0], "local history kept while the host was shown");
+        assert_ne!(mon.uptime_shown(), 42);
     }
 
     #[test]
