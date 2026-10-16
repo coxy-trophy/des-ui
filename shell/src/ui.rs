@@ -368,7 +368,24 @@ pub fn chip(ui: &mut Ui, theme: &Theme, label: &str, swatch: Option<Color32>, ch
 /// What an [`icon_button`] shows.
 #[derive(Clone, Copy)]
 pub enum Icon {
+    Search,
     Close,
+    Settings,
+    Music,
+    Power,
+    Notifications,
+    Apps,
+    Fullscreen,
+    Volume,
+    Muted,
+    Brightness,
+    Battery,
+    Charging,
+    Wifi,
+    Download,
+    Upload,
+    Display,
+    WindowSplit,
     /// An arrow to the right: send to the next display.
     Send,
     PanelLeft,
@@ -383,15 +400,133 @@ pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: Icon, size: f32, lit: bool)
     let (rect, response) = ui.allocate_exact_size(vec2(size, size), Sense::click());
     let color = if lit {
         theme.main
-    } else if response.hovered() {
+    } else if response.hovered() || response.has_focus() {
         TEXT
     } else {
         SECONDARY
     };
+    paint_icon(ui.painter(), rect, icon, color, lit);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), icon.label()));
+    response
+}
+
+impl Icon {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Search => "Find in terminal",
+            Self::Close => "Close", Self::Send => "Send to next display",
+            Self::PanelLeft => "Left panel", Self::PanelBottom => "File panel", Self::PanelRight => "Right panel",
+            Self::SplitPane => "Split terminal", Self::WindowSplit => "Split application workspace",
+            Self::Settings => "Settings", Self::Music => "Music", Self::Power => "Power",
+            Self::Notifications => "Notifications", Self::Apps => "Applications", Self::Fullscreen => "Full screen",
+            Self::Volume => "Volume", Self::Muted => "Muted", Self::Brightness => "Brightness",
+            Self::Battery => "Battery", Self::Charging => "Charging", Self::Wifi => "Wi-Fi signal",
+            Self::Download => "Download", Self::Upload => "Upload", Self::Display => "Displays",
+        }
+    }
+}
+
+/// Noninteractive icon, also used beside readings so values remain visible.
+pub fn icon(ui: &mut Ui, icon: Icon, size: f32, color: Color32) -> Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
+    paint_icon(ui.painter(), rect, icon, color, false);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, ui.is_enabled(), icon.label()));
+    response.on_hover_text(icon.label())
+}
+
+pub fn icon_value(ui: &mut Ui, symbol: Icon, value: &str, color: Color32, hint: &str) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 5.0;
+        icon(ui, symbol, 16.0, color);
+        text(ui, value, mono(11.0), color);
+    }).response.on_hover_text(hint);
+}
+
+pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32, lit: bool) {
     let stroke = Stroke::new(1.4, color);
-    let painter = ui.painter();
     let c = rect.center();
+    let line = |a: (f32, f32), b: (f32, f32)| { painter.line_segment([c + vec2(a.0, a.1), c + vec2(b.0, b.1)], stroke); };
+    let path = |points: &[(f32, f32)]| { painter.line(points.iter().map(|&(x,y)| c + vec2(x,y)).collect(), stroke); };
     match icon {
+        Icon::Settings => {
+            painter.circle_stroke(c, 4.0, stroke);
+            painter.circle_stroke(c, 1.4, stroke);
+            for i in 0..8 {
+                let a = i as f32 * std::f32::consts::TAU / 8.0;
+                let v = vec2(a.cos(), a.sin());
+                painter.line_segment([c + v * 4.0, c + v * 6.5], stroke);
+            }
+        }
+        Icon::Search => {painter.circle_stroke(c+vec2(-2.0,-2.0),4.5,stroke);line((1.0,1.0),(6.0,6.0));}
+        Icon::Music => {
+            path(&[(-3.0,4.0),(-3.0,-5.0),(5.0,-7.0),(5.0,2.0)]);
+            line((-3.0,-2.0),(5.0,-4.0));
+            painter.circle_filled(c + vec2(-5.0,4.0), 2.2, color);
+            painter.circle_filled(c + vec2(3.0,2.0), 2.2, color);
+        }
+        Icon::Power => {
+            let points = (0..=24).map(|i| {
+                let a = -std::f32::consts::FRAC_PI_2 + 0.7 + i as f32 / 24.0 * (std::f32::consts::TAU - 1.4);
+                c + vec2(a.cos(), a.sin()) * 6.0
+            }).collect();
+            painter.line(points, stroke);
+            line((0.0,-7.0),(0.0,0.0));
+        }
+        Icon::Notifications => {
+            path(&[(-6.0,4.0),(-4.0,1.0),(-4.0,-2.0),(-3.0,-5.0),(0.0,-6.0),(3.0,-5.0),(4.0,-2.0),(4.0,1.0),(6.0,4.0),(-6.0,4.0)]);
+            painter.circle_filled(c + vec2(0.0,6.0), 1.2, color);
+        }
+        Icon::Apps => {
+            for x in [-5.0, 2.0] { for y in [-5.0, 2.0] {
+                painter.rect_stroke(Rect::from_min_size(c + vec2(x,y), vec2(4.0,4.0)), 0.0, stroke, StrokeKind::Inside);
+            }}
+        }
+        Icon::Fullscreen => {
+            for (x,y) in [(-1.0,-1.0),(1.0,-1.0),(-1.0,1.0),(1.0,1.0)] {
+                path(&[(x*2.0,y*6.0),(x*6.0,y*6.0),(x*6.0,y*2.0)]);
+            }
+        }
+        Icon::Volume | Icon::Muted => {
+            path(&[(-6.0,-2.0),(-3.0,-2.0),(1.0,-5.0),(1.0,5.0),(-3.0,2.0),(-6.0,2.0),(-6.0,-2.0)]);
+            if matches!(icon, Icon::Muted) {
+                line((3.0,-2.0),(7.0,2.0)); line((3.0,2.0),(7.0,-2.0));
+            } else {
+                path(&[(3.0,-3.0),(5.0,-1.0),(5.0,1.0),(3.0,3.0)]);
+            }
+        }
+        Icon::Brightness => {
+            painter.circle_stroke(c, 2.8, stroke);
+            for i in 0..8 {
+                let a = i as f32 * std::f32::consts::TAU / 8.0;
+                let v = vec2(a.cos(), a.sin());
+                painter.line_segment([c + v * 4.8, c + v * 6.8], stroke);
+            }
+        }
+        Icon::Battery | Icon::Charging => {
+            painter.rect_stroke(Rect::from_center_size(c - vec2(1.0,0.0), vec2(12.0,8.0)), 0.0, stroke, StrokeKind::Inside);
+            line((6.0,-1.0),(6.0,1.0));
+            if matches!(icon, Icon::Charging) { path(&[(0.0,-3.0),(-2.0,0.5),(1.0,0.5),(-1.0,3.0)]); }
+        }
+        Icon::Wifi => {
+            path(&[(-7.0,-2.0),(-4.0,-5.0),(0.0,-6.0),(4.0,-5.0),(7.0,-2.0)]);
+            path(&[(-4.0,1.0),(-2.0,-1.0),(0.0,-2.0),(2.0,-1.0),(4.0,1.0)]);
+            painter.circle_filled(c + vec2(0.0,4.0), 1.4, color);
+        }
+        Icon::Download | Icon::Upload => {
+            let d = if matches!(icon, Icon::Download) { 1.0 } else { -1.0 };
+            line((0.0,-6.0*d),(0.0,5.0*d));
+            path(&[(-4.0,1.0*d),(0.0,5.0*d),(4.0,1.0*d)]);
+        }
+        Icon::Display => {
+            painter.rect_stroke(Rect::from_center_size(c - vec2(0.0,1.0), vec2(14.0,9.0)), 0.0, stroke, StrokeKind::Inside);
+            line((0.0,4.0),(0.0,6.0)); line((-4.0,6.0),(4.0,6.0));
+        }
+        Icon::WindowSplit => {
+            for x in [-7.0, 1.0] {
+                painter.rect_stroke(Rect::from_min_size(c + vec2(x,-5.0),vec2(6.0,10.0)),0.0,stroke,StrokeKind::Inside);
+                line((x+1.0,-2.0),(x+5.0,-2.0));
+            }
+        }
         Icon::Close => {
             painter.line_segment([c + vec2(-4.0, -4.0), c + vec2(4.0, 4.0)], stroke);
             painter.line_segment([c + vec2(4.0, -4.0), c + vec2(-4.0, 4.0)], stroke);
@@ -422,7 +557,6 @@ pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: Icon, size: f32, lit: bool)
             }
         }
     }
-    response
 }
 
 /// A line graph of `values` scaled against `max`, in a box of the given size.
