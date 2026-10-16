@@ -186,3 +186,10 @@ watched work on a real machine. Tick them off, or note what went wrong.
 - [ ] Settings → Frame → Animate off snaps everything, for windows and the dock alike
 - [ ] Once nothing moves no frames are drawn: idle power is as before
 - [ ] A client slow to resize is scaled into its new area rather than jumping
+
+## Palette: hosts, processes, units and commands
+
+- [ ] An `ssh` host from `~/.ssh/config` opens in a tab, and the tab closes when ssh exits
+- [ ] `kill <name>` ends a real process of your own, and never one of root's
+- [ ] `start`, `stop` and `restart` on a user unit; a system unit is refused without polkit
+- [ ] A `.command` file with `terminal = yes` runs in a tab; `exec` with quoted arguments

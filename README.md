@@ -214,6 +214,15 @@ eight absolute folders separated by semicolons. By default it searches Documents
 Downloads and Desktop. Filename lookup is bounded, skips hidden/build folders and
 symlinks, and never reads file contents. Refine the query when results are limited.
 
+The palette also knows more than files. `ssh` hosts from `~/.ssh/config` open in a
+new terminal tab; `2+2`, `10 km in mi`, `72 f in c` and `255 in hex` show an answer
+as you type, and Enter copies it; `kill <name>` and `ps <name>` list your own
+processes, and Enter ends one; `start`, `stop` and `restart` act on your systemd
+units (system units only where polkit allows it). Your own entries go in
+`~/.config/des-ui/commands/*.command`, as `key = value` lines: `name`, `exec`
+(split like a desktop entry, never through a shell), `terminal = yes|no` and
+`keywords`.
+
 **Settings → Session → SAVE SESSION** records installed application identities,
 workspace/display placement and terminal folders/layout. **RESTORE SESSION** reuses
 existing windows and terminals, opens recognized installed apps, and waits up to 30
