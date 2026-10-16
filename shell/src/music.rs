@@ -7,6 +7,7 @@
 
 use crate::theme::Theme;
 use crate::ui;
+use des_common::music::socket_path;
 use eframe::egui::{
     self, Align, Align2, Key, Layout, Modifiers, Rect, Response, ScrollArea, Sense, Shape, Stroke,
     StrokeKind, TextEdit, TextureHandle, Ui, UiBuilder, pos2, vec2,
@@ -221,16 +222,6 @@ struct Shared {
     refresh: bool,
     /// Set to call off a sign-in that is waiting on the browser.
     cancel: bool,
-}
-
-fn socket_path() -> PathBuf {
-    if let Some(path) = std::env::var_os("DES_MUSIC_SOCKET") {
-        return PathBuf::from(path);
-    }
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join(format!("des-music-{}", rustix::process::geteuid().as_raw())))
-        .join("des-music.sock")
 }
 
 /// The service's program: the one installed beside this one.

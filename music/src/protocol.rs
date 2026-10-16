@@ -4,19 +4,8 @@
 //! what is playing changes, and `{"type":"list", ...}` in answer to a request for one.
 
 use serde_json::{Value, json};
-use std::path::PathBuf;
 
-/// Where the service listens. `DES_MUSIC_SOCKET` names another place, for trying
-/// things out beside a service that is in use.
-pub fn socket_path() -> PathBuf {
-    if let Some(path) = std::env::var_os("DES_MUSIC_SOCKET") {
-        return PathBuf::from(path);
-    }
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join(format!("des-music-{}", rustix::process::geteuid().as_raw())))
-        .join("des-music.sock")
-}
+pub use des_common::music::socket_path;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Track {

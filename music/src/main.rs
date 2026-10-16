@@ -104,7 +104,7 @@ fn device_id() -> String {
         }
         bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>()
     };
-    if std::env::var_os("DES_MUSIC_SOCKET").is_some() {
+    if std::env::var_os(des_common::music::SOCKET_ENV).is_some() {
         return fresh();
     }
     let path = cache_dir().join("device-id");
