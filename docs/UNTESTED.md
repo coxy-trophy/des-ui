@@ -193,3 +193,12 @@ watched work on a real machine. Tick them off, or note what went wrong.
 - [ ] `kill <name>` ends a real process of your own, and never one of root's
 - [ ] `start`, `stop` and `restart` on a user unit; a system unit is refused without polkit
 - [ ] A `.command` file with `terminal = yes` runs in a tab; `exec` with quoted arguments
+
+## Instruments (the side panels)
+
+- [ ] Temperatures and fans carry the right labels on an AMD and on an Intel machine
+- [ ] The GPU meter on amdgpu, on an NVIDIA machine (`nvidia-smi`), and absent otherwise
+- [ ] A machine with no sensors shows no THERMAL section and nothing else moves
+- [ ] The alerts: a hot CPU, a disk past 95%, memory past 95%, a unit that fails;
+      each once, and again only after it has cleared
+- [ ] The per-core bars on 2, 8 and 32 cores, and the companion still has its room

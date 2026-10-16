@@ -9,6 +9,10 @@ impl eframe::App for App {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.mon.tick();
+        // Threshold crossings the sampler noticed: heat, a full disk, memory, a failed unit.
+        for alert in self.mon.take_alerts() {
+            self.notices.post(&alert.title, &alert.body, alert.urgent);
+        }
         self.pump_documents();
         if let Some(desktop) = &mut self.desktop {
             desktop.pump();
