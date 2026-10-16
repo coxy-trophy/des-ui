@@ -268,3 +268,26 @@ watched work on a real machine. Tick them off, or note what went wrong.
 - [ ] Locking hides the pinned window, and it comes back after unlocking
 - [ ] The overlay (once the scratchpad exists): drawn above applications and below
       notifications, keys go to it, it disappears on lock and during screenshot picking
+
+## The frame follows ssh
+
+- [ ] `ssh` to a Linux host with a key or an agent: REMOTE heading, its processes, memory
+      and network within a few seconds; back to this machine when ssh exits
+- [ ] A password-only host shows NEEDS A KEY and the panels stay local; no password prompt
+      appears anywhere
+- [ ] A host that is down shows UNREACHABLE and is asked again only every 10 s
+- [ ] A non-Linux host (macOS, a router) shows NOT LINUX
+- [ ] Two tabs on two hosts: switching tabs switches the panels
+- [ ] The globe draws the remote machine's public connections
+- [ ] `ssh -N -L …` and `ssh -W` are not followed
+- [ ] No `ssh-*` control sockets are left in `$XDG_RUNTIME_DIR/des-ui/` a minute after
+      leaving
+
+## Accessibility and the on-screen keyboard
+
+- Orca reads the launcher's results with their kind, the settings switches with
+  their row name and state, the tab bar and the dock.
+- The on-screen keyboard on a real touchscreen: every key, Shift/Ctrl latching,
+  Ctrl+C in the terminal, typing into the launcher and a settings field, and that a
+  key never takes the keyboard away from the field.
+- The keyboard with an application in view (it is covered, by design).

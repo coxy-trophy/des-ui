@@ -8,8 +8,21 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Before anything reads input: what the on-screen keys pressed last frame.
+        self.osk.inject(ctx);
         self.mon.tick();
         self.widgets.pump();
+        // While the terminal in use is in an ssh session, the panels show that machine.
+        let focused = self.focus_tab();
+        self.remote.follow_tab(self.tabs.get(focused), ctx);
+        let view = self.remote.view();
+        let following = self.remote.target().map(|target| sysmon::Following {
+            name: target.name(),
+            live: view.is_some(),
+            word: self.remote.state().map_or("", remote::State::word),
+        });
+        self.geo.set_remote_connections(view.as_ref().map(|view| view.connections.clone()));
+        self.mon.set_remote(following, view.as_ref());
         // Threshold crossings the sampler noticed: heat, a full disk, memory, a failed unit.
         for alert in self.mon.take_alerts() {
             self.notices.post(&alert.title, &alert.body, alert.urgent);
@@ -226,11 +239,18 @@ impl eframe::App for App {
             vec2(area.width, area.height),
         );
         let status_top = screen.bottom() - des_common::STATUS_HEIGHT;
+        // The on-screen keys sit above the status strip and push the frame up.
+        let osk_height = self.osk.height();
+        let keys_top = status_top - osk_height;
+        let workspace = Rect::from_min_max(workspace.min, pos2(workspace.max.x, (workspace.max.y - osk_height).max(workspace.min.y)));
         let dock_keys = self.dock.reserve_keyboard(ctx);
         CentralPanel::default()
             .frame(Frame::new().fill(ui::GROUND))
             .show(ctx, |ui| {
                 let status = Rect::from_min_max(pos2(screen.left(), status_top), screen.max);
+                if osk_height > 0.0 {
+                    self.osk.show(ui, &theme, Rect::from_min_max(pos2(screen.left(), keys_top), pos2(screen.right(), status_top)));
+                }
                 let toggled = region(ui, status, vec2(24.0, 0.0), Layout::left_to_right(Align::Center), |ui| {
                     panels::status(ui, &theme, &self.mon, state.as_ref(), open, overlay, self.notices.count(), self.capture.recording.map(|since| since.elapsed()))
                 });
@@ -259,13 +279,13 @@ impl eframe::App for App {
 
                 let column = vec2(24.0, 24.0);
                 if open.left {
-                    let rect = Rect::from_min_max(screen.min, pos2(workspace.left(), status_top));
+                    let rect = Rect::from_min_max(screen.min, pos2(workspace.left(), keys_top));
                     region(ui, rect, column, Layout::top_down(Align::Min), |ui| {
                         panels::left(ui, &theme, &self.mon, &mut self.pet, &self.widgets)
                     });
                 }
                 if open.right {
-                    let rect = Rect::from_min_max(pos2(workspace.right(), screen.top()), pos2(screen.right(), status_top));
+                    let rect = Rect::from_min_max(pos2(workspace.right(), screen.top()), pos2(screen.right(), keys_top));
                     region(ui, rect, column, Layout::top_down(Align::Min), |ui| {
                         let music = &mut self.music;
                         let mut wanted = false;
@@ -278,8 +298,8 @@ impl eframe::App for App {
                 }
                 if self.config.side_panel_behavior == des_common::PanelBehavior::Collapse {
                     for (panel, visible, rect) in [
-                        (des_common::Panel::Left, open.left, Rect::from_min_max(screen.min, pos2(workspace.left(), status_top))),
-                        (des_common::Panel::Right, open.right, Rect::from_min_max(pos2(workspace.right(), screen.top()), pos2(screen.right(), status_top))),
+                        (des_common::Panel::Left, open.left, Rect::from_min_max(screen.min, pos2(workspace.left(), keys_top))),
+                        (des_common::Panel::Right, open.right, Rect::from_min_max(pos2(workspace.right(), screen.top()), pos2(screen.right(), keys_top))),
                     ] {
                         if !visible && region(ui, rect, vec2(0.0, 0.0), Layout::top_down(Align::Center), |ui| panels::collapsed_rail(ui, &theme, panel)) {
                             match &self.desktop {
@@ -291,7 +311,7 @@ impl eframe::App for App {
                 }
                 let mut typed = None;
                 if open.bottom {
-                    let rect = Rect::from_min_max(workspace.left_bottom(), pos2(workspace.right(), status_top));
+                    let rect = Rect::from_min_max(workspace.left_bottom(), pos2(workspace.right(), keys_top));
                     typed = region(ui, rect, vec2(24.0, 16.0), Layout::top_down(Align::Min), |ui| {
                         let cwd = self.tabs[self.focus_tab()].cwd();
                         self.fs.show(ui, &theme, cwd.as_deref())
@@ -458,7 +478,7 @@ impl eframe::App for App {
         // The one-pixel lines between the frame's regions, drawn over all of them.
         let lines = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("frame-lines")));
         let line = Stroke::new(1.0, ui::LINE);
-        powerup::frame_lines(&lines, screen, workspace, status_top, open,
+        powerup::frame_lines(&lines, screen, workspace, keys_top, open,
             self.config.side_panel_behavior == des_common::PanelBehavior::Collapse, line, &stage);
 
         ctx.input_mut(|input| input.events.extend(dock_keys));

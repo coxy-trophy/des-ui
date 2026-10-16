@@ -268,6 +268,15 @@ The program's last line is shown as text, or read as JSON (`text`, `value`, `lab
 `series`, `state`, `lines`, `tooltip`). Programs run one at a time, for at most three
 seconds; one that fails says "no answer". Examples are in `shell/assets/widgets/`.
 
+## Accessibility
+
+The shell's controls carry names a screen reader can read (AccessKit, which Orca reaches
+over AT-SPI): buttons, switches, sliders, the launcher's results and the terminal tabs.
+**Settings → Keyboard → On-screen keyboard**, or **Ctrl+Shift+K**, puts keys along the
+foot of the desktop for a touchscreen. Shift, Ctrl and Alt hold for one key; `123`
+switches to symbols. They type into the terminal and the desktop's own fields, not
+into other applications.
+
 ## The terminal
 
 **Ctrl+Shift+F**, the magnifying-glass button in the terminal toolbar, or “Find in terminal” in the palette
@@ -286,6 +295,15 @@ the gutter marks each prompt and a square its exit status, amber when it failed;
 hover it for the number. **Ctrl+Shift+Up** and **Down** walk between prompts, a
 click on a prompt's mark selects that command's output for Ctrl+Shift+C, and
 "Copy last command output" in the palette copies it outright.
+
+When the terminal in use is running `ssh`, the side panels follow it: the processor,
+memory, processes, network, disks and the globe's connections are that machine's,
+under a REMOTE heading with its name. The clock, battery, volume and brightness stay
+yours (marked LOCAL). It asks the host every two seconds with one short `ssh` call of
+its own, reusing a private control connection, and never with a password: a host you
+reach only by typing a password shows NEEDS A KEY and the panels stay on this machine.
+Tunnels (`ssh -N`, `ssh -W`) are not followed. Temperatures, fans and the GPU are not
+read over ssh, so those sections fold away.
 
 Ctrl+Shift+T opens a tab and Ctrl+Tab moves between them. The terminal can also be
 split in two, each half showing a tab of its own:

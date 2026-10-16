@@ -179,6 +179,10 @@ struct App {
     powerup: powerup::PowerUp,
     /// Readings from the user's own programs, for the side panels.
     widgets: widgets::Widgets,
+    /// While the terminal in use is in an ssh session, the machine it reached.
+    remote: remote::Remote,
+    /// The keys along the foot of the shell, for a touchscreen or a missing keyboard.
+    osk: osk::Osk,
 }
 
 impl App {
@@ -209,6 +213,8 @@ impl App {
         };
         let clipboard = clipboard::Clipboard::start(ctx.clone());
         let widgets = widgets::Widgets::new(ctx.clone());
+        let mut osk = osk::Osk::default();
+        osk.open = config.osk;
         let mut launcher = Launcher::default();
         launcher.set_clipboard(clipboard.handle());
         notices.sounds = config.notification_sounds;
@@ -260,6 +266,8 @@ impl App {
             control,
             clipboard,
             widgets,
+            remote: remote::Remote::new(),
+            osk,
             // Alone in a window there is no splash to wait for.
             powerup: if desktop_present { powerup::PowerUp::under_splash() } else { powerup::PowerUp::new(Duration::ZERO) },
         })
@@ -467,6 +475,15 @@ impl App {
         }
     }
 
+    /// Shows or hides the on-screen keyboard, and remembers it for the next start.
+    fn toggle_osk(&mut self) {
+        self.osk.open = !self.osk.open;
+        self.config.osk = self.osk.open;
+        if let Err(error) = config::set("osk", self.osk.open.then_some("on")) {
+            self.notices.post("Could not save the keyboard setting", &error.to_string(), false);
+        }
+    }
+
     fn lock_now(&mut self) {
         self.lock.prepare(&self.ctx);
     }
@@ -572,6 +589,9 @@ impl App {
                 if key == "side_panel_behavior" {
                     self.frame_synced = false;
                 }
+                if key == "osk" {
+                    self.osk.open = self.config.osk;
+                }
                 if matches!(key, "animate" | "glow" | "scanlines" | "night_light") {
                     // The compositor re-reads the setting where it reads the input ones.
                     self.send(Command::ReloadInput);
@@ -676,6 +696,10 @@ impl App {
             } = &event
             {
                 let count = self.tabs.len();
+                if modifiers.ctrl && modifiers.shift && *key == Key::K {
+                    self.toggle_osk();
+                    continue;
+                }
                 if modifiers.ctrl && modifiers.shift && *key == Key::D {
                     self.dock.reveal_keyboard();
                     continue;
