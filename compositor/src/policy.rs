@@ -16,6 +16,7 @@ use smithay::{
 };
 
 use crate::{DesComp, focus::Focus};
+use std::time::Instant;
 use des_common::{
     Panel,
     ipc::{AppInfo, Command, DesktopState, Event, Place},
@@ -292,6 +293,13 @@ impl DesComp {
             mode.side_focused &= split;
         }
         let focus_app = self.focused_on(self.focus_screen).filter(|_| !self.locked);
+        // Nothing moves behind the lock or while the display stands still for a
+        // screenshot: whatever was on its way arrives at once.
+        let now = Instant::now();
+        let animate = crate::motion::allowed(self.motions.enabled, self.locked, self.picking);
+        if !animate {
+            self.motions.settle();
+        }
 
         if let Some(shell) = self.shell.clone() {
             configure(&shell, primary, true, focus_app.is_none());
@@ -321,8 +329,10 @@ impl DesComp {
             let alone = self.mode(screen).fullscreen && main == side && area == self.screens.get(screen).copied().unwrap_or_default();
             configure(&window, area, alone, focus_app == Some(i));
             if place == Place::Hidden {
+                self.motions.hide(&window, now, animate);
                 self.space.unmap_elem(&window);
             } else {
+                self.motions.show(window.clone(), area, now, animate);
                 // Mapping also raises, which puts the application above what is behind it.
                 self.space.map_element(window, area.loc, false);
             }
@@ -408,6 +418,7 @@ impl DesComp {
     pub fn forget_app(&mut self, index: usize) {
         let app = self.apps.remove(index);
         self.space.unmap_elem(&app.window);
+        self.motions.forget(&app.window);
         // Whatever opened on top of this one is now on top of what this one was on.
         for other in self.apps.iter_mut().filter(|other| other.over.as_ref() == Some(&app.window)) {
             other.over = app.over.clone();
@@ -492,7 +503,10 @@ impl DesComp {
         self.modes = modes;
         self.workspace = to;
         tracing::info!(workspace = to + 1, "workspace in view");
+        // Higher workspaces lie to the right: what arrives comes from there.
+        self.motions.slide = Some(if to > from { 1 } else { -1 });
         self.arrange();
+        self.motions.slide = None;
     }
 
     /// Sends an application to another workspace, where it is the one in view on its

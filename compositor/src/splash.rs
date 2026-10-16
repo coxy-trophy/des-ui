@@ -31,6 +31,8 @@ render_elements! {
     Toast=crate::toast::ToastElement,
     Buffer=MemoryRenderBufferRenderElement<GlesRenderer>,
     Solid=SolidColorRenderElement,
+    Space=smithay::desktop::space::SpaceRenderElements<GlesRenderer, smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement<GlesRenderer>>,
+    Moving=smithay::backend::renderer::element::utils::RescaleRenderElement<smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement<GlesRenderer>>,
 }
 
 /// The name, drawn at twice the size it is shown at: two bytes a pixel, how much of
