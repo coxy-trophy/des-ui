@@ -43,7 +43,7 @@ mod tests {
     }
     #[test] fn capture_retains_inactive_workspace_layout() {
         let entries = vec![entry()]; let mut state = DesktopState::default();
-        for workspace in [1, 2] { state.apps.push(des_common::ipc::AppInfo { app_id: "editor".into(), title: "private".into(), screen: 0, workspace, place: Place::Hidden }); }
+        for workspace in [1, 2] { state.apps.push(des_common::ipc::AppInfo { app_id: "editor".into(), title: "private".into(), screen: 0, workspace, place: Place::Hidden, pinned: false }); }
         state.saved_places = vec![Place::Side, Place::Main];
         let session = Session::capture(&state, &entries, TerminalLayout::default());
         assert_eq!(session.apps.iter().map(|a| a.place).collect::<Vec<_>>(), vec![SavedPlace::Side, SavedPlace::Main]);
@@ -52,7 +52,7 @@ mod tests {
     }
     #[test] fn privacy_and_restore_lifecycle() {
         let entries = vec![entry()]; let mut state = DesktopState::default();
-        state.apps.push(des_common::ipc::AppInfo { app_id: "editor".into(), title: "SECRET document contents".into(), screen: 0, workspace: 0, place: Place::Main });
+        state.apps.push(des_common::ipc::AppInfo { app_id: "editor".into(), title: "SECRET document contents".into(), screen: 0, workspace: 0, place: Place::Main, pinned: false });
         let mut s = Session::capture(&state, &entries, TerminalLayout::default());
         let json = serde_json::to_string(&s).unwrap(); assert!(!json.contains("SECRET")); assert!(!json.contains("exec"));
         let now = Instant::now(); let r = Restore::new(&s, &entries, &state, now); assert!(r.launch.is_empty()); assert_eq!(r.placements.len(), 1);

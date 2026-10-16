@@ -37,6 +37,35 @@ pub struct App {
     /// The application it opened on top of, which comes back when this one closes:
     /// a dialog gives the window that asked for it its place back.
     pub over: Option<Window>,
+    /// Kept in a corner above everything on its display, on every workspace.
+    pub pinned: bool,
+    /// Where it goes back to when no longer pinned, and the shape it keeps meanwhile.
+    pub pin_return: Place,
+    pub pin_aspect: f64,
+    /// Whether the window rules have been looked at for it; they are, once.
+    pub ruled: bool,
+}
+
+/// How far the pinned application keeps from the edges of its workspace.
+const PIP_MARGIN: i32 = 16;
+
+/// Where a pinned application goes: a quarter of the workspace wide, at most half
+/// of it high, its shape kept, in the bottom right corner, clear of the strip along
+/// the bottom edge that reveals the dock. `aspect` is width over height; a window
+/// without a size yet is taken to be sixteen by nine.
+pub fn pip_rect(area: Rectangle<i32, Logical>, aspect: f64, margin: i32, below: i32) -> Rectangle<i32, Logical> {
+    let aspect = if aspect.is_finite() && aspect > 0.0 { aspect } else { 16.0 / 9.0 };
+    let mut width = (area.size.w / 4).max(1) as f64;
+    let mut height = width / aspect;
+    let most = (area.size.h / 2).max(1) as f64;
+    if height > most {
+        height = most;
+        width = height * aspect;
+    }
+    let (w, h) = ((width.round() as i32).max(1), (height.round() as i32).max(1));
+    let x = (area.loc.x + area.size.w - w - margin).max(area.loc.x);
+    let y = (area.loc.y + area.size.h - h - margin - below).max(area.loc.y);
+    Rectangle::new((x, y).into(), (w, h).into())
 }
 
 /// How a display's workspace is being used.
@@ -67,7 +96,7 @@ fn dismisses_dock_keyboard(keyboard_screen:usize,cleared_screen:usize,area_none:
     area_none && keyboard_screen==cleared_screen
 }
 fn command_allowed(locked: bool, picking:bool, command: &Command) -> bool {
-    (!locked || matches!(command, Command::Lock | Command::Unlock | Command::ReloadInput)) && (!picking || !matches!(command,Command::Dock(Some(_))|Command::DockOn(_,Some(_))))
+    (!locked || matches!(command, Command::Lock | Command::Unlock | Command::ReloadInput)) && (!picking || !matches!(command,Command::Dock(Some(_))|Command::DockOn(_,Some(_))|Command::Overlay(Some(_))))
 }
 
 #[cfg(test)]
@@ -230,6 +259,12 @@ impl DesComp {
     /// Brings the application at `index` into view and gives it the keyboard.
     fn activate(&mut self, index: usize) {
         self.dock_keyboard = false;
+        if self.apps.get(index).is_some_and(|app| app.pinned) {
+            self.pin_focused = true;
+            self.focus_screen = self.apps[index].screen;
+            return;
+        }
+        self.pin_focused = false;
         let Some(on) = self.apps.get(index).map(|app| app.workspace) else {
             return;
         };
@@ -292,7 +327,7 @@ impl DesComp {
             let split = self.apps.iter().any(|app| app.screen == screen && app.place == Place::Side);
             mode.side_focused &= split;
         }
-        let focus_app = self.focused_on(self.focus_screen).filter(|_| !self.locked);
+        let focus_app = self.keyboard_app().filter(|_| !self.locked);
         // Nothing moves behind the lock or while the display stands still for a
         // screenshot: whatever was on its way arrives at once.
         let now = Instant::now();
@@ -316,6 +351,10 @@ impl DesComp {
             }
         }
         for i in 0..self.apps.len() {
+            // The pinned application is placed after the others, above them.
+            if self.apps[i].pinned {
+                continue;
+            }
             let (window, screen, place) = {
                 let app = &self.apps[i];
                 // Locked, nothing but the shell is shown, wherever it was.
@@ -338,6 +377,19 @@ impl DesComp {
             }
         }
 
+        if let Some(i) = self.pinned_app() {
+            let window = self.apps[i].window.clone();
+            if self.locked {
+                self.motions.hide(&window, now, animate);
+                self.space.unmap_elem(&window);
+            } else {
+                let rect = self.pin_rect(i);
+                configure(&window, rect, false, focus_app == Some(i));
+                self.motions.show(window.clone(), rect, now, animate);
+                self.space.map_element(window, rect.loc, false);
+            }
+        }
+
         // X11 menus stay above the windows that were just raised.
         for popup in &self.x_popups {
             if self.locked {
@@ -347,7 +399,8 @@ impl DesComp {
             }
         }
 
-        let focus = focus_app.filter(|_| !self.dock_keyboard)
+        // The dock and the shell's overlay take the keyboard while they are up.
+        let focus = focus_app.filter(|_| !self.dock_keyboard && self.overlay_area().is_none())
             .and_then(|i|focus_of(&self.apps[i].window))
             .or_else(||self.shell_on(if self.dock_keyboard{self.dock_keyboard_screen}else{0}).and_then(focus_of));
         let keyboard = self.seat.get_keyboard().unwrap();
@@ -383,9 +436,19 @@ impl DesComp {
                 workspace: self.workspace,
                 kept: Place::Hidden,
                 over,
+                pinned: false,
+                pin_return: Place::Hidden,
+                pin_aspect: 0.0,
+                ruled: false,
             });
             self.place(self.apps.len() - 1, place);
             self.focus_screen = screen;
+            // An X11 window says what it is from the start; a Wayland one usually
+            // does in its first commit, where the rules are looked at instead.
+            let window = self.apps[self.apps.len() - 1].window.clone();
+            if !window_app_id(&window).is_empty() {
+                self.apply_rules(&window);
+            }
         }
         self.arrange();
     }
@@ -396,6 +459,7 @@ impl DesComp {
             // Whether this ends the session is decided when the shell's process exits.
             tracing::info!("shell window closed");
             self.toast = None;
+            self.overlay = None;
             self.dock = None;
             self.docks.clear();
             self.dock_keyboard = false;
@@ -452,7 +516,7 @@ impl DesComp {
         };
         // Applications in the other slot are not candidates.
         let here: Vec<usize> = (0..self.apps.len())
-            .filter(|i| self.apps[*i].workspace == self.workspace)
+            .filter(|i| self.apps[*i].workspace == self.workspace && !self.apps[*i].pinned)
             .filter(|i| self.apps[*i].screen == screen && [slot, Place::Hidden].contains(&self.apps[*i].place))
             .collect();
         let current = here.iter().position(|i| self.apps[*i].place == slot);
@@ -486,6 +550,10 @@ impl DesComp {
         }
         let from = self.workspace;
         for app in self.apps.iter_mut() {
+            // Pinned, it is in view on every workspace.
+            if app.pinned {
+                continue;
+            }
             if app.workspace == from {
                 app.kept = app.place;
                 app.place = Place::Hidden;
@@ -515,6 +583,12 @@ impl DesComp {
         if to >= des_common::ipc::WORKSPACES || index >= self.apps.len() || self.apps[index].workspace == to {
             return;
         }
+        if self.apps[index].pinned {
+            // In view everywhere already; it goes back to this workspace when unpinned.
+            self.apps[index].workspace = to;
+            self.arrange();
+            return;
+        }
         let screen = self.apps[index].screen;
         if to == self.workspace {
             // Brought here from elsewhere: into view at once.
@@ -541,7 +615,7 @@ impl DesComp {
 
     /// Asks the current application to close. The terminal cannot be closed this way.
     pub fn close_active(&mut self) {
-        if let Some(index) = self.focused_on(self.focus_screen) {
+        if let Some(index) = self.keyboard_app() {
             self.close(index);
         }
     }
@@ -559,13 +633,19 @@ impl DesComp {
 
     /// Moves the current application to the next display.
     pub fn move_active(&mut self) {
-        if let Some(index) = self.focused_on(self.focus_screen) {
+        if let Some(index) = self.keyboard_app() {
             self.move_app(index);
         }
     }
 
     fn move_app(&mut self, index: usize) {
         if self.screens.len() < 2 || index >= self.apps.len() {
+            return;
+        }
+        if self.apps[index].pinned {
+            self.apps[index].screen = (self.apps[index].screen + 1) % self.screens.len();
+            self.focus_screen = self.apps[index].screen;
+            self.arrange();
             return;
         }
         self.apps[index].screen = (self.apps[index].screen + 1) % self.screens.len();
@@ -592,7 +672,7 @@ impl DesComp {
         } else {
             let other = (0..self.apps.len())
                 .rev()
-                .find(|i| self.apps[*i].workspace == self.workspace && self.apps[*i].screen == screen && self.apps[*i].place == Place::Hidden);
+                .find(|i| self.apps[*i].workspace == self.workspace && self.apps[*i].screen == screen && self.apps[*i].place == Place::Hidden && !self.apps[*i].pinned);
             match (other, main) {
                 (Some(other), _) => self.apps[other].place = Place::Side,
                 // Only the frame has a terminal to put beside a lone application.
@@ -637,12 +717,151 @@ impl DesComp {
     /// Uncovers the terminal and gives it the keyboard.
     fn show_terminal(&mut self) {
         self.dock_keyboard = false;
+        self.pin_focused = false;
         for app in self.apps.iter_mut().filter(|app| app.screen == 0 && app.place == Place::Main) {
             app.place = Place::Hidden;
         }
         self.modes[0].side_focused = false;
         self.focus_screen = 0;
         self.arrange();
+    }
+
+    /// The pinned application, if one is.
+    pub fn pinned_app(&self) -> Option<usize> {
+        self.apps.iter().position(|app| app.pinned)
+    }
+
+    /// The application with the keyboard: the pinned one after a click on it, or
+    /// else the one in use on the display in use.
+    pub fn keyboard_app(&self) -> Option<usize> {
+        self.pinned_app().filter(|_| self.pin_focused).or_else(|| self.focused_on(self.focus_screen))
+    }
+
+    fn pin_rect(&self, index: usize) -> Rectangle<i32, Logical> {
+        let app = &self.apps[index];
+        pip_rect(self.workspace_of(app.screen), app.pin_aspect, PIP_MARGIN, des_common::DOCK_TRIGGER_HEIGHT.ceil() as i32)
+    }
+
+    /// Keeps the application at `index` in a corner above everything, on every
+    /// workspace of its display. Only one is pinned at a time.
+    pub fn pin(&mut self, index: usize) {
+        if index >= self.apps.len() || self.apps[index].pinned {
+            return;
+        }
+        if let Some(other) = self.pinned_app() {
+            self.unpin_app(other);
+        }
+        let size = self.apps[index].window.geometry().size;
+        let current = self.workspace;
+        let app = &mut self.apps[index];
+        app.pin_aspect = if size.h > 0 { size.w as f64 / size.h as f64 } else { 0.0 };
+        app.pin_return = if app.place == Place::Hidden { Place::Main } else { app.place };
+        if app.workspace != current {
+            app.kept = Place::Hidden;
+        }
+        app.place = Place::Hidden;
+        app.pinned = true;
+        self.pin_focused = false;
+        tracing::info!(index, "pinned in a corner");
+        self.arrange();
+    }
+
+    /// Puts whatever is pinned back where it was.
+    pub fn unpin(&mut self) {
+        if let Some(index) = self.pinned_app() {
+            self.unpin_app(index);
+            self.arrange();
+        }
+    }
+
+    /// Super+P: pins the application in use, or puts the pinned one back.
+    pub fn toggle_pin(&mut self) {
+        match self.pinned_app() {
+            Some(_) => self.unpin(),
+            None => {
+                if let Some(index) = self.focused_on(self.focus_screen) {
+                    self.pin(index);
+                }
+            }
+        }
+    }
+
+    /// The pinned application goes back to the place it was pinned from, on its own
+    /// workspace: in view if that is the one in view, else for when it is.
+    fn unpin_app(&mut self, index: usize) {
+        self.pin_focused = false;
+        let (screen, workspace, back) = {
+            let app = &mut self.apps[index];
+            app.pinned = false;
+            (app.screen, app.workspace, app.pin_return)
+        };
+        if workspace == self.workspace {
+            self.place(index, back);
+            self.focus_screen = screen;
+            if let Some(mode) = self.modes.get_mut(screen) {
+                mode.side_focused = back == Place::Side;
+            }
+        } else {
+            for app in self.apps.iter_mut().filter(|app| app.workspace == workspace && app.screen == screen && app.kept == back) {
+                app.kept = Place::Hidden;
+            }
+            self.apps[index].kept = back;
+        }
+    }
+
+    /// Applies the first window rule that matches a new application, once. Returns
+    /// whether it moved anything.
+    pub fn apply_rules(&mut self, window: &Window) -> bool {
+        let Some(index) = self.apps.iter().position(|app| &app.window == window) else {
+            return false;
+        };
+        if std::mem::replace(&mut self.apps[index].ruled, true) {
+            return false;
+        }
+        let identity = window_app_id(window);
+        let rules = crate::rules::load();
+        let Some(rule) = crate::rules::find(&rules, &identity).cloned() else {
+            return false;
+        };
+        let (old_screen, old_workspace, old_place) = {
+            let app = &self.apps[index];
+            (app.screen, app.workspace, app.place)
+        };
+        let screen = rule.display.filter(|display| *display < self.screens.len()).unwrap_or(old_screen);
+        let workspace = rule.workspace.unwrap_or(old_workspace);
+        let place = if rule.side { Place::Side } else if old_place == Place::Hidden { Place::Main } else { old_place };
+        if (screen, workspace, place) == (old_screen, old_workspace, old_place) {
+            return false;
+        }
+        tracing::info!(%identity, ?rule, "window rule");
+        let over = {
+            let app = &mut self.apps[index];
+            app.screen = screen;
+            app.workspace = workspace;
+            app.place = Place::Hidden;
+            app.over.take()
+        };
+        if workspace == self.workspace {
+            self.place(index, place);
+            self.focus_screen = screen;
+            if let Some(mode) = self.modes.get_mut(screen) {
+                mode.side_focused = place == Place::Side;
+            }
+        } else {
+            for app in self.apps.iter_mut().filter(|app| app.workspace == workspace && app.screen == screen && app.kept == place) {
+                app.kept = Place::Hidden;
+            }
+            self.apps[index].kept = place;
+        }
+        // What it opened on top of gets its place back, as when a window closes.
+        if let Some(under) = over.and_then(|over| self.apps.iter().position(|other| other.window == over)) {
+            let back = &self.apps[under];
+            let returns = back.screen == old_screen && back.workspace == old_workspace && back.place == Place::Hidden;
+            if returns && old_workspace == self.workspace && old_place != Place::Hidden && self.in_place(old_screen, old_place).is_none() {
+                self.apps[under].place = old_place;
+            }
+        }
+        true
     }
 
     /// Asks the shell to lock the screen. It answers when it can show the lock screen,
@@ -689,6 +908,8 @@ impl DesComp {
                 self.dock_keyboard = false;
                 self.dock = None;
                 self.docks.clear();
+                self.overlay = None;
+                self.pin_focused = false;
                 self.stop_recording();
                 self.focus_screen = 0;
             }
@@ -738,6 +959,16 @@ impl DesComp {
         if screen >= self.modes.len() {
             return;
         }
+        // A click on the pinned application gives it the keyboard; one anywhere
+        // else takes the keyboard back.
+        let on_pin = self.pinned_app().filter(|_| !self.locked).is_some_and(|i| self.pin_rect(i).to_f64().contains(pos));
+        if on_pin != self.pin_focused {
+            self.pin_focused = on_pin;
+            self.arrange();
+        }
+        if on_pin {
+            return;
+        }
         let split = self.in_place(screen, Place::Side).is_some();
         let (main, side) = self.slots(screen);
         let side_focused = if !split {
@@ -782,7 +1013,7 @@ impl DesComp {
                         if place!=Place::Hidden { for (i,app) in self.apps.iter_mut().enumerate() {
                             if i!=index && app.screen==screen && app.workspace==workspace && occupies_restored_slot(self.workspace,workspace,app.place,app.kept,place) {app.place=Place::Hidden;app.kept=Place::Hidden;}
                         }}
-                        let app=&mut self.apps[index];app.screen=screen;app.workspace=workspace;app.kept=place;app.over=None;
+                        let app=&mut self.apps[index];app.pinned=false;app.screen=screen;app.workspace=workspace;app.kept=place;app.over=None;
                         app.place=if workspace==self.workspace{place}else{Place::Hidden};
                         self.arrange();
                     }
@@ -832,6 +1063,15 @@ impl DesComp {
                         if !self.picking {self.arrange();}
                     }
                 }
+                Command::Pin(index) => self.pin(index),
+                Command::Unpin => self.unpin(),
+                Command::Overlay(area) => {
+                    self.overlay = area.map(|(x, y, w, h)| Rectangle::new((x, y).into(), (w, h).into()));
+                    // The keyboard goes to the shell while the overlay shows, and back after.
+                    if !self.picking {
+                        self.arrange();
+                    }
+                }
                 Command::Toast(area) => {
                     self.toast = area.map(|(x, y, w, h)| Rectangle::new((x, y).into(), (w.max(0), h.max(0)).into()));
                     // The shell is done choosing what to picture: the keyboard goes
@@ -847,6 +1087,9 @@ impl DesComp {
         if !ipc.has_shell_client() {
             self.dock = None;
             self.docks.clear();
+            if self.overlay.take().is_some() {
+                self.arrange();
+            }
             if std::mem::take(&mut self.dock_keyboard) { self.arrange(); }
         }
         let last_screen = self.screens.len().saturating_sub(1);
@@ -855,7 +1098,7 @@ impl DesComp {
             screens: self.screens.len().max(1),
             panels: self.panels,
             terminal_split: self.in_place(0, Place::Side).is_some() && self.in_place(0, Place::Main).is_none(),
-            focus: self.focused_on(self.focus_screen),
+            focus: self.keyboard_app(),
             workspace: self.workspace,
             apps: self
                 .apps
@@ -866,6 +1109,7 @@ impl DesComp {
                     screen: app.screen.min(last_screen),
                     place: app.place,
                     workspace: app.workspace,
+                    pinned: app.pinned,
                 })
                 .collect(),
         });
@@ -967,5 +1211,43 @@ fn configure(window: &Window, area: Rectangle<i32, Logical>, fullscreen: bool, a
     // Before the first commit, the commit handler sends the initial configure instead.
     if toplevel.is_initial_configure_sent() {
         toplevel.send_pending_configure();
+    }
+}
+
+#[cfg(test)]
+mod pin_and_overlay_tests {
+    use super::*;
+
+    #[test]
+    fn picture_in_picture_is_a_quarter_wide_in_the_corner_and_keeps_its_shape() {
+        let area = Rectangle::new((100, 44).into(), (1600, 900).into());
+        let pip = pip_rect(area, 16.0 / 9.0, 16, 4);
+        assert_eq!((pip.size.w, pip.size.h), (400, 225));
+        assert_eq!(pip.loc.x + pip.size.w, 100 + 1600 - 16);
+        assert_eq!(pip.loc.y + pip.size.h, 44 + 900 - 16 - 4);
+        assert!(area.contains_rect(pip));
+        // A tall window is held to half the height, and keeps its shape.
+        let tall = pip_rect(area, 0.25, 16, 4);
+        assert_eq!(tall.size.h, 450);
+        assert!((tall.size.w as f64 / tall.size.h as f64 - 0.25).abs() < 0.01);
+        assert!(area.contains_rect(tall));
+        // No size yet: sixteen by nine.
+        let no_size = pip_rect(area, 0.0, 16, 4);
+        assert_eq!((no_size.size.w, no_size.size.h), (400, 225));
+        // A tiny workspace still holds it.
+        let tiny = Rectangle::new((0, 0).into(), (40, 30).into());
+        assert!(tiny.contains_rect(pip_rect(tiny, 16.0 / 9.0, 16, 4)));
+    }
+
+    #[test]
+    fn overlays_wait_for_the_lock_and_screenshots_but_can_always_be_cleared_unlocked() {
+        let area = Some((0, 44, 1920, 400));
+        assert!(command_allowed(false, false, &Command::Overlay(area)));
+        assert!(!command_allowed(true, false, &Command::Overlay(area)));
+        assert!(!command_allowed(false, true, &Command::Overlay(area)));
+        assert!(command_allowed(false, true, &Command::Overlay(None)));
+        assert!(!command_allowed(true, false, &Command::Pin(0)));
+        assert!(!command_allowed(true, false, &Command::Unpin));
+        assert!(command_allowed(false, false, &Command::Pin(0)));
     }
 }

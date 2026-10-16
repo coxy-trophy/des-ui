@@ -128,6 +128,12 @@ pub struct DesComp {
     pub dock_id: smithay::backend::renderer::element::Id,
     /// The name the toasts go by when drawn.
     pub toast_id: smithay::backend::renderer::element::Id,
+    /// A part of the shell's window on the main display shown above everything, such
+    /// as its drop-down terminal; the keyboard is the shell's while it shows.
+    pub overlay: Option<Rectangle<i32, Logical>>,
+    pub overlay_id: smithay::backend::renderer::element::Id,
+    /// Whether the pinned application has the keyboard, having been clicked.
+    pub pin_focused: bool,
     /// The shell's backdrop windows: the nth covers display n + 1 behind its applications.
     pub backdrops: Vec<Window>,
     /// Application windows, in the order they were opened.
@@ -256,6 +262,9 @@ impl DesComp {
             // A session starts quickly enough to need none; a test may ask for one.
             splash: std::env::var_os("DES_TEST_SPLASH_MS").map(|_| crate::splash::Splash::new(Duration::from_millis(test_millis("DES_TEST_SPLASH_MS", 1400)))),
             toast_id: smithay::backend::renderer::element::Id::new(),
+            overlay: None,
+            overlay_id: smithay::backend::renderer::element::Id::new(),
+            pin_focused: false,
             backdrops: Vec::new(),
             apps: Vec::new(),
             screens: Vec::new(),
@@ -400,6 +409,7 @@ impl DesComp {
         self.dock = None;
         self.docks.clear();
         self.dock_keyboard = false;
+        self.overlay = None;
         let Some(spec) = &self.shell_spec else {
             return Err("no shell configured".into());
         };
@@ -437,6 +447,7 @@ impl DesComp {
         self.dock = None;
         self.docks.clear();
         self.dock_keyboard = false;
+        self.overlay = None;
         if let Some(child) = self.shell_child.as_mut() {
             tracing::info!("restarting the shell");
             self.shell_restarting = true;

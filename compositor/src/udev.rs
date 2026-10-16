@@ -816,6 +816,7 @@ impl DesComp {
             return;
         }
         let toast_area = self.toast_area();
+        let overlay_area = self.overlay_area();
         let docks = self.dock_layers();
         let primary = self.screens.first().map(|screen| screen.loc);
         let now = Instant::now();
@@ -871,6 +872,12 @@ impl DesComp {
             for (shell,area,origin,id) in &docks {
                 elements.extend(crate::toast::elements(renderer,Some(shell),Some(*area),Some(*origin),id,geometry.loc,scale).into_iter().map(OutputElements::Toast));
             }
+            // The overlay is beneath the toasts and the dock, above every window.
+            elements.extend(
+                crate::toast::elements(renderer, self.shell.as_ref(), overlay_area, primary, &self.overlay_id, geometry.loc, scale)
+                    .into_iter()
+                    .map(OutputElements::Toast),
+            );
             elements.extend(crate::motion::window_elements::<OutputElements>(renderer, &self.space, &monitor.output, &self.motions, &beneath, now));
 
             // Glow, scanlines and the night light: the frame drawn off screen, then shown

@@ -150,6 +150,7 @@ pub fn init_winit(
 
                 let capture = state.screenshot.is_some() && state.start_time.elapsed() > Duration::from_millis(crate::state::test_millis("DES_TEST_SHOT_MS", 5000));
                 let toast_area = state.toast_area();
+                let overlay_area = state.overlay_area();
                 let docks = state.dock_layers();
                 let primary = state.screens.first().map(|screen| screen.loc);
                 let backend = state.backend.as_mut().unwrap();
@@ -170,6 +171,12 @@ pub fn init_winit(
                     for (shell,area,origin,id) in &docks {
                         toasts.extend(crate::toast::elements(renderer,Some(shell),Some(*area),Some(*origin),id,(0,0).into(),scale).into_iter().map(crate::splash::TopElements::Toast));
                     }
+                    // The overlay is beneath the toasts and the dock, above every window.
+                    toasts.extend(
+                        crate::toast::elements(renderer, state.shell.as_ref(), overlay_area, primary, &state.overlay_id, (0, 0).into(), scale)
+                            .into_iter()
+                            .map(crate::splash::TopElements::Toast),
+                    );
                     // The windows are listed here rather than by the space, so that one
                     // on its way somewhere is drawn where it is at this moment.
                     let beneath: Vec<&smithay::desktop::Window> = state.shell.iter().chain(state.backdrops.iter()).collect();
