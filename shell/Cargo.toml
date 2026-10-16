@@ -18,4 +18,12 @@ vt100 = "0.16.2"
 des-common = { path = "../common" }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
 tempfile = "3"
-rustix = { version = "1", features = ["fs", "process"] }
+rustix = { version = "1", features = ["fs", "process", "net"] }
+
+[[bin]]
+name = "des-ui"
+path = "src/main.rs"
+
+[[bin]]
+name = "des-ui-ctl"
+path = "src/bin/des-ui-ctl.rs"

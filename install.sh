@@ -22,6 +22,7 @@ if [ ! -x /usr/local/bin/des-ui ] && [ -x /usr/local/bin/edex-rs ] && [ -x /usr/
     sudo install -Dm755 /usr/local/bin/edex-comp /usr/local/lib/des-ui/previous/des-comp
 fi
 sudo install -Dm755 target/release/des-ui /usr/local/bin/des-ui
+sudo install -Dm755 target/release/des-ui-ctl /usr/local/bin/des-ui-ctl
 sudo install -Dm755 target/release/des-comp /usr/local/bin/des-comp
 sudo install -Dm755 target/release/des-music /usr/local/bin/des-music
 sudo install -Dm755 session/des-ui-session /usr/local/bin/des-ui-session
