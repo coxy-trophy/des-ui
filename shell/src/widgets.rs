@@ -379,10 +379,6 @@ impl Widgets {
         self.slots.iter().filter(move |slot| slot.declaration.panel == panel)
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.slots.is_empty()
-    }
-
     /// A set of widgets with no worker, for drawing in tests.
     #[cfg(test)]
     fn for_test(ctx: egui::Context, declarations: Vec<Declaration>) -> Widgets {

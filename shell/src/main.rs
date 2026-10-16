@@ -175,6 +175,8 @@ struct App {
     clipboard: clipboard::Clipboard,
     /// The frame powering up after the splash.
     powerup: powerup::PowerUp,
+    /// Readings from the user's own programs, for the side panels.
+    widgets: widgets::Widgets,
 }
 
 impl App {
@@ -204,6 +206,7 @@ impl App {
             }
         };
         let clipboard = clipboard::Clipboard::start(ctx.clone());
+        let widgets = widgets::Widgets::new(ctx.clone());
         let mut launcher = Launcher::default();
         launcher.set_clipboard(clipboard.handle());
         notices.sounds = config.notification_sounds;
@@ -254,6 +257,7 @@ impl App {
             screenshot_requested: false,
             control,
             clipboard,
+            widgets,
             // Alone in a window there is no splash to wait for.
             powerup: if desktop_present { powerup::PowerUp::under_splash() } else { powerup::PowerUp::new(Duration::ZERO) },
         })

@@ -87,7 +87,7 @@ fn clock(ui: &mut Ui, theme: &Theme, size: f32) {
     ui.painter().galley(seconds_pos, seconds, theme.main);
 }
 
-pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon, pet: &mut crate::pet::Pet) {
+pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon, pet: &mut crate::pet::Pet, widgets: &crate::widgets::Widgets) {
     // At the start of a session the column comes on with the rest of the frame.
     let stage = powerup::stage(ui.ctx());
     stage.apply(ui, Part::Left);
@@ -164,7 +164,9 @@ pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon, pet: &mut crate::pet::Pet)
     let thermal_height = if temps > 0 { SECTION_GAP + 24.0 + (temps + fans) as f32 * 23.0 } else { 0.0 };
     let filesystems = mon.filesystems.len().min(3);
     let storage_height = SECTION_GAP + 24.0 + 36.0 + 7.0 + filesystems as f32 * 23.0;
-    let fitting = sections_that_fit(ui.available_height(), LEFT_RESERVE, &[thermal_height, storage_height]);
+    // The user's own widgets come before the optional instruments, so they keep their room too.
+    let widget_height = widgets.on(des_common::Panel::Left).count() as f32 * 60.0;
+    let fitting = sections_that_fit(ui.available_height(), LEFT_RESERVE + widget_height, &[thermal_height, storage_height]);
     if temps > 0 && fitting >= 1 {
         ui.add_space(SECTION_GAP);
         let hottest = mon.temps[0].degrees;
@@ -204,6 +206,8 @@ pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon, pet: &mut crate::pet::Pet)
             ui::meter(ui, theme, &truncate(&fs.mount, 9), 60.0, stage.swept(fs.used), &format!("{:.0}%", fs.used * 100.0));
         }
     }
+
+    crate::widgets::show(ui, theme, widgets, des_common::Panel::Left);
 
     ui.add_space(SECTION_GAP);
     ui::section(ui, "PROCESSES", |ui| ui::meta(ui, "CPU · MEM", ui::LABEL));
@@ -287,6 +291,7 @@ pub fn right(
     desktop: Option<&DesktopState>,
     rotation: f32,
     geo: &Snapshot,
+    widgets: &crate::widgets::Widgets,
     playing: impl FnOnce(&mut Ui),
 ) {
     let stage = powerup::stage(ui.ctx());
@@ -351,6 +356,7 @@ pub fn right(
             ui::meta(ui, &format!("{} LINK{plural}", geo.links.len()), ui::LABEL);
         }
     });
+    crate::widgets::show(ui, theme, widgets, des_common::Panel::Right);
     globe::show(ui, theme, (ui.available_width() * 0.82).min(224.0), rotation, geo);
     if let Some(home) = &geo.home {
         ui.horizontal(|ui| {

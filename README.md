@@ -156,6 +156,7 @@ window.
 | <kbd>[</kbd> <kbd>]</kbd> <kbd>\</kbd> | Collapse or open the left, right and bottom panels |
 | <kbd>Q</kbd> | Close the current application |
 | <kbd>O</kbd> | Move the current application to the next display |
+| <kbd>P</kbd> | Keep the current application in a corner above everything, or put it back |
 | <kbd>M</kbd> | Open the music player |
 | <kbd>N</kbd> | Open the notifications |
 | <kbd>Esc</kbd> | Open the power menu |
@@ -185,6 +186,15 @@ when it covers the connected monitors.
 Otherwise the frame is on a laptop's own panel and the others extend to its right.
 Each further display shows its applications at full size, split or not.
 Applications open on the display the pointer is on.
+
+Rules in `~/.config/des-ui/rules` send applications where you want them when they
+open, matched by app ID or X11 class (`*` and `?` work; the first match wins):
+
+```
+firefox        workspace=2
+org.gnome.*    display=2 side
+mpv            side
+```
 
 Side panels can minimize to a narrow rail; click the rail to reopen them. In
 **Settings → Frame → Minimized side panels**, choose **Collapse** (the default)
@@ -250,6 +260,13 @@ and `state`, which prints what is open as JSON. It speaks to the shell over a pr
 socket of its own (`$XDG_RUNTIME_DIR/des-ui-control.sock`, yours alone); the
 compositor still accepts commands only from its shell. While the screen is locked
 only `lock`, `ping` and `state` are answered.
+
+**Widgets.** A file in `~/.config/des-ui/widgets/` ending in `.widget` puts a
+program's reading in a side panel: `name`, `exec` (split like a desktop entry, never
+through a shell), `every = 5s`, `panel = left|right`, `kind = text|meter|series|list`.
+The program's last line is shown as text, or read as JSON (`text`, `value`, `label`,
+`series`, `state`, `lines`, `tooltip`). Programs run one at a time, for at most three
+seconds; one that fails says "no answer". Examples are in `shell/assets/widgets/`.
 
 ## The terminal
 

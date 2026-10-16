@@ -9,6 +9,7 @@ impl eframe::App for App {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.mon.tick();
+        self.widgets.pump();
         // Threshold crossings the sampler noticed: heat, a full disk, memory, a failed unit.
         for alert in self.mon.take_alerts() {
             self.notices.post(&alert.title, &alert.body, alert.urgent);
@@ -260,7 +261,7 @@ impl eframe::App for App {
                 if open.left {
                     let rect = Rect::from_min_max(screen.min, pos2(workspace.left(), status_top));
                     region(ui, rect, column, Layout::top_down(Align::Min), |ui| {
-                        panels::left(ui, &theme, &self.mon, &mut self.pet)
+                        panels::left(ui, &theme, &self.mon, &mut self.pet, &self.widgets)
                     });
                 }
                 if open.right {
@@ -268,7 +269,7 @@ impl eframe::App for App {
                     region(ui, rect, column, Layout::top_down(Align::Min), |ui| {
                         let music = &mut self.music;
                         let mut wanted = false;
-                        panels::right(ui, &theme, &self.mon, state.as_ref(), rotation, &places, |ui| {
+                        panels::right(ui, &theme, &self.mon, state.as_ref(), rotation, &places, &self.widgets, |ui| {
                             wanted = music.panel(ui, &theme);
                         });
                         wanted

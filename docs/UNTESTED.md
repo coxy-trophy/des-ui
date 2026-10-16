@@ -247,3 +247,24 @@ watched work on a real machine. Tick them off, or note what went wrong.
       second.
 - [ ] Super+Shift+R: the splash, then the power-up again.
 - [ ] Starting locked, and Settings → Frame → Animate off: everything appears at once.
+
+## Panel widgets
+
+- [ ] The three example widgets copied into `~/.config/des-ui/widgets/` show on the
+      real panels, left and right, and the companion keeps its room
+- [ ] A widget added, changed or removed shows within 30 seconds
+- [ ] A program that hangs shows "no answer" and the others keep updating
+- [ ] A `meter` with `"state":"caution"` and a `series` filling its history
+
+## Window rules and picture in picture
+
+- [ ] A rule for a Wayland app (Firefox) and an X11 app (xterm) sends each to its
+      workspace and display; `side` opens it beside what is there; an edited rules
+      file counts for the next window
+- [ ] Super+P pins a video player in the corner; it stays in view through Super+1…4;
+      Super+P again puts it back in its half
+- [ ] Clicking the pinned window types into it; clicking elsewhere takes the keyboard
+      back; Super+Q closes it while it has the keyboard
+- [ ] Locking hides the pinned window, and it comes back after unlocking
+- [ ] The overlay (once the scratchpad exists): drawn above applications and below
+      notifications, keys go to it, it disappears on lock and during screenshot picking
