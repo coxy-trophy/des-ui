@@ -14,6 +14,7 @@ mod greeter;
 mod launcher;
 mod palette;
 mod commands;
+mod clipboard;
 mod file_search;
 mod lock;
 mod music;

@@ -23,11 +23,18 @@ impl App {
             palette::Action::RestoreSession=>self.restore_session(),
             palette::Action::RunInTerminal(argv)=>self.run_argv(&argv),
             // The palette already put it on the clipboard; this just says so.
-            palette::Action::Copy(text)=>self.notices.post("Copied",&text,false),
+            palette::Action::Copy(text)=>{
+                // Short answers are shown; clipboard entries are not echoed into the notice history.
+                let shown=if text.chars().count()<=80 && !text.contains('\n'){text}else{format!("{} characters",text.chars().count())};
+                self.notices.post("Copied",&shown,false);
+            }
             palette::Action::Terminate(pid)=>match commands::terminate(pid){
                 Ok(())=>self.notices.post("Process asked to end",&format!("SIGTERM sent to process {pid}."),false),
                 Err(e)=>self.notices.post("Process not ended",&e,true),
             },
+            palette::Action::ClipPin(id,pinned)=>{if let Some(clips)=self.launcher.clipboard(){clips.pin(id,pinned);}}
+            palette::Action::ClipRemove(id)=>{if let Some(clips)=self.launcher.clipboard(){clips.remove(id);}}
+            palette::Action::ClipClear=>{if let Some(clips)=self.launcher.clipboard(){clips.clear();}self.notices.post("Clipboard history cleared","Nothing copied before now is kept.",false);}
             palette::Action::Unit{name,user,op}=>{
                 let outcomes=self.launcher.outcomes();let ctx=self.ctx.clone();
                 std::thread::spawn(move ||{
