@@ -7,6 +7,7 @@
 pub mod input;
 pub mod ipc;
 pub mod music;
+pub mod control;
 pub mod transport;
 
 /// Height of the bar along the top of the workspace that lists terminal tabs and open

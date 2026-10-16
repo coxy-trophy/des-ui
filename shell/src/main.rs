@@ -5,6 +5,7 @@ mod app_icons;
 mod dock;
 mod capture;
 mod config;
+mod control;
 mod desktop;
 mod geo;
 mod health;
