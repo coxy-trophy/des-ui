@@ -5,14 +5,23 @@
 //!
 //! The compositor sends events, one per line:
 //! - `state <displays> <open panels, as bits> <0|1 terminal shares the workspace>
-//!   <application with the keyboard, or "-" for the terminal>` followed by one
-//!   tab-separated field per application, each `<display> <place>:<workspace>:<hex app_id> <title>`, whenever
-//!   any of that changes. A place is `0` hidden, `1` shown, `2` shown in the right half;
+//!   <application with the keyboard, or "-" for the terminal> <workspace in view>`
+//!   followed by one tab-separated field per application, each
+//!   `<display> <place>:<workspace>:<hex app_id>[:<saved place>] <title>`, whenever any
+//!   of that changes. A place is `0` hidden, `1` shown, `2` shown in the right half;
+//!   the saved place, present only when the compositor retains layouts, is the one an
+//!   application hidden on another workspace will have back;
+//! - `dock` when the user asks for the dock on the main display, and
+//!   `dock-screen <display>` for the one on another display;
 //! - `launcher` when the user asks for the application launcher;
 //! - `settings` when the user asks for the settings;
 //! - `music` when the user asks for the music player;
 //! - `notifications` when the user asks for the list of notifications;
 //! - `power` when the user asks for the power menu;
+//! - `shot <screen|window|region|pick> <width> <height> <x,y,w,h|-> <file>` when a
+//!   screenshot has been taken: the file holds plain pixels, four bytes each, rows
+//!   from the top, and the four numbers say where in it the window in use lies;
+//! - `recording <on|off|failed>` when a recording starts, stops, or could not start;
 //! - `lock` when the user asks for the screen to be locked, which the shell answers
 //!   with its own `lock` once it is ready to show the lock screen;
 //! - `locked <0|1>` whenever the screen becomes locked or unlocked, and as an
@@ -21,13 +30,26 @@
 //!   field per monitor, left to right, each `<name> <0|1 main> <x> <y> <mode in use>
 //!   <modes it offers, comma-separated>`. A mode is `<width>x<height>@<millihertz>`.
 //!
-//! The shell sends `activate <n>`, `close <n>`, `move <n>`, `terminal`, `split`,
-//! `toast <x y w h|none>`, `dock <x y w h|none>`, `fullscreen`, `lock`, `unlock`, `panel <left|right|bottom>`, `reload-input` (the input settings in the
-//! configuration file changed), `reload-frame` (panel behavior changed), `displays-keep`, `displays-revert`, or
-//! `displays-apply` followed by one `<name>=<mode>` per monitor, left to right, with a
-//! `*` after the one that is to be the main display, then `/<scale>:<turn>:<use>`: the
-//! scale in percent, the turn in degrees, and `o` for a display of its own, `m` for one
-//! mirroring the main display, `x` for one turned off.
+//! The shell sends, one per line:
+//! - `activate <n>`, `close <n>`, `move <n>` (to the next display) for the
+//!   application at that index, `workspace <n>` to bring a workspace into view,
+//!   `send-to <n>:<workspace>`, and `place <n> <display> <workspace> <place>` to
+//!   put an application somewhere outright, as restoring a session does;
+//! - `terminal`, `split`, `fullscreen`, `panel <left|right|bottom>`;
+//! - `lock` and `unlock`;
+//! - `toast <x y w h|none>`, `dock <x y w h|none>` and `dock-screen <display>
+//!   <x y w h|none>`: where in its window the shell is showing notifications, or
+//!   the dock, that are to be seen above any application;
+//! - `hold-idle <on|off>` while an application is showing something to watch, so
+//!   that the screen is not locked for want of input;
+//! - `shot <screen|window|region|pick>`, `record <file>` and `record-stop`;
+//! - `reload-input` (the input settings in the configuration file changed) and
+//!   `reload-frame` (the side panel behavior changed);
+//! - `displays-keep`, `displays-revert`, or `displays-apply` followed by one
+//!   `<name>=<mode>` per monitor, left to right, with a `*` after the one that is to
+//!   be the main display, then `/<scale>:<turn>:<use>`: the scale in percent, the
+//!   turn in degrees, and `o` for a display of its own, `m` for one mirroring the
+//!   main display, `x` for one turned off.
 
 use crate::{Panel, Panels};
 

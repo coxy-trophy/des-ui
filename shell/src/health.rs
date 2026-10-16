@@ -1,38 +1,6 @@
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn excerpt_is_bounded_and_redacts_sensitive_lines() {
-        let input = format!("{}\npassword=hunter2\nAuthorization: Bearer abc\nTOKEN=abc\nordinary event\n", "x".repeat(MAX_BYTES * 2));
-        let excerpt = sanitize_excerpt(input.as_bytes());
-        assert!(excerpt.len() <= MAX_BYTES);
-        assert!(!excerpt.contains("hunter2"));
-        assert!(!excerpt.contains("Bearer abc"));
-        assert!(!excerpt.contains("TOKEN=abc"));
-        assert!(excerpt.contains("ordinary event"));
-        assert!(excerpt.lines().count() <= MAX_LINES);
-    }
-    #[test]
-    fn rejects_relative_roots_and_non_regular_logs() {
-        assert!(log_paths(Some(std::path::PathBuf::from("relative"))).is_empty());
-        let dir = tempfile::tempdir().unwrap();
-        assert!(matches!(read_log(dir.path()), LogReading::Failed(_)));
-        let missing = dir.path().join("missing.log");
-        assert!(matches!(read_log(&missing), LogReading::Missing));
-        std::os::unix::fs::symlink("/dev/zero", &missing).unwrap();
-        assert!(matches!(read_log(&missing), LogReading::Failed(_)));
-    }
-    #[test]
-    fn tail_reads_recent_lines_and_bounds_bytes() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("session.log");
-        std::fs::write(&path, format!("{}\nlast event\n", "old\n".repeat(MAX_BYTES))).unwrap();
-        let LogReading::Ready(text) = read_log(&path) else { panic!("expected regular log") };
-        assert!(text.ends_with("last event"));
-        assert!(text.len() <= MAX_BYTES);
-        assert!(text.lines().count() <= MAX_LINES);
-    }
-}
+//! Settings → Health: read-only probes of the compositor and music service, the
+//! helper programs the desktop calls, and the session logs, shown as bounded
+//! excerpts with secret-bearing lines left out. Nothing here changes the system.
 
 use crate::{theme::Theme, ui};
 use eframe::egui::{self, Ui};
@@ -184,5 +152,41 @@ impl Health {
             }
             ui.add_space(18.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn excerpt_is_bounded_and_redacts_sensitive_lines() {
+        let input = format!("{}\npassword=hunter2\nAuthorization: Bearer abc\nTOKEN=abc\nordinary event\n", "x".repeat(MAX_BYTES * 2));
+        let excerpt = sanitize_excerpt(input.as_bytes());
+        assert!(excerpt.len() <= MAX_BYTES);
+        assert!(!excerpt.contains("hunter2"));
+        assert!(!excerpt.contains("Bearer abc"));
+        assert!(!excerpt.contains("TOKEN=abc"));
+        assert!(excerpt.contains("ordinary event"));
+        assert!(excerpt.lines().count() <= MAX_LINES);
+    }
+    #[test]
+    fn rejects_relative_roots_and_non_regular_logs() {
+        assert!(log_paths(Some(std::path::PathBuf::from("relative"))).is_empty());
+        let dir = tempfile::tempdir().unwrap();
+        assert!(matches!(read_log(dir.path()), LogReading::Failed(_)));
+        let missing = dir.path().join("missing.log");
+        assert!(matches!(read_log(&missing), LogReading::Missing));
+        std::os::unix::fs::symlink("/dev/zero", &missing).unwrap();
+        assert!(matches!(read_log(&missing), LogReading::Failed(_)));
+    }
+    #[test]
+    fn tail_reads_recent_lines_and_bounds_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.log");
+        std::fs::write(&path, format!("{}\nlast event\n", "old\n".repeat(MAX_BYTES))).unwrap();
+        let LogReading::Ready(text) = read_log(&path) else { panic!("expected regular log") };
+        assert!(text.ends_with("last event"));
+        assert!(text.len() <= MAX_BYTES);
+        assert!(text.lines().count() <= MAX_LINES);
     }
 }
