@@ -1,0 +1,6 @@
+# The load averages, straight from the kernel.
+name = Load
+exec = cat /proc/loadavg
+every = 5s
+panel = left
+kind = text
