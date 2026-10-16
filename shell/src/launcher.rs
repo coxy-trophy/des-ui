@@ -1,243 +1,156 @@
-//! The application launcher: a search box over the installed applications, shown in
-//! place of the terminal.
+//! Universal keyboard palette, with a single bounded background file-search worker.
+use crate::{apps::{self,AppEntry},palette::{self,Action,Item},file_search::{self,Found},theme::Theme,ui};
+use des_common::ipc::DesktopState;
+use eframe::egui::{self,Align2,Key,Modifiers,Rect,ScrollArea,Sense,Stroke,StrokeKind,TextEdit,Ui,UiBuilder,vec2};
+use std::path::PathBuf;
+use std::sync::{Arc,Mutex,atomic::{AtomicU64,Ordering},mpsc::{self,SyncSender}};
+use std::time::{Duration,Instant};
 
-use crate::apps::{self, AppEntry};
-use crate::theme::Theme;
-use crate::ui;
-use eframe::egui::{
-    Align, Align2, Key, Layout, Modifiers, Rect, ScrollArea, Sense, Stroke, StrokeKind, TextEdit, Ui,
-    UiBuilder, vec2,
-};
-
-const ROW_HEIGHT: f32 = 56.0;
-
-#[derive(Default)]
-pub struct Launcher {
-    pub open: bool,
-    query: String,
-    selected: usize,
-    entries: Vec<AppEntry>,
-    /// The last thing that went wrong, shown under the search box.
-    error: Option<String>,
+struct Job { generation:u64, query:String, roots:Vec<PathBuf> }
+struct Files {
+    tx:SyncSender<Job>, generation:Arc<AtomicU64>, ready:Arc<Mutex<Option<(u64,Found)>>>,
+}
+impl Default for Files {
+    fn default()->Self {
+        let (tx,rx)=mpsc::sync_channel::<Job>(1);
+        let generation=Arc::new(AtomicU64::new(0));
+        let ready=Arc::new(Mutex::new(None));
+        let (current,result)=(generation.clone(),ready.clone());
+        std::thread::spawn(move || while let Ok(job)=rx.recv() {
+            let found=file_search::search(&job.roots,&job.query,job.generation,&current);
+            if current.load(Ordering::Relaxed)==job.generation { *result.lock().unwrap()=Some((job.generation,found)); }
+        });
+        Self {tx,generation,ready}
+    }
 }
 
+pub struct Launcher {
+    pub open:bool,
+    pin_request:Option<String>,query:String,selected:usize,entries:Vec<AppEntry>,state:Option<DesktopState>,
+    icons:crate::app_icons::IconCache,error:Option<String>,files:Files,found:Found,
+    roots:Vec<PathBuf>,folders:String,edit_folders:bool,focus_query:bool,changed:Instant,submitted:bool,searching:bool,composing:bool,
+}
+impl Default for Launcher {
+    fn default()->Self {
+        let home=std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(||PathBuf::from("/"));
+        let roots=vec![home.join("Documents"),home.join("Downloads"),home.join("Desktop")];
+        Self {open:false,pin_request:None,query:String::new(),selected:0,entries:Vec::new(),state:None,icons:Default::default(),error:None,files:Default::default(),found:Default::default(),folders:roots.iter().map(|p|p.display().to_string()).collect::<Vec<_>>().join("; "),roots,edit_folders:false,focus_query:true,changed:Instant::now(),submitted:false,searching:false,composing:false}
+    }
+}
 impl Launcher {
+    pub fn take_pin_request(&mut self)->Option<String>{self.pin_request.take()}
+    pub fn set_state(&mut self,state:Option<DesktopState>){self.state=state;}
+    pub fn fail(&mut self,error:String){self.error=Some(error);self.open=true;}
     pub fn open(&mut self) {
-        // Read afresh each time: applications get installed and removed.
-        self.entries = apps::scan();
-        self.query.clear();
-        self.selected = 0;
-        self.error = None;
-        self.open = true;
-    }
-
-    pub fn toggle(&mut self) {
-        if self.open {
-            self.open = false;
-        } else {
-            self.open();
-        }
-    }
-
-    /// The entries matching the query: names starting with it first, then names
-    /// containing it.
-    fn matches(&self) -> Vec<usize> {
-        let query = self.query.trim().to_lowercase();
-        let mut starts = Vec::new();
-        let mut contains = Vec::new();
-        for (index, entry) in self.entries.iter().enumerate() {
-            let name = entry.name.to_lowercase();
-            if name.starts_with(&query) {
-                starts.push(index);
-            } else if name.contains(&query) {
-                contains.push(index);
-            }
-        }
-        starts.extend(contains);
-        starts
-    }
-
-    /// Draws the launcher into `rect`. Returns an application that must be run inside
-    /// a terminal, when the user picked one; others are started directly.
-    pub fn show(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme) -> Option<AppEntry> {
-        let (up, down, enter, escape) = ui.input_mut(|input| {
-            (
-                input.consume_key(Modifiers::NONE, Key::ArrowUp),
-                input.consume_key(Modifiers::NONE, Key::ArrowDown),
-                input.consume_key(Modifiers::NONE, Key::Enter),
-                input.consume_key(Modifiers::NONE, Key::Escape),
-            )
-        });
-        if escape {
-            self.open = false;
-            return None;
-        }
-
-        // Wide margins on a wide workspace, so the list does not stretch edge to edge.
-        let margin = (rect.width() * 0.09).clamp(16.0, 120.0);
-        let area = Rect::from_min_max(rect.min + vec2(margin, 32.0), rect.max - vec2(margin, 0.0));
-        let before = self.query.clone();
-        let mut picked = None;
-        ui.allocate_new_ui(UiBuilder::new().max_rect(area), |ui| {
-            ui.spacing_mut().item_spacing.y = 8.0;
-            ui::tracked(ui, "OPEN AN APPLICATION", ui::display_bold(12.0), ui::SECONDARY, 3.0);
-
-            // The search field: a box in the accent, a lens, the query, the count.
-            let (field, _) = ui.allocate_exact_size(vec2(ui.available_width(), 60.0), Sense::hover());
-            ui.painter().rect_filled(field, 0.0, ui::PANEL);
-            ui.painter()
-                .rect_stroke(field, 0.0, Stroke::new(1.0, theme.main), StrokeKind::Inside);
-            let lens = field.left_center() + vec2(26.0, -1.0);
-            ui.painter().circle_stroke(lens, 5.5, Stroke::new(1.5, theme.main));
-            ui.painter()
-                .line_segment([lens + vec2(4.0, 4.0), lens + vec2(9.0, 9.0)], Stroke::new(1.5, theme.main));
-            let matches = {
-                let input = Rect::from_min_max(field.min + vec2(50.0, 14.0), field.max - vec2(110.0, 14.0));
-                let search = ui.put(
-                    input,
-                    TextEdit::singleline(&mut self.query)
-                        .frame(false)
-                        .font(ui::mono(22.0))
-                        .text_color(ui::TEXT)
-                        .hint_text("type a name"),
-                );
-                search.request_focus();
-                self.matches()
-            };
-            ui.painter().text(
-                field.right_center() - vec2(18.0, 0.0),
-                Align2::RIGHT_CENTER,
-                format!("{} OF {}", matches.len(), self.entries.len()),
-                ui::mono(12.0),
-                ui::LABEL,
-            );
-            if let Some(error) = &self.error {
-                ui::text(ui, error, ui::mono(12.0), ui::CAUTION);
-            }
-            ui.add_space(12.0);
-
-            if self.query != before {
-                self.selected = 0;
-            }
-            if down {
-                self.selected += 1;
-            }
-            if up {
-                self.selected = self.selected.saturating_sub(1);
-            }
-            self.selected = self.selected.min(matches.len().saturating_sub(1));
-            if enter {
-                picked = matches.get(self.selected).copied();
-            }
-
-            // The list on the left; on a wide workspace, the selection's details beside it.
-            let detail_width = if ui.available_width() > 760.0 { 320.0 } else { 0.0 };
-            let list_width = ui.available_width() - detail_width - if detail_width > 0.0 { 24.0 } else { 0.0 };
-            let selected_entry = matches.get(self.selected).map(|index| self.entries[*index].clone());
-            ui.horizontal_top(|ui| {
-                ui.spacing_mut().item_spacing.x = 24.0;
-                ui.allocate_ui_with_layout(vec2(list_width, ui.available_height()), Layout::top_down(Align::Min), |ui| {
-                    if matches.is_empty() {
-                        ui::text(ui, "No application by that name", ui::mono(13.0), ui::SECONDARY);
+        self.entries=apps::scan(); self.icons.clear();self.query.clear();self.error=None;self.open=true;self.edit_folders=false;self.focus_query=true;
+        if let Some(text)=des_common::input::config_path().and_then(|p|std::fs::read_to_string(p).ok()) {
+            for line in text.lines() {
+                if let Some(("search_folders",value))=line.split_once('=').map(|(k,v)|(k.trim(),v.trim())) {
+                    if let Ok(roots)=serde_json::from_str::<Vec<PathBuf>>(value) {
+                        let text=roots.iter().map(|p|p.display().to_string()).collect::<Vec<_>>().join("; ");
+                        if let Ok(roots)=file_search::parse_roots(&text){self.roots=roots;self.folders=text;}
                     }
-                    ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = 4.0;
-                        for (row, index) in matches.iter().enumerate() {
-                            let entry = &self.entries[*index];
-                            let (row_rect, response) =
-                                ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), Sense::click());
-                            let selected = row == self.selected;
-                            let painter = ui.painter_at(row_rect);
-                            if selected {
-                                painter.rect_filled(row_rect, 0.0, theme.main);
-                                if up || down {
-                                    ui.scroll_to_rect(row_rect, None);
-                                }
-                            } else {
-                                if response.hovered() {
-                                    painter.rect_filled(row_rect, 0.0, ui::PANEL);
-                                }
-                                painter.hline(row_rect.x_range(), row_rect.bottom() - 0.5, Stroke::new(1.0, ui::TRACK));
-                            }
-                            let (ink, quiet, edge) = if selected {
-                                (ui::GROUND, theme.muted_on_accent(), ui::GROUND)
-                            } else {
-                                (ui::TEXT, ui::LABEL, ui::LINE_STRONG)
-                            };
-                            // A square with the name's initial stands in for an icon.
-                            let badge = Rect::from_center_size(row_rect.left_center() + vec2(32.0, 0.0), vec2(28.0, 28.0));
-                            painter.rect_stroke(badge, 0.0, Stroke::new(1.5, edge), StrokeKind::Inside);
-                            let initial: String = entry.name.chars().take(1).flat_map(char::to_uppercase).collect();
-                            painter.text(badge.center(), Align2::CENTER_CENTER, initial, ui::display_bold(14.0), if selected { ink } else { ui::SECONDARY });
-                            let font = if selected { ui::display_bold(18.0) } else { ui::display(18.0) };
-                            painter.text(row_rect.left_center() + vec2(62.0, 0.0), Align2::LEFT_CENTER, &entry.name, font, ink);
-                            let note = match (selected, entry.terminal) {
-                                (true, _) => "ENTER",
-                                (false, true) => "RUNS IN A TERMINAL TAB",
-                                (false, false) => "",
-                            };
-                            painter.text(row_rect.right_center() - vec2(18.0, 0.0), Align2::RIGHT_CENTER, note, ui::mono(11.0), quiet);
-                            if response.clicked() {
-                                picked = Some(*index);
-                            }
-                        }
-                    });
-                });
-                if let (true, Some(entry)) = (detail_width > 0.0, &selected_entry) {
-                    ui.allocate_ui_with_layout(vec2(detail_width, 0.0), Layout::top_down(Align::Min), |ui| {
-                        eframe::egui::Frame::new()
-                            .fill(ui::PANEL)
-                            .stroke(Stroke::new(1.0, ui::LINE))
-                            .inner_margin(eframe::egui::Margin::same(18))
-                            .show(ui, |ui| {
-                                ui.set_width(ui.available_width());
-                                ui.spacing_mut().item_spacing.y = 12.0;
-                                ui::tracked(ui, "SELECTED", ui::display_bold(12.0), ui::SECONDARY, 3.0);
-                                ui::text(ui, &crate::panels::truncate(&entry.name, 24), ui::display_bold(22.0), ui::TEXT);
-                                ui::text(ui, &crate::panels::truncate(&entry.exec.join(" "), 38), ui::mono(12.0), ui::SECONDARY);
-                                let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
-                                ui.painter().rect_filled(line, 0.0, ui::LINE);
-                                ui::key_row(ui, "Open", "ENTER");
-                                ui::key_row(ui, "Move selection", "↑ ↓");
-                                ui::key_row(ui, "Back to terminal", "ESC");
-                            });
-                    });
+                }
+            }
+        }
+        self.invalidate();
+    }
+    pub fn toggle(&mut self){if self.open {self.open=false;}else{self.open();}}
+    fn invalidate(&mut self){self.files.generation.fetch_add(1,Ordering::Relaxed);self.selected=0;self.found=Found::default();self.changed=Instant::now();self.submitted=false;self.searching=false;}
+    fn pump_files(&mut self,ctx:&egui::Context){
+        let generation=self.files.generation.load(Ordering::Relaxed);
+        if let Some((version,found))=self.files.ready.lock().unwrap().take(){if version==generation{self.found=found;self.searching=false;}}
+        if !self.composing && !self.submitted && self.query.trim().chars().count()>=2 && self.changed.elapsed()>=Duration::from_millis(200){
+            let job=Job {generation,query:self.query.clone(),roots:self.roots.clone()};
+            if self.files.tx.try_send(job).is_ok(){self.submitted=true;self.searching=true;}
+        }
+        if self.searching || (!self.submitted && self.query.trim().chars().count()>=2){ctx.request_repaint_after(Duration::from_millis(40));}
+    }
+    pub fn show(&mut self,ui:&mut Ui,rect:Rect,theme:&Theme)->Option<Action>{
+        let mut ime_frame=self.composing;
+        for event in ui.input(|i|i.events.clone()) {if let egui::Event::Ime(ime)=event {ime_frame=true;self.composing=matches!(ime,egui::ImeEvent::Enabled|egui::ImeEvent::Preedit(_));}}
+        let (up,down,enter,escape)=if ime_frame{(false,false,false,false)}else{ui.input_mut(|i|(
+            i.consume_key(Modifiers::NONE,Key::ArrowUp),i.consume_key(Modifiers::NONE,Key::ArrowDown),i.consume_key(Modifiers::NONE,Key::Enter),i.consume_key(Modifiers::NONE,Key::Escape)))};
+        if escape {self.open=false;return None;}
+        self.pump_files(ui.ctx());
+        let margin=(rect.width()*0.06).clamp(12.0,72.0);
+        let area=Rect::from_min_max(rect.min+vec2(margin,20.0),rect.max-vec2(margin,8.0));
+        let mut chosen=None;
+        ui.allocate_new_ui(UiBuilder::new().max_rect(area),|ui|{
+            ui.horizontal_wrapped(|ui|{
+                ui::tracked(ui,"COMMAND PALETTE",ui::display_bold(14.0),ui::TEXT,2.0);
+                if ui::button(ui,theme,"FOLDERS",None,self.edit_folders).clicked(){self.edit_folders=!self.edit_folders;if !self.edit_folders{self.focus_query=true;}}
+                if ui::button(ui,theme,"DONE",Some("ESC"),false).clicked(){self.open=false;}
+            });
+            if self.edit_folders {
+                ui::text(ui,"Local file search folders · absolute paths separated by semicolons",ui::mono(11.0),ui::SECONDARY);
+                ui.add(TextEdit::singleline(&mut self.folders).char_limit(32768).font(ui::mono(12.0)).desired_width(f32::INFINITY));
+                if ui::button(ui,theme,"SAVE FOLDERS",None,false).clicked(){match file_search::parse_roots(&self.folders){
+                    Ok(roots)=>match crate::config::set("search_folders",Some(&serde_json::to_string(&roots).unwrap())){Ok(_)=>{self.roots=roots;self.edit_folders=false;self.focus_query=true;self.error=None;self.invalidate();},Err(e)=>self.error=Some(e.to_string())},
+                    Err(e)=>self.error=Some(e.into()),
+                }}
+            }
+            let before=self.query.clone();
+            let query_id=ui.id().with("palette-query");
+            ui.horizontal(|ui|{
+                let field=ui.add_sized(vec2((ui.available_width()-75.0).max(40.0),38.0),TextEdit::singleline(&mut self.query).char_limit(4096).id(query_id).font(ui::mono(18.0)).hint_text("Apps, windows, settings, actions, files…"));
+                if self.focus_query && !self.edit_folders {field.request_focus();self.focus_query=false;}
+                if ui.add_enabled(!self.query.is_empty(),egui::Button::new("CLEAR")).clicked(){self.query.clear();field.request_focus();}
+            });
+            if before!=self.query{self.invalidate();}
+            if let Some(error)=&self.error{ui::text(ui,error,ui::mono(12.0),ui::CAUTION);}
+            let mut items=palette::results(&self.query,&self.entries,self.state.as_ref());
+            items.extend(self.found.paths.iter().map(|path|Item{label:path.file_name().unwrap_or_default().to_string_lossy().into_owned(),detail:path.display().to_string(),kind:"FILE",action:Action::File(path.clone()),pin:None,icon:None}));
+            let status=if self.query.trim().chars().count()<2{"Type two characters to include files"}else if self.searching || !self.submitted {"Searching local filenames…"}else if self.found.truncated{"File search bounded · refine the query or folders"}else if self.found.errors>0{"Some folders were unavailable"}else{"Local filenames · hidden and build folders excluded"};
+            ui::text(ui,&format!("{} results · {status}",items.len()),ui::mono(11.0),ui::SECONDARY);
+            if down{self.selected=self.selected.saturating_add(1);}if up{self.selected=self.selected.saturating_sub(1);}
+            self.selected=self.selected.min(items.len().saturating_sub(1));
+            if enter && !self.edit_folders{chosen=items.get(self.selected).map(|i|i.action.clone());}
+            if items.is_empty(){ui::text(ui,"No matching result. Try another name or choose different folders.",ui::mono(13.0),ui::SECONDARY);}
+            let mut scroll=ScrollArea::vertical().auto_shrink([false,false]);
+            if up||down{scroll=scroll.vertical_scroll_offset((self.selected as f32*(52.0+ui.spacing().item_spacing.y)-ui.available_height()*0.5).max(0.0));}
+            scroll.show_rows(ui,52.0,items.len(),|ui,range|{
+                for row in range{
+                    let item=&items[row];let selected=row==self.selected;
+                    let (rect,response)=ui.allocate_exact_size(vec2(ui.available_width(),52.0),Sense::click());
+                    let painter=ui.painter_at(rect);
+                    painter.rect_filled(rect,0.0,if selected{theme.tint()}else if response.hovered(){ui::PANEL}else{ui::GROUND});
+                    if selected{painter.rect_stroke(rect,0.0,Stroke::new(1.0,theme.main),StrokeKind::Inside);}
+                    if let Some(icon)=&item.icon{self.icons.paint(ui,Rect::from_center_size(rect.left_center()+vec2(20.0,0.0),vec2(24.0,24.0)),Some(icon));}
+                    let left=rect.left_top()+vec2(40.0,6.0);
+                    painter.text(left,Align2::LEFT_TOP,crate::panels::truncate(&item.label,80),ui::display(16.0),ui::TEXT);
+                    painter.text(left+vec2(0.0,24.0),Align2::LEFT_TOP,crate::panels::truncate(&item.detail,110),ui::mono(10.0),ui::SECONDARY);
+                    painter.text(rect.right_top()-vec2(8.0,-8.0),Align2::RIGHT_TOP,item.kind,ui::mono(10.0),ui::LABEL);
+                    if response.clicked(){chosen=Some(item.action.clone());}
+                    if let Some(id)=&item.pin{response.context_menu(|ui|{if ui.button("Pin to dock").clicked(){self.pin_request=Some(id.clone());ui.close_menu();}});}
                 }
             });
         });
-
-        let entry = self.entries.get(picked?)?.clone();
-        if entry.terminal {
-            self.open = false;
-            return Some(entry);
-        }
-        match apps::launch(&entry) {
-            Ok(()) => self.open = false,
-            Err(e) => self.error = Some(format!("Cannot start {}: {e}", entry.name)),
-        }
-        None
+        if chosen.is_some(){self.open=false;}
+        chosen
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    fn frame(launcher:&mut Launcher,ctx:&egui::Context,events:Vec<egui::Event>)->Option<Action>{
+        let mut picked=None;
+        let _=ctx.run(egui::RawInput{screen_rect:Some(Rect::from_min_size(egui::Pos2::ZERO,vec2(900.0,600.0))),events,..Default::default()},|ctx|{
+            egui::CentralPanel::default().show(ctx,|ui|{picked=launcher.show(ui,ui.max_rect(),&Theme::load("signal"));});
+        });picked
+    }
     #[test]
-    fn prefix_matches_come_first() {
-        let entry = |name: &str| AppEntry {
-            name: name.into(),
-            exec: vec!["x".into()],
-            terminal: false,
-        };
-        let mut launcher = Launcher {
-            entries: vec![entry("Brave"), entry("Firefox"), entry("Fire Alarm"), entry("Campfire")],
-            ..Default::default()
-        };
-        assert_eq!(launcher.matches(), [0, 1, 2, 3]);
-        launcher.query = " FIRE".into();
-        assert_eq!(launcher.matches(), [1, 2, 3]);
-        launcher.query = "zzz".into();
-        assert!(launcher.matches().is_empty());
+    fn keyboard_palette_opens_settings_and_composition_cannot_execute(){
+        let ctx=egui::Context::default();ui::install_fonts(&ctx,None,None);let mut launcher=Launcher{open:true,..Default::default()};
+        frame(&mut launcher,&ctx,vec![]);
+        frame(&mut launcher,&ctx,vec![egui::Event::Text("health".into())]);
+        let enter=||egui::Event::Key{key:Key::Enter,physical_key:None,pressed:true,repeat:false,modifiers:Modifiers::NONE};
+        frame(&mut launcher,&ctx,vec![egui::Event::Ime(egui::ImeEvent::Preedit("文".into()))]);
+        assert!(frame(&mut launcher,&ctx,vec![enter()]).is_none());assert!(launcher.open);
+        assert!(frame(&mut launcher,&ctx,vec![egui::Event::Ime(egui::ImeEvent::Commit(String::new())),enter()]).is_none());
+        launcher.query="health".into();launcher.invalidate();
+        assert!(matches!(frame(&mut launcher,&ctx,vec![enter()]),Some(Action::Settings("HEALTH"))));
+        assert!(!launcher.open);
     }
 }
