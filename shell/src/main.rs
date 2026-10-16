@@ -528,6 +528,10 @@ impl App {
                 if key == "side_panel_behavior" {
                     self.frame_synced = false;
                 }
+                if key == "animate" {
+                    // The compositor re-reads the setting where it reads the input ones.
+                    self.send(Command::ReloadInput);
+                }
                 if key == "palette" {
                     self.theme = self.config.resolved_theme();
                     apply_style(ctx, &self.theme);

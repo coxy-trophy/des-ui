@@ -63,7 +63,9 @@ pub struct Config {
     pub panels: Panels,
     pub side_panel_behavior: des_common::PanelBehavior,
     pub dock_pins: Vec<String>,
-    pub dock_animation: bool,
+    /// Windows, workspaces and the dock move; off for reduced motion. The compositor
+    /// reads the same key.
+    pub animate: bool,
 }
 
 impl Default for Config {
@@ -91,7 +93,7 @@ impl Default for Config {
             panels: Panels::default(),
             side_panel_behavior: des_common::PanelBehavior::default(),
             dock_pins: Vec::new(),
-            dock_animation: true,
+            animate: true,
         }
     }
 }
@@ -106,6 +108,7 @@ impl Config {
     pub fn parse(text: &str) -> Config {
         let mut config = Config::default();
         config.side_panel_behavior = des_common::PanelBehavior::parse(text);
+        let mut parsed_animate = false;
         for line in text.lines() {
             let Some((key, value)) = line.split('#').next().unwrap_or("").split_once('=') else {
                 continue;
@@ -148,7 +151,12 @@ impl Config {
                 "do_not_disturb" => config.do_not_disturb = value == "on",
                 "lock_on_sleep" => config.lock_on_sleep = value != "off",
                 "notification_sounds" => config.notification_sounds = value != "off",
-                "dock_animation" => config.dock_animation = value != "off",
+                "animate" => {
+                    config.animate = value != "off";
+                    parsed_animate = true;
+                }
+                // The key before windows moved too; `animate` wins when both are present.
+                "dock_animation" if !parsed_animate => config.animate = value != "off",
                 "dock_pins" => {
                     if let Ok(pins) = serde_json::from_str::<Vec<String>>(value) {
                         let mut seen = std::collections::HashSet::new();
@@ -309,7 +317,9 @@ mod tests {
         assert_eq!(Config::parse(&std::fs::read_to_string(&path).unwrap()).dock_pins,pins);
         assert!(Config::parse("dock_pins = broken").dock_pins.is_empty());
         assert_eq!(Config::parse(r#"dock_pins = ["a.desktop","a.desktop",""]"#).dock_pins,vec!["a.desktop"]);
-        assert!(!Config::parse("dock_animation = off").dock_animation);
+        assert!(!Config::parse("dock_animation = off").animate);
+        assert!(!Config::parse("animate = off").animate);
+        assert!(Config::parse("dock_animation = off\nanimate = on").animate);
     }
 
     #[test]

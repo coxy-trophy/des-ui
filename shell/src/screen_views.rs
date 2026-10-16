@@ -10,7 +10,7 @@ impl App {
             let dock=self.secondary_docks.entry(screen).or_default();
             let mut output=None;
             let suppress=locked || self.capture.marking();
-            let (theme,mon,pins,animate)=(&self.theme,&self.mon,&self.config.dock_pins,self.config.dock_animation);
+            let (theme,mon,pins,animate)=(&self.theme,&self.mon,&self.config.dock_pins,self.config.animate);
             ctx.show_viewport_immediate(
                 egui::ViewportId::from_hash_of(("des-display",screen+1)),
                 ViewportBuilder::default().with_title(format!("des-ui display {}",screen+1)).with_app_id("des-ui"),

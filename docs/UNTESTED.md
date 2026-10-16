@@ -176,3 +176,13 @@ watched work on a real machine. Tick them off, or note what went wrong.
 - [ ] Lock and screenshot picking suppress every dock and return keyboard focus correctly
 - [ ] Health: real helper paths, fresh/missing logs, open full log, refresh and failure states
 - [ ] Terminal find: large scrollback, wide/combining text, a real IME, two panes, live output and keyboard focus
+
+## Motion (compositor)
+
+- [ ] A window materialises (grows from 96%, fades in) when it opens; split, full
+      screen and a move to another display ease over 180 ms; Super+1…4 slides the
+      workspace sideways over 220 ms, higher workspaces arriving from the right
+- [ ] Nothing moves while locked or while the screenshot chooser is up
+- [ ] Settings → Frame → Animate off snaps everything, for windows and the dock alike
+- [ ] Once nothing moves no frames are drawn: idle power is as before
+- [ ] A client slow to resize is scaled into its new area rather than jumping

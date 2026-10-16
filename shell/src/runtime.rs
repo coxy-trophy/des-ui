@@ -466,7 +466,7 @@ impl eframe::App for App {
             self.dock.reset();
             dock::Output::default()
         } else {
-            self.dock.show(ctx, screen, state.as_ref(), &self.config.dock_pins, &theme, self.config.dock_animation)
+            self.dock.show(ctx, screen, state.as_ref(), &self.config.dock_pins, &theme, self.config.animate)
         };
         let dock_area = dock.overlay.map(|rect| (
             rect.left().floor() as i32, rect.top().floor() as i32,

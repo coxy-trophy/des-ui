@@ -3,3 +3,6 @@
 # eDEX-UI's theme files are GPL-3.0; only this project's own theme is kept here.
 /themes/*
 !/themes/signal.json
+
+# Claude Code worktrees and session files
+/.claude/

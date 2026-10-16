@@ -620,8 +620,8 @@ impl Settings {
         ui.add_space(26.0);
 
         heading(ui, "DOCK", "Move to the bottom edge to show open and pinned apps. Super+D opens keyboard navigation.");
-        if switch_row(ui, theme, "Animate dock", "Slide in and out; turn off for reduced motion", config.dock_animation) {
-            changes.push(Change::Set("dock_animation", (!config.dock_animation).then_some("off".to_string())));
+        if switch_row(ui, theme, "Animate", "Windows, workspaces and the dock; turn off for reduced motion", config.animate) {
+            changes.push(Change::Set("animate", (!config.animate).then_some("off".to_string())));
         }
         ui.add_space(26.0);
 
