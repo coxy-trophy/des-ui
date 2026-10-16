@@ -2,6 +2,8 @@
 //! driven through the system's own tools, `nmcli` and `bluetoothctl`, run on background
 //! threads so that a slow scan never stalls the interface.
 
+mod wifi;
+
 use crate::theme::Theme;
 use crate::ui;
 use eframe::egui::{self, Align, Align2, Key, Layout, Sense, Stroke, StrokeKind, TextEdit, Ui, vec2};
@@ -446,9 +448,17 @@ impl Radio {
         }
     }
 
+    fn wifi_connect(&self, ssid: String, password: Option<String>) {
+        self.wifi_work("CONNECTING", Vec::new(), false, Some((ssid, password)));
+    }
+
     /// Runs `steps` in the background while showing `doing`, then reads the networks
     /// again. A step that fails stops the rest and is reported.
     fn wifi_do(&self, doing: &str, steps: Vec<Vec<String>>, rescan: bool) {
+        self.wifi_work(doing, steps, rescan, None);
+    }
+
+    fn wifi_work(&self, doing: &str, steps: Vec<Vec<String>>, rescan: bool, connection: Option<(String, Option<String>)>) {
         let shared = self.wifi.clone();
         let ctx = self.ctx.clone();
         {
@@ -460,7 +470,7 @@ impl Radio {
             state.problem = None;
         }
         std::thread::spawn(move || {
-            let mut problem = None;
+            let mut problem = connection.and_then(|(ssid, password)| wifi::connect(&ssid, password.as_deref()).err());
             for step in steps {
                 let args: Vec<&str> = step.iter().map(String::as_str).collect();
                 if let Err(e) = run("nmcli", &args) {
@@ -827,15 +837,11 @@ impl Radio {
                     if network.secured {
                         go = field(ui, theme, &mut self.password, "password", true, 280.0);
                     }
-                    let ready = !network.secured || self.password.len() >= 8;
+                    let ready = !network.secured || !self.password.is_empty();
                     go |= ui::button(ui, theme, "CONNECT", None, ready).clicked();
                     if go && ready {
-                        let mut step = args(&["device", "wifi", "connect", ssid]);
-                        if network.secured {
-                            step.extend(args(&["password", &self.password]));
-                        }
-                        self.password.clear();
-                        self.wifi_do("CONNECTING", vec![step], false);
+                        let password = network.secured.then(|| std::mem::take(&mut self.password));
+                        self.wifi_connect(ssid.to_string(), password);
                     }
                 }
                 if network.known && ui::button(ui, theme, "FORGET", None, false).clicked() {
