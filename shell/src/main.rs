@@ -12,6 +12,7 @@ mod globe;
 mod greeter;
 mod launcher;
 mod palette;
+mod commands;
 mod file_search;
 mod lock;
 mod music;

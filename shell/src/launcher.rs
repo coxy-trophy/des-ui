@@ -1,5 +1,6 @@
-//! Universal keyboard palette, with a single bounded background file-search worker.
-use crate::{apps::{self,AppEntry},palette::{self,Action,Item},file_search::{self,Found},theme::Theme,ui};
+//! Universal keyboard palette: one bounded background worker for files and one for
+//! hosts, commands, processes and units; neither ever runs what was typed.
+use crate::{apps::{self,AppEntry},commands,palette::{self,Action,Item},file_search::{self,Found},theme::Theme,ui};
 use des_common::ipc::DesktopState;
 use eframe::egui::{self,Align2,Key,Modifiers,Rect,ScrollArea,Sense,Stroke,StrokeKind,TextEdit,Ui,UiBuilder,vec2};
 use std::path::PathBuf;
@@ -28,19 +29,25 @@ pub struct Launcher {
     pub open:bool,
     pin_request:Option<String>,query:String,selected:usize,entries:Vec<AppEntry>,state:Option<DesktopState>,
     icons:crate::app_icons::IconCache,error:Option<String>,files:Files,found:Found,
+    providers:commands::Worker,catalog:commands::Catalog,catalog_asked:bool,
+    /// What background actions (unit changes) reported: title, body, whether it went wrong.
+    outcomes:Arc<Mutex<Vec<(String,String,bool)>>>,
     roots:Vec<PathBuf>,folders:String,edit_folders:bool,focus_query:bool,changed:Instant,submitted:bool,searching:bool,composing:bool,
 }
 impl Default for Launcher {
     fn default()->Self {
         let home=std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(||PathBuf::from("/"));
         let roots=vec![home.join("Documents"),home.join("Downloads"),home.join("Desktop")];
-        Self {open:false,pin_request:None,query:String::new(),selected:0,entries:Vec::new(),state:None,icons:Default::default(),error:None,files:Default::default(),found:Default::default(),folders:roots.iter().map(|p|p.display().to_string()).collect::<Vec<_>>().join("; "),roots,edit_folders:false,focus_query:true,changed:Instant::now(),submitted:false,searching:false,composing:false}
+        Self {open:false,pin_request:None,query:String::new(),selected:0,entries:Vec::new(),state:None,icons:Default::default(),error:None,files:Default::default(),found:Default::default(),providers:Default::default(),catalog:Default::default(),catalog_asked:false,outcomes:Default::default(),folders:roots.iter().map(|p|p.display().to_string()).collect::<Vec<_>>().join("; "),roots,edit_folders:false,focus_query:true,changed:Instant::now(),submitted:false,searching:false,composing:false}
     }
 }
 impl Launcher {
     pub fn take_pin_request(&mut self)->Option<String>{self.pin_request.take()}
     pub fn set_state(&mut self,state:Option<DesktopState>){self.state=state;}
     pub fn fail(&mut self,error:String){self.error=Some(error);self.open=true;}
+    /// Where a background action reports how it went; drained by the shell into notices.
+    pub fn outcomes(&self)->Arc<Mutex<Vec<(String,String,bool)>>>{self.outcomes.clone()}
+    pub fn take_outcomes(&mut self)->Vec<(String,String,bool)>{std::mem::take(&mut *self.outcomes.lock().unwrap_or_else(|e|e.into_inner()))}
     pub fn open(&mut self) {
         self.entries=apps::scan(); self.icons.clear();self.query.clear();self.error=None;self.open=true;self.edit_folders=false;self.focus_query=true;
         if let Some(text)=des_common::input::config_path().and_then(|p|std::fs::read_to_string(p).ok()) {
@@ -56,7 +63,20 @@ impl Launcher {
         self.invalidate();
     }
     pub fn toggle(&mut self){if self.open {self.open=false;}else{self.open();}}
-    fn invalidate(&mut self){self.files.generation.fetch_add(1,Ordering::Relaxed);self.selected=0;self.found=Found::default();self.changed=Instant::now();self.submitted=false;self.searching=false;}
+    fn invalidate(&mut self){
+        self.files.generation.fetch_add(1,Ordering::Relaxed);self.providers.generation().fetch_add(1,Ordering::Relaxed);
+        self.selected=0;self.found=Found::default();self.changed=Instant::now();self.submitted=false;self.searching=false;self.catalog_asked=false;
+        // The hosts and commands already known stay in view; processes answer only the new query.
+        self.catalog.processes.clear();
+    }
+    fn pump_catalog(&mut self,ctx:&egui::Context){
+        let generation=self.providers.generation().load(Ordering::Relaxed);
+        if let Some(catalog)=self.providers.take(generation){self.catalog=catalog;}
+        else if !self.catalog_asked && !self.composing && (self.query.trim().is_empty() || self.changed.elapsed()>=Duration::from_millis(200)) {
+            self.catalog_asked=self.providers.request(generation,&self.query);
+            ctx.request_repaint_after(Duration::from_millis(40));
+        }
+    }
     fn pump_files(&mut self,ctx:&egui::Context){
         let generation=self.files.generation.load(Ordering::Relaxed);
         if let Some((version,found))=self.files.ready.lock().unwrap().take(){if version==generation{self.found=found;self.searching=false;}}
@@ -73,6 +93,7 @@ impl Launcher {
             i.consume_key(Modifiers::NONE,Key::ArrowUp),i.consume_key(Modifiers::NONE,Key::ArrowDown),i.consume_key(Modifiers::NONE,Key::Enter),i.consume_key(Modifiers::NONE,Key::Escape)))};
         if escape {self.open=false;return None;}
         self.pump_files(ui.ctx());
+        self.pump_catalog(ui.ctx());
         let margin=(rect.width()*0.06).clamp(12.0,72.0);
         let area=Rect::from_min_max(rect.min+vec2(margin,20.0),rect.max-vec2(margin,8.0));
         let mut chosen=None;
@@ -93,19 +114,20 @@ impl Launcher {
             let before=self.query.clone();
             let query_id=ui.id().with("palette-query");
             ui.horizontal(|ui|{
-                let field=ui.add_sized(vec2((ui.available_width()-75.0).max(40.0),38.0),TextEdit::singleline(&mut self.query).char_limit(4096).id(query_id).font(ui::mono(18.0)).hint_text("Apps, windows, settings, actions, files…"));
+                let field=ui.add_sized(vec2((ui.available_width()-75.0).max(40.0),38.0),TextEdit::singleline(&mut self.query).char_limit(4096).id(query_id).font(ui::mono(18.0)).hint_text("Apps, windows, settings, hosts, commands, files, 2+2…"));
                 if self.focus_query && !self.edit_folders {field.request_focus();self.focus_query=false;}
                 if ui.add_enabled(!self.query.is_empty(),egui::Button::new("CLEAR")).clicked(){self.query.clear();field.request_focus();}
             });
             if before!=self.query{self.invalidate();}
             if let Some(error)=&self.error{ui::text(ui,error,ui::mono(12.0),ui::CAUTION);}
-            let mut items=palette::results(&self.query,&self.entries,self.state.as_ref());
+            let mut items=palette::results(&self.query,&self.entries,self.state.as_ref(),&self.catalog);
             items.extend(self.found.paths.iter().map(|path|Item{label:path.file_name().unwrap_or_default().to_string_lossy().into_owned(),detail:path.display().to_string(),kind:"FILE",action:Action::File(path.clone()),pin:None,icon:None}));
             let status=if self.query.trim().chars().count()<2{"Type two characters to include files"}else if self.searching || !self.submitted {"Searching local filenames…"}else if self.found.truncated{"File search bounded · refine the query or folders"}else if self.found.errors>0{"Some folders were unavailable"}else{"Local filenames · hidden and build folders excluded"};
             ui::text(ui,&format!("{} results · {status}",items.len()),ui::mono(11.0),ui::SECONDARY);
             if down{self.selected=self.selected.saturating_add(1);}if up{self.selected=self.selected.saturating_sub(1);}
             self.selected=self.selected.min(items.len().saturating_sub(1));
             if enter && !self.edit_folders{chosen=items.get(self.selected).map(|i|i.action.clone());}
+            if let Some(Action::Copy(text))=&chosen{ui.ctx().copy_text(text.clone());}
             if items.is_empty(){ui::text(ui,"No matching result. Try another name or choose different folders.",ui::mono(13.0),ui::SECONDARY);}
             let mut scroll=ScrollArea::vertical().auto_shrink([false,false]);
             if up||down{scroll=scroll.vertical_scroll_offset((self.selected as f32*(52.0+ui.spacing().item_spacing.y)-ui.available_height()*0.5).max(0.0));}
@@ -121,8 +143,13 @@ impl Launcher {
                     painter.text(left,Align2::LEFT_TOP,crate::panels::truncate(&item.label,80),ui::display(16.0),ui::TEXT);
                     painter.text(left+vec2(0.0,24.0),Align2::LEFT_TOP,crate::panels::truncate(&item.detail,110),ui::mono(10.0),ui::SECONDARY);
                     painter.text(rect.right_top()-vec2(8.0,-8.0),Align2::RIGHT_TOP,item.kind,ui::mono(10.0),ui::LABEL);
-                    if response.clicked(){chosen=Some(item.action.clone());}
+                    if response.clicked(){chosen=Some(item.action.clone());if let Action::Copy(text)=&item.action{ui.ctx().copy_text(text.clone());}}
                     if let Some(id)=&item.pin{response.context_menu(|ui|{if ui.button("Pin to dock").clicked(){self.pin_request=Some(id.clone());ui.close_menu();}});}
+                    if let Action::Unit{name,user,..}=&item.action{response.context_menu(|ui|{
+                        for op in [commands::UnitOp::Start,commands::UnitOp::Stop,commands::UnitOp::Restart]{
+                            if ui.button(op.word()).clicked(){chosen=Some(Action::Unit{name:name.clone(),user:*user,op});ui.close_menu();}
+                        }
+                    });}
                 }
             });
         });
@@ -134,11 +161,26 @@ impl Launcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn frame(launcher:&mut Launcher,ctx:&egui::Context,events:Vec<egui::Event>)->Option<Action>{
+    fn frame(launcher:&mut Launcher,ctx:&egui::Context,events:Vec<egui::Event>)->Option<Action>{ frame_copying(launcher,ctx,events).0 }
+    fn frame_copying(launcher:&mut Launcher,ctx:&egui::Context,events:Vec<egui::Event>)->(Option<Action>,Option<String>){
         let mut picked=None;
-        let _=ctx.run(egui::RawInput{screen_rect:Some(Rect::from_min_size(egui::Pos2::ZERO,vec2(900.0,600.0))),events,..Default::default()},|ctx|{
+        let output=ctx.run(egui::RawInput{screen_rect:Some(Rect::from_min_size(egui::Pos2::ZERO,vec2(900.0,600.0))),events,..Default::default()},|ctx|{
             egui::CentralPanel::default().show(ctx,|ui|{picked=launcher.show(ui,ui.max_rect(),&Theme::load("signal"));});
-        });picked
+        });
+        let copied=output.platform_output.commands.iter().find_map(|c|match c{egui::OutputCommand::CopyText(t)=>Some(t.clone()),_=>None});
+        (picked,copied)
+    }
+    #[test]
+    fn typing_arithmetic_shows_a_calculation_and_enter_copies_it(){
+        let ctx=egui::Context::default();ui::install_fonts(&ctx,None,None);let mut launcher=Launcher{open:true,..Default::default()};
+        frame(&mut launcher,&ctx,vec![]);
+        frame(&mut launcher,&ctx,vec![egui::Event::Text("2+2".into())]);
+        let items=palette::results(&launcher.query,&launcher.entries,None,&launcher.catalog);
+        assert_eq!((items[0].kind,items[0].label.as_str()),("CALC","2+2 = 4"));
+        let enter=egui::Event::Key{key:Key::Enter,physical_key:None,pressed:true,repeat:false,modifiers:Modifiers::NONE};
+        let (picked,copied)=frame_copying(&mut launcher,&ctx,vec![enter]);
+        assert_eq!(picked,Some(Action::Copy("4".into())));
+        assert_eq!(copied.as_deref(),Some("4"));
     }
     #[test]
     fn keyboard_palette_opens_settings_and_composition_cannot_execute(){
