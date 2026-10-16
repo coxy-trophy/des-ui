@@ -575,7 +575,12 @@ impl TermTab {
             }
         }
 
-        let painter = ui.painter_at(rect);
+        let mut painter = ui.painter_at(rect);
+        // At the start of a session the text comes on after the frame around it.
+        let shown = crate::powerup::stage(ui.ctx()).alpha(crate::powerup::Part::Terminal);
+        if shown < 1.0 {
+            painter.set_opacity(shown);
+        }
         painter.rect_filled(rect, 0.0, crate::ui::GROUND);
         // Backgrounds and selections use terminal cells, not font glyph advances.
         for row in 0..rows {

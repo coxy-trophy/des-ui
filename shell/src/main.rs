@@ -23,6 +23,7 @@ mod oklch;
 mod panels;
 mod pet;
 mod power;
+mod powerup;
 mod bootsplash;
 mod radio;
 mod runtime;

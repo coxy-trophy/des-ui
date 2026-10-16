@@ -2,6 +2,7 @@
 //! status strip, and what a further display shows while it is idle.
 
 use crate::geo::Snapshot;
+use crate::powerup::{self, Part};
 use crate::globe;
 use crate::sysmon::SysMon;
 use crate::theme::Theme;
@@ -87,6 +88,9 @@ fn clock(ui: &mut Ui, theme: &Theme, size: f32) {
 }
 
 pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon, pet: &mut crate::pet::Pet) {
+    // At the start of a session the column comes on with the rest of the frame.
+    let stage = powerup::stage(ui.ctx());
+    stage.apply(ui, Part::Left);
     ui.spacing_mut().item_spacing.y = 7.0;
     let now = chrono::Local::now();
     // The clock is sized for a full-width column and shrinks with it.
@@ -128,13 +132,13 @@ pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon, pet: &mut crate::pet::Pet)
             ui::meta(ui, &format!("LOAD {:.2}", average[0]), ui::LABEL);
         }
     });
-    ui::sparkline(ui, &mon.cpu_hist, 100.0, vec2(ui.available_width(), 56.0), theme.main, true);
+    ui::sparkline(ui, &stage.swept_values(&mon.cpu_hist), 100.0, vec2(ui.available_width(), 56.0), theme.main, true);
     ui.add_space(3.0);
     // One bar per core, however many there are; the pointer reads any one of them.
-    ui::bar_grid(ui, theme, &mon.cores, 100.0, 28.0, |i, usage| format!("Core {}: {usage:.0}%", i + 1));
+    ui::bar_grid(ui, theme, &stage.swept_slice(&mon.cores), 100.0, 28.0, |i, usage| format!("Core {}: {usage:.0}%", i + 1));
     if let Some(gpu) = &mon.gpu {
         ui.add_space(3.0);
-        ui::meter(ui, theme, "GPU", 30.0, gpu.busy as f32 / 100.0, &format!("{}", gpu.busy));
+        ui::meter(ui, theme, "GPU", 30.0, stage.swept(gpu.busy as f32 / 100.0), &format!("{}", gpu.busy));
     }
 
     ui.add_space(SECTION_GAP);
@@ -143,9 +147,9 @@ pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon, pet: &mut crate::pet::Pet)
         ui::meta(ui, &total, ui::LABEL);
         ui::meta(ui, &format!("{:.1}", mon.mem_used as f64 / GIB), ui::TEXT);
     });
-    ui::sparkline(ui, &mon.mem_hist, 100.0, vec2(ui.available_width(), 30.0), theme.main, true);
+    ui::sparkline(ui, &stage.swept_values(&mon.mem_hist), 100.0, vec2(ui.available_width(), 30.0), theme.main, true);
     ui.add_space(3.0);
-    ui::bar(ui, theme, 10.0, mon.mem_used as f32 / mon.mem_total.max(1) as f32, 0.0);
+    ui::bar(ui, theme, 10.0, stage.swept(mon.mem_used as f32 / mon.mem_total.max(1) as f32), 0.0);
     ui.horizontal(|ui| {
         ui::text(ui, "USED", ui::mono(11.0), ui::SECONDARY);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -195,9 +199,9 @@ pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon, pet: &mut crate::pet::Pet)
             .iter()
             .chain(mon.disk_write_hist.iter())
             .fold(1024.0_f32 * 1024.0, |a, b| a.max(*b));
-        ui::waterfall(ui, &mon.disk_read_hist, &mon.disk_write_hist, peak, vec2(ui.available_width(), 36.0), theme.main, ui::SECONDARY);
+        ui::waterfall(ui, &stage.swept_values(&mon.disk_read_hist), &stage.swept_values(&mon.disk_write_hist), peak, vec2(ui.available_width(), 36.0), theme.main, ui::SECONDARY);
         for fs in mon.filesystems.iter().take(filesystems) {
-            ui::meter(ui, theme, &truncate(&fs.mount, 9), 60.0, fs.used, &format!("{:.0}%", fs.used * 100.0));
+            ui::meter(ui, theme, &truncate(&fs.mount, 9), 60.0, stage.swept(fs.used), &format!("{:.0}%", fs.used * 100.0));
         }
     }
 
@@ -285,6 +289,8 @@ pub fn right(
     geo: &Snapshot,
     playing: impl FnOnce(&mut Ui),
 ) {
+    let stage = powerup::stage(ui.ctx());
+    stage.apply(ui, Part::Right);
     ui.spacing_mut().item_spacing.y = 7.0;
     let online = !mon.ip.is_empty();
     ui::section(ui, "NETWORK", |ui| {
@@ -336,7 +342,7 @@ pub fn right(
         });
     });
     // What comes in rises from the line, what goes out hangs from it.
-    ui::waterfall(ui, &mon.rx_hist, &mon.tx_hist, peak, vec2(ui.available_width(), 48.0), theme.main, ui::SECONDARY);
+    ui::waterfall(ui, &stage.swept_values(&mon.rx_hist), &stage.swept_values(&mon.tx_hist), peak, vec2(ui.available_width(), 48.0), theme.main, ui::SECONDARY);
 
     ui.add_space(SECTION_GAP);
     ui::section(ui, "WORLD VIEW", |ui| {
@@ -452,6 +458,10 @@ pub fn status(
     recording: Option<std::time::Duration>,
 ) -> (Option<Panel>, bool, bool, bool, bool, bool) {
     let mut toggled = None;
+    let stage = powerup::stage(ui.ctx());
+    if stage.alpha(Part::Status) < 1.0 {
+        ui.set_opacity(stage.alpha(Part::Status));
+    }
     ui.spacing_mut().item_spacing.x = 20.0;
     ui::tracked(ui, "DEs-UI", ui::display_bold(11.0), theme.main, 3.0);
     // The way into the settings, lit while they are open.
@@ -671,6 +681,7 @@ impl FsView {
     /// Draws the browser: a path, then a grid of tiles. Returns text to type into the
     /// terminal when an entry is clicked.
     pub fn show(&mut self, ui: &mut Ui, theme: &Theme, cwd: Option<&Path>) -> Option<String> {
+        powerup::stage(ui.ctx()).apply(ui, Part::Bottom);
         if let Some(cwd) = cwd {
             let stale = self
                 .loaded

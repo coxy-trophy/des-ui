@@ -7,6 +7,7 @@
 pub mod input;
 pub mod ipc;
 pub mod music;
+pub mod splash;
 pub mod control;
 pub mod transport;
 
