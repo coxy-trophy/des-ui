@@ -225,3 +225,25 @@ watched work on a real machine. Tick them off, or note what went wrong.
 - [ ] A password copied from KeePassXC or another manager that sets the hint does not appear
 - [ ] Without `wl-clipboard` the palette says so under `clip` and nothing else changes
 - [ ] A pin survives 50 further copies; Clear history empties it
+
+## Phosphor and night light (Settings → Appearance)
+
+- [ ] GLOW at 30 % and 100 %: bright text and the accent bleed softly; nothing is
+      offset or upside down on a laptop panel, a rotated display and the nested window
+- [ ] SCANLINES on a 100 % and a 200 % display: faint, even lines that do not shimmer
+- [ ] NIGHT LIGHT across its start and end times: colours warm and return over a
+      minute; a window past midnight; idle power with it on and nothing moving
+- [ ] All three off: frame time and idle power as before (the pass is skipped)
+- [ ] A screenshot and a recording taken with glow on come out clean
+- [ ] Frame time with glow on at 1080p and 4K on an integrated GPU (target < 1 ms)
+
+## Power-up (boot and shell restart)
+
+- [ ] A real boot, Plymouth → compositor splash → power-up: no black frame between any two
+      of them, and the name and bar do not jump at the Plymouth hand-over.
+- [ ] The bar's drop at the Plymouth hand-over (the known gap above): how noticeable it is.
+- [ ] The frame lines sweep out as the splash fades; the columns, file panel, terminal
+      text and status strip follow, and the instruments rise from zero, all within a
+      second.
+- [ ] Super+Shift+R: the splash, then the power-up again.
+- [ ] Starting locked, and Settings → Frame → Animate off: everything appears at once.

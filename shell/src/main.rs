@@ -172,6 +172,8 @@ struct App {
     control: Option<control::Control>,
     /// What was copied lately, in memory only, for the palette.
     clipboard: clipboard::Clipboard,
+    /// The frame powering up after the splash.
+    powerup: powerup::PowerUp,
 }
 
 impl App {
@@ -188,6 +190,7 @@ impl App {
             .unwrap_or_else(|| PathBuf::from("/"));
         let first = TermTab::spawn(&shell, &home, ctx.clone(), config.scrollback)?;
         let desktop = Desktop::connect(ctx.clone());
+        let desktop_present = desktop.is_some();
         let music = music::Music::new(ctx.clone());
         let capture = capture::Capture::new(ctx.clone());
         let power = power::Power::start(ctx.clone(), desktop.is_some());
@@ -250,6 +253,8 @@ impl App {
             screenshot_requested: false,
             control,
             clipboard,
+            // Alone in a window there is no splash to wait for.
+            powerup: if desktop_present { powerup::PowerUp::under_splash() } else { powerup::PowerUp::new(Duration::ZERO) },
         })
     }
 
@@ -497,6 +502,8 @@ impl App {
                 self.theme = theme;
                 save("theme", Some(&name));
                 self.config.theme = name;
+                // The compositor tints its glow with the theme's accent.
+                self.send(Command::ReloadInput);
             }
             Change::Accent(accent) => {
                 let value = accent.map(|[r, g, b]| format!("{r}, {g}, {b}"));
@@ -558,7 +565,7 @@ impl App {
                 if key == "side_panel_behavior" {
                     self.frame_synced = false;
                 }
-                if key == "animate" {
+                if matches!(key, "animate" | "glow" | "scanlines" | "night_light") {
                     // The compositor re-reads the setting where it reads the input ones.
                     self.send(Command::ReloadInput);
                 }

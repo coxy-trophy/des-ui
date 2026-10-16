@@ -342,6 +342,13 @@ over the system D-Bus, without putting passwords in process arguments. Two can b
 X11 applications run through Xwayland, which `des-comp` starts and manages; the
 clipboard is shared between them and Wayland applications.
 
+Under **Settings → Appearance → Phosphor** the compositor can add a glow to bright
+text and the accent, and the faint lines of a tube; **Night light** warms the colours
+between the hours you choose, easing in and out over a minute. Both are drawn over
+everything and cost nothing when off; screenshots and recordings stay clean. At start
+the frame powers up: its lines sweep out of the splash and the panels and instruments
+follow, unless Animate is off.
+
 The look is called Signal (`shell/src/ui.rs`): fixed greys, two typefaces, and one
 accent colour. A theme sets that accent and the terminal's colours, in the JSON
 format eDEX-UI uses, so its theme files work here. `themes/` holds the built-in

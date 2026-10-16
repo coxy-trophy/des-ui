@@ -406,6 +406,44 @@ impl Settings {
         ui.add_space(10.0);
         swatches(ui, theme);
         ui.add_space(20.0);
+        heading(ui, "PHOSPHOR", "Drawn by the compositor over everything: a glow on bright text and the accent, and the lines of a tube. Screenshots stay clean.");
+        if let Some(frac) = slider_row(ui, theme, "Glow", config.glow, &format!("{:.0}%", config.glow * 100.0)) {
+            let glow = (frac * 20.0).round() / 20.0;
+            if (glow - config.glow).abs() > f32::EPSILON {
+                changes.push(Change::Set("glow", (glow > 0.0).then(|| format!("{glow:.2}"))));
+            }
+        }
+        if switch_row(ui, theme, "Scanlines", "Faint lines across every display", config.scanlines) {
+            changes.push(Change::Set("scanlines", (!config.scanlines).then(|| "on".to_string())));
+        }
+        ui.add_space(20.0);
+        heading(ui, "NIGHT LIGHT", "Warmer colours in the evening, eased in and out over a minute.");
+        let night = config.night_light;
+        if switch_row(ui, theme, "Night light", "From 19:00 to 07:00 unless you choose other hours", night.is_some()) {
+            let value = if night.is_some() { None } else { Some(crate::config::night_light_value((19, 7, 4500))) };
+            changes.push(Change::Set("night_light", value));
+        }
+        if let Some((from, to, kelvin)) = night {
+            let (mut start, mut end) = (from, to);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                ui.label(egui::RichText::new("From").font(ui::mono(13.0)));
+                ui.add(egui::DragValue::new(&mut start).range(0..=23).suffix(":00"));
+                ui.label(egui::RichText::new("to").font(ui::mono(13.0)));
+                ui.add(egui::DragValue::new(&mut end).range(0..=23).suffix(":00"));
+            });
+            ui.add_space(12.0);
+            // Left is warmest: 2700 K, as far as is comfortable; right is daylight.
+            let frac = (kelvin.saturating_sub(2700)) as f32 / 3800.0;
+            let mut warmth = kelvin;
+            if let Some(frac) = slider_row(ui, theme, "Warmth", 1.0 - frac, &format!("{kelvin} K")) {
+                warmth = (6500.0 - frac * 3800.0).round() as u32 / 100 * 100;
+            }
+            if (start, end, warmth) != (from, to, kelvin) && start != end {
+                changes.push(Change::Set("night_light", Some(crate::config::night_light_value((start, end, warmth)))));
+            }
+        }
+        ui.add_space(20.0);
         note(ui, "Fonts, text size and the cursor are under Terminal.");
     }
 

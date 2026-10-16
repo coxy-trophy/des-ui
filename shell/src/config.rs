@@ -66,6 +66,12 @@ pub struct Config {
     /// Windows, workspaces and the dock move; off for reduced motion. The compositor
     /// reads the same key.
     pub animate: bool,
+    /// The compositor's bloom on bright pixels, 0 to 1; 0 draws nothing extra.
+    pub glow: f32,
+    /// Faint lines across every display, as on a tube.
+    pub scanlines: bool,
+    /// When the colours warm and how far: from, to (hours, 0–23), Kelvin.
+    pub night_light: Option<(u8, u8, u32)>,
 }
 
 impl Default for Config {
@@ -94,6 +100,9 @@ impl Default for Config {
             side_panel_behavior: des_common::PanelBehavior::default(),
             dock_pins: Vec::new(),
             animate: true,
+            glow: 0.0,
+            scanlines: false,
+            night_light: None,
         }
     }
 }
@@ -121,6 +130,14 @@ impl Config {
                         .collect::<Result<Vec<_>, _>>().ok().and_then(|rgb| rgb.try_into().ok());
                 }
                 "palette" => config.palette = if value == "derived" { Palette::Derived } else { Palette::Preset },
+                "glow" => {
+                    if let Ok(glow) = value.parse::<f32>() {
+                        // The compositor reads more than 1 as a percentage; so does this.
+                        config.glow = if glow > 1.0 { glow / 100.0 } else { glow }.clamp(0.0, 1.0);
+                    }
+                }
+                "scanlines" => config.scanlines = value == "on",
+                "night_light" => config.night_light = parse_night_light(value),
                 "font_size" => {
                     if let Ok(size) = value.parse::<f32>() {
                         config.font_size = size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
@@ -269,8 +286,36 @@ fn set_at(path: &std::path::Path, key: &str, value: Option<&str>) -> std::io::Re
     Ok(())
 }
 
+/// `19:00-07:00 4500`: the hours the night light holds, and its warmth in Kelvin.
+/// Minutes are ignored here; the compositor honours them when someone writes them.
+pub fn parse_night_light(value: &str) -> Option<(u8, u8, u32)> {
+    let (span, kelvin) = value.split_once(char::is_whitespace)?;
+    let (from, to) = span.split_once('-')?;
+    let hour = |time: &str| time.split(':').next()?.trim().parse::<u8>().ok().filter(|h| *h < 24);
+    let kelvin = kelvin.trim().parse::<u32>().ok()?.clamp(1000, 6500);
+    let (from, to) = (hour(from)?, hour(to)?);
+    (from != to).then_some((from, to, kelvin))
+}
+
+pub fn night_light_value((from, to, kelvin): (u8, u8, u32)) -> String {
+    format!("{from:02}:00-{to:02}:00 {kelvin}")
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reads_the_compositor_s_look() {
+        let config = Config::parse("glow = 0.4\nscanlines = on\nnight_light = 19:00-07:30 4500");
+        assert_eq!(config.glow, 0.4);
+        assert!(config.scanlines);
+        assert_eq!(config.night_light, Some((19, 7, 4500)));
+        assert_eq!(Config::parse("glow = 60").glow, 0.6);
+        assert_eq!(Config::parse("night_light = 19:00-19:00 4500").night_light, None);
+        assert_eq!(Config::parse("night_light = 25:00-07:00 4500").night_light, None);
+        assert_eq!(night_light_value((19, 7, 4500)), "19:00-07:00 4500");
+        assert_eq!(parse_night_light(&night_light_value((21, 6, 3000))), Some((21, 6, 3000)));
+    }
+
     use super::*;
 
     #[test]

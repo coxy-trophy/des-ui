@@ -184,8 +184,10 @@ impl eframe::App for App {
                 }
                 self.send(Command::Unlock);
             }
+            self.powerup.publish(ctx, self.config.animate, true);
             return;
         }
+        let stage = self.powerup.publish(ctx, self.config.animate, false);
         self.pump_restore();
         let events = self.take_shortcuts(ctx);
         let theme = self.theme.clone();
@@ -455,19 +457,8 @@ impl eframe::App for App {
         // The one-pixel lines between the frame's regions, drawn over all of them.
         let lines = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("frame-lines")));
         let line = Stroke::new(1.0, ui::LINE);
-        lines.hline(screen.x_range(), status_top, line);
-        if open.left || self.config.side_panel_behavior == des_common::PanelBehavior::Collapse {
-            lines.vline(workspace.left(), screen.top()..=status_top, line);
-        }
-        if open.right || self.config.side_panel_behavior == des_common::PanelBehavior::Collapse {
-            lines.vline(workspace.right(), screen.top()..=status_top, line);
-        }
-        if workspace.is_positive() {
-            lines.hline(workspace.x_range(), workspace.top(), line);
-            if open.bottom {
-                lines.hline(workspace.x_range(), workspace.bottom(), line);
-            }
-        }
+        powerup::frame_lines(&lines, screen, workspace, status_top, open,
+            self.config.side_panel_behavior == des_common::PanelBehavior::Collapse, line, &stage);
 
         ctx.input_mut(|input| input.events.extend(dock_keys));
         let dock = if self.capture.marking() {
