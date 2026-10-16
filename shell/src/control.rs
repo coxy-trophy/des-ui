@@ -412,7 +412,7 @@ mod tests {
         let mut state = DesktopState::default();
         state.screens = 2;
         state.workspace = 1;
-        state.apps.push(AppInfo { app_id: "org.example.App".into(), title: "A \"quoted\" title".into(), screen: 1, workspace: 1, place: Place::Side });
+        state.apps.push(AppInfo { app_id: "org.example.App".into(), title: "A \"quoted\" title".into(), screen: 1, workspace: 1, place: Place::Side, pinned: false });
         let json: serde_json::Value = serde_json::from_str(&state_json(Some(&state), true)).unwrap();
         assert_eq!(json["screens"], 2);
         assert_eq!(json["locked"], true);

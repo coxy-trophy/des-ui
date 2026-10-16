@@ -43,6 +43,14 @@ impl CompositorHandler for DesComp {
             }
         };
 
+        // A Wayland window usually says what it is in its first commit: the window
+        // rules are looked at then, before it is first told its size.
+        if let Some(window) = self.window_for(surface) {
+            if self.apply_rules(&window) {
+                self.arrange();
+            }
+        }
+
         let window = self.window_for(surface);
         xdg_shell::handle_commit(&mut self.popups, window.as_ref(), surface);
     }

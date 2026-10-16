@@ -241,6 +241,7 @@ mod tests {
                 screen: 1,
                 place: des_common::ipc::Place::Main,
                 workspace: 0,
+                pinned: false,
             }],
             ..Default::default()
         };

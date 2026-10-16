@@ -10,6 +10,7 @@ mod input;
 mod ipc;
 mod monitors;
 mod policy;
+mod rules;
 mod capture;
 mod state;
 mod splash;
@@ -57,6 +58,8 @@ Keys (hold Super, or Ctrl+Alt):
   S                    Split the workspace between two windows, or undo that
   Left, Right          Give the keyboard to that half of a split
   F                    Full screen for the current display, or undo that
+  P                    Keep the current application in a corner above everything,
+                       on every workspace, or put it back where it was
   [  ]  \\              Collapse or open the left, right and bottom panels
   Shift+R              Restart the shell, to load a newly installed build (its
                        terminal tabs close; applications stay open)

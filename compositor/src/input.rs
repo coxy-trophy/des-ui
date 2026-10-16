@@ -36,6 +36,8 @@ enum Action {
     Ignore,
     Split,
     Fullscreen,
+    /// Pin the application in use in a corner above everything, or put it back.
+    Pin,
     /// Give the keyboard to the left (false) or right (true) half of a split.
     FocusHalf(bool),
     Panel(des_common::Panel),
@@ -268,6 +270,7 @@ impl DesComp {
                                 FilterResult::Intercept(Action::Panel(des_common::Panel::Bottom))
                             }
                             Keysym::q | Keysym::Q => FilterResult::Intercept(Action::Close),
+                            Keysym::p | Keysym::P => FilterResult::Intercept(Action::Pin),
                             // Not a shortcut, but not a letter for the application either.
                             other if modifiers.logo && other.key_char().is_some_and(|c| !c.is_control()) => {
                                 FilterResult::Intercept(Action::Ignore)
@@ -305,6 +308,7 @@ impl DesComp {
                     Some(Action::RestartShell) => self.restart_shell(),
                     Some(Action::Split) => self.toggle_split(),
                     Some(Action::Fullscreen) => self.toggle_fullscreen(),
+                    Some(Action::Pin) => self.toggle_pin(),
                     Some(Action::FocusHalf(right)) => self.focus_half(right),
                     Some(Action::Panel(panel)) => self.toggle_panel(panel),
                     Some(Action::Media(media)) => media.apply(),

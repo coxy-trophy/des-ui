@@ -7,10 +7,11 @@
 //! - `state <displays> <open panels, as bits> <0|1 terminal shares the workspace>
 //!   <application with the keyboard, or "-" for the terminal> <workspace in view>`
 //!   followed by one tab-separated field per application, each
-//!   `<display> <place>:<workspace>:<hex app_id>[:<saved place>] <title>`, whenever any
-//!   of that changes. A place is `0` hidden, `1` shown, `2` shown in the right half;
+//!   `<display> <place>:<workspace>:<hex app_id>[:<saved place>][:p] <title>`, whenever
+//!   any of that changes. A place is `0` hidden, `1` shown, `2` shown in the right half;
 //!   the saved place, present only when the compositor retains layouts, is the one an
-//!   application hidden on another workspace will have back;
+//!   application hidden on another workspace will have back; `p` marks an application
+//!   pinned in a corner above everything (picture in picture);
 //! - `dock` when the user asks for the dock on the main display, and
 //!   `dock-screen <display>` for the one on another display;
 //! - `launcher` when the user asks for the application launcher;
@@ -35,11 +36,16 @@
 //!   application at that index, `workspace <n>` to bring a workspace into view,
 //!   `send-to <n>:<workspace>`, and `place <n> <display> <workspace> <place>` to
 //!   put an application somewhere outright, as restoring a session does;
+//! - `pin <n>` to keep the application at that index in a corner above everything,
+//!   on every workspace of its display, and `unpin` to put it back where it was;
 //! - `terminal`, `split`, `fullscreen`, `panel <left|right|bottom>`;
 //! - `lock` and `unlock`;
 //! - `toast <x y w h|none>`, `dock <x y w h|none>` and `dock-screen <display>
 //!   <x y w h|none>`: where in its window the shell is showing notifications, or
 //!   the dock, that are to be seen above any application;
+//! - `overlay <x y w h|none>`: a part of the shell's window on the main display to
+//!   be seen above any application, such as a drop-down terminal, with the keyboard
+//!   going to the shell for as long as it shows;
 //! - `hold-idle <on|off>` while an application is showing something to watch, so
 //!   that the screen is not locked for want of input;
 //! - `shot <screen|window|region|pick>`, `record <file>` and `record-stop`;
@@ -80,6 +86,8 @@ pub struct AppInfo {
     pub place: Place,
     /// The workspace it belongs to, counted from 0.
     pub workspace: usize,
+    /// Kept in a corner above everything, on every workspace of its display.
+    pub pinned: bool,
 }
 
 /// The displays and open applications, as the compositor reports them.
@@ -134,6 +142,7 @@ impl DesktopState {
             self.terminal_split as u8,
             self.workspace
         );
+        let saved_wanted = !self.saved_places.is_empty() || self.apps.iter().any(|app| app.pinned);
         for (index, app) in self.apps.iter().enumerate() {
             let place = match app.place {
                 Place::Hidden => 0,
@@ -142,13 +151,14 @@ impl DesktopState {
             };
             let app_id: String = app.app_id.chars().filter(|c| !c.is_control()).collect();
             let encoded_id: String = app_id.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
-            let saved = if self.saved_places.is_empty() { String::new() } else {
+            let saved = if !saved_wanted { String::new() } else {
                 let value = match self.saved_places.get(index).copied().unwrap_or(app.place) {
                     Place::Hidden => 0, Place::Main => 1, Place::Side => 2,
                 };
                 format!(":{value}")
             };
-            line.push_str(&format!("\t{} {place}:{}:{encoded_id}{saved} ", app.screen, app.workspace));
+            let pinned = if app.pinned { ":p" } else { "" };
+            line.push_str(&format!("\t{} {place}:{}:{encoded_id}{saved}{pinned} ", app.screen, app.workspace));
             // Titles come from applications and must not break the framing.
             line.extend(app.title.chars().map(|c| if c.is_control() { ' ' } else { c }));
         }
@@ -215,6 +225,11 @@ impl DesktopState {
                 Some(_) => return None,
                 None => place,
             };
+            let pinned = match metadata.next() {
+                Some("p") => true,
+                Some(_) => return None,
+                None => false,
+            };
             if metadata.next().is_some() { return None; }
             saved_places.push(saved_place);
             if screen >= screens {
@@ -226,6 +241,7 @@ impl DesktopState {
                 screen,
                 place,
                 workspace: on,
+                pinned,
             });
         }
         if focus.is_some_and(|index| index >= apps.len()) {
@@ -608,6 +624,15 @@ pub enum Command {
     /// Record the display in use into this file.
     Record(String),
     RecordStop,
+    /// Keep the application at this index in a corner above everything, on every
+    /// workspace of its display: picture in picture.
+    Pin(usize),
+    /// Put whatever is pinned back where it was.
+    Unpin,
+    /// The shell is showing something in this part of its window on the main display
+    /// (x, y, width, height) that is to be seen above any application, and has the
+    /// keyboard meanwhile; or no longer.
+    Overlay(Option<(i32, i32, i32, i32)>),
 }
 
 impl Command {
@@ -641,6 +666,10 @@ impl Command {
             Command::Shot(mode) => format!("shot {}\n", mode.word()),
             Command::Record(path) => format!("record {path}\n"),
             Command::RecordStop => "record-stop\n".to_string(),
+            Command::Pin(index) => format!("pin {index}\n"),
+            Command::Unpin => "unpin\n".to_string(),
+            Command::Overlay(None) => "overlay none\n".to_string(),
+            Command::Overlay(Some((x, y, w, h))) => format!("overlay {x} {y} {w} {h}\n"),
             Command::Toast(Some((x, y, w, h))) => format!("toast {x} {y} {w} {h}\n"),
             Command::ApplyDisplays(choices) => {
                 let mut line = "displays-apply".to_string();
@@ -701,6 +730,13 @@ impl Command {
             if w <= 0 || h <= 0 || x.checked_add(w).is_none() || y.checked_add(h).is_none() { return None; }
             return Some(Command::Dock(Some((x, y, w, h))));
         }
+        if let Some(area) = line.trim_end().strip_prefix("overlay ") {
+            if area == "none" { return Some(Command::Overlay(None)); }
+            let numbers: Vec<i32> = area.split(' ').map(str::parse).collect::<Result<_, _>>().ok()?;
+            let [x, y, w, h] = numbers[..] else { return None };
+            if w <= 0 || h <= 0 || x.checked_add(w).is_none() || y.checked_add(h).is_none() { return None; }
+            return Some(Command::Overlay(Some((x, y, w, h))));
+        }
         if let Some(area) = line.trim_end().strip_prefix("toast ") {
             if area == "none" {
                 return Some(Command::Toast(None));
@@ -720,6 +756,8 @@ impl Command {
             }
             ("shot", Some(word)) => Command::Shot(ShotMode::from_word(word)?),
             ("record-stop", None) => Command::RecordStop,
+            ("pin", Some(index)) => Command::Pin(index.parse().ok()?),
+            ("unpin", None) => Command::Unpin,
             ("hold-idle", Some("on")) => Command::HoldIdle(true),
             ("hold-idle", Some("off")) => Command::HoldIdle(false),
             ("panel", Some("left")) => Command::TogglePanel(Panel::Left),
@@ -751,7 +789,34 @@ mod tests {
             screen,
             place,
             workspace: 0,
+            pinned: false,
         }
+    }
+
+    #[test]
+    fn pins_and_overlays_round_trip_and_old_wire_remains_unchanged() {
+        for command in [Command::Pin(2), Command::Unpin, Command::Overlay(None), Command::Overlay(Some((0, 44, 1920, 400)))] {
+            assert_eq!(Command::decode(command.encode().trim_end()), Some(command));
+        }
+        assert_eq!(Command::decode("pin x"), None);
+        assert_eq!(Command::decode("pin"), None);
+        assert_eq!(Command::decode("unpin 1"), None);
+        assert_eq!(Command::decode("overlay 0 0 -5 5"), None);
+        assert_eq!(Command::decode("overlay 0 0 5"), None);
+
+        // Nothing pinned and nothing retained: the wire is as it was.
+        let mut state = DesktopState { apps: vec![app("a", 0, Place::Main)], ..Default::default() };
+        assert!(state.encode().starts_with("state 1 7 0 - 0\t0 1:0: a"), "{}", state.encode());
+        assert_eq!(DesktopState::decode(&state.encode()), Some(state.clone()));
+        // Pinned: the mark follows the saved place, which is then always written.
+        state.apps[0].pinned = true;
+        state.apps.push(app("b", 0, Place::Main));
+        assert!(state.encode().contains("\t0 1:0::1:p a\t0 1:0::1 b"), "{}", state.encode());
+        let decoded = DesktopState::decode(&state.encode()).unwrap();
+        assert!(decoded.apps[0].pinned && !decoded.apps[1].pinned);
+        assert_eq!(decoded.apps, state.apps);
+        assert_eq!(DesktopState::decode("state 1 7 0 - 0\t0 1:0::1:q a"), None);
+        assert_eq!(DesktopState::decode("state 1 7 0 - 0\t0 1:0::1:p:p a"), None);
     }
 
     #[test]
