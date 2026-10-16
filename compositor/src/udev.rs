@@ -38,7 +38,7 @@ use smithay::{
         session::{Event as SessionEvent, Session, libseat::LibSeatSession},
         udev::{UdevBackend, primary_gpu},
     },
-    desktop::space::{SpaceRenderElements, space_render_elements},
+    desktop::space::SpaceRenderElements,
     input::pointer::{CursorImageAttributes, CursorImageStatus},
     output::{Mode as WlMode, Output, PhysicalProperties},
     reexports::{
@@ -68,6 +68,7 @@ type Surface = DrmOutput<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDe
 render_elements! {
     pub OutputElements<=GlesRenderer>;
     Space=SpaceRenderElements<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>,
+    Moving=smithay::backend::renderer::element::utils::RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>,
     Cursor=MemoryRenderBufferRenderElement<GlesRenderer>,
     ClientCursor=WaylandSurfaceRenderElement<GlesRenderer>,
     Toast=crate::toast::ToastElement,
@@ -128,6 +129,8 @@ pub fn splash_elements(
             crate::splash::TopElements::Buffer(buffer) => OutputElements::Cursor(buffer),
             crate::splash::TopElements::Solid(solid) => OutputElements::Solid(solid),
             crate::splash::TopElements::Toast(toast) => OutputElements::Toast(toast),
+            crate::splash::TopElements::Space(space) => OutputElements::Space(space),
+            crate::splash::TopElements::Moving(moving) => OutputElements::Moving(moving),
             crate::splash::TopElements::_GenericCatcher(never) => match never {},
         })
         .collect()
@@ -813,6 +816,8 @@ impl DesComp {
         let toast_area = self.toast_area();
         let docks = self.dock_layers();
         let primary = self.screens.first().map(|screen| screen.loc);
+        let now = Instant::now();
+        let beneath: Vec<&smithay::desktop::Window> = self.shell.iter().chain(self.backdrops.iter()).collect();
         let Some(udev) = self.udev.as_mut() else {
             return;
         };
@@ -859,10 +864,7 @@ impl DesComp {
             for (shell,area,origin,id) in &docks {
                 elements.extend(crate::toast::elements(renderer,Some(shell),Some(*area),Some(*origin),id,geometry.loc,scale).into_iter().map(OutputElements::Toast));
             }
-            match space_render_elements(renderer, [&self.space], &monitor.output, 1.0) {
-                Ok(space) => elements.extend(space.into_iter().map(OutputElements::Space)),
-                Err(e) => tracing::error!("cannot collect windows to draw: {e:?}"),
-            }
+            elements.extend(crate::motion::window_elements::<OutputElements>(renderer, &self.space, &monitor.output, &self.motions, &beneath, now));
 
             let drawn = monitor
                 .surface

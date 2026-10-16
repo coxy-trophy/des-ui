@@ -166,6 +166,8 @@ pub struct DesComp {
     /// Set while a new layout waits to be confirmed: what to go back to, and since when.
     pub display_pending: Option<(Option<Vec<crate::monitors::Saved>>, Instant)>,
     pub screenshot: Option<PathBuf>,
+    /// Where windows are on their way to, for drawing them on the way.
+    pub motions: crate::motion::Motions<Window>,
 }
 
 /// A length of time in milliseconds that a test may set through the environment.
@@ -272,6 +274,7 @@ impl DesComp {
             display_override: None,
             display_pending: None,
             screenshot: None,
+            motions: crate::motion::Motions::new(crate::motion::wanted()),
         }
     }
 
@@ -349,6 +352,7 @@ impl DesComp {
 
     /// Work due before drawing a frame. Returns false once the session is over.
     pub fn before_frame(&mut self) -> bool {
+        self.motions.tick(Instant::now());
         if self.splash.as_ref().is_some_and(|splash| splash.done()) {
             self.splash = None;
         }

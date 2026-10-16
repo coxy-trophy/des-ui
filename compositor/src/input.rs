@@ -153,6 +153,7 @@ impl DesComp {
     /// pointing device.
     pub fn reload_input(&mut self) {
         self.input_settings = des_common::input::InputSettings::load();
+        self.motions.enabled = crate::motion::wanted();
         let settings = self.input_settings.clone();
         let keyboard = self.seat.get_keyboard().unwrap();
         keyboard.change_repeat_info(settings.repeat_rate as i32, settings.repeat_delay as i32);

@@ -170,18 +170,20 @@ pub fn init_winit(
                     for (shell,area,origin,id) in &docks {
                         toasts.extend(crate::toast::elements(renderer,Some(shell),Some(*area),Some(*origin),id,(0,0).into(),scale).into_iter().map(crate::splash::TopElements::Toast));
                     }
-                    smithay::desktop::space::render_output::<_, crate::splash::TopElements, _, _>(
-                        &output,
+                    // The windows are listed here rather than by the space, so that one
+                    // on its way somewhere is drawn where it is at this moment.
+                    let beneath: Vec<&smithay::desktop::Window> = state.shell.iter().chain(state.backdrops.iter()).collect();
+                    toasts.extend(crate::motion::window_elements::<crate::splash::TopElements>(
                         renderer,
-                        &mut framebuffer,
-                        1.0,
-                        0,
-                        [&state.space],
-                        &toasts,
-                        &mut damage_tracker,
-                        [0.0, 0.0, 0.0, 1.0],
-                    )
-                    .unwrap();
+                        &state.space,
+                        &output,
+                        &state.motions,
+                        &beneath,
+                        std::time::Instant::now(),
+                    ));
+                    damage_tracker
+                        .render_output(renderer, &mut framebuffer, 0, &toasts, [0.0, 0.0, 0.0, 1.0])
+                        .unwrap();
 
                     if capture {
                         let region = Rectangle::from_size((size.w, size.h).into());
