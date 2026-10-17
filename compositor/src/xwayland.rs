@@ -14,6 +14,10 @@ use smithay::{
                 clear_data_device_selection, current_data_device_selection_userdata,
                 request_data_device_client_selection, set_data_device_selection,
             },
+            primary_selection::{
+                clear_primary_selection, current_primary_selection_userdata, request_primary_client_selection,
+                set_primary_selection,
+            },
         },
         xwayland_shell::{XWaylandShellHandler, XWaylandShellState},
     },
@@ -177,25 +181,37 @@ impl XwmHandler for DesComp {
         true
     }
 
+    // The clipboard and the primary selection (select, then middle-click) are both
+    // shared between X11 and Wayland applications, each through its own protocol.
     fn send_selection(&mut self, _xwm: XwmId, selection: SelectionTarget, mime_type: String, fd: OwnedFd) {
-        if selection == SelectionTarget::Clipboard {
-            if let Err(e) = request_data_device_client_selection(&self.seat, mime_type, fd) {
-                tracing::warn!("cannot hand the clipboard to an X11 application: {e}");
-            }
+        let failed = match selection {
+            SelectionTarget::Clipboard => request_data_device_client_selection(&self.seat, mime_type, fd).err().map(|e| e.to_string()),
+            SelectionTarget::Primary => request_primary_client_selection(&self.seat, mime_type, fd).err().map(|e| e.to_string()),
+        };
+        if let Some(e) = failed {
+            tracing::warn!(?selection, "cannot hand the selection to an X11 application: {e}");
         }
     }
 
     fn new_selection(&mut self, _xwm: XwmId, selection: SelectionTarget, mime_types: Vec<String>) {
-        if selection == SelectionTarget::Clipboard {
-            set_data_device_selection(&self.display_handle, &self.seat, mime_types, ());
+        match selection {
+            SelectionTarget::Clipboard => set_data_device_selection(&self.display_handle, &self.seat, mime_types, ()),
+            SelectionTarget::Primary => set_primary_selection(&self.display_handle, &self.seat, mime_types, ()),
         }
     }
 
     fn cleared_selection(&mut self, _xwm: XwmId, selection: SelectionTarget) {
-        if selection == SelectionTarget::Clipboard
-            && current_data_device_selection_userdata(&self.seat).is_some()
-        {
-            clear_data_device_selection(&self.display_handle, &self.seat);
+        match selection {
+            SelectionTarget::Clipboard => {
+                if current_data_device_selection_userdata(&self.seat).is_some() {
+                    clear_data_device_selection(&self.display_handle, &self.seat);
+                }
+            }
+            SelectionTarget::Primary => {
+                if current_primary_selection_userdata(&self.seat).is_some() {
+                    clear_primary_selection(&self.display_handle, &self.seat);
+                }
+            }
         }
     }
 }

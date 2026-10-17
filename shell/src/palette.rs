@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn running_application_focuses_existing_window_and_settings_are_searchable() {
         let entry=entry("Editor");
-        let state=DesktopState { apps:vec![des_common::ipc::AppInfo{app_id:"editor".into(),title:"Notes".into(),screen:0,workspace:0,place:des_common::ipc::Place::Main,pinned:false}],..Default::default() };
+        let state=DesktopState { apps:vec![des_common::ipc::AppInfo{app_id:"editor".into(),title:"Notes".into(),screen:0,workspace:0,place:des_common::ipc::Place::Main,pinned:false,urgent:false}],..Default::default() };
         let items=results("editor",&[entry],Some(&state),&Catalog::default(),&[]);
         assert!(matches!(items[0].action,Action::Command(Command::Activate(0))));
         assert!(results("health",&[],None,&Catalog::default(),&[]).iter().any(|i|matches!(i.action,Action::Settings(_))));

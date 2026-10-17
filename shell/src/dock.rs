@@ -334,13 +334,13 @@ mod tests {
         AppEntry { name: id.trim_end_matches(".desktop").into(), desktop_id:id.into(), icon:None, startup_wm_class:class.map(str::to_string), exec:vec![id.trim_end_matches(".desktop").into()], terminal:false }
     }
     fn window(id:&str, title:&str) -> AppInfo {
-        AppInfo { app_id:id.into(), title:title.into(), screen:0, place:Place::Main, workspace:0, pinned:false }
+        AppInfo { app_id:id.into(), title:title.into(), screen:0, place:Place::Main, workspace:0, pinned:false,urgent:false }
     }
     #[test]
     fn display_docks_keep_shared_pins_but_only_their_own_window_indices(){
         let state=DesktopState{screens:2,apps:vec![
-            des_common::ipc::AppInfo{app_id:"browser".into(),title:"Primary".into(),screen:0,place:des_common::ipc::Place::Main,workspace:0,pinned:false},
-            des_common::ipc::AppInfo{app_id:"browser".into(),title:"Secondary".into(),screen:1,place:des_common::ipc::Place::Main,workspace:0,pinned:false},
+            des_common::ipc::AppInfo{app_id:"browser".into(),title:"Primary".into(),screen:0,place:des_common::ipc::Place::Main,workspace:0,pinned:false,urgent:false},
+            des_common::ipc::AppInfo{app_id:"browser".into(),title:"Secondary".into(),screen:1,place:des_common::ipc::Place::Main,workspace:0,pinned:false,urgent:false},
         ],..Default::default()};
         let pins=vec!["browser.desktop".into()];
         let primary=items_on(&[],&pins,&state,Some(0));let secondary=items_on(&[],&pins,&state,Some(1));

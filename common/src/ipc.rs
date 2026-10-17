@@ -7,11 +7,12 @@
 //! - `state <displays> <open panels, as bits> <0|1 terminal shares the workspace>
 //!   <application with the keyboard, or "-" for the terminal> <workspace in view>`
 //!   followed by one tab-separated field per application, each
-//!   `<display> <place>:<workspace>:<hex app_id>[:<saved place>][:p] <title>`, whenever
+//!   `<display> <place>:<workspace>:<hex app_id>[:<saved place>][:<marks>] <title>`, whenever
 //!   any of that changes. A place is `0` hidden, `1` shown, `2` shown in the right half;
 //!   the saved place, present only when the compositor retains layouts, is the one an
-//!   application hidden on another workspace will have back; `p` marks an application
-//!   pinned in a corner above everything (picture in picture);
+//!   application hidden on another workspace will have back; the marks are `p` for an
+//!   application pinned in a corner above everything (picture in picture), `u` for one
+//!   that asked to be brought forward and wants attention, or `pu` for both;
 //! - `dock` when the user asks for the dock on the main display, and
 //!   `dock-screen <display>` for the one on another display;
 //! - `launcher` when the user asks for the application launcher;
@@ -88,6 +89,8 @@ pub struct AppInfo {
     pub workspace: usize,
     /// Kept in a corner above everything, on every workspace of its display.
     pub pinned: bool,
+    /// Asked to be brought forward when it could not be: it wants attention.
+    pub urgent: bool,
 }
 
 /// The displays and open applications, as the compositor reports them.
@@ -142,7 +145,7 @@ impl DesktopState {
             self.terminal_split as u8,
             self.workspace
         );
-        let saved_wanted = !self.saved_places.is_empty() || self.apps.iter().any(|app| app.pinned);
+        let saved_wanted = !self.saved_places.is_empty() || self.apps.iter().any(|app| app.pinned || app.urgent);
         for (index, app) in self.apps.iter().enumerate() {
             let place = match app.place {
                 Place::Hidden => 0,
@@ -157,8 +160,10 @@ impl DesktopState {
                 };
                 format!(":{value}")
             };
-            let pinned = if app.pinned { ":p" } else { "" };
-            line.push_str(&format!("\t{} {place}:{}:{encoded_id}{saved}{pinned} ", app.screen, app.workspace));
+            // Marks: `p` pinned, `u` wanting attention; none at all leaves the field out.
+            let marks = format!("{}{}", if app.pinned { "p" } else { "" }, if app.urgent { "u" } else { "" });
+            let marks = if marks.is_empty() { marks } else { format!(":{marks}") };
+            line.push_str(&format!("\t{} {place}:{}:{encoded_id}{saved}{marks} ", app.screen, app.workspace));
             // Titles come from applications and must not break the framing.
             line.extend(app.title.chars().map(|c| if c.is_control() { ' ' } else { c }));
         }
@@ -225,10 +230,12 @@ impl DesktopState {
                 Some(_) => return None,
                 None => place,
             };
-            let pinned = match metadata.next() {
-                Some("p") => true,
+            let (pinned, urgent) = match metadata.next() {
+                Some("p") => (true, false),
+                Some("u") => (false, true),
+                Some("pu") => (true, true),
                 Some(_) => return None,
-                None => false,
+                None => (false, false),
             };
             if metadata.next().is_some() { return None; }
             saved_places.push(saved_place);
@@ -242,6 +249,7 @@ impl DesktopState {
                 place,
                 workspace: on,
                 pinned,
+                urgent,
             });
         }
         if focus.is_some_and(|index| index >= apps.len()) {
@@ -790,6 +798,7 @@ mod tests {
             place,
             workspace: 0,
             pinned: false,
+            urgent: false,
         }
     }
 
@@ -817,6 +826,20 @@ mod tests {
         assert_eq!(decoded.apps, state.apps);
         assert_eq!(DesktopState::decode("state 1 7 0 - 0\t0 1:0::1:q a"), None);
         assert_eq!(DesktopState::decode("state 1 7 0 - 0\t0 1:0::1:p:p a"), None);
+    }
+
+    #[test]
+    fn urgency_round_trips_beside_the_pin_and_bad_marks_are_refused() {
+        let mut state = DesktopState { apps: vec![app("a", 0, Place::Hidden), app("b", 0, Place::Main)], ..Default::default() };
+        state.apps[0].urgent = true;
+        assert!(state.encode().contains("\t0 0:0::0:u a\t0 1:0::1 b"), "{}", state.encode());
+        assert_eq!(DesktopState::decode(&state.encode()).unwrap().apps, state.apps);
+        state.apps[0].pinned = true;
+        assert!(state.encode().contains(":pu a"), "{}", state.encode());
+        assert_eq!(DesktopState::decode(&state.encode()).unwrap().apps, state.apps);
+        for bad in ["state 1 7 0 - 0\t0 1:0::1:up a", "state 1 7 0 - 0\t0 1:0::1:uu a", "state 1 7 0 - 0\t0 1:0::1: a"] {
+            assert_eq!(DesktopState::decode(bad), None, "{bad}");
+        }
     }
 
     #[test]
