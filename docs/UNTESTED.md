@@ -421,3 +421,54 @@ watched work on a real machine. Tick them off, or note what went wrong.
 - [ ] Notifications from three applications: grouped, folding a group, CLEAR ALL
 - [ ] Quiet hours across midnight: non-urgent notifications stay in the list, urgent
       ones still show; turning the switch off ends it at once
+
+## Overview, Alt+Tab and gestures
+
+- [ ] Super pressed and let go opens the overview; Super+key still does its shortcut
+      and opens nothing; Super+W toggles it; `des-ui-ctl overview` too
+- [ ] The overview on a wide, a narrow (2×2) and a turned display; pictures update
+      live (a playing video moves)
+- [ ] Click a picture, click an empty workspace, drag a picture to another workspace;
+      Escape; arrows and Enter; typing narrows and Backspace widens
+- [ ] Super+L while the overview is open locks at once and nothing of it shows after
+      unlocking; Print closes it before the chooser
+- [ ] Alt+Tab, Alt+Shift+Tab and letting go of Alt; Alt+` with two windows of one app;
+      a VM holding the keyboard keeps Alt+Tab for itself
+- [ ] Three- and four-finger swipes left, right, up, down on a real touchpad; a
+      two-finger scroll and a pinch-to-zoom still reach the browser
+- [ ] The opening and closing animation with Animate on and off
+
+## Layouts and dividers
+
+- [ ] Drag the gap between two windows: the divider follows, the windows resize without
+      tearing and settle crisply when let go; the double-arrow pointer shows over the gap
+- [ ] Super+Shift+S round all four layouts with 1, 3 and 6 applications open; the ones
+      used most recently fill new slots; the window in use keeps the keyboard
+- [ ] Super+Alt+Left/Right in each layout; Super+Enter in three columns and in master
+      and stack; beside the terminal, Super+Enter covers the terminal
+- [ ] Three columns on a 1366-wide laptop panel with both side panels open: fewer
+      columns, nothing narrower than 320 px
+- [ ] Different layouts on workspaces 1 and 2 and on a second display, kept across
+      switching back and forth
+- [ ] Save a session with three columns and master and stack, restore it after logging
+      in again: layouts, dividers and positions come back
+- [ ] Closing the middle of three columns closes the gap; closing the master promotes
+      nothing silently (the terminal or backdrop shows in the first slot)
+- [ ] An X11 application in each slot
+
+## Quick settings, the meter and attention marks
+
+- [ ] Super+A over a full-screen application: the panel shows above it and closes on
+      Escape and on a click elsewhere; the application keeps the keyboard afterwards
+- [ ] Wi-Fi and Bluetooth switches turn the radios off and on; the connected network
+      and devices are named
+- [ ] Volume and brightness sliders and mute; choosing another output device
+- [ ] Night light and Do not disturb from the panel match Settings afterwards
+- [ ] Media keys show the volume meter; brightness keys the brightness meter; dragging
+      the slider in Settings or the panel shows none
+- [ ] The meter and a notification together: both above an application, no gap of
+      terminal showing between them
+- [ ] A window demanding attention (e.g. a terminal bell in an unfocused app, or a
+      browser opened from a link): the dock dot pulses, the palette lists it first
+- [ ] The keyboard button in the status strip shows and hides the on-screen keyboard
+- [ ] A custom accent tints the phosphor glow straight after Apply color

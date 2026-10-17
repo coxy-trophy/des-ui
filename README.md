@@ -151,13 +151,17 @@ window.
 | <kbd>Tab</kbd> | Switch between the terminal and the applications on this display |
 | <kbd>1</kbd> to <kbd>4</kbd> | Bring that workspace into view; with <kbd>Shift</kbd>, send the application in use there |
 | <kbd>S</kbd> | Split the workspace between two windows, or make it whole again |
-| <kbd>←</kbd> <kbd>→</kbd> | Give the keyboard to that half of a split |
+| <kbd>Shift</kbd>+<kbd>S</kbd> | Next layout: one window, two side by side, three columns, a master with up to four stacked beside it |
+| <kbd>←</kbd> <kbd>→</kbd> | Give the keyboard to the window on that side |
+| <kbd>Alt</kbd>+<kbd>←</kbd> <kbd>→</kbd> | Move the divider beside the window in use |
+| <kbd>Enter</kbd> | Make the window in use the master, the first column |
 | <kbd>F</kbd> | Full screen: the applications on this display cover all of it |
 | <kbd>[</kbd> <kbd>]</kbd> <kbd>\</kbd> | Collapse or open the left, right and bottom panels |
 | <kbd>Q</kbd> | Close the current application |
 | <kbd>O</kbd> | Move the current application to the next display |
 | <kbd>P</kbd> | Keep the current application in a corner above everything, or put it back |
 | <kbd>W</kbd>, or <kbd>Super</kbd> alone | Open the overview of every workspace, or close it |
+| <kbd>A</kbd> | Open the quick settings, or close them |
 | <kbd>M</kbd> | Open the music player |
 | <kbd>N</kbd> | Open the notifications |
 | <kbd>Esc</kbd> | Open the power menu |
@@ -187,6 +191,14 @@ keys do, and the three small switches in the status strip collapse the panels.
 A split keeps the window in view on the left and puts the application used before
 it on the right. With one application open, that one goes right and the terminal
 stays on the left.
+
+The workspace can be shared four ways, chosen with the four small icons in the bar
+above it or with Super+Shift+S: one application, two side by side, three columns of the
+three used most recently, or a master on the left with up to four stacked on the right.
+Drag the gap between two windows to move the divider, or use Super+Alt+Left and Right;
+Super+Enter makes the window in use the master. Each workspace and display keeps its
+own layout and dividers, and a saved session keeps them too. Where three columns would
+be narrower than 320 pixels, fewer are shown.
 
 There are four workspaces: sets of applications, one of which is in view at a time,
 each with its own split and full screen. The numbered squares at the top of the
@@ -227,6 +239,17 @@ display. The launcher also offers **Pin to dock** on right-click. Pins are saved
 and launcher shortcuts remain available in the dock. **Settings → Frame → Animate
 dock** turns the sliding motion off. Each display has its own dock, showing windows on that display and the same saved pins. Super+D opens keyboard navigation on the display under the pointer.
 Launcher and dock use installed app icons; missing icons use a generic app symbol.
+
+## Quick settings
+
+**Quick settings** — **Super+A**, the sliders icon at the right of the status strip,
+or a click on its readings: Wi-Fi, Bluetooth, volume and the output device,
+brightness, the night light, Do not disturb and the on-screen keyboard, with the
+battery and buttons to lock, open the settings or the power menu. Escape or a click
+elsewhere closes it. When the volume or brightness changes from the keyboard's keys
+or another program, a small meter shows it for a moment at the top right. A window
+that asks for attention gets a pulsing dot on its dock icon and comes first among
+the palette's windows.
 
 ## Calendar and notifications
 
