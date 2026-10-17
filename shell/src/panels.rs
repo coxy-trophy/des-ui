@@ -221,9 +221,11 @@ pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon, pet: &mut crate::pet::Pet,
     ui.add_space(SECTION_GAP);
     ui::section(ui, "PROCESSES", |ui| ui::meta(ui, "CPU · MEM", ui::LABEL));
     ui.spacing_mut().item_spacing.y = 0.0;
+    // The list stops short of the companion's strip, so the animal always has its room.
+    let floor = ui.max_rect().bottom() - pet.room();
     for process in &mon.top {
         let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 27.0), Sense::hover());
-        if rect.bottom() > ui.max_rect().bottom() {
+        if rect.bottom() > floor {
             break;
         }
         let painter = ui.painter();

@@ -280,6 +280,11 @@ impl Pet {
 
     /// Draws the companion at the foot of the column, if there is room left under
     /// what is already there.
+    /// The height the animal needs at the foot of the column; nothing when there is none.
+    pub fn room(&self) -> f32 {
+        if self.kind.is_some_and(|kind| kind < KINDS.len()) { STRIP + 16.0 } else { 0.0 }
+    }
+
     pub fn show(&mut self, ui: &mut Ui) {
         let Some(kind) = self.kind.and_then(|kind| KINDS.get(kind)) else {
             return;
@@ -329,6 +334,12 @@ impl Pet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_chosen_animal_claims_its_strip_and_none_claims_nothing() {
+        assert_eq!(Pet::new("crab").room(), STRIP + 16.0);
+        assert_eq!(Pet::new("off").room(), 0.0);
+    }
 
     #[test]
     fn every_bundled_animation_can_be_read() {
