@@ -277,6 +277,17 @@ foot of the desktop for a touchscreen. Shift, Ctrl and Alt hold for one key; `12
 switches to symbols. They type into the terminal and the desktop's own fields, not
 into other applications.
 
+## Typing other languages, games and virtual machines
+
+Input methods reach applications through the Wayland text-input protocol: start
+`fcitx5 -d` (an autostart entry does it at login) or `ibus-daemon -drx --panel disable`,
+and the candidate list appears under the text cursor. Set `XMODIFIERS=@im=fcitx` only
+for X11 applications, and leave `GTK_IM_MODULE` unset so GTK 4 uses text-input. Games
+can capture the mouse; any desktop shortcut, locking or the screenshot chooser lets it
+go. A virtual machine or remote desktop may take the desktop's shortcuts while it has
+the keyboard, but Super+L, Ctrl+Alt+Backspace, console switching, the power key and
+the volume, brightness and media keys always stay with the desktop.
+
 ## The terminal
 
 **Ctrl+Shift+F**, the magnifying-glass button in the terminal toolbar, or “Find in terminal” in the palette

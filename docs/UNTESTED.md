@@ -315,3 +315,16 @@ watched work on a real machine. Tick them off, or note what went wrong.
       gtk for the rest; no 25-second waits on start
 - [ ] Locked: a portal request is refused at once and nothing is captured
 - [ ] A file name with spaces or non-ASCII letters arrives intact as a URI
+
+## Input methods, pointer capture and shortcut grabs
+
+- [ ] fcitx5 Pinyin in Firefox and in a GTK4 app (gnome-text-editor): preedit shows in
+      place, the candidate list sits under the cursor, above it near the screen's foot
+- [ ] The candidate list on a second display and on a scaled display
+- [ ] A game or a 3D viewer (e.g. a Wayland-native Minecraft launcher, Blender's
+      continuous grab) captures the mouse; relative motion is smooth
+- [ ] Super+1…4, Super+L and Print release a captured pointer
+- [ ] A VM (virt-manager / GNOME Boxes) or a remote desktop grabbing the keyboard: Super+Tab
+      and Super+Space reach the guest; Super+L still locks, Ctrl+Alt+Backspace still ends
+      the session, Ctrl+Alt+F3 still switches VT
+- [ ] Locking while a VM holds the shortcuts: the lock screen gets every key
