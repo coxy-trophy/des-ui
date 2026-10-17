@@ -37,6 +37,8 @@ pub struct Desktop {
     pub locked: bool,
     /// The monitors, as last reported.
     pub displays: Displays,
+    /// The layouts other than the plain one, on every display and workspace.
+    pub layouts: Vec<des_common::ipc::LayoutInfo>,
     heard: bool,
     /// Confirmation of the most recent security intent, consumed by the UI.
     pub security_confirmed: Option<bool>,
@@ -73,6 +75,7 @@ impl Desktop {
             lock_requested: false,
             locked: false,
             displays: Displays::default(),
+            layouts: Vec::new(),
             heard: false,
             security_confirmed: None,
             security_generation: 0,
@@ -106,6 +109,7 @@ impl Desktop {
                 Event::Shot { mode, width, height, window, path } => self.shots.push(crate::capture::Shot { mode, width, height, window, path }),
                 Event::Recording(state) => self.recording_news.push(state),
                 Event::Displays(displays) => self.displays = displays,
+                Event::Layouts(layouts) => self.layouts = layouts,
                 Event::LockRequested => self.lock_requested = true,
                 Event::Locked(locked) => self.locked = locked,
             }

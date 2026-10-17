@@ -1,6 +1,6 @@
 //! Explicit, privacy-limited desktop session snapshots and bounded restoration.
 use crate::apps::AppEntry;
-use des_common::ipc::{DesktopState, Place, WORKSPACES};
+use des_common::ipc::{DesktopState, LayoutInfo, LayoutKind, Place, WORKSPACES};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, fs::{self, File}, io::{self, Read, Write}, os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt}, path::{Path, PathBuf}, time::{Duration, Instant}};
 
@@ -12,10 +12,10 @@ const MAX_SCREENS: usize = 32;
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn session() -> Session { Session { version: 1, workspace: 0, apps: vec![], terminals: TerminalLayout::default() } }
+    fn session() -> Session { Session { version: VERSION, workspace: 0, apps: vec![], terminals: TerminalLayout::default(), layouts: vec![] } }
     fn entry() -> AppEntry { AppEntry { desktop_id: "editor.desktop".into(), name: "Editor".into(), exec: vec!["editor".into()], startup_wm_class: None, icon: None, terminal: false } }
     #[test] fn malformed_and_bounded() {
-        for bytes in [b"{}".as_slice(), br#"{"version":2,"workspace":0,"apps":[],"terminals":{"directories":[],"active":0,"side":null,"stacked":false}}"#] { assert!(decode(bytes).is_err()); }
+        for bytes in [b"{}".as_slice(), br#"{"version":3,"workspace":0,"apps":[],"terminals":{"directories":[],"active":0,"side":null,"stacked":false}}"#] { assert!(decode(bytes).is_err()); }
         assert!(decode(&vec![b' '; MAX_BYTES + 1]).is_err());
         let mut s = session(); s.workspace = WORKSPACES; assert!(s.validate().is_err());
         let mut s = session(); s.terminals.directories = vec![PathBuf::from("relative")]; assert!(s.validate().is_err());
@@ -23,6 +23,32 @@ mod tests {
         let mut s = session(); s.terminals.side = Some(0); assert!(s.validate().is_err());
         let mut value = serde_json::to_value(session()).unwrap(); value["exec"] = serde_json::json!(["evil"]); assert!(decode(&serde_json::to_vec(&value).unwrap()).is_err());
         let mut s = session(); s.apps = vec![SavedApp { desktop_id: "../evil.desktop".into(), screen: 0, workspace: 0, place: SavedPlace::Main }]; assert!(s.validate().is_err());
+    }
+    #[test] fn layouts_are_kept_and_snapshots_from_before_them_still_load() {
+        // A version 1 snapshot has no layouts and no further slots; it loads as it was.
+        let old = br#"{"version":1,"workspace":2,"apps":[{"desktop_id":"editor.desktop","screen":0,"workspace":2,"place":"Side"}],"terminals":{"directories":[],"active":0,"side":null,"stacked":false}}"#;
+        let loaded = decode(old).unwrap();
+        assert_eq!((loaded.version, loaded.layouts.len(), loaded.apps[0].place), (1, 0, SavedPlace::Side));
+        // A version 2 one keeps the layouts and the further slots.
+        let mut s = session();
+        s.apps = vec![SavedApp { desktop_id: "editor.desktop".into(), screen: 0, workspace: 1, place: SavedPlace::Extra(3) }];
+        let layouts = [LayoutInfo { workspace: 1, screen: 0, kind: LayoutKind::Columns, ratio: 0.3, ratio2: 0.6 }];
+        s.set_layouts(&layouts);
+        let round = decode(&serde_json::to_vec(&s).unwrap()).unwrap();
+        assert_eq!(round, s);
+        assert_eq!(round.layout_commands(), layouts.to_vec());
+        assert_eq!(Place::from(SavedPlace::Extra(3)), Place::Extra(3));
+        // What cannot be a layout or a slot is refused.
+        for bad in [
+            SavedLayout { workspace: WORKSPACES, ..s.layouts[0].clone() },
+            SavedLayout { kind: "grid".into(), ..s.layouts[0].clone() },
+            SavedLayout { ratio: 1.0, ..s.layouts[0].clone() },
+            SavedLayout { ratio2: f32::NAN, ..s.layouts[0].clone() },
+        ] {
+            let mut s = s.clone(); s.layouts = vec![bad]; assert!(s.validate().is_err());
+        }
+        let mut s = session(); s.apps = vec![SavedApp { desktop_id: "editor.desktop".into(), screen: 0, workspace: 0, place: SavedPlace::Extra(5) }]; assert!(s.validate().is_err());
+        let mut s = session(); s.layouts = vec![SavedLayout { workspace: 0, screen: 0, kind: "split".into(), ratio: 0.5, ratio2: 0.5 }]; s.version = 1; assert!(s.validate().is_err(), "layouts need version 2");
     }
     #[test] fn atomic_private_storage_and_symlinks() {
         let temp = tempfile::tempdir().unwrap(); fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap(); let dir = temp.path().join("session");
@@ -66,22 +92,39 @@ mod tests {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct TerminalLayout { pub directories: Vec<PathBuf>, pub active: usize, pub side: Option<usize>, pub stacked: bool }
+/// Version 2 added layouts and the further slots of a layout; version 1 files load.
+const VERSION: u32 = 2;
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
-pub enum SavedPlace { Hidden, Main, Side }
-impl From<Place> for SavedPlace { fn from(p: Place) -> Self { match p { Place::Hidden => Self::Hidden, Place::Main => Self::Main, Place::Side => Self::Side } } }
-impl From<SavedPlace> for Place { fn from(p: SavedPlace) -> Self { match p { SavedPlace::Hidden => Self::Hidden, SavedPlace::Main => Self::Main, SavedPlace::Side => Self::Side } } }
+pub enum SavedPlace { Hidden, Main, Side, Extra(u8) }
+impl From<Place> for SavedPlace { fn from(p: Place) -> Self { match p { Place::Hidden => Self::Hidden, Place::Main => Self::Main, Place::Side => Self::Side, Place::Extra(n) => Self::Extra(n) } } }
+impl From<SavedPlace> for Place { fn from(p: SavedPlace) -> Self { match p { SavedPlace::Hidden => Self::Hidden, SavedPlace::Main => Self::Main, SavedPlace::Side => Self::Side, SavedPlace::Extra(n) => Place::of_slot(n as usize) } } }
+/// How one display shared its workspace on one workspace: the layout's name and its
+/// dividers as shares of the width.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SavedLayout { pub workspace: usize, pub screen: usize, pub kind: String, pub ratio: f32, pub ratio2: f32 }
+impl SavedLayout {
+    fn valid(&self) -> bool {
+        let share = |s: f32| s.is_finite() && s > 0.0 && s < 1.0;
+        self.workspace < WORKSPACES && self.screen < MAX_SCREENS && LayoutKind::from_word(&self.kind).is_some() && share(self.ratio) && share(self.ratio2)
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct SavedApp { pub desktop_id: String, pub screen: usize, pub workspace: usize, pub place: SavedPlace }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct Session { pub version: u32, pub workspace: usize, pub apps: Vec<SavedApp>, pub terminals: TerminalLayout }
+pub struct Session { pub version: u32, pub workspace: usize, pub apps: Vec<SavedApp>, pub terminals: TerminalLayout, #[serde(default)] pub layouts: Vec<SavedLayout> }
 fn invalid() -> io::Error { io::Error::new(io::ErrorKind::InvalidData, "invalid or insecure session snapshot") }
 fn valid_id(id: &str) -> bool { id.ends_with(".desktop") && id.len() <= 255 && !id.starts_with('.') && !id.chars().any(|c| c.is_control() || c == '/' || c == '\\') }
 impl Session {
     pub fn validate(&self) -> io::Result<()> {
         let t = &self.terminals;
-        if self.version != 1 || self.workspace >= WORKSPACES || self.apps.len() > MAX_APPS || t.directories.len() > MAX_TERMINALS
+        let slot_ok = |p: &SavedPlace| !matches!(p, SavedPlace::Extra(n) if !(2..Place::SLOTS as u8).contains(n));
+        if !(1..=VERSION).contains(&self.version) || (self.version < 2 && !self.layouts.is_empty())
+            || self.layouts.len() > WORKSPACES * MAX_SCREENS || self.layouts.iter().any(|l| !l.valid())
+            || self.apps.iter().any(|a| !slot_ok(&a.place))
+            || self.workspace >= WORKSPACES || self.apps.len() > MAX_APPS || t.directories.len() > MAX_TERMINALS
             || (!t.directories.is_empty() && t.active >= t.directories.len()) || (t.directories.is_empty() && t.active != 0)
             || t.side.is_some_and(|i| i >= t.directories.len() || i == t.active)
             || self.apps.iter().any(|a| !valid_id(&a.desktop_id) || a.screen >= MAX_SCREENS || a.workspace >= WORKSPACES)
@@ -89,10 +132,25 @@ impl Session {
         Ok(())
     }
     pub fn capture(state: &DesktopState, entries: &[AppEntry], terminals: TerminalLayout) -> Self {
-        Self { version: 1, workspace: state.workspace, terminals, apps: state.apps.iter().enumerate().filter_map(|(index, a)| {
+        Self { version: VERSION, workspace: state.workspace, terminals, layouts: Vec::new(), apps: state.apps.iter().enumerate().filter_map(|(index, a)| {
             let entry = &entries[entry_for(&a.app_id, entries)?];
             valid_id(&entry.desktop_id).then(|| SavedApp { desktop_id: entry.desktop_id.clone(), screen: a.screen, workspace: a.workspace, place: state.saved_places.get(index).copied().unwrap_or(a.place).into() })
         }).take(MAX_APPS).collect() }
+    }
+}
+impl Session {
+    /// Keeps the layouts the compositor reported, beside the applications.
+    pub fn set_layouts(&mut self, layouts: &[LayoutInfo]) {
+        self.layouts = layouts.iter().take(WORKSPACES * MAX_SCREENS)
+            .map(|l| SavedLayout { workspace: l.workspace, screen: l.screen, kind: l.kind.word().to_string(), ratio: l.ratio, ratio2: l.ratio2 })
+            .collect();
+    }
+
+    /// The layouts to set again when restoring, as the compositor takes them.
+    pub fn layout_commands(&self) -> Vec<LayoutInfo> {
+        self.layouts.iter().filter(|l| l.valid()).filter_map(|l| Some(LayoutInfo {
+            workspace: l.workspace, screen: l.screen, kind: LayoutKind::from_word(&l.kind)?, ratio: l.ratio, ratio2: l.ratio2,
+        })).collect()
     }
 }
 pub fn entry_for(id: &str, entries: &[AppEntry]) -> Option<usize> {

@@ -10,6 +10,7 @@ mod input;
 mod ipc;
 mod monitors;
 mod policy;
+mod layout;
 mod rules;
 mod capture;
 mod state;
@@ -52,13 +53,17 @@ Keys (hold Super, or Ctrl+Alt):
   M                    Open the music player
   N                    Open the notifications
   Escape               Open the power menu
-  Shift+S              Screenshot of a piece of the display (also Shift+Print)
   R                    Start or end a screen recording
   L                    Lock the screen
   Tab                  Switch between the terminal and open applications
   O                    Move the current application to the next display
   S                    Split the workspace between two windows, or undo that
-  Left, Right          Give the keyboard to that half of a split
+  Shift+S              Next layout: one, two side by side, three columns, master
+                       and stack
+  Left, Right          Give the keyboard to the window to that side
+  Alt+Left, Alt+Right  Move the divider beside the window in use (or drag the
+                       gap between windows)
+  Enter                Make the window in use the master, the first column
   F                    Full screen for the current display, or undo that
   P                    Keep the current application in a corner above everything,
                        on every workspace, or put it back where it was

@@ -30,13 +30,23 @@
 //!   acknowledgement of each `lock` or `unlock` command;
 //! - `displays <seconds left to confirm a change, or 0>` followed by one tab-separated
 //!   field per monitor, left to right, each `<name> <0|1 main> <x> <y> <mode in use>
-//!   <modes it offers, comma-separated>`. A mode is `<width>x<height>@<millihertz>`.
+//!   <modes it offers, comma-separated>`. A mode is `<width>x<height>@<millihertz>`;
+//! - `layouts` followed by one `<workspace>:<display>:<single|split|columns|master>:<first
+//!   divider>:<second divider>` for every display and workspace whose layout is not the
+//!   plain one, the dividers as shares of the width, whenever any of them changes.
+//!
+//! An application's place in `state` is `0` hidden, `1` the first slot (the whole
+//! workspace, or its first column), `2` the second, and `3` to `5` the further slots of
+//! a layout with more than two windows.
 //!
 //! The shell sends, one per line:
 //! - `activate <n>`, `close <n>`, `move <n>` (to the next display) for the
 //!   application at that index, `workspace <n>` to bring a workspace into view,
 //!   `send-to <n>:<workspace>`, and `place <n> <display> <workspace> <place>` to
 //!   put an application somewhere outright, as restoring a session does;
+//! - `layout <single|split|columns|master>` and `ratio <share>` for the workspace in
+//!   use, and `layout-at <workspace>:<display>:<kind>:<share>:<share>` to set one
+//!   outright, as restoring a session does;
 //! - `pin <n>` to keep the application at that index in a corner above everything,
 //!   on every workspace of its display, and `unpin` to put it back where it was;
 //! - `terminal`, `split`, `fullscreen`, `panel <left|right|bottom>`;
@@ -69,10 +79,147 @@ pub const SOCKET_ENV: &str = "DES_COMP_SOCKET";
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Place {
     Hidden,
-    /// Filling the workspace, or its left half when it is split.
+    /// Filling the workspace, or its first column when it is shared: the master.
     Main,
-    /// In the right half of a split workspace.
+    /// In the second column of a shared workspace (the right half of a split).
     Side,
+    /// In a further slot of a layout with more than two windows, numbered from 2:
+    /// the third column, or further down the stack beside the master.
+    Extra(u8),
+}
+
+impl Place {
+    /// The most windows a layout shows on one display: the master and four beside it.
+    pub const SLOTS: usize = 5;
+
+    /// The slot it fills, counted from 0 for the master; none when hidden.
+    pub fn slot(self) -> Option<usize> {
+        match self {
+            Place::Hidden => None,
+            Place::Main => Some(0),
+            Place::Side => Some(1),
+            Place::Extra(n) => Some(n as usize),
+        }
+    }
+
+    /// The place of a slot; slots past the last are the last.
+    pub fn of_slot(slot: usize) -> Place {
+        match slot {
+            0 => Place::Main,
+            1 => Place::Side,
+            n => Place::Extra(n.min(Place::SLOTS - 1) as u8),
+        }
+    }
+
+    /// The number it travels as: 0 hidden, 1 main, 2 side, and the slot plus one beyond.
+    /// Peers from before the further slots only ever see 0, 1 and 2.
+    pub fn code(self) -> u8 {
+        match self {
+            Place::Hidden => 0,
+            other => other.slot().map_or(0, |slot| slot as u8 + 1),
+        }
+    }
+
+    pub fn from_code(code: u8) -> Option<Place> {
+        match code {
+            0 => Some(Place::Hidden),
+            n if (n as usize) <= Place::SLOTS => Some(Place::of_slot(n as usize - 1)),
+            _ => None,
+        }
+    }
+}
+
+/// How the applications in view share a display's workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LayoutKind {
+    /// One application at a time.
+    #[default]
+    Single,
+    /// Two side by side.
+    Split,
+    /// Three side by side: the three used most recently.
+    Columns,
+    /// The master on the left, up to four stacked on the right.
+    Master,
+}
+
+impl LayoutKind {
+    pub const ALL: [LayoutKind; 4] = [LayoutKind::Single, LayoutKind::Split, LayoutKind::Columns, LayoutKind::Master];
+
+    pub fn word(self) -> &'static str {
+        match self {
+            LayoutKind::Single => "single",
+            LayoutKind::Split => "split",
+            LayoutKind::Columns => "columns",
+            LayoutKind::Master => "master",
+        }
+    }
+
+    pub fn from_word(word: &str) -> Option<LayoutKind> {
+        LayoutKind::ALL.into_iter().find(|kind| kind.word() == word)
+    }
+
+    /// How many applications it shows at most.
+    pub fn slots(self) -> usize {
+        match self {
+            LayoutKind::Single => 1,
+            LayoutKind::Split => 2,
+            LayoutKind::Columns => 3,
+            LayoutKind::Master => Place::SLOTS,
+        }
+    }
+
+    /// The next one round, as Super+Shift+S goes.
+    pub fn next(self) -> LayoutKind {
+        let all = LayoutKind::ALL;
+        let at = all.iter().position(|kind| *kind == self).unwrap_or(0);
+        all[(at + 1) % all.len()]
+    }
+}
+
+/// The layout of one display on one workspace, and where its dividers are: `ratio`
+/// is the first divider as a share of the width, `ratio2` the second, which only
+/// three columns have.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LayoutInfo {
+    pub workspace: usize,
+    pub screen: usize,
+    pub kind: LayoutKind,
+    pub ratio: f32,
+    pub ratio2: f32,
+}
+
+impl LayoutInfo {
+    fn word(&self) -> String {
+        format!("{}:{}:{}:{:.3}:{:.3}", self.workspace, self.screen, self.kind.word(), self.ratio, self.ratio2)
+    }
+
+    fn from_word(word: &str) -> Option<LayoutInfo> {
+        let mut parts = word.split(':');
+        let workspace = parts.next()?.parse().ok().filter(|w| *w < WORKSPACES)?;
+        let screen = parts.next()?.parse().ok().filter(|s| *s < 32)?;
+        let kind = LayoutKind::from_word(parts.next()?)?;
+        let ratio = parse_share(parts.next()?)?;
+        let ratio2 = parse_share(parts.next()?)?;
+        parts.next().is_none().then_some(LayoutInfo { workspace, screen, kind, ratio, ratio2 })
+    }
+
+    /// The `layouts` line: every display on every workspace whose layout is not the
+    /// plain one, so that the shell can show it and a saved session keep it.
+    pub fn encode_all(layouts: &[LayoutInfo]) -> String {
+        let mut line = "layouts".to_string();
+        for layout in layouts {
+            line.push(' ');
+            line.push_str(&layout.word());
+        }
+        line.push('\n');
+        line
+    }
+}
+
+/// A share of a width, strictly between nothing and all of it.
+fn parse_share(text: &str) -> Option<f32> {
+    text.parse::<f32>().ok().filter(|share| share.is_finite() && *share > 0.0 && *share < 1.0)
 }
 
 /// How many workspaces there are: sets of applications, one of which is in view.
@@ -150,17 +297,11 @@ impl DesktopState {
         );
         let saved_wanted = !self.saved_places.is_empty() || self.apps.iter().any(|app| app.pinned || app.urgent);
         for (index, app) in self.apps.iter().enumerate() {
-            let place = match app.place {
-                Place::Hidden => 0,
-                Place::Main => 1,
-                Place::Side => 2,
-            };
+            let place = app.place.code();
             let app_id: String = app.app_id.chars().filter(|c| !c.is_control()).collect();
             let encoded_id: String = app_id.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
             let saved = if !saved_wanted { String::new() } else {
-                let value = match self.saved_places.get(index).copied().unwrap_or(app.place) {
-                    Place::Hidden => 0, Place::Main => 1, Place::Side => 2,
-                };
+                let value = self.saved_places.get(index).copied().unwrap_or(app.place).code();
                 format!(":{value}")
             };
             // Marks: `p` pinned, `u` wanting attention; none at all leaves the field out.
@@ -220,17 +361,12 @@ impl DesktopState {
                 Some((place, on)) => (place, on.parse::<usize>().ok().filter(|on| *on < WORKSPACES)?),
                 None => (word, 0),
             };
-            let place = match place {
-                "0" => Place::Hidden,
-                "1" => Place::Main,
-                "2" => Place::Side,
-                _ => return None,
-            };
+            let place = place.parse::<u8>().ok().and_then(Place::from_code)?;
             let saved_place = match metadata.next() {
-                Some("0") => { has_saved_places = true; Place::Hidden },
-                Some("1") => { has_saved_places = true; Place::Main },
-                Some("2") => { has_saved_places = true; Place::Side },
-                Some(_) => return None,
+                Some(code) => {
+                    has_saved_places = true;
+                    code.parse::<u8>().ok().and_then(Place::from_code)?
+                }
                 None => place,
             };
             let (pinned, urgent) = match metadata.next() {
@@ -517,6 +653,8 @@ pub enum Event {
     /// The screen is now locked, or no longer.
     Locked(bool),
     Displays(Displays),
+    /// The layouts that are not the plain one, on every display and workspace.
+    Layouts(Vec<LayoutInfo>),
 }
 
 impl Event {
@@ -565,6 +703,13 @@ impl Event {
         }
         if line.starts_with("displays ") {
             return Displays::decode(line).map(Event::Displays);
+        }
+        if let Some(rest) = line.trim_end_matches('\n').strip_prefix("layouts") {
+            if !rest.is_empty() && !rest.starts_with(' ') {
+                return None;
+            }
+            let layouts: Option<Vec<LayoutInfo>> = rest.split_whitespace().take(WORKSPACES * 32).map(LayoutInfo::from_word).collect();
+            return layouts.map(Event::Layouts);
         }
         if let Some(shot) = line.trim_end_matches('\n').strip_prefix("shot ") {
             // The path comes last and may hold spaces.
@@ -647,6 +792,13 @@ pub enum Command {
     /// The pointer is dragging these files out of the shell: start a drag that drops
     /// them as `file://` URIs into whatever is under the pointer when it is let go.
     DragFiles(Vec<String>),
+    /// Share the workspace in use this way.
+    Layout(LayoutKind),
+    /// Move the first divider of the workspace in use to this share of its width.
+    Ratio(f32),
+    /// Set the layout of one display on one workspace outright, as restoring a
+    /// session does.
+    LayoutAt(LayoutInfo),
 }
 
 /// At most this many files go in one drag.
@@ -682,7 +834,10 @@ impl Command {
             Command::Unlock => "unlock\n".to_string(),
             Command::DockOn(screen,None) => format!("dock-screen {screen} none\n"),
             Command::DockOn(screen,Some((x,y,w,h))) => format!("dock-screen {screen} {x} {y} {w} {h}\n"),
-            Command::PlaceApp(index,screen,workspace,place) => format!("place {index} {screen} {workspace} {}\n",match place{Place::Hidden=>0,Place::Main=>1,Place::Side=>2}),
+            Command::PlaceApp(index,screen,workspace,place) => format!("place {index} {screen} {workspace} {}\n",place.code()),
+            Command::Layout(kind) => format!("layout {}\n", kind.word()),
+            Command::Ratio(ratio) => format!("ratio {ratio:.3}\n"),
+            Command::LayoutAt(layout) => format!("layout-at {}\n", layout.word()),
             Command::Dock(None) => "dock none\n".to_string(),
             Command::Dock(Some((x, y, w, h))) => format!("dock {x} {y} {w} {h}\n"),
             Command::Toast(None) => "toast none\n".to_string(),
@@ -718,7 +873,7 @@ impl Command {
             let n:Vec<usize>=rest.split_whitespace().map(str::parse).collect::<Result<_,_>>().ok()?;
             let [index,screen,workspace,place]=n[..]else{return None};
             if screen>=32 || workspace>=WORKSPACES{return None;}
-            let place=match place{0=>Place::Hidden,1=>Place::Main,2=>Place::Side,_=>return None};
+            let place=u8::try_from(place).ok().and_then(Place::from_code)?;
             return Some(Command::PlaceApp(index,screen,workspace,place));
         }
 
@@ -789,6 +944,9 @@ impl Command {
             ("shot", Some(word)) => Command::Shot(ShotMode::from_word(word)?),
             ("record-stop", None) => Command::RecordStop,
             ("pin", Some(index)) => Command::Pin(index.parse().ok()?),
+            ("layout", Some(word)) => Command::Layout(LayoutKind::from_word(word)?),
+            ("ratio", Some(share)) => Command::Ratio(parse_share(share)?),
+            ("layout-at", Some(word)) => Command::LayoutAt(LayoutInfo::from_word(word)?),
             ("unpin", None) => Command::Unpin,
             ("hold-idle", Some("on")) => Command::HoldIdle(true),
             ("hold-idle", Some("off")) => Command::HoldIdle(false),
@@ -901,7 +1059,7 @@ mod tests {
         assert_eq!(DesktopState::decode(&state.encode()), Some(state.clone()));
         state.saved_places.clear();
         assert_eq!(DesktopState::decode(&state.encode()), Some(state));
-        for suffix in ["3", "", "2:1"] {
+        for suffix in ["6", "", "2:1"] {
             assert!(DesktopState::decode(&format!("state 1 7 0 - 0\t0 0:1:6162:{suffix} Title\n")).is_none());
         }
     }
@@ -1006,7 +1164,7 @@ mod tests {
             "state 1 7 0 -\t0 1:9 on-a-missing-workspace",
             "state 1 7 0 0",
             "state 1 7 0 -\t1 1 on-a-missing-display",
-            "state 1 7 0 -\t0 3 bad-place",
+            "state 1 7 0 -\t0 6 bad-place",
             "state 1 7 0 -\t0 1",
         ] {
             assert_eq!(DesktopState::decode(line), None, "{line}");
@@ -1113,5 +1271,44 @@ mod tests {
         for line in ["activate", "activate -1", "terminal 1", "close 1 2", "panel top", "split 1"] {
             assert_eq!(Command::decode(line), None, "{line}");
         }
+    }
+
+    #[test]
+    fn further_slots_and_layouts_travel_and_old_places_keep_their_numbers() {
+        assert_eq!(Place::Main.code(), 1);
+        assert_eq!(Place::Side.code(), 2);
+        for slot in 0..Place::SLOTS {
+            let place = Place::of_slot(slot);
+            assert_eq!(place.slot(), Some(slot));
+            assert_eq!(Place::from_code(place.code()), Some(place));
+        }
+        assert_eq!(Place::from_code(6), None);
+        let mut state = DesktopState::default();
+        state.apps = vec![app("a", 0, Place::Main), app("b", 0, Place::Side), app("c", 0, Place::Extra(2)), app("d", 0, Place::Extra(4))];
+        assert_eq!(DesktopState::decode(&state.encode()), Some(state));
+
+        let layouts = vec![
+            LayoutInfo { workspace: 0, screen: 0, kind: LayoutKind::Columns, ratio: 0.25, ratio2: 0.6 },
+            LayoutInfo { workspace: 3, screen: 1, kind: LayoutKind::Master, ratio: 0.7, ratio2: 0.5 },
+        ];
+        assert_eq!(Event::decode(&LayoutInfo::encode_all(&layouts)), Some(Event::Layouts(layouts)));
+        assert_eq!(Event::decode(&LayoutInfo::encode_all(&[])), Some(Event::Layouts(Vec::new())));
+        for line in ["layouts 4:0:split:0.5:0.5", "layouts 0:0:grid:0.5:0.5", "layouts 0:0:split:1.5:0.5", "layouts 0:0:split:0.5", "layoutsx"] {
+            assert_eq!(Event::decode(line), None, "{line}");
+        }
+
+        for command in [
+            Command::Layout(LayoutKind::Master),
+            Command::Ratio(0.35),
+            Command::LayoutAt(LayoutInfo { workspace: 2, screen: 0, kind: LayoutKind::Split, ratio: 0.4, ratio2: 0.667 }),
+            Command::PlaceApp(1, 0, 0, Place::Extra(3)),
+        ] {
+            assert_eq!(Command::decode(command.encode().trim_end()), Some(command));
+        }
+        for line in ["layout", "layout grid", "ratio 0", "ratio 1", "ratio nan", "ratio 0.5 0.5", "place 1 0 0 6"] {
+            assert_eq!(Command::decode(line), None, "{line}");
+        }
+        assert_eq!(LayoutKind::Master.next(), LayoutKind::Single);
+        assert_eq!(LayoutKind::Single.next(), LayoutKind::Split);
     }
 }

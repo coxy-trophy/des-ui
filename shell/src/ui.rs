@@ -392,7 +392,6 @@ pub enum Icon {
     Download,
     Upload,
     Display,
-    WindowSplit,
     /// An arrow to the right: send to the next display.
     Send,
     PanelLeft,
@@ -402,6 +401,25 @@ pub enum Icon {
     SplitPane,
     /// Two sheets, one behind the other: copy.
     Copy,
+    /// The four ways the applications in view share the workspace: one window, two
+    /// side by side, three columns, and a master with others stacked beside it.
+    LayoutSingle,
+    LayoutSplit,
+    LayoutColumns,
+    LayoutMaster,
+}
+
+impl Icon {
+    /// The picture for a layout.
+    pub fn of_layout(kind: des_common::ipc::LayoutKind) -> Icon {
+        use des_common::ipc::LayoutKind;
+        match kind {
+            LayoutKind::Single => Icon::LayoutSingle,
+            LayoutKind::Split => Icon::LayoutSplit,
+            LayoutKind::Columns => Icon::LayoutColumns,
+            LayoutKind::Master => Icon::LayoutMaster,
+        }
+    }
 }
 
 /// A small square button drawn with lines. `lit` draws it in the accent.
@@ -425,13 +443,15 @@ impl Icon {
             Self::Search => "Find in terminal",
             Self::Close => "Close", Self::Send => "Send to next display",
             Self::PanelLeft => "Left panel", Self::PanelBottom => "File panel", Self::PanelRight => "Right panel",
-            Self::SplitPane => "Split terminal", Self::WindowSplit => "Split application workspace",
+            Self::SplitPane => "Split terminal",
             Self::Settings => "Settings", Self::Music => "Music", Self::Power => "Power",
             Self::Notifications => "Notifications", Self::Apps => "Applications", Self::Fullscreen => "Full screen",
             Self::Volume => "Volume", Self::Muted => "Muted", Self::Brightness => "Brightness",
             Self::Battery => "Battery", Self::Charging => "Charging", Self::Wifi => "Wi-Fi signal",
             Self::Download => "Download", Self::Upload => "Upload", Self::Display => "Displays",
             Self::Copy => "Copy last command output",
+            Self::LayoutSingle => "One application", Self::LayoutSplit => "Two side by side",
+            Self::LayoutColumns => "Three columns", Self::LayoutMaster => "Master and stack",
         }
     }
 }
@@ -468,6 +488,23 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color3
             }
         }
         Icon::Search => {painter.circle_stroke(c+vec2(-2.0,-2.0),4.5,stroke);line((1.0,1.0),(6.0,6.0));}
+        Icon::LayoutSingle | Icon::LayoutSplit | Icon::LayoutColumns | Icon::LayoutMaster => {
+            // A screen outline, divided as the layout divides the workspace.
+            painter.rect_stroke(Rect::from_min_max(c + vec2(-7.0, -5.0), c + vec2(7.0, 5.0)), 0.0, stroke, StrokeKind::Middle);
+            match icon {
+                Icon::LayoutSplit => line((0.0, -5.0), (0.0, 5.0)),
+                Icon::LayoutColumns => {
+                    line((-2.3, -5.0), (-2.3, 5.0));
+                    line((2.3, -5.0), (2.3, 5.0));
+                }
+                Icon::LayoutMaster => {
+                    line((0.0, -5.0), (0.0, 5.0));
+                    line((0.0, -1.7), (7.0, -1.7));
+                    line((0.0, 1.7), (7.0, 1.7));
+                }
+                _ => {}
+            }
+        }
         Icon::Copy => {
             painter.rect_stroke(Rect::from_min_max(c + vec2(-6.0, -6.0), c + vec2(2.0, 2.0)), 1.0, stroke, StrokeKind::Middle);
             painter.rect_stroke(Rect::from_min_max(c + vec2(-2.0, -2.0), c + vec2(6.0, 6.0)), 1.0, stroke, StrokeKind::Middle);
@@ -534,12 +571,6 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color3
         Icon::Display => {
             painter.rect_stroke(Rect::from_center_size(c - vec2(0.0,1.0), vec2(14.0,9.0)), 0.0, stroke, StrokeKind::Inside);
             line((0.0,4.0),(0.0,6.0)); line((-4.0,6.0),(4.0,6.0));
-        }
-        Icon::WindowSplit => {
-            for x in [-7.0, 1.0] {
-                painter.rect_stroke(Rect::from_min_size(c + vec2(x,-5.0),vec2(6.0,10.0)),0.0,stroke,StrokeKind::Inside);
-                line((x+1.0,-2.0),(x+5.0,-2.0));
-            }
         }
         Icon::Close => {
             painter.line_segment([c + vec2(-4.0, -4.0), c + vec2(4.0, 4.0)], stroke);

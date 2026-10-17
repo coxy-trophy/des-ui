@@ -74,7 +74,9 @@ impl App {
         let home=std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(||PathBuf::from("/"));
         let terminals=session_restore::TerminalLayout {directories:self.tabs.iter().map(|t|t.cwd().unwrap_or_else(||home.clone())).collect(),active:self.active,side:self.side,stacked:self.stacked};
         let state=self.desktop.as_ref().map(|d|d.state.clone()).unwrap_or_default();
-        let session=session_restore::Session::capture(&state,&apps::scan(),terminals);
+        let mut session=session_restore::Session::capture(&state,&apps::scan(),terminals);
+        // How each display shared its workspaces, beside where the applications were.
+        if let Some(desktop)=self.desktop.as_ref(){session.set_layouts(&desktop.layouts);}
         match session_restore::save(&session){
             Ok(())=>self.notices.post("Session saved","Application placement and terminal folders are ready to restore.",false),
             Err(e)=>self.notices.post("Session not saved",&format!("{e}. Session storage requires a private, user-owned state directory."),true),
@@ -98,6 +100,10 @@ impl App {
         if let Some(&i)=mapping.get(session.terminals.active){self.active=i;}
         self.side=session.terminals.side.and_then(|i|mapping.get(i).copied()).filter(|i|*i!=self.active);
         self.stacked=session.terminals.stacked;self.side_focused=false;
+        // Layouts first, so that the placements land in the slots they had.
+        for layout in session.layout_commands(){
+            if let Some(desktop)=self.desktop.as_mut(){let _=desktop.send(Command::LayoutAt(layout));}
+        }
         for place in std::mem::take(&mut restore.placements){
             if let Some(app)=state.apps.get(place.index){self.restore_placements.push_back((place,app.app_id.clone()));}
         }

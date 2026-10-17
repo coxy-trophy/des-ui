@@ -30,6 +30,7 @@ pub struct IpcServer {
     last: String,
     /// Likewise for the displays line.
     last_displays: String,
+    last_layouts: String,
     /// Likewise for whether the screen is locked.
     last_locked: String,
     last_recording: String,
@@ -46,6 +47,7 @@ impl IpcServer {
             clients: Vec::new(),
             last: DesktopState::default().encode(),
             last_displays: String::new(),
+            last_layouts: des_common::ipc::LayoutInfo::encode_all(&[]),
             last_locked: des_common::ipc::Event::locked(false),
             last_recording: des_common::ipc::Event::recording("off"),
         })
@@ -76,6 +78,7 @@ impl IpcServer {
                 let mut outgoing = WriteBuffer::new(1024 * 1024);
                 if outgoing.enqueue(self.last.as_bytes())
                     .and_then(|()| outgoing.enqueue(self.last_displays.as_bytes()))
+                    .and_then(|()| outgoing.enqueue(self.last_layouts.as_bytes()))
                     .and_then(|()| outgoing.enqueue(self.last_locked.as_bytes()))
                     .and_then(|()| outgoing.enqueue(self.last_recording.as_bytes())).is_err() {
                     continue;
@@ -161,6 +164,15 @@ impl IpcServer {
         if line != self.last_locked {
             self.send(&line);
             self.last_locked = line;
+        }
+    }
+
+    /// Sends the layouts that are not the plain one, unless none of them changed.
+    pub fn publish_layouts(&mut self, layouts: &[des_common::ipc::LayoutInfo]) {
+        let line = des_common::ipc::LayoutInfo::encode_all(layouts);
+        if line != self.last_layouts {
+            self.send(&line);
+            self.last_layouts = line;
         }
     }
 
@@ -254,7 +266,7 @@ mod tests {
             if line.starts_with("state ") {
                 break;
             }
-            assert!(line == "locked 0\n" || line == "recording off\n");
+            assert!(line == "locked 0\n" || line == "recording off\n" || line == "layouts\n", "{line}");
         }
         assert_eq!(DesktopState::decode(&line), Some(state));
 

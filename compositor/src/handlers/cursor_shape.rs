@@ -82,18 +82,33 @@ const HAND: [&str; 17] = [
     "    XXXXXXXX  ",
 ];
 
+/// Over a divider between windows: a double arrow, its hotspot in the middle.
+const RESIZE: [&str; 9] = [
+    "    X     X    ",
+    "   XX     XX   ",
+    "  X.X     X.X  ",
+    " X..XXXXXXX..X ",
+    "X.............X",
+    " X..XXXXXXX..X ",
+    "  X.X     X.X  ",
+    "   XX     XX   ",
+    "    X     X    ",
+];
+
 /// Which of the compositor's own pointers stands for a named one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shape {
     Arrow,
     Beam,
     Hand,
+    Resize,
 }
 
 pub fn shape_for(icon: CursorIcon) -> Shape {
     match icon {
         CursorIcon::Text | CursorIcon::VerticalText => Shape::Beam,
         CursorIcon::Pointer => Shape::Hand,
+        CursorIcon::EwResize | CursorIcon::ColResize | CursorIcon::EResize | CursorIcon::WResize => Shape::Resize,
         _ => Shape::Arrow,
     }
 }
@@ -103,11 +118,12 @@ pub struct Cursors {
     arrow: MemoryRenderBuffer,
     beam: MemoryRenderBuffer,
     hand: MemoryRenderBuffer,
+    resize: MemoryRenderBuffer,
 }
 
 impl Cursors {
     pub fn new() -> Cursors {
-        Cursors { arrow: buffer(&ARROW), beam: buffer(&BEAM), hand: buffer(&HAND) }
+        Cursors { arrow: buffer(&ARROW), beam: buffer(&BEAM), hand: buffer(&HAND), resize: buffer(&RESIZE) }
     }
 
     /// The picture for a named pointer, and where in it the pointer's point is.
@@ -116,6 +132,7 @@ impl Cursors {
             Shape::Arrow => (&self.arrow, (0, 0).into()),
             Shape::Beam => (&self.beam, (3, 8).into()),
             Shape::Hand => (&self.hand, (5, 0).into()),
+            Shape::Resize => (&self.resize, (7, 4).into()),
         }
     }
 }
@@ -148,11 +165,12 @@ mod tests {
         assert_eq!(shape_for(CursorIcon::Pointer), Shape::Hand);
         assert_eq!(shape_for(CursorIcon::Default), Shape::Arrow);
         assert_eq!(shape_for(CursorIcon::Wait), Shape::Arrow);
+        assert_eq!(shape_for(CursorIcon::ColResize), Shape::Resize);
     }
 
     #[test]
     fn every_hotspot_lies_on_the_picture() {
-        for (rows, hotspot) in [(&ARROW[..], (0, 0)), (&BEAM[..], (3, 8)), (&HAND[..], (5, 0))] {
+        for (rows, hotspot) in [(&ARROW[..], (0, 0)), (&BEAM[..], (3, 8)), (&HAND[..], (5, 0)), (&RESIZE[..], (7, 4))] {
             let width = rows.iter().map(|row| row.len()).max().unwrap();
             assert!(hotspot.0 < width && hotspot.1 < rows.len());
             let cell = rows[hotspot.1].as_bytes().get(hotspot.0).copied().unwrap_or(b' ');

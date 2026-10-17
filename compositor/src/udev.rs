@@ -827,7 +827,13 @@ impl DesComp {
                 elements.extend(splash_elements(splash, renderer, geometry.size, scale));
             } else if geometry.to_f64().contains(pointer) {
                 let position = pointer - geometry.loc.to_f64();
-                elements.extend(cursor_elements(renderer, cursor, &self.cursor_status, position, scale));
+                // Over a divider between windows, or dragging one, the double arrow.
+                let status = if self.resize_hover {
+                    CursorImageStatus::Named(smithay::input::pointer::CursorIcon::ColResize)
+                } else {
+                    self.cursor_status.clone()
+                };
+                elements.extend(cursor_elements(renderer, cursor, &status, position, scale));
             }
             elements.extend(
                 crate::toast::elements(renderer, self.shell.as_ref(), toast_area, primary, &self.toast_id, geometry.loc, scale)

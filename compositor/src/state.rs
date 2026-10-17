@@ -154,6 +154,12 @@ pub struct DesComp {
     /// when it was last in view.
     pub workspace: usize,
     pub kept_modes: Vec<Vec<ScreenMode>>,
+    /// Counts uses of applications, so that the one used most recently can be found.
+    pub use_clock: u64,
+    /// A divider between columns being dragged with the pointer.
+    pub resize: Option<crate::layout::Drag>,
+    /// Whether the pointer is over a divider it could drag, or dragging one.
+    pub resize_hover: bool,
     /// Which of the frame's panels are open.
     pub panels: Panels,
     /// The display in use: its application has the keyboard, and shortcuts act on it.
@@ -305,6 +311,9 @@ impl DesComp {
             modes: Vec::new(),
             workspace: 0,
             kept_modes: Vec::new(),
+            use_clock: 0,
+            resize: None,
+            resize_hover: false,
             panels: Panels::default(),
             focus_screen: 0,
             cursor_status: CursorImageStatus::default_named(),

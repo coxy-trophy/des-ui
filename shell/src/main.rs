@@ -56,7 +56,7 @@ use eframe::egui::{
 use desktop::Desktop;
 use des_common::{
     Panels,
-    ipc::{Command, DesktopState, Place},
+    ipc::{Command, DesktopState},
 };
 use ui::Icon;
 use launcher::Launcher;
@@ -854,6 +854,19 @@ fn region<R>(
     add(&mut child)
 }
 
+/// The layout of the main display on the workspace in view, as the compositor says;
+/// a split made some other way still shows as a split.
+fn layout_in_view(state: &DesktopState, layouts: &[des_common::ipc::LayoutInfo]) -> des_common::ipc::LayoutKind {
+    use des_common::ipc::LayoutKind;
+    let said = layouts.iter().find(|layout| layout.workspace == state.workspace && layout.screen == 0).map(|layout| layout.kind);
+    let shared = state.apps.iter().any(|app| app.screen == 0 && app.place.slot().is_some_and(|slot| slot > 0));
+    match said {
+        Some(kind) => kind,
+        None if shared => LayoutKind::Split,
+        None => LayoutKind::Single,
+    }
+}
+
 /// What the top bar asks for in one frame.
 #[derive(Default)]
 struct BarActions {
@@ -936,6 +949,7 @@ fn tab(ui: &mut Ui, theme: &Theme, tab: Tab) -> Response {
 impl App {
     /// Draws terminal tabs and workspace controls. Graphical apps live in the dock.
     fn top_bar(&mut self, ui: &mut Ui, theme: &Theme, state: Option<&DesktopState>) -> BarActions {
+        let layouts = self.desktop.as_ref().map(|desktop| desktop.layouts.clone());
         let mut actions = BarActions::default();
         ui.spacing_mut().item_spacing.x = 4.0;
         let covered = state.and_then(|s| s.covering()).is_some();
@@ -1001,13 +1015,22 @@ impl App {
                 actions.toggle_launcher = true;
             }
             if let Some(state) = state {
-                let split = state.apps.iter().any(|app| app.place == Place::Side);
-                if ui::icon_button(ui, theme, Icon::WindowSplit, 28.0, split)
-                    .on_hover_text("Share the workspace between two windows (Super+S)")
-                    .clicked()
-                {
-                    actions.command = Some(Command::Split);
+                // How the main display shares the workspace in view; laid out right to
+                // left, so the last of the four comes first.
+                let shown = layout_in_view(state, layouts.as_deref().unwrap_or(&[]));
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for kind in des_common::ipc::LayoutKind::ALL.into_iter().rev() {
+                    let hint = match kind {
+                        des_common::ipc::LayoutKind::Single => "One application at a time (Super+S makes a split whole)",
+                        des_common::ipc::LayoutKind::Split => "Two side by side (Super+S); drag the gap to resize, Super+Alt+Left/Right",
+                        des_common::ipc::LayoutKind::Columns => "Three columns side by side (Super+Shift+S goes round the layouts)",
+                        des_common::ipc::LayoutKind::Master => "A master and up to four stacked beside it (Super+Enter makes the window in use the master)",
+                    };
+                    if ui::icon_button(ui, theme, Icon::of_layout(kind), 24.0, shown == kind).on_hover_text(hint).clicked() {
+                        actions.command = Some(Command::Layout(kind));
+                    }
                 }
+                ui.spacing_mut().item_spacing.x = 8.0;
                 if state.apps.iter().any(|app| app.workspace == state.workspace)
                     && ui::icon_button(ui, theme, Icon::Fullscreen, 28.0, false)
                         .on_hover_text("Let the application cover the whole display (Super+F)")
@@ -1330,7 +1353,23 @@ fn main() -> eframe::Result {
 
 #[cfg(test)]
 mod tests {
-    use super::{remap_panes, reconcile_lock, LockStep};
+    use super::{layout_in_view, remap_panes, reconcile_lock, LockStep};
+    use des_common::ipc::{DesktopState, Place};
+
+    #[test]
+    fn the_layout_chooser_shows_what_the_compositor_says_or_a_split_seen_otherwise() {
+        use des_common::ipc::{AppInfo, LayoutInfo, LayoutKind};
+        let app = |place| AppInfo { app_id: String::new(), title: String::new(), screen: 0, place, workspace: 1, pinned: false, urgent: false };
+        let mut state = DesktopState { workspace: 1, ..DesktopState::default() };
+        state.apps = vec![app(Place::Main)];
+        assert_eq!(layout_in_view(&state, &[]), LayoutKind::Single);
+        state.apps.push(app(Place::Side));
+        assert_eq!(layout_in_view(&state, &[]), LayoutKind::Split);
+        let other = LayoutInfo { workspace: 0, screen: 0, kind: LayoutKind::Master, ratio: 0.6, ratio2: 0.5 };
+        let here = LayoutInfo { workspace: 1, kind: LayoutKind::Columns, ..other };
+        assert_eq!(layout_in_view(&state, &[other]), LayoutKind::Split, "another workspace's layout is not this one's");
+        assert_eq!(layout_in_view(&state, &[other, here]), LayoutKind::Columns);
+    }
 
     #[test]
     fn reconnect_unlock_confirmation_does_not_relock_the_session() {
