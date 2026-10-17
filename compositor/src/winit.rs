@@ -153,6 +153,7 @@ pub fn init_winit(
                 let overlay_area = state.overlay_area();
                 let docks = state.dock_layers();
                 let primary = state.screens.first().map(|screen| screen.loc);
+                let layers = state.beneath();
                 let backend = state.backend.as_mut().unwrap();
                 let size = backend.window_size();
                 let damage = Rectangle::from_size(size);
@@ -180,12 +181,16 @@ pub fn init_winit(
                     // The windows are listed here rather than by the space, so that one
                     // on its way somewhere is drawn where it is at this moment.
                     let beneath: Vec<&smithay::desktop::Window> = state.shell.iter().chain(state.backdrops.iter()).collect();
+                    // Bars and launchers above the windows; wallpapers and the like beneath them.
+                    toasts.extend(crate::handlers::layer_shell::layer_elements::<crate::splash::TopElements>(renderer, &state.space, &output, true, layers));
+                    let under = crate::handlers::layer_shell::layer_elements::<crate::splash::TopElements>(renderer, &state.space, &output, false, layers);
                     toasts.extend(crate::motion::window_elements::<crate::splash::TopElements>(
                         renderer,
                         &state.space,
                         &output,
                         &state.motions,
                         &beneath,
+                        under,
                         std::time::Instant::now(),
                     ));
                     // Glow, scanlines and the night light, as on the hardware. A window

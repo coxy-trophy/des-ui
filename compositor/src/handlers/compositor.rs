@@ -53,6 +53,8 @@ impl CompositorHandler for DesComp {
 
         let window = self.window_for(surface);
         xdg_shell::handle_commit(&mut self.popups, window.as_ref(), surface);
+        // Bars, wallpapers and launchers: placed, configured, and the windows kept clear.
+        self.layer_commit(surface);
     }
 }
 

@@ -34,6 +34,7 @@ render_elements! {
     Space=smithay::desktop::space::SpaceRenderElements<GlesRenderer, smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement<GlesRenderer>>,
     Moving=smithay::backend::renderer::element::utils::RescaleRenderElement<smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement<GlesRenderer>>,
     Phosphor=smithay::backend::renderer::gles::element::TextureShaderElement,
+    Cropped=smithay::backend::renderer::element::utils::CropRenderElement<smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement<GlesRenderer>>,
 }
 
 /// The name, drawn at twice the size it is shown at: two bytes a pixel, how much of

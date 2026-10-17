@@ -74,6 +74,7 @@ render_elements! {
     Toast=crate::toast::ToastElement,
     Solid=smithay::backend::renderer::element::solid::SolidColorRenderElement,
     Phosphor=smithay::backend::renderer::gles::element::TextureShaderElement,
+    Cropped=smithay::backend::renderer::element::utils::CropRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>,
 }
 
 /// The pointer as something to draw at `position` on a display: the arrow, or the
@@ -133,6 +134,7 @@ pub fn splash_elements(
             crate::splash::TopElements::Space(space) => OutputElements::Space(space),
             crate::splash::TopElements::Moving(moving) => OutputElements::Moving(moving),
             crate::splash::TopElements::Phosphor(frame) => OutputElements::Phosphor(frame),
+            crate::splash::TopElements::Cropped(cropped) => OutputElements::Cropped(cropped),
             crate::splash::TopElements::_GenericCatcher(never) => match never {},
         })
         .collect()
@@ -821,6 +823,7 @@ impl DesComp {
         let primary = self.screens.first().map(|screen| screen.loc);
         let now = Instant::now();
         let beneath: Vec<&smithay::desktop::Window> = self.shell.iter().chain(self.backdrops.iter()).collect();
+        let layers = self.beneath();
         self.phosphor.begin_frame();
         let Some(udev) = self.udev.as_mut() else {
             return;
@@ -878,7 +881,10 @@ impl DesComp {
                     .into_iter()
                     .map(OutputElements::Toast),
             );
-            elements.extend(crate::motion::window_elements::<OutputElements>(renderer, &self.space, &monitor.output, &self.motions, &beneath, now));
+            // Bars and launchers above the windows; wallpapers and the like beneath them.
+            elements.extend(crate::handlers::layer_shell::layer_elements::<OutputElements>(renderer, &self.space, &monitor.output, true, layers));
+            let under = crate::handlers::layer_shell::layer_elements::<OutputElements>(renderer, &self.space, &monitor.output, false, layers);
+            elements.extend(crate::motion::window_elements::<OutputElements>(renderer, &self.space, &monitor.output, &self.motions, &beneath, under, now));
 
             // Glow, scanlines and the night light: the frame drawn off screen, then shown
             // through one shader. With none of them on, the scene is drawn as it is.
