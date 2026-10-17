@@ -205,7 +205,13 @@ pub fn peer_allowed(peer_uid: Option<u32>, own_uid: u32) -> bool {
 
 /// The desktop as `state` reports it.
 pub fn state_json(state: Option<&DesktopState>, locked: bool) -> String {
-    let place = |place: Place| match place { Place::Hidden => "hidden", Place::Main => "main", Place::Side => "side" };
+    // Further slots of a layout read as `slot-2` and on; the first two keep their names.
+    let place = |place: Place| match place {
+        Place::Hidden => "hidden".to_string(),
+        Place::Main => "main".to_string(),
+        Place::Side => "side".to_string(),
+        Place::Extra(slot) => format!("slot-{slot}"),
+    };
     let apps: Vec<serde_json::Value> = state.map(|s| &s.apps[..]).unwrap_or(&[]).iter().enumerate().map(|(index, app)| {
         serde_json::json!({
             "index": index,

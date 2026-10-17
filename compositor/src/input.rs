@@ -13,6 +13,9 @@ use smithay::{
 
 use crate::state::DesComp;
 
+/// The left mouse button, as the kernel numbers it.
+const BTN_LEFT: u32 = 0x110;
+
 /// A compositor shortcut, as opposed to a key press that belongs to the focused client.
 #[derive(Debug)]
 enum Action {
@@ -36,6 +39,12 @@ enum Action {
     /// Super with a key that is no shortcut: swallowed, so that it types nothing.
     Ignore,
     Split,
+    /// Super+Shift+S: the next layout round.
+    CycleLayout,
+    /// Super+Alt+Left (false) or Right (true): move the divider beside the window in use.
+    NudgeRatio(bool),
+    /// Super+Enter: the window in use becomes the master.
+    SwapMaster,
     Fullscreen,
     /// Pin the application in use in a corner above everything, or put it back.
     Pin,
@@ -155,6 +164,12 @@ fn inhibitable(action: &Action) -> bool {
     !matches!(action, Action::Lock | Action::Quit | Action::SwitchVt(_) | Action::Power | Action::Media(_))
 }
 
+/// Whether an arrow with these modifiers moves a divider rather than the keyboard:
+/// Super+Alt, or Ctrl+Alt+Shift where Ctrl+Alt stands in for Super.
+fn nudges(logo: bool, ctrl: bool, alt: bool, shift: bool) -> bool {
+    (logo && alt) || (!logo && ctrl && alt && shift)
+}
+
 /// The keysyms that Ctrl+Alt+F1..F12 produce.
 const SWITCH_VT_1: u32 = 0x1008_FE01;
 const SWITCH_VT_12: u32 = 0x1008_FE0C;
@@ -268,8 +283,15 @@ impl DesComp {
                             Keysym::l | Keysym::L => FilterResult::Intercept(Action::Lock),
                             Keysym::o | Keysym::O => FilterResult::Intercept(Action::MoveDisplay),
                             Keysym::R if modifiers.shift => FilterResult::Intercept(Action::RestartShell),
+                            Keysym::s | Keysym::S if modifiers.shift => FilterResult::Intercept(Action::CycleLayout),
                             Keysym::s | Keysym::S => FilterResult::Intercept(Action::Split),
+                            Keysym::Return | Keysym::KP_Enter => FilterResult::Intercept(Action::SwapMaster),
                             Keysym::f | Keysym::F => FilterResult::Intercept(Action::Fullscreen),
+                            // With Alt as well the divider moves; under Ctrl+Alt in a window,
+                            // Shift stands in for the Alt that is already held.
+                            Keysym::Left | Keysym::Right if nudges(modifiers.logo, modifiers.ctrl, modifiers.alt, modifiers.shift) => {
+                                FilterResult::Intercept(Action::NudgeRatio(sym == Keysym::Right))
+                            }
                             Keysym::Left => FilterResult::Intercept(Action::FocusHalf(false)),
                             Keysym::Right => FilterResult::Intercept(Action::FocusHalf(true)),
                             Keysym::bracketleft => {
@@ -328,6 +350,9 @@ impl DesComp {
                     Some(Action::Ignore) => {}
                     Some(Action::RestartShell) => self.restart_shell(),
                     Some(Action::Split) => self.toggle_split(),
+                    Some(Action::CycleLayout) => self.cycle_layout(),
+                    Some(Action::NudgeRatio(right)) => self.nudge_ratio(right),
+                    Some(Action::SwapMaster) => self.swap_master(),
                     Some(Action::Fullscreen) => self.toggle_fullscreen(),
                     Some(Action::Pin) => self.toggle_pin(),
                     Some(Action::FocusHalf(right)) => self.focus_half(right),
@@ -372,6 +397,12 @@ impl DesComp {
                     crate::handlers::input_protocols::Hold::Free => self.clamp_to_screens(from, from + event.delta()),
                 };
 
+                // A divider in hand follows the pointer; over one, the pointer says so.
+                if self.resize.is_some() {
+                    self.drag_resize(pos.x);
+                }
+                self.resize_hover = self.resize.is_some() || self.divider_under(pos).is_some();
+
                 let serial = SERIAL_COUNTER.next_serial();
                 let under = self.surface_under(pos);
                 pointer.motion(
@@ -392,6 +423,10 @@ impl DesComp {
                 let output_geo = self.space.output_geometry(output).unwrap();
 
                 let pos = event.position_transformed(output_geo.size) + output_geo.loc.to_f64();
+                if self.resize.is_some() {
+                    self.drag_resize(pos.x);
+                }
+                self.resize_hover = self.resize.is_some() || self.divider_under(pos).is_some();
 
                 let serial = SERIAL_COUNTER.next_serial();
 
@@ -421,6 +456,18 @@ impl DesComp {
                 // Click to focus: the keyboard follows the display that was clicked.
                 // Shell overlays own their clicks; only their explicit commands change focus.
                 let on_overlay = self.shell_overlay_contains(pointer.current_location());
+                // The left button on a divider between windows drags it; neither the
+                // press nor its release reaches the windows either side.
+                if button == BTN_LEFT {
+                    if ButtonState::Pressed == button_state && !pointer.is_grabbed() && !on_overlay && self.start_resize(pointer.current_location()) {
+                        return;
+                    }
+                    if ButtonState::Released == button_state && self.resize.is_some() {
+                        self.end_resize();
+                        self.resize_hover = self.divider_under(pointer.current_location()).is_some();
+                        return;
+                    }
+                }
                 if ButtonState::Pressed == button_state && !pointer.is_grabbed() && !on_overlay {
                     self.focus_at(pointer.current_location());
                 };
@@ -483,6 +530,18 @@ impl DesComp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alt_with_super_moves_the_divider_and_super_alone_the_keyboard() {
+        assert!(nudges(true, false, true, false));
+        assert!(!nudges(true, false, false, false));
+        // Ctrl+Alt is the shortcut key in a window; Shift adds the divider.
+        assert!(!nudges(false, true, true, false));
+        assert!(nudges(false, true, true, true));
+        for layout in [Action::CycleLayout, Action::NudgeRatio(true), Action::SwapMaster] {
+            assert!(inhibitable(&layout), "{layout:?} goes to an application that asked");
+        }
+    }
 
     #[test]
     fn the_safety_keys_cannot_be_taken_by_an_application() {

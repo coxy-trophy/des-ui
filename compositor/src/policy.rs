@@ -19,8 +19,9 @@ use crate::{DesComp, focus::Focus};
 use std::time::Instant;
 use des_common::{
     Panel,
-    ipc::{AppInfo, Command, DesktopState, Event, Place},
+    ipc::{AppInfo, Command, DesktopState, Event, LayoutInfo, LayoutKind, Place},
 };
+use crate::layout::{self, Ratios};
 
 /// An application window and its place on the desktop.
 pub struct App {
@@ -46,6 +47,8 @@ pub struct App {
     pub ruled: bool,
     /// It asked to be brought forward and could not be; cleared once it is.
     pub urgent: bool,
+    /// When it last had the keyboard, by `DesComp::use_clock`: higher is more recent.
+    pub used: u64,
 }
 
 /// How far the pinned application keeps from the edges of its workspace.
@@ -75,8 +78,13 @@ pub fn pip_rect(area: Rectangle<i32, Logical>, aspect: f64, margin: i32, below: 
 pub struct ScreenMode {
     /// Applications cover the whole display instead of the workspace inside the frame.
     pub fullscreen: bool,
-    /// The right half of a split has the keyboard.
-    pub side_focused: bool,
+    /// The slot whose application has the keyboard; 0 is the master, or the terminal
+    /// beside an application on the main display.
+    pub focus_slot: usize,
+    /// How the applications in view share the workspace.
+    pub layout: LayoutKind,
+    /// Where its dividers are, kept per layout.
+    pub ratios: Ratios,
 }
 
 fn is_toplevel(window: &Window, surface: &WlSurface) -> bool {
@@ -97,6 +105,16 @@ fn occupies_restored_slot(active:usize,workspace:usize,live:Place,kept:Place,tar
 fn dismisses_dock_keyboard(keyboard_screen:usize,cleared_screen:usize,area_none:bool)->bool{
     area_none && keyboard_screen==cleared_screen
 }
+/// What the shell is told of one display's layout on one workspace: nothing for the
+/// plain one, and a split for a workspace shared some other way than by choosing it.
+fn layout_info(workspace: usize, screen: usize, mode: &ScreenMode, split_anyway: bool) -> Option<LayoutInfo> {
+    let kind = if split_anyway { LayoutKind::Split } else { mode.layout };
+    if kind == LayoutKind::Single && mode.ratios == Ratios::default() {
+        return None;
+    }
+    Some(LayoutInfo { workspace, screen, kind, ratio: mode.ratios.primary(kind), ratio2: mode.ratios.secondary(kind) })
+}
+
 fn command_allowed(locked: bool, picking:bool, command: &Command) -> bool {
     (!locked || matches!(command, Command::Lock | Command::Unlock | Command::ReloadInput)) && (!picking || !matches!(command,Command::Dock(Some(_))|Command::DockOn(_,Some(_))|Command::Overlay(Some(_))))
 }
@@ -121,6 +139,21 @@ mod lock_command_tests {
         assert!(occupies_restored_slot(0,0,Place::Main,Place::Side,Place::Main));
         assert!(occupies_restored_slot(0,1,Place::Hidden,Place::Side,Place::Side));
     }
+    #[test]
+    fn only_layouts_other_than_the_plain_one_are_reported() {
+        let plain = ScreenMode::default();
+        assert_eq!(layout_info(0, 0, &plain, false), None);
+        let split = layout_info(1, 0, &plain, true).unwrap();
+        assert_eq!((split.kind, split.ratio), (LayoutKind::Split, 0.5));
+        let mut columns = ScreenMode { layout: LayoutKind::Columns, ..ScreenMode::default() };
+        columns.ratios.restore(LayoutKind::Columns, 0.25, 0.55);
+        let info = layout_info(2, 1, &columns, false).unwrap();
+        assert_eq!((info.workspace, info.screen, info.ratio, info.ratio2), (2, 1, 0.25, 0.55));
+        // Layouts are refused behind the lock like every other window action.
+        assert!(!command_allowed(true, false, &Command::Layout(LayoutKind::Master)));
+        assert!(!command_allowed(true, false, &Command::Ratio(0.3)));
+    }
+
     #[test]
     fn already_locked_requests_can_receive_their_confirmation() {
         assert!(command_allowed(true, false, &Command::Lock));
@@ -236,10 +269,63 @@ impl DesComp {
     /// The application that has the keyboard on a display: the one in the half last
     /// used, or the only one there is.
     pub fn focused_on(&self, screen: usize) -> Option<usize> {
-        let side = self.in_place(screen, Place::Side);
-        match side {
-            Some(side) if self.mode(screen).side_focused => Some(side),
-            _ => self.in_place(screen, Place::Main),
+        let slot = self.mode(screen).focus_slot;
+        self.in_place(screen, Place::of_slot(slot)).filter(|_| slot > 0).or_else(|| self.in_place(screen, Place::Main))
+    }
+
+    /// How many slots of a display are in use: one past the last occupied. The first
+    /// counts even when empty, for the terminal or the backdrop is there.
+    fn slots_in_use(&self, screen: usize) -> usize {
+        self.apps
+            .iter()
+            .filter(|app| app.screen == screen && !app.pinned)
+            .filter_map(|app| app.place.slot())
+            .map(|slot| slot + 1)
+            .max()
+            .unwrap_or(1)
+    }
+
+    /// The layout a display is drawn with: the chosen one, unless more applications
+    /// are in view than it has room for (put there by a rule or a restored session),
+    /// when the master and its stack, which has room for all.
+    fn shown_layout(&self, screen: usize) -> LayoutKind {
+        let mode = self.mode(screen);
+        let count = self.slots_in_use(screen);
+        let kind = if count > mode.layout.slots().max(2) { LayoutKind::Master } else { mode.layout };
+        layout::effective(kind, count)
+    }
+
+    /// Where each slot in use of a display's workspace is, in slot order.
+    fn slot_areas(&self, screen: usize) -> Vec<Rectangle<i32, Logical>> {
+        let mode = self.mode(screen);
+        layout::slot_rects(self.shown_layout(screen), &mode.ratios, self.workspace_of(screen), self.slots_in_use(screen))
+    }
+
+    /// Moves a display's applications down into any slot left empty, so that a closed
+    /// window leaves no hole. The first slot is left alone: when it is empty the
+    /// terminal or the backdrop is there on purpose.
+    fn close_gaps(&mut self, screen: usize) {
+        let mut taken: Vec<(usize, usize)> = self
+            .apps
+            .iter()
+            .enumerate()
+            .filter(|(_, app)| app.screen == screen && !app.pinned)
+            .filter_map(|(i, app)| app.place.slot().filter(|slot| *slot > 0).map(|slot| (slot, i)))
+            .collect();
+        taken.sort();
+        let focus = self.modes.get(screen).map_or(0, |mode| mode.focus_slot);
+        let mut new_focus = focus;
+        for (n, (slot, index)) in taken.into_iter().enumerate() {
+            let to = n + 1;
+            if slot != to {
+                self.apps[index].place = Place::of_slot(to);
+                if focus == slot {
+                    new_focus = to;
+                }
+            }
+        }
+        if let Some(mode) = self.modes.get_mut(screen) {
+            mode.focus_slot = new_focus;
         }
     }
 
@@ -277,13 +363,16 @@ impl DesComp {
         self.switch_workspace(on);
         let app = &self.apps[index];
         let screen = app.screen;
-        // An application already in the right half stays there.
-        let side = app.place == Place::Side;
-        if !side {
-            self.place(index, Place::Main);
-        }
+        // An application already in view stays in its slot.
+        let slot = match app.place.slot() {
+            Some(slot) => slot,
+            None => {
+                self.place(index, Place::Main);
+                0
+            }
+        };
         if let Some(mode) = self.modes.get_mut(screen) {
-            mode.side_focused = side;
+            mode.focus_slot = slot;
         }
         self.focus_screen = screen;
     }
@@ -307,35 +396,28 @@ impl DesComp {
         self.clear_of_layers(screen, area)
     }
 
-    /// Where each slot of a display's workspace is: the whole of it for the main slot
-    /// alone, its halves when an application is in the side slot.
-    fn slots(&self, screen: usize) -> (Rectangle<i32, Logical>, Rectangle<i32, Logical>) {
-        let workspace = self.workspace_of(screen);
-        if self.in_place(screen, Place::Side).is_none() {
-            return (workspace, workspace);
-        }
-        let area = des_common::Rect {
-            x: workspace.loc.x as f32,
-            y: workspace.loc.y as f32,
-            width: workspace.size.w as f32,
-            height: workspace.size.h as f32,
-        };
-        let (left, right) = area.halves();
-        (to_rectangle(left, (0, 0).into()), to_rectangle(right, (0, 0).into()))
-    }
-
     /// Applies the layout to every window and gives the keyboard to the right one: the
     /// application in use on the display in use, or else the shell's terminal.
     pub fn arrange(&mut self) {
         let Some(primary) = self.screens.first().copied() else {
             return;
         };
-        // A split needs a second application; without one the display is whole again.
-        for (screen, mode) in self.modes.iter_mut().enumerate() {
-            let split = self.apps.iter().any(|app| app.screen == screen && app.place == Place::Side);
-            mode.side_focused &= split;
+        // No holes between the windows in view, and the keyboard on a slot in use.
+        for screen in 0..self.modes.len() {
+            self.close_gaps(screen);
+            let slot = self.modes[screen].focus_slot;
+            if slot > 0 && self.in_place(screen, Place::of_slot(slot)).is_none() {
+                self.modes[screen].focus_slot = 0;
+            }
         }
         let focus_app = self.keyboard_app().filter(|_| !self.locked);
+        // The application with the keyboard is the one used most recently.
+        if let Some(i) = focus_app {
+            if self.apps[i].used != self.use_clock || self.use_clock == 0 {
+                self.use_clock += 1;
+                self.apps[i].used = self.use_clock;
+            }
+        }
         // Nothing moves behind the lock or while the display stands still for a
         // screenshot: whatever was on its way arrives at once.
         let now = Instant::now();
@@ -358,6 +440,13 @@ impl DesComp {
                 None => self.space.unmap_elem(&backdrop),
             }
         }
+        let areas: Vec<Vec<Rectangle<i32, Logical>>> = (0..self.screens.len()).map(|screen| self.slot_areas(screen)).collect();
+        // While a divider is dragged, the windows on its display are told their sizes
+        // only now and then, and drawn scaled into place in between.
+        let held = self.resize.filter(|drag| drag.last_configure.elapsed() < layout::RECONFIGURE_EVERY).map(|drag| drag.screen);
+        if let Some(drag) = self.resize.as_mut().filter(|drag| Some(drag.screen) != held) {
+            drag.last_configure = now;
+        }
         for i in 0..self.apps.len() {
             // The pinned application is placed after the others, above them.
             if self.apps[i].pinned {
@@ -369,12 +458,15 @@ impl DesComp {
                 let place = if self.locked { Place::Hidden } else { app.place };
                 (app.window.clone(), app.screen, place)
             };
-            let (main, side) = self.slots(screen);
-            let area = if place == Place::Side { side } else { main };
+            let slots = areas.get(screen).map(Vec::as_slice).unwrap_or(&[]);
+            let whole = self.workspace_of(screen);
+            let area = place.slot().and_then(|slot| slots.get(slot)).or(slots.first()).copied().unwrap_or(whole);
             // An application alone on a display in full screen is told so, which lets
-            // it drop its own toolbars; in a half it is merely as large as it can be.
-            let alone = self.mode(screen).fullscreen && main == side && area == self.screens.get(screen).copied().unwrap_or_default();
-            configure(&window, area, alone, focus_app == Some(i));
+            // it drop its own toolbars; sharing it is merely as large as it can be.
+            let alone = self.mode(screen).fullscreen && slots.len() <= 1 && area == self.screens.get(screen).copied().unwrap_or_default();
+            if held != Some(screen) || place == Place::Hidden {
+                configure(&window, area, alone, focus_app == Some(i));
+            }
             if place == Place::Hidden {
                 self.motions.hide(&window, now, animate);
                 self.space.unmap_elem(&window);
@@ -435,8 +527,9 @@ impl DesComp {
             let pointer = self.seat.get_pointer().unwrap().current_location();
             let screen = self.screen_at(pointer);
             tracing::info!(screen, "application window opened");
-            let side = self.in_place(screen, Place::Side).is_some() && self.mode(screen).side_focused;
-            let place = if side { Place::Side } else { Place::Main };
+            // A new window takes the place of the one in use, in whichever slot that is.
+            let slot = self.mode(screen).focus_slot;
+            let place = if slot > 0 && self.in_place(screen, Place::of_slot(slot)).is_some() { Place::of_slot(slot) } else { Place::Main };
             let over = self.in_place(screen, place).map(|index| self.apps[index].window.clone());
             self.apps.push(App {
                 window,
@@ -450,6 +543,7 @@ impl DesComp {
                 pin_aspect: 0.0,
                 ruled: false,
                 urgent: false,
+                used: 0,
             });
             self.place(self.apps.len() - 1, place);
             self.focus_screen = screen;
@@ -671,39 +765,219 @@ impl DesComp {
     /// and the terminal takes the left.
     pub fn toggle_split(&mut self) {
         let screen = self.focus_screen;
-        let main = self.in_place(screen, Place::Main);
-        if let Some(side) = self.in_place(screen, Place::Side) {
-            // Whole again: the half in use wins the workspace.
-            let keep_side = self.mode(screen).side_focused || main.is_none();
-            self.apps[side].place = Place::Hidden;
-            if keep_side {
-                self.place(side, Place::Main);
-            }
-        } else {
-            let other = (0..self.apps.len())
-                .rev()
-                .find(|i| self.apps[*i].workspace == self.workspace && self.apps[*i].screen == screen && self.apps[*i].place == Place::Hidden && !self.apps[*i].pinned);
-            match (other, main) {
-                (Some(other), _) => self.apps[other].place = Place::Side,
-                // Only the frame has a terminal to put beside a lone application.
-                (None, Some(main)) if screen == 0 => self.apps[main].place = Place::Side,
-                _ => return,
-            }
-            if let Some(mode) = self.modes.get_mut(screen) {
-                mode.side_focused = true;
-            }
+        let kind = if self.slots_in_use(screen) > 1 { LayoutKind::Single } else { LayoutKind::Split };
+        self.set_layout(screen, kind);
+    }
+
+    /// Shares a display's workspace another way; see `layout::plan`.
+    pub fn set_layout(&mut self, screen: usize, kind: LayoutKind) {
+        if screen >= self.modes.len() {
+            return;
         }
+        let focused = self.focused_on(screen);
+        let members: Vec<usize> = (0..self.apps.len())
+            .filter(|i| {
+                let app = &self.apps[*i];
+                app.screen == screen && app.workspace == self.workspace && !app.pinned
+            })
+            .collect();
+        let places: Vec<Place> = members.iter().map(|i| self.apps[*i].place).collect();
+        let used: Vec<u64> = members.iter().map(|i| self.apps[*i].used).collect();
+        let focused = focused.and_then(|f| members.iter().position(|i| *i == f));
+        let (places, focus) = layout::plan(kind, &places, &used, focused, screen == 0);
+        for (i, place) in members.into_iter().zip(places) {
+            self.apps[i].place = place;
+        }
+        if let Some(slot) = focus {
+            self.modes[screen].focus_slot = slot;
+        }
+        self.modes[screen].layout = kind;
         self.arrange();
     }
 
-    /// Gives the keyboard to the left or right half of a split workspace.
-    pub fn focus_half(&mut self, right: bool) {
+    /// Super+Shift+S: the next layout round on the display in use.
+    pub fn cycle_layout(&mut self) {
         let screen = self.focus_screen;
-        if self.in_place(screen, Place::Side).is_some() {
-            self.modes[screen].side_focused = right;
+        let current = self.shown_layout(screen);
+        // A split made some other way counts as one.
+        let current = if current == LayoutKind::Single && self.slots_in_use(screen) > 1 { LayoutKind::Split } else { current };
+        self.set_layout(screen, current.next());
+    }
+
+    /// Moves the first divider of the display in use to `share` of its width.
+    pub fn set_ratio(&mut self, share: f32) {
+        let screen = self.focus_screen;
+        let kind = self.shown_layout(screen);
+        if let Some(mode) = self.modes.get_mut(screen) {
+            mode.ratios.set(kind, 0, share);
             self.arrange();
         }
     }
+
+    /// Super+Alt+Left or Right: moves the divider beside the application in use.
+    pub fn nudge_ratio(&mut self, right: bool) {
+        let screen = self.focus_screen;
+        if screen >= self.modes.len() || self.slots_in_use(screen) < 2 {
+            return;
+        }
+        let kind = self.shown_layout(screen);
+        let mode = &mut self.modes[screen];
+        let divider = layout::nudged_divider(kind, mode.focus_slot);
+        let now = if divider == 0 { mode.ratios.primary(kind) } else { mode.ratios.secondary(kind) };
+        let by = if right { layout::NUDGE } else { -layout::NUDGE };
+        mode.ratios.set(kind, divider, now + by);
+        self.arrange();
+    }
+
+    /// Super+Enter: the application in use becomes the master, and the master takes
+    /// its slot. Beside the terminal, it takes the terminal's place.
+    pub fn swap_master(&mut self) {
+        let screen = self.focus_screen;
+        let Some(focused) = self.focused_on(screen) else {
+            return;
+        };
+        let members: Vec<usize> = (0..self.apps.len()).filter(|i| self.apps[*i].screen == screen && !self.apps[*i].pinned).collect();
+        let mut places: Vec<Place> = members.iter().map(|i| self.apps[*i].place).collect();
+        let Some(at) = members.iter().position(|i| *i == focused) else {
+            return;
+        };
+        if !layout::swap_into_master(&mut places, at) {
+            return;
+        }
+        for (i, place) in members.into_iter().zip(places) {
+            self.apps[i].place = place;
+        }
+        self.modes[screen].focus_slot = 0;
+        self.arrange();
+    }
+
+    /// Sets the layout of one display on one workspace outright, without moving any
+    /// application: the placements of a restored session do that.
+    pub fn layout_at(&mut self, info: LayoutInfo) {
+        if info.screen >= self.screens.len() || info.workspace >= des_common::ipc::WORKSPACES {
+            return;
+        }
+        let apply = |mode: &mut ScreenMode| {
+            mode.layout = info.kind;
+            mode.ratios.restore(info.kind, info.ratio, info.ratio2);
+        };
+        if info.workspace == self.workspace {
+            if let Some(mode) = self.modes.get_mut(info.screen) {
+                apply(mode);
+            }
+            self.arrange();
+        } else {
+            if self.kept_modes.len() < des_common::ipc::WORKSPACES {
+                self.kept_modes.resize(des_common::ipc::WORKSPACES, Vec::new());
+            }
+            let kept = &mut self.kept_modes[info.workspace];
+            if kept.len() <= info.screen {
+                kept.resize(info.screen + 1, ScreenMode::default());
+            }
+            apply(&mut kept[info.screen]);
+        }
+    }
+
+    /// The layouts that are not the plain one, on every display and workspace, as the
+    /// shell is told them. A split made some other way than by choosing it counts.
+    pub fn layout_report(&self) -> Vec<LayoutInfo> {
+        let mut report = Vec::new();
+        for workspace in 0..des_common::ipc::WORKSPACES {
+            let here = workspace == self.workspace;
+            let modes = if here {
+                &self.modes
+            } else {
+                match self.kept_modes.get(workspace) {
+                    Some(modes) => modes,
+                    None => continue,
+                }
+            };
+            for (screen, mode) in modes.iter().enumerate().take(self.screens.len()) {
+                let split_anyway = here && mode.layout == LayoutKind::Single && self.slots_in_use(screen) > 1;
+                if let Some(info) = layout_info(workspace, screen, mode, split_anyway) {
+                    report.push(info);
+                }
+            }
+        }
+        report
+    }
+
+    /// Gives the keyboard to the slot to the left or right of the one in use (before
+    /// or after it, for the stack beside the master). On the main display the terminal
+    /// beside an application is the first slot.
+    pub fn focus_half(&mut self, right: bool) {
+        let screen = self.focus_screen;
+        let count = self.slots_in_use(screen);
+        if count < 2 || screen >= self.modes.len() {
+            return;
+        }
+        let usable: Vec<usize> = (0..count)
+            .filter(|slot| (*slot == 0 && screen == 0) || self.in_place(screen, Place::of_slot(*slot)).is_some())
+            .collect();
+        let now = self.modes[screen].focus_slot;
+        let next = if right {
+            usable.iter().copied().find(|slot| *slot > now)
+        } else {
+            usable.iter().rev().copied().find(|slot| *slot < now)
+        };
+        if let Some(slot) = next {
+            self.modes[screen].focus_slot = slot;
+            self.arrange();
+        }
+    }
+
+    /// The divider a press at `pos` would grab, and what it divides. None over the
+    /// lock, the screenshot chooser, the shell's overlays or the pinned window.
+    pub fn divider_under(&self, pos: Point<f64, Logical>) -> Option<layout::Drag> {
+        if self.locked || self.picking || self.shell_overlay_contains(pos) {
+            return None;
+        }
+        if self.pinned_app().is_some_and(|i| self.pin_rect(i).to_f64().contains(pos)) {
+            return None;
+        }
+        let screen = self.screen_at(pos);
+        let count = self.slots_in_use(screen);
+        if count < 2 {
+            return None;
+        }
+        let kind = self.shown_layout(screen);
+        let area = self.workspace_of(screen);
+        let divider = layout::divider_at(&layout::dividers(kind, &self.mode(screen).ratios, area, count), pos)?;
+        Some(layout::Drag { screen, divider: divider.index, kind, area, last_configure: Instant::now() })
+    }
+
+    /// A press on a divider: it follows the pointer until let go. Returns whether the
+    /// press was taken for that.
+    pub fn start_resize(&mut self, pos: Point<f64, Logical>) -> bool {
+        let Some(drag) = self.divider_under(pos) else {
+            return false;
+        };
+        self.resize = Some(drag);
+        self.resize_hover = true;
+        true
+    }
+
+    /// The pointer moved to `x` while a divider is held.
+    pub fn drag_resize(&mut self, x: f64) {
+        let Some(drag) = self.resize else {
+            return;
+        };
+        if drag.screen >= self.modes.len() || self.locked {
+            self.resize = None;
+            return;
+        }
+        let share = layout::share_at(drag.kind, drag.divider, drag.area, x);
+        self.modes[drag.screen].ratios.set(drag.kind, drag.divider, share);
+        self.arrange();
+    }
+
+    /// The divider is let go: every window is told its final size.
+    pub fn end_resize(&mut self) {
+        if self.resize.take().is_some() {
+            self.arrange();
+        }
+    }
+
 
     /// Lets the applications on the display in use cover all of it, or stops that.
     pub fn toggle_fullscreen(&mut self) {
@@ -731,7 +1005,7 @@ impl DesComp {
         for app in self.apps.iter_mut().filter(|app| app.screen == 0 && app.place == Place::Main) {
             app.place = Place::Hidden;
         }
-        self.modes[0].side_focused = false;
+        self.modes[0].focus_slot = 0;
         self.focus_screen = 0;
         self.arrange();
     }
@@ -809,7 +1083,7 @@ impl DesComp {
             self.place(index, back);
             self.focus_screen = screen;
             if let Some(mode) = self.modes.get_mut(screen) {
-                mode.side_focused = back == Place::Side;
+                mode.focus_slot = back.slot().unwrap_or(0);
             }
         } else {
             for app in self.apps.iter_mut().filter(|app| app.workspace == workspace && app.screen == screen && app.kept == back) {
@@ -855,7 +1129,7 @@ impl DesComp {
             self.place(index, place);
             self.focus_screen = screen;
             if let Some(mode) = self.modes.get_mut(screen) {
-                mode.side_focused = place == Place::Side;
+                mode.focus_slot = place.slot().unwrap_or(0);
             }
         } else {
             for app in self.apps.iter_mut().filter(|app| app.workspace == workspace && app.screen == screen && app.kept == place) {
@@ -984,21 +1258,16 @@ impl DesComp {
         if on_pin {
             return;
         }
-        let split = self.in_place(screen, Place::Side).is_some();
-        let (main, side) = self.slots(screen);
-        let side_focused = if !split {
-            false
-        } else if side.to_f64().contains(pos) {
-            true
-        } else if main.to_f64().contains(pos) {
-            false
+        let areas = self.slot_areas(screen);
+        let slot = if areas.len() < 2 {
+            0
         } else {
-            // A click on the frame itself changes nothing.
-            self.modes[screen].side_focused
+            // A click on the frame itself, or between windows, changes nothing.
+            areas.iter().position(|area| area.to_f64().contains(pos)).unwrap_or(self.modes[screen].focus_slot)
         };
-        if screen != self.focus_screen || side_focused != self.modes[screen].side_focused {
+        if screen != self.focus_screen || slot != self.modes[screen].focus_slot {
             self.focus_screen = screen;
-            self.modes[screen].side_focused = side_focused;
+            self.modes[screen].focus_slot = slot;
             self.arrange();
         }
     }
@@ -1078,6 +1347,9 @@ impl DesComp {
                         if !self.picking {self.arrange();}
                     }
                 }
+                Command::Layout(kind) => self.set_layout(self.focus_screen, kind),
+                Command::Ratio(share) => self.set_ratio(share),
+                Command::LayoutAt(info) => self.layout_at(info),
                 Command::Pin(index) => self.pin(index),
                 Command::Unpin => self.unpin(),
                 Command::Overlay(area) => {
@@ -1130,6 +1402,7 @@ impl DesComp {
                 .collect(),
         });
         ipc.publish_displays(&self.display_report());
+        ipc.publish_layouts(&self.layout_report());
         ipc.publish_locked(self.locked);
         // What handling the commands gave rise to, while the socket was out of reach.
         for line in std::mem::take(&mut self.unsaid) {
