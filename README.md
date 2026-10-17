@@ -277,6 +277,14 @@ foot of the desktop for a touchscreen. Shift, Ctrl and Alt hold for one key; `12
 switches to symbols. They type into the terminal and the desktop's own fields, not
 into other applications.
 
+## Bars, wallpapers and launchers of your own
+
+Tools made for wlroots desktops work here: `swaybg` for a wallpaper inside the
+workspace, `waybar` or another bar, `wofi` or `fuzzel` as a launcher, `mako` for
+notifications. A bar keeps applications clear of it on its display, but the frame
+stays where it is. Nothing of them shows while the screen is locked. Start them with
+an autostart entry.
+
 ## Typing other languages, games and virtual machines
 
 Input methods reach applications through the Wayland text-input protocol: start

@@ -328,3 +328,15 @@ watched work on a real machine. Tick them off, or note what went wrong.
       and Super+Space reach the guest; Super+L still locks, Ctrl+Alt+Backspace still ends
       the session, Ctrl+Alt+F3 still switches VT
 - [ ] Locking while a VM holds the shortcuts: the lock screen gets every key
+
+## Layer shell (bars, wallpapers, launchers)
+
+- [ ] `swaybg -i <picture>`: the picture shows in the main workspace and on the other
+      displays, behind applications, never over the frame or the lock screen
+- [ ] `waybar` at the top and at the bottom: applications stay clear of it on that
+      display; quitting it gives the room back
+- [ ] `wofi --show drun` / `fuzzel`: takes the keyboard at once, gives it back on close
+- [ ] `mako` + `notify-send`: the notification shows above applications and can be clicked
+- [ ] A waybar tray menu opens within the display
+- [ ] Lock with all of the above running: none of them shows or takes keys until unlocked
+- [ ] Screenshot chooser with waybar up: the bar stays visible, clicks go to the chooser
