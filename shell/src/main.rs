@@ -23,6 +23,7 @@ mod oklch;
 mod osk;
 mod panels;
 mod pet;
+mod polkit;
 mod power;
 mod powerup;
 mod bootsplash;
