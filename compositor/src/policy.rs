@@ -44,6 +44,8 @@ pub struct App {
     pub pin_aspect: f64,
     /// Whether the window rules have been looked at for it; they are, once.
     pub ruled: bool,
+    /// It asked to be brought forward and could not be; cleared once it is.
+    pub urgent: bool,
 }
 
 /// How far the pinned application keeps from the edges of its workspace.
@@ -257,8 +259,11 @@ impl DesComp {
     }
 
     /// Brings the application at `index` into view and gives it the keyboard.
-    fn activate(&mut self, index: usize) {
+    pub(crate) fn activate(&mut self, index: usize) {
         self.dock_keyboard = false;
+        if let Some(app) = self.apps.get_mut(index) {
+            app.urgent = false;
+        }
         if self.apps.get(index).is_some_and(|app| app.pinned) {
             self.pin_focused = true;
             self.focus_screen = self.apps[index].screen;
@@ -440,6 +445,7 @@ impl DesComp {
                 pin_return: Place::Hidden,
                 pin_aspect: 0.0,
                 ruled: false,
+                urgent: false,
             });
             self.place(self.apps.len() - 1, place);
             self.focus_screen = screen;
@@ -1110,6 +1116,7 @@ impl DesComp {
                     place: app.place,
                     workspace: app.workspace,
                     pinned: app.pinned,
+                    urgent: app.urgent,
                 })
                 .collect(),
         });

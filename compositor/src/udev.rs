@@ -29,7 +29,7 @@ use smithay::{
             ImportDma,
             element::{
                 Kind,
-                memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
+                memory::MemoryRenderBufferRenderElement,
                 render_elements,
                 surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
             },
@@ -61,9 +61,11 @@ use des_common::ipc::{DisplayInfo, Mode as DisplayMode, Setup, Usage};
 /// How long the first frame may take to reach a screen before the backend gives up.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// What travels with each frame to its page flip: whom to tell it was shown.
+type Feedback = Option<smithay::desktop::utils::OutputPresentationFeedback>;
 type Manager =
-    DrmOutputManager<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
-type Surface = DrmOutput<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
+    DrmOutputManager<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, Feedback, DrmDeviceFd>;
+type Surface = DrmOutput<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, Feedback, DrmDeviceFd>;
 
 render_elements! {
     pub OutputElements<=GlesRenderer>;
@@ -80,7 +82,7 @@ render_elements! {
 /// image the application under it supplies.
 pub fn cursor_elements(
     renderer: &mut GlesRenderer,
-    cursor: &MemoryRenderBuffer,
+    cursors: &crate::handlers::cursor_shape::Cursors,
     status: &CursorImageStatus,
     position: smithay::utils::Point<f64, smithay::utils::Logical>,
     scale: f64,
@@ -105,11 +107,11 @@ pub fn cursor_elements(
                 Kind::Cursor,
             ));
         }
-        CursorImageStatus::Named(_) => {
-            if let Ok(arrow) =
-                MemoryRenderBufferRenderElement::from_buffer(renderer, position.to_physical(scale), cursor, None, None, None, Kind::Cursor)
-            {
-                elements.push(OutputElements::Cursor(arrow));
+        CursorImageStatus::Named(icon) => {
+            let (picture, hotspot) = cursors.get(*icon);
+            let at = (position - hotspot.to_f64()).to_physical(scale);
+            if let Ok(pointer) = MemoryRenderBufferRenderElement::from_buffer(renderer, at, picture, None, None, None, Kind::Cursor) {
+                elements.push(OutputElements::Cursor(pointer));
             }
         }
     }
@@ -165,7 +167,7 @@ pub struct UdevData {
     /// Connected monitors that are turned off in the settings.
     dark: Vec<DisplayInfo>,
     manager: Manager,
-    pub cursor: MemoryRenderBuffer,
+    pub cursor: crate::handlers::cursor_shape::Cursors,
     /// False while another virtual terminal owns the displays.
     active: bool,
     /// Frames that have reached a screen.
@@ -174,50 +176,6 @@ pub struct UdevData {
     devices: Vec<input::Device>,
     // Declared last so that it is dropped last: the devices above were opened through it.
     pub session: LibSeatSession,
-}
-
-/// The pointer, top-left corner at the hotspot. `X` is the outline, `.` the fill.
-const CURSOR_SHAPE: [&str; 17] = [
-    "X           ",
-    "XX          ",
-    "X.X         ",
-    "X..X        ",
-    "X...X       ",
-    "X....X      ",
-    "X.....X     ",
-    "X......X    ",
-    "X.......X   ",
-    "X........X  ",
-    "X.........X ",
-    "X......XXXXX",
-    "X...X..X    ",
-    "X..XX..X    ",
-    "X.X  X..X   ",
-    "XX   X..X   ",
-    "X     XX    ",
-];
-
-fn cursor_buffer() -> MemoryRenderBuffer {
-    let width = CURSOR_SHAPE[0].len();
-    let mut data = Vec::with_capacity(width * CURSOR_SHAPE.len() * 4);
-    for row in CURSOR_SHAPE {
-        for cell in row.bytes() {
-            // Argb8888 is stored as B, G, R, A.
-            data.extend_from_slice(match cell {
-                b'X' => &[0, 0, 0, 255],
-                b'.' => &[255, 255, 255, 255],
-                _ => &[0, 0, 0, 0],
-            });
-        }
-    }
-    MemoryRenderBuffer::from_slice(
-        &data,
-        Fourcc::Argb8888,
-        (width as i32, CURSOR_SHAPE.len() as i32),
-        1,
-        Transform::Normal,
-        None,
-    )
 }
 
 pub fn init_udev(
@@ -275,7 +233,7 @@ pub fn init_udev(
         monitors: Vec::new(),
         dark: Vec::new(),
         manager,
-        cursor: cursor_buffer(),
+        cursor: crate::handlers::cursor_shape::Cursors::new(),
         active: true,
         flips: 0,
         devices: Vec::new(),
@@ -344,14 +302,18 @@ pub fn init_udev(
 
     event_loop
         .handle()
-        .insert_source(drm_notifier, |event, _, data| match event {
+        .insert_source(drm_notifier, |event, metadata, data| match event {
             DrmEvent::VBlank(crtc) => {
                 let Some(udev) = data.udev.as_mut() else {
                     return;
                 };
                 if let Some(monitor) = udev.monitors.iter_mut().find(|monitor| monitor.crtc == crtc) {
-                    if let Err(e) = monitor.surface.frame_submitted() {
-                        tracing::warn!("page flip bookkeeping failed: {e}");
+                    match monitor.surface.frame_submitted() {
+                        Ok(Some(Some(mut feedback))) => {
+                            crate::handlers::presentation::presented(&mut feedback, metadata.as_ref(), monitor.refresh)
+                        }
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!("page flip bookkeeping failed: {e}"),
                     }
                     monitor.pending_since = None;
                     if !std::mem::replace(&mut monitor.lit, true) {
@@ -898,7 +860,7 @@ impl DesComp {
                 .render_frame(renderer, &elements, [0.0, 0.0, 0.0, 1.0], FrameFlags::empty())
                 .map(|result| !result.is_empty);
             match drawn {
-                Ok(true) => match monitor.surface.queue_frame(()) {
+                Ok(true) => match monitor.surface.queue_frame(Some(crate::handlers::presentation::feedback_for(&self.space, &monitor.output))) {
                     Ok(()) => monitor.pending_since = Some(Instant::now()),
                     Err(e) => tracing::error!("cannot present frame: {e}"),
                 },

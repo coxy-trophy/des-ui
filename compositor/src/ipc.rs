@@ -242,6 +242,7 @@ mod tests {
                 place: des_common::ipc::Place::Main,
                 workspace: 0,
                 pinned: false,
+                urgent: false,
             }],
             ..Default::default()
         };

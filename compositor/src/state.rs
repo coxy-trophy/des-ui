@@ -79,6 +79,12 @@ pub struct DesComp {
     /// Lets clipboard tools (such as `wl-copy`, which screenshots use) set and read
     /// the clipboard without a window of their own.
     pub data_control_state: smithay::wayland::selection::wlr_data_control::DataControlState,
+    /// Select, then middle-click to paste.
+    pub primary_selection_state: smithay::wayland::selection::primary_selection::PrimarySelectionState,
+    /// Requests to bring a window forward, as a link opened elsewhere asks of the browser.
+    pub xdg_activation_state: smithay::wayland::xdg_activation::XdgActivationState,
+    /// One application's window as the parent of another's.
+    pub xdg_foreign_state: smithay::wayland::xdg_foreign::XdgForeignState,
     pub dmabuf_state: DmabufState,
     pub dmabuf_global: Option<DmabufGlobal>,
     pub popups: PopupManager,
@@ -199,6 +205,18 @@ impl DesComp {
         let data_device_state = DataDeviceState::new::<Self>(&dh);
         let data_control_state =
             smithay::wayland::selection::wlr_data_control::DataControlState::new::<Self, _>(&dh, None, |_| true);
+        let primary_selection_state = smithay::wayland::selection::primary_selection::PrimarySelectionState::new::<Self>(&dh);
+        let xdg_activation_state = smithay::wayland::xdg_activation::XdgActivationState::new::<Self>(&dh);
+        let xdg_foreign_state = smithay::wayland::xdg_foreign::XdgForeignState::new::<Self>(&dh);
+        // Globals that need nothing kept: what applications draw at, and how they hear of it.
+        smithay::wayland::fractional_scale::FractionalScaleManagerState::new::<Self>(&dh);
+        smithay::wayland::viewporter::ViewporterState::new::<Self>(&dh);
+        smithay::wayland::single_pixel_buffer::SinglePixelBufferState::new::<Self>(&dh);
+        smithay::wayland::cursor_shape::CursorShapeManagerState::new::<Self>(&dh);
+        smithay::wayland::presentation::PresentationState::new::<Self>(&dh, {
+            use smithay::utils::ClockSource;
+            smithay::utils::Monotonic::ID as u32
+        });
         let popups = PopupManager::default();
 
         let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, "winit");
@@ -232,6 +250,9 @@ impl DesComp {
             seat_state,
             data_device_state,
             data_control_state,
+            primary_selection_state,
+            xdg_activation_state,
+            xdg_foreign_state,
             dmabuf_state: DmabufState::new(),
             dmabuf_global: None,
             popups,
@@ -365,6 +386,7 @@ impl DesComp {
     /// Work due before drawing a frame. Returns false once the session is over.
     pub fn before_frame(&mut self) -> bool {
         self.motions.tick(Instant::now());
+        self.prefer_scales();
         if self.splash.as_ref().is_some_and(|splash| splash.done()) {
             self.splash = None;
         }

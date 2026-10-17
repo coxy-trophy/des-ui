@@ -1,4 +1,11 @@
+mod buffers;
 mod compositor;
+pub mod cursor_shape;
+pub mod presentation;
+mod primary_selection;
+pub mod scale;
+pub mod xdg_activation;
+mod xdg_foreign;
 mod xdg_shell;
 
 use crate::{DesComp, focus::Focus};
@@ -36,7 +43,8 @@ impl SeatHandler for DesComp {
         let client = focused
             .and_then(|focus| focus.wl_surface())
             .and_then(|surface| dh.get_client(surface.id()).ok());
-        set_data_device_focus(dh, seat, client);
+        set_data_device_focus(dh, seat, client.clone());
+        smithay::wayland::selection::primary_selection::set_primary_focus(dh, seat, client);
     }
 }
 
