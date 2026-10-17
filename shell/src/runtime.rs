@@ -262,7 +262,7 @@ impl eframe::App for App {
                     self.osk.show(ui, &theme, Rect::from_min_max(pos2(screen.left(), keys_top), pos2(screen.right(), status_top)));
                 }
                 let toggled = region(ui, status, vec2(24.0, 0.0), Layout::left_to_right(Align::Center), |ui| {
-                    panels::status(ui, &theme, &self.mon, state.as_ref(), open, overlay, self.notices.count(), self.capture.recording.map(|since| since.elapsed()))
+                    panels::status(ui, &theme, &self.mon, state.as_ref(), open, overlay, self.notices.count(), self.capture.recording.map(|since| since.elapsed()), Some(&self.tray))
                 });
                 let (toggled, settings_clicked, music_clicked, notices_clicked, power_clicked, stop_clicked) = toggled;
                 if stop_clicked {

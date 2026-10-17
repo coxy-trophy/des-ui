@@ -23,6 +23,7 @@ mod oklch;
 mod osk;
 mod panels;
 mod pet;
+mod tray;
 mod power;
 mod powerup;
 mod bootsplash;
@@ -192,6 +193,8 @@ struct App {
     pending_shot_replies: Vec<control::Reply>,
     /// A program waiting for a colour picked with one click.
     pending_color: Option<control::Reply>,
+    /// Applications' status icons, for the status strip.
+    tray: tray::Tray,
 }
 
 impl App {
@@ -222,6 +225,7 @@ impl App {
         };
         let clipboard = clipboard::Clipboard::start(ctx.clone());
         let widgets = widgets::Widgets::new(ctx.clone());
+        let tray = tray::Tray::start(ctx.clone());
         let mut osk = osk::Osk::default();
         osk.open = config.osk;
         let mut launcher = Launcher::default();
@@ -277,6 +281,7 @@ impl App {
             widgets,
             remote: remote::Remote::new(),
             osk,
+            tray,
             scratchpad: scratchpad::Scratchpad::default(),
             overlay_area: None,
             pending_shot_replies: Vec::new(),

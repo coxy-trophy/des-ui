@@ -81,7 +81,7 @@ fn icon_roots() -> Vec<PathBuf> {
     }
     roots
 }
-fn resolve(icon: &str, roots: &[PathBuf]) -> Option<PathBuf> {
+pub(crate) fn resolve(icon: &str, roots: &[PathBuf]) -> Option<PathBuf> {
     let path = Path::new(icon);
     if path.is_absolute() { return path.is_file().then(|| path.to_owned()); }
     if icon.contains('/') { return None; }
