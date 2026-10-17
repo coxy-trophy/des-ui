@@ -141,6 +141,8 @@ impl eframe::App for App {
             LockStep::Wait => {},
         }
         self.notices.pump();
+        // What starts within a quarter of an hour is announced, once.
+        self.agenda.pump(&mut self.notices);
         if let Some(desktop) = &mut self.desktop {
             for shot in std::mem::take(&mut desktop.shots) {
                 self.capture.take(shot);
@@ -187,6 +189,7 @@ impl eframe::App for App {
                 self.send(Command::Dock(None));
             }
             self.capture.cancel();
+            self.agenda.open = false;
             self.scratchpad.close_now();
             if self.overlay_area != Some(None) {
                 self.overlay_area = Some(None);
@@ -529,6 +532,13 @@ impl eframe::App for App {
         // Toasts hang from the top right corner of the workspace. The compositor is
         // told where, so that it shows them above whatever application is open.
         let (mut covered, chosen) = self.notices.toasts(ctx, &theme, workspace.right_top() + vec2(-16.0, 12.0));
+        // The calendar opened from the clock; lifted with the toasts, so it shows over applications.
+        if let Some(anchor) = agenda::take_request(ctx) {
+            self.agenda.toggle(ctx, anchor);
+        }
+        if let Some(rect) = self.agenda.show(ctx, &theme) {
+            covered = Some(covered.map_or(rect, |all| all.union(rect)));
+        }
         // Marking out a piece for a screenshot takes the whole display, above everything.
         if self.capture.marking() {
             match self.capture.mark(ctx, theme.main) {

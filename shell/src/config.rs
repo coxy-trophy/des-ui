@@ -55,6 +55,8 @@ pub struct Config {
     pub notification_sounds: bool,
     /// Whether notifications are kept off the screen as they arrive.
     pub do_not_disturb: bool,
+    /// Quiet hours, as minutes after midnight: from, to (`dnd_schedule = 22:00-07:00`).
+    pub dnd_schedule: Option<(u32, u32)>,
     /// The animal at the foot of the left column; "off" for none.
     pub pet: String,
     /// Whether the clocks count twelve hours twice, not twenty-four once.
@@ -96,6 +98,7 @@ impl Default for Config {
             lock_on_sleep: true,
             notification_sounds: true,
             do_not_disturb: false,
+            dnd_schedule: None,
             twelve_hour: false,
             pet: "dog".to_string(),
             panels: Panels::default(),
@@ -169,6 +172,7 @@ impl Config {
                 }
                 "globe_rotation" => config.globe_rotation = value != "off",
                 "do_not_disturb" => config.do_not_disturb = value == "on",
+                "dnd_schedule" => config.dnd_schedule = crate::notify::parse_schedule(value),
                 "lock_on_sleep" => config.lock_on_sleep = value != "off",
                 "notification_sounds" => config.notification_sounds = value != "off",
                 "animate" => {
