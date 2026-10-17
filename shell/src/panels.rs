@@ -477,6 +477,7 @@ pub fn status(
     overlay: Option<&str>,
     notices: usize,
     recording: Option<std::time::Duration>,
+    tray: Option<&crate::tray::Tray>,
 ) -> (Option<Panel>, bool, bool, bool, bool, bool) {
     let mut toggled = None;
     let stage = powerup::stage(ui.ctx());
@@ -560,6 +561,11 @@ pub fn status(
             if button.clicked() {
                 toggled = Some(panel);
             }
+        }
+        // Applications' own icons, left of the readings.
+        if let Some(tray) = tray {
+            ui.spacing_mut().item_spacing.x = 20.0;
+            crate::tray::show(ui, theme, tray);
         }
     });
     (toggled, settings_clicked, music_clicked, notices_clicked, power_clicked, stop_clicked)

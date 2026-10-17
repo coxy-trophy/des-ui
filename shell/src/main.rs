@@ -25,6 +25,7 @@ mod osk;
 mod panels;
 mod pet;
 mod polkit;
+mod tray;
 mod power;
 mod powerup;
 mod bootsplash;
@@ -196,6 +197,8 @@ struct App {
     pending_color: Option<control::Reply>,
     /// Asks for an administrator's password when an application needs one.
     polkit: polkit::Polkit,
+    /// Applications' status icons, for the status strip.
+    tray: tray::Tray,
 }
 
 impl App {
@@ -226,6 +229,7 @@ impl App {
         };
         let clipboard = clipboard::Clipboard::start(ctx.clone());
         let widgets = widgets::Widgets::new(ctx.clone());
+        let tray = tray::Tray::start(ctx.clone());
         let polkit = polkit::Polkit::start(ctx.clone());
         // What the user asked to start at login, once per session, and only in one.
         if desktop_present {
@@ -287,6 +291,7 @@ impl App {
             remote: remote::Remote::new(),
             osk,
             polkit,
+            tray,
             scratchpad: scratchpad::Scratchpad::default(),
             overlay_area: None,
             pending_shot_replies: Vec::new(),

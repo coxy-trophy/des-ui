@@ -376,3 +376,17 @@ watched work on a real machine. Tick them off, or note what went wrong.
 - [ ] Turning a system entry off and on in Settings → Session leaves no file behind
 - [ ] ADD with a quoted argument (`foo --name "a b"`) starts exactly that next session
 - [ ] polkit-gnome or polkit-kde installed: their agent is not started
+
+## System tray
+
+- [ ] Discord, Steam, Nextcloud, Telegram and `nm-applet --indicator` each show an icon,
+      with the right picture and tooltip
+- [ ] Left click opens or raises the application; right click opens its menu; entries
+      with submenus, check marks and radio buttons work and close the menu
+- [ ] An item that changes its icon or status (Nextcloud syncing, a new Telegram
+      message) updates within a second; a Passive one disappears
+- [ ] Quitting an application removes its icon; starting it again brings it back
+- [ ] Restarting the shell (Super+Shift+R) brings every icon back without restarting
+      the applications
+- [ ] With another watcher running (e.g. `snixembed` or a KDE session's), the shell
+      shows the same icons as a host
