@@ -19,6 +19,7 @@
 //! - `settings` when the user asks for the settings;
 //! - `music` when the user asks for the music player;
 //! - `notifications` when the user asks for the list of notifications;
+//! - `quick` when the user asks for the quick settings, over whatever is in view;
 //! - `power` when the user asks for the power menu;
 //! - `shot <screen|window|region|pick> <width> <height> <x,y,w,h|-> <file>` when a
 //!   screenshot has been taken: the file holds plain pixels, four bytes each, rows
@@ -808,6 +809,8 @@ pub enum Event {
     Music,
     /// The notifications shortcut was pressed.
     Notifications,
+    /// The quick settings shortcut was pressed.
+    Quick,
     /// The power key or shortcut was pressed.
     Power,
     /// A screenshot was taken: its width and height, and the file of plain pixels
@@ -836,6 +839,7 @@ impl Event {
     pub const SETTINGS: &str = "settings\n";
     pub const MUSIC: &str = "music\n";
     pub const NOTIFICATIONS: &str = "notifications\n";
+    pub const QUICK: &str = "quick\n";
     pub const POWER: &str = "power\n";
 
     pub fn shot(mode: ShotMode, width: i32, height: i32, window: Option<(i32, i32, i32, i32)>, path: &str) -> String {
@@ -862,6 +866,7 @@ impl Event {
             "settings" => return Some(Event::Settings),
             "music" => return Some(Event::Music),
             "notifications" => return Some(Event::Notifications),
+            "quick" => return Some(Event::Quick),
             "power" => return Some(Event::Power),
             "recording on" => return Some(Event::Recording(Recording::On)),
             "recording off" => return Some(Event::Recording(Recording::Off)),
@@ -1436,6 +1441,7 @@ mod tests {
         assert_eq!(Event::decode(Event::SETTINGS), Some(Event::Settings));
         assert_eq!(Event::decode(Event::MUSIC), Some(Event::Music));
         assert_eq!(Event::decode(Event::NOTIFICATIONS), Some(Event::Notifications));
+        assert_eq!(Event::decode(Event::QUICK), Some(Event::Quick));
         assert_eq!(Event::decode(Event::POWER), Some(Event::Power));
         assert_eq!(Event::decode(&Event::recording("failed")), Some(Event::Recording(Recording::Failed)));
         assert_eq!(

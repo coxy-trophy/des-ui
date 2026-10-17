@@ -217,6 +217,27 @@ impl Sound {
         ui.add_space(16.0);
     }
 
+    /// The outputs to choose among, compactly, for the quick settings.
+    pub fn quick_outputs(&mut self, ui: &mut Ui, theme: &Theme) {
+        let (devices, stale) = {
+            let state = self.shared.lock().unwrap();
+            (state.devices.clone(), state.read_at.is_none_or(|at| at.elapsed() > Duration::from_secs(3)))
+        };
+        if stale {
+            self.act(Vec::new());
+        }
+        let Some(devices) = devices else { return };
+        if devices.outputs.len() < 2 {
+            return;
+        }
+        for node in devices.outputs.iter().take(4) {
+            let state = if node.chosen { "IN USE" } else { "USE" };
+            if row(ui, theme, &crate::panels::truncate(&node.name, 26), state, node.chosen) && !node.chosen {
+                self.act(vec![vec!["set-default".into(), node.id.to_string()]]);
+            }
+        }
+    }
+
     pub fn show(&mut self, ui: &mut Ui, theme: &Theme) {
         let (devices, stale, tried) = {
             let state = self.shared.lock().unwrap();

@@ -415,6 +415,15 @@ fn read_bluetooth() -> (Option<bool>, Vec<BtDevice>) {
     (powered, devices)
 }
 
+/// A radio in one line: on or off (`None` when there is none), what it is joined to,
+/// and what it is busy doing.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Glance {
+    pub powered: Option<bool>,
+    pub detail: Option<String>,
+    pub working: Option<String>,
+}
+
 /// The Wi-Fi and Bluetooth panels of the settings screen.
 pub struct Radio {
     wifi: Arc<Mutex<Shared<Network>>>,
@@ -760,6 +769,50 @@ impl Radio {
             };
             ctx.request_repaint();
         });
+    }
+
+    /// Wi-Fi at a glance, for the quick settings: reads again when the last look is old.
+    pub fn wifi_glance(&mut self) -> Glance {
+        let (glance, stale) = {
+            let state = self.wifi.lock().unwrap();
+            let stale = state.refreshed.is_none_or(|at| at.elapsed() > Duration::from_secs(12));
+            let detail = state.items.iter().find(|network| network.in_use).map(|network| network.ssid.clone());
+            (Glance { powered: state.powered, detail, working: state.working.clone() }, stale && state.working.is_none())
+        };
+        if stale {
+            self.wifi_do("READING", Vec::new(), false);
+        }
+        glance
+    }
+
+    /// Turns the Wi-Fi radio on or off, as the switch in the settings does.
+    pub fn toggle_wifi(&self, on: bool) {
+        let next = if on { "off" } else { "on" };
+        self.wifi_do(if on { "TURNING OFF" } else { "TURNING ON" }, vec![vec!["radio".into(), "wifi".into(), next.into()]], !on);
+    }
+
+    /// Bluetooth at a glance: on or off, and what is connected.
+    pub fn bluetooth_glance(&mut self) -> Glance {
+        let (glance, stale) = {
+            let state = self.bluetooth.lock().unwrap();
+            let stale = state.refreshed.is_none_or(|at| at.elapsed() > Duration::from_secs(12));
+            let connected: Vec<&str> = state.items.iter().filter(|device| device.connected).map(|device| device.name.as_str()).collect();
+            let detail = match connected.as_slice() {
+                [] => None,
+                [one] => Some(one.to_string()),
+                many => Some(format!("{} devices", many.len())),
+            };
+            (Glance { powered: state.powered, detail, working: state.working.clone() }, stale && state.working.is_none())
+        };
+        if stale {
+            self.bluetooth_do("READING", Vec::new());
+        }
+        glance
+    }
+
+    pub fn toggle_bluetooth(&self, on: bool) {
+        let next = if on { "off" } else { "on" };
+        self.bluetooth_do(if on { "TURNING OFF" } else { "TURNING ON" }, vec![vec!["power".into(), next.into()]]);
     }
 
     pub fn show_wifi(&mut self, ui: &mut Ui, theme: &Theme) {

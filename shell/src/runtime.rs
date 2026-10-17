@@ -11,6 +11,11 @@ impl eframe::App for App {
         // Before anything reads input: what the on-screen keys pressed last frame.
         self.osk.inject(ctx);
         self.mon.tick();
+        // Volume and brightness changed from outside the shell's sliders get a meter.
+        let quiet = self.settings.open || self.quick.open;
+        let now = Instant::now();
+        self.osd.observe(osd::Kind::Volume, self.mon.volume(), quiet, now);
+        self.osd.observe(osd::Kind::Brightness, self.mon.brightness, quiet, now);
         self.widgets.pump();
         // While the terminal in use is in an ssh session, the panels show that machine.
         let focused = self.focus_tab();
@@ -66,6 +71,9 @@ impl eframe::App for App {
                 self.music.open = false;
                 self.notices.open = false;
                 self.power_menu.open = true;
+            }
+            if std::mem::take(&mut desktop.quick_requested) {
+                self.quick.toggle();
             }
             if std::mem::take(&mut desktop.notifications_requested) && !self.notices.open {
                 self.launcher.open = false;
@@ -191,6 +199,7 @@ impl eframe::App for App {
             self.capture.cancel();
             self.agenda.open = false;
             self.scratchpad.close_now();
+            self.quick.open = false;
             if self.overlay_area != Some(None) {
                 self.overlay_area = Some(None);
                 self.send(Command::Overlay(None));
@@ -258,7 +267,7 @@ impl eframe::App for App {
         let workspace = Rect::from_min_max(workspace.min, pos2(workspace.max.x, (workspace.max.y - osk_height).max(workspace.min.y)));
         let dock_keys = self.dock.reserve_keyboard(ctx);
         // While the scratchpad is down it has the keyboard, not the panes.
-        let scratch_keys = self.scratchpad.visible() || self.polkit.active() || self.fs.has_keyboard();
+        let scratch_keys = self.scratchpad.visible() || self.polkit.active() || self.fs.has_keyboard() || self.quick.open;
         CentralPanel::default()
             .frame(Frame::new().fill(ui::GROUND))
             .show(ctx, |ui| {
@@ -266,10 +275,17 @@ impl eframe::App for App {
                 if osk_height > 0.0 {
                     self.osk.show(ui, &theme, Rect::from_min_max(pos2(screen.left(), keys_top), pos2(screen.right(), status_top)));
                 }
-                let toggled = region(ui, status, vec2(24.0, 0.0), Layout::left_to_right(Align::Center), |ui| {
-                    panels::status(ui, &theme, &self.mon, state.as_ref(), open, overlay, self.notices.count(), self.capture.recording.map(|since| since.elapsed()), Some(&self.tray))
+                let clicks = region(ui, status, vec2(24.0, 0.0), Layout::left_to_right(Align::Center), |ui| {
+                    panels::status(ui, &theme, &self.mon, state.as_ref(), open, overlay, self.notices.count(), self.capture.recording.map(|since| since.elapsed()), Some(&self.tray), self.osk.open, self.quick.open)
                 });
-                let (toggled, settings_clicked, music_clicked, notices_clicked, power_clicked, stop_clicked) = toggled;
+                let (toggled, settings_clicked, music_clicked, notices_clicked, power_clicked, stop_clicked) =
+                    (clicks.toggled, clicks.settings, clicks.music, clicks.notices, clicks.power, clicks.stop);
+                if clicks.keyboard {
+                    self.toggle_osk();
+                }
+                if clicks.quick {
+                    self.quick.toggle();
+                }
                 if stop_clicked {
                     self.toggle_recording();
                 }
@@ -496,7 +512,20 @@ impl eframe::App for App {
         let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
         let scratch = self.scratchpad.show(ctx, workspace, screen, &theme, &look, self.config.animate,
             (&self.shell, &home, self.config.scrollback), &events);
-        let overlay_area = scratch.map(scratchpad::area);
+        // The quick settings, when open, take the lifted area: they are the one in use.
+        let readings = quick::Readings {
+            volume: self.mon.volume(),
+            brightness: self.mon.brightness,
+            night_light: self.config.night_light,
+            do_not_disturb: self.notices.quiet,
+            keyboard: self.osk.open,
+            battery: self.mon.power.map(crate::power::battery_line),
+        };
+        for action in self.quick.show(ctx, &theme, screen, keys_top, &readings) {
+            self.quick_action(ctx, action);
+        }
+        let quick_area = self.quick.open.then(|| quick::area(screen, keys_top));
+        let overlay_area = quick_area.or(scratch).map(scratchpad::area);
         if scratchpad::changed(&mut self.overlay_area, overlay_area) {
             self.send(Command::Overlay(overlay_area));
         }
@@ -531,7 +560,14 @@ impl eframe::App for App {
 
         // Toasts hang from the top right corner of the workspace. The compositor is
         // told where, so that it shows them above whatever application is open.
-        let (mut covered, chosen) = self.notices.toasts(ctx, &theme, workspace.right_top() + vec2(-16.0, 12.0));
+        // The volume or brightness meter hangs first; the toasts follow below it.
+        let corner = workspace.right_top() + vec2(-16.0, 12.0);
+        let meter = self.osd.show(ctx, &theme, corner, self.config.animate);
+        let toasts_at = meter.map_or(corner, |meter| corner + vec2(0.0, meter.height() + 8.0));
+        let (mut covered, chosen) = self.notices.toasts(ctx, &theme, toasts_at);
+        if let Some(meter) = meter {
+            covered = Some(covered.map_or(meter, |toasts| toasts.union(meter)));
+        }
         // The calendar opened from the clock; lifted with the toasts, so it shows over applications.
         if let Some(anchor) = agenda::take_request(ctx) {
             self.agenda.toggle(ctx, anchor);
@@ -644,6 +680,7 @@ impl App {
                 }
                 Request::Scratchpad => { self.scratchpad.toggle(); Answer::Ok }
                 Request::Overview => { self.send(Command::Overview); Answer::Ok }
+                Request::Quick => { self.quick.toggle(); Answer::Ok }
                 Request::Music(word) => { self.music.command(word.word()); Answer::Ok }
                 Request::Panel(panel) => { self.send(Command::TogglePanel(panel)); Answer::Ok }
                 Request::Screenshot(mode) => { self.send(Command::Shot(mode)); Answer::Ok }
@@ -667,6 +704,40 @@ impl App {
             }
             if let Some(reply) = self.pending_color.take() {
                 reply.send(control::colour_answer(None));
+            }
+        }
+    }
+}
+
+impl App {
+    /// Does what the quick settings asked.
+    fn quick_action(&mut self, ctx: &egui::Context, action: quick::Action) {
+        match action {
+            quick::Action::Change(change) => self.apply(ctx, change),
+            quick::Action::Mute => {
+                self.osd.hold(osd::Kind::Volume, Instant::now());
+                spawn_quietly("wpctl", &["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"]);
+            }
+            quick::Action::Keyboard => self.toggle_osk(),
+            quick::Action::DoNotDisturb(quiet) => {
+                self.notices.quiet = quiet;
+                if let Err(e) = config::set("do_not_disturb", quiet.then_some("on")) {
+                    self.notices.post("Could not save Do not disturb", &e.to_string(), false);
+                }
+            }
+            quick::Action::Settings => {
+                self.quick.open = false;
+                if !self.settings.open {
+                    self.toggle_settings();
+                }
+            }
+            quick::Action::Power => {
+                self.quick.open = false;
+                self.toggle_power();
+            }
+            quick::Action::Lock => {
+                self.quick.open = false;
+                self.lock_now();
             }
         }
     }

@@ -52,6 +52,9 @@ pub fn clip_query(query:&str)->Option<String> {
     None
 }
 
+/// How a window that asked for attention is marked in its result.
+pub const URGENT: &str = "WANTS ATTENTION";
+
 pub fn results(query:&str, entries:&[AppEntry], state:Option<&DesktopState>, catalog:&Catalog, clips:&[clipboard::Entry]) -> Vec<Item> {
     let query=query.trim().to_lowercase();
     let mut items=Vec::new();
@@ -62,7 +65,9 @@ pub fn results(query:&str, entries:&[AppEntry], state:Option<&DesktopState>, cat
     }
     if let Some(state)=state {
         for (index,app) in state.apps.iter().enumerate() {
-            items.push(item(app.title.clone(),format!("{} · display {} · workspace {}",app.app_id,app.screen+1,app.workspace+1),"WINDOW",Action::Command(Command::Activate(index))));
+            // A window that asked for attention says so, and comes first among the rest.
+            let wants=if app.urgent { format!("{URGENT} · ") } else { String::new() };
+            items.push(item(app.title.clone(),format!("{wants}{} · display {} · workspace {}",app.app_id,app.screen+1,app.workspace+1),"WINDOW",Action::Command(Command::Activate(index))));
         }
     }
     for (id,title) in crate::settings::destinations() {
@@ -125,11 +130,12 @@ pub fn results(query:&str, entries:&[AppEntry], state:Option<&DesktopState>, cat
         let label=item.sort_key();
         let rank=match item.kind {
             "CALC"|"CLIP"=>0,
-            "APP" if label.starts_with(&query)=>1,
-            "HOST"|"COMMAND" if label==query=>2,
-            _ if label.starts_with(&query)=>3,
-            "APP"=>4,
-            _=>5,
+            "WINDOW" if item.detail.starts_with(URGENT)=>1,
+            "APP" if label.starts_with(&query)=>2,
+            "HOST"|"COMMAND" if label==query=>3,
+            _ if label.starts_with(&query)=>4,
+            "APP"=>5,
+            _=>6,
         };
         (rank,label)
     });
@@ -140,6 +146,15 @@ pub fn results(query:&str, entries:&[AppEntry], state:Option<&DesktopState>, cat
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_window_that_wants_attention_comes_first() {
+        let app=|title:&str,urgent:bool| des_common::ipc::AppInfo{app_id:"x".into(),title:title.into(),screen:0,workspace:0,place:des_common::ipc::Place::Main,pinned:false,urgent};
+        let state=DesktopState { apps:vec![app("Quiet",false),app("Ringing",true)],..Default::default() };
+        let items=results("",&[],Some(&state),&Catalog::default(),&[]);
+        assert_eq!(items[0].label,"Ringing");
+        assert!(items[0].detail.starts_with(URGENT));
+        assert!(!items.iter().find(|i|i.label=="Quiet").unwrap().detail.starts_with(URGENT));
+    }
     use crate::commands::{Host,Proc,Unit,UserCommand};
     fn entry(name:&str)->AppEntry { AppEntry { name:name.into(),desktop_id:format!("{name}.desktop"),exec:vec!["x".into()],icon:None,startup_wm_class:None,terminal:false } }
     #[test]

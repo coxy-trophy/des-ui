@@ -482,7 +482,9 @@ pub fn status(
     notices: usize,
     recording: Option<std::time::Duration>,
     tray: Option<&crate::tray::Tray>,
-) -> (Option<Panel>, bool, bool, bool, bool, bool) {
+    keyboard_open: bool,
+    quick_open: bool,
+) -> StatusClicks {
     let mut toggled = None;
     let stage = powerup::stage(ui.ctx());
     if stage.alpha(Part::Status) < 1.0 {
@@ -512,7 +514,11 @@ pub fn status(
     ui::text(ui, &format!("{holder} HAS THE KEYBOARD"), ui::mono(11.0), ui::SECONDARY);
 
     let mut stop_clicked = false;
+    let (mut keyboard_clicked, mut quick_clicked) = (false, false);
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        quick_clicked = ui::icon_button(ui, theme, Icon::Quick, 22.0, quick_open)
+            .on_hover_text("Quick settings: Wi-Fi, Bluetooth, sound, brightness (Super+A)")
+            .clicked();
         if let Some(running) = recording {
             // The one thing here that is happening to the user, so it is the one in colour.
             let seconds = running.as_secs();
@@ -522,6 +528,8 @@ pub fn status(
             ui.painter().galley(rect.center() - label.size() / 2.0, label, ui::CAUTION);
             stop_clicked = response.on_hover_text("End the recording").clicked();
         }
+        // The readings themselves open the quick settings, as on other desktops.
+        let readings_start = ui.cursor().right();
         if let Some(battery) = mon.power {
             // Low and running down is the one reading here that asks for something.
             let low = !battery.plugged && battery.percent <= 15;
@@ -548,6 +556,13 @@ pub fn status(
             let count = desktop.apps.len();
             ui::icon_value(ui, Icon::Apps, &count.to_string(), ui::SECONDARY, "Open applications");
         }
+        let readings = Rect::from_min_max(pos2(ui.cursor().right(), ui.max_rect().top()), pos2(readings_start, ui.max_rect().bottom()));
+        if readings.width() > 0.0 && ui.interact(readings, ui.id().with("readings"), Sense::click()).clicked() {
+            quick_clicked = true;
+        }
+        keyboard_clicked = ui::icon_button(ui, theme, Icon::Keyboard, 22.0, keyboard_open)
+            .on_hover_text("On-screen keyboard (Ctrl+Shift+K)")
+            .clicked();
         ui.spacing_mut().item_spacing.x = 4.0;
         for (icon, panel, open) in [
             (Icon::PanelRight, Panel::Right, panels.right),
@@ -572,7 +587,19 @@ pub fn status(
             crate::tray::show(ui, theme, tray);
         }
     });
-    (toggled, settings_clicked, music_clicked, notices_clicked, power_clicked, stop_clicked)
+    StatusClicks { toggled, settings: settings_clicked, music: music_clicked, notices: notices_clicked, power: power_clicked, stop: stop_clicked, keyboard: keyboard_clicked, quick: quick_clicked }
+}
+
+/// What was clicked in the status strip this frame.
+pub struct StatusClicks {
+    pub toggled: Option<Panel>,
+    pub settings: bool,
+    pub music: bool,
+    pub notices: bool,
+    pub power: bool,
+    pub stop: bool,
+    pub keyboard: bool,
+    pub quick: bool,
 }
 
 /// What a further display shows while no application is on it.

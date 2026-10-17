@@ -407,6 +407,10 @@ pub enum Icon {
     LayoutSplit,
     LayoutColumns,
     LayoutMaster,
+    /// A keyboard's outline with three rows of keys: the on-screen keyboard.
+    Keyboard,
+    /// Three sliders: the quick settings.
+    Quick,
 }
 
 impl Icon {
@@ -452,6 +456,7 @@ impl Icon {
             Self::Copy => "Copy last command output",
             Self::LayoutSingle => "One application", Self::LayoutSplit => "Two side by side",
             Self::LayoutColumns => "Three columns", Self::LayoutMaster => "Master and stack",
+            Self::Keyboard => "On-screen keyboard", Self::Quick => "Quick settings",
         }
     }
 }
@@ -503,6 +508,23 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color3
                     line((0.0, 1.7), (7.0, 1.7));
                 }
                 _ => {}
+            }
+        }
+        Icon::Keyboard => {
+            painter.rect_stroke(Rect::from_min_max(c + vec2(-7.0, -4.5), c + vec2(7.0, 4.5)), 1.0, stroke, StrokeKind::Middle);
+            for (y, from, to) in [(-2.0, -4.5, 4.5), (0.5, -4.5, 4.5)] {
+                let mut x = from;
+                while x <= to + 0.01 {
+                    painter.circle_filled(c + vec2(x, y), 0.7, color);
+                    x += 3.0;
+                }
+            }
+            line((-3.0, 2.8), (3.0, 2.8));
+        }
+        Icon::Quick => {
+            for (y, knob) in [(-4.0, 2.5), (0.0, -2.5), (4.0, 0.5)] {
+                line((-6.0, y), (6.0, y));
+                painter.circle_filled(c + vec2(knob, y), 1.8, color);
             }
         }
         Icon::Copy => {
@@ -731,6 +753,12 @@ pub fn waterfall(ui: &mut Ui, above: &VecDeque<f32>, below: &VecDeque<f32>, max:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_icons_say_what_they_are() {
+        assert_eq!(Icon::Keyboard.label(), "On-screen keyboard");
+        assert_eq!(Icon::Quick.label(), "Quick settings");
+    }
 
     #[test]
     fn bar_grids_fit_their_column() {
