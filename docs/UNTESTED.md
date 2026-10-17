@@ -390,3 +390,18 @@ watched work on a real machine. Tick them off, or note what went wrong.
       the applications
 - [ ] With another watcher running (e.g. `snixembed` or a KDE session's), the shell
       shows the same icons as a host
+
+## File panel: quick-look and dragging files out
+
+- [ ] Space on a PNG, a large JPEG, a GIF, a source file, a 10,000-line log, a PDF
+      (with and without poppler-utils), a zip, a .tar.xz, a folder of 50,000 files and a
+      binary; ← → through a folder of mixed files; Escape returns keys to the terminal
+- [ ] The preview over a workspace showing an application: the terminal comes into
+      view under it
+- [ ] Drag a file from the panel into Firefox (an upload field), Nautilus, a GTK4 text
+      editor and a Qt application; the drop arrives as the file, not as text
+- [ ] Drag a file named with spaces and non-ASCII letters
+- [ ] Drag onto an X11 application (expected: no drop) and onto the shell itself
+- [ ] Locking while dragging: the drag is cancelled, nothing is dropped
+- [ ] Clicking a file then typing in the terminal after a click there: keys reach the
+      terminal again

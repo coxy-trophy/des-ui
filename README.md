@@ -349,6 +349,15 @@ again, and its shell keeps running meanwhile. Escape goes to the shell inside, n
 the scratchpad. "Scratchpad terminal" in the palette and `des-ui-ctl scratchpad` do
 the same. Locking puts it away.
 
+**Files.** A click on a file in the bottom panel picks it; **Space** shows it over the
+workspace (pictures, text and source, a PDF's first page with poppler-utils, what a zip
+or tar archive holds, how big a folder is, or at least what a file is), **← →** go
+through the folder, **Space** or **Escape** closes. **Enter** or a double click types
+its path into the terminal, as a click on a folder `cd`s into it. Drag a file out of
+the panel and drop it on an application to open or attach it. Nothing is ever run:
+the preview reads at most 50 MB, and the only helpers it uses are `file`,
+`pdftoppm`, `unzip` and `tar`, each with the file as an argument.
+
 Ctrl+Shift+T opens a tab and Ctrl+Tab moves between them. The terminal can also be
 split in two, each half showing a tab of its own:
 
