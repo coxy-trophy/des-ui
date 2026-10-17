@@ -35,6 +35,7 @@ mod runtime;
 mod workflows;
 mod screen_views;
 mod scratchpad;
+mod quicklook;
 mod region;
 mod sound;
 mod users;

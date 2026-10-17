@@ -255,7 +255,7 @@ impl eframe::App for App {
         let workspace = Rect::from_min_max(workspace.min, pos2(workspace.max.x, (workspace.max.y - osk_height).max(workspace.min.y)));
         let dock_keys = self.dock.reserve_keyboard(ctx);
         // While the scratchpad is down it has the keyboard, not the panes.
-        let scratch_keys = self.scratchpad.visible() || self.polkit.active();
+        let scratch_keys = self.scratchpad.visible() || self.polkit.active() || self.fs.has_keyboard();
         CentralPanel::default()
             .frame(Frame::new().fill(ui::GROUND))
             .show(ctx, |ui| {
@@ -328,6 +328,8 @@ impl eframe::App for App {
                         let cwd = self.tabs[self.focus_tab()].cwd();
                         self.fs.show(ui, &theme, cwd.as_deref())
                     });
+                } else {
+                    self.fs.blur();
                 }
 
                 // The top bar stays in view while an application covers what is below
@@ -553,6 +555,20 @@ impl eframe::App for App {
         }
 
         self.secondary_views(ctx,state.as_ref(),false);
+        // The file panel's preview, over the workspace, with the terminal brought into
+        // view beneath it.
+        if self.fs.take_uncover() {
+            self.send(Command::Terminal);
+        }
+        self.fs.look.show(ctx, workspace, &theme);
+        // A file dragged out of the panel: the compositor carries it to whatever is
+        // under the pointer when the button is let go.
+        if let Some(path) = self.fs.take_drag() {
+            let uri = control::file_uri(&path);
+            if des_common::ipc::drag_uri_ok(&uri) && uri.len() + 12 < des_common::ipc::MAX_DRAG_LINE {
+                self.send(Command::DragFiles(vec![uri]));
+            }
+        }
         // Last, so that it is above everything else.
         self.polkit.show(ctx, &theme, false);
 

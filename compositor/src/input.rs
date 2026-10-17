@@ -417,6 +417,11 @@ impl DesComp {
                 let button = event.button_code();
 
                 let button_state = event.state();
+                // A drag out of the shell may only begin while a button is held.
+                self.buttons_down = match button_state {
+                    ButtonState::Pressed => self.buttons_down.saturating_add(1),
+                    ButtonState::Released => self.buttons_down.saturating_sub(1),
+                };
 
                 // Click to focus: the keyboard follows the display that was clicked.
                 // Shell overlays own their clicks; only their explicit commands change focus.

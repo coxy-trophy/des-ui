@@ -98,7 +98,7 @@ fn dismisses_dock_keyboard(keyboard_screen:usize,cleared_screen:usize,area_none:
     area_none && keyboard_screen==cleared_screen
 }
 fn command_allowed(locked: bool, picking:bool, command: &Command) -> bool {
-    (!locked || matches!(command, Command::Lock | Command::Unlock | Command::ReloadInput)) && (!picking || !matches!(command,Command::Dock(Some(_))|Command::DockOn(_,Some(_))|Command::Overlay(Some(_))))
+    (!locked || matches!(command, Command::Lock | Command::Unlock | Command::ReloadInput)) && (!picking || !matches!(command,Command::Dock(Some(_))|Command::DockOn(_,Some(_))|Command::Overlay(Some(_))|Command::DragFiles(_)))
 }
 
 #[cfg(test)]
@@ -916,6 +916,7 @@ impl DesComp {
             self.locked = locked;
             if locked {
                 self.release_pointer_constraint();
+                self.cancel_file_drag();
                 self.dock_keyboard = false;
                 self.dock = None;
                 self.docks.clear();
@@ -1080,6 +1081,7 @@ impl DesComp {
                 }
                 Command::Pin(index) => self.pin(index),
                 Command::Unpin => self.unpin(),
+                Command::DragFiles(uris) => self.start_file_drag(uris),
                 Command::Overlay(area) => {
                     self.overlay = area.map(|(x, y, w, h)| Rectangle::new((x, y).into(), (w, h).into()));
                     // The keyboard goes to the shell while the overlay shows, and back after.
@@ -1262,6 +1264,10 @@ mod pin_and_overlay_tests {
         assert!(!command_allowed(true, false, &Command::Overlay(area)));
         assert!(!command_allowed(false, true, &Command::Overlay(area)));
         assert!(command_allowed(false, true, &Command::Overlay(None)));
+        let drag = Command::DragFiles(vec!["file:///a".into()]);
+        assert!(command_allowed(false, false, &drag));
+        assert!(!command_allowed(true, false, &drag));
+        assert!(!command_allowed(false, true, &drag));
         assert!(!command_allowed(true, false, &Command::Pin(0)));
         assert!(!command_allowed(true, false, &Command::Unpin));
         assert!(command_allowed(false, false, &Command::Pin(0)));

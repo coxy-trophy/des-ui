@@ -20,6 +20,7 @@ mod phosphor;
 mod udev;
 mod winit;
 mod displays;
+mod dnd;
 mod focus;
 mod xwayland;
 

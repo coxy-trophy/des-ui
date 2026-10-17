@@ -47,6 +47,9 @@
 //! - `overlay <x y w h|none>`: a part of the shell's window on the main display to
 //!   be seen above any application, such as a drop-down terminal, with the keyboard
 //!   going to the shell for as long as it shows;
+//! - `drag-files <uri>\t<uri>…` while a file is dragged out of the shell: the
+//!   compositor starts a drag that drops those `file://` URIs (at most 64, the line
+//!   under 4,000 bytes) where the pointer is let go;
 //! - `hold-idle <on|off>` while an application is showing something to watch, so
 //!   that the screen is not locked for want of input;
 //! - `shot <screen|window|region|pick>`, `record <file>` and `record-stop`;
@@ -641,6 +644,20 @@ pub enum Command {
     /// (x, y, width, height) that is to be seen above any application, and has the
     /// keyboard meanwhile; or no longer.
     Overlay(Option<(i32, i32, i32, i32)>),
+    /// The pointer is dragging these files out of the shell: start a drag that drops
+    /// them as `file://` URIs into whatever is under the pointer when it is let go.
+    DragFiles(Vec<String>),
+}
+
+/// At most this many files go in one drag.
+pub const MAX_DRAG_FILES: usize = 64;
+/// A drag's line stays well inside the compositor's 4 KiB line bound.
+pub const MAX_DRAG_LINE: usize = 4000;
+
+/// Whether `uri` may travel in a drag: a percent-encoded local file, nothing that could
+/// break the line or the tab-separated list.
+pub fn drag_uri_ok(uri: &str) -> bool {
+    uri.starts_with("file:///") && uri.len() > 8 && uri.bytes().all(|b| b.is_ascii_graphic())
 }
 
 impl Command {
@@ -678,6 +695,7 @@ impl Command {
             Command::Unpin => "unpin\n".to_string(),
             Command::Overlay(None) => "overlay none\n".to_string(),
             Command::Overlay(Some((x, y, w, h))) => format!("overlay {x} {y} {w} {h}\n"),
+            Command::DragFiles(uris) => format!("drag-files {}\n", uris.join("\t")),
             Command::Toast(Some((x, y, w, h))) => format!("toast {x} {y} {w} {h}\n"),
             Command::ApplyDisplays(choices) => {
                 let mut line = "displays-apply".to_string();
@@ -737,6 +755,12 @@ impl Command {
             let [x, y, w, h] = numbers[..] else { return None };
             if w <= 0 || h <= 0 || x.checked_add(w).is_none() || y.checked_add(h).is_none() { return None; }
             return Some(Command::Dock(Some((x, y, w, h))));
+        }
+        if let Some(list) = line.trim_end_matches('\n').strip_prefix("drag-files ") {
+            if line.len() > MAX_DRAG_LINE { return None; }
+            let uris: Vec<String> = list.split('\t').map(str::to_string).collect();
+            if uris.len() > MAX_DRAG_FILES || !uris.iter().all(|uri| drag_uri_ok(uri)) { return None; }
+            return Some(Command::DragFiles(uris));
         }
         if let Some(area) = line.trim_end().strip_prefix("overlay ") {
             if area == "none" { return Some(Command::Overlay(None)); }
@@ -800,6 +824,23 @@ mod tests {
             pinned: false,
             urgent: false,
         }
+    }
+
+    #[test]
+    fn dragged_files_round_trip_and_are_bounded() {
+        let one = Command::DragFiles(vec!["file:///home/a/notes%20one.txt".into()]);
+        assert_eq!(Command::decode(one.encode().trim_end()), Some(one));
+        let two = Command::DragFiles(vec!["file:///a".into(), "file:///b/c".into()]);
+        assert_eq!(two.encode(), "drag-files file:///a\tfile:///b/c\n");
+        assert_eq!(Command::decode(two.encode().trim_end()), Some(two));
+        assert_eq!(Command::decode("drag-files "), None);
+        assert_eq!(Command::decode("drag-files http://example.com/x"), None);
+        assert_eq!(Command::decode("drag-files file:///a b"), None);
+        assert_eq!(Command::decode("drag-files file:///"), None);
+        let many = vec!["file:///x".to_string(); MAX_DRAG_FILES + 1].join("\t");
+        assert_eq!(Command::decode(&format!("drag-files {many}")), None);
+        let long = format!("drag-files file:///{}", "a".repeat(MAX_DRAG_LINE));
+        assert_eq!(Command::decode(&long), None);
     }
 
     #[test]

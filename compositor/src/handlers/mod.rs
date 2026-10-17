@@ -22,7 +22,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Resource;
 use smithay::wayland::output::OutputHandler;
 use smithay::wayland::selection::data_device::{
-    set_data_device_focus, ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
+    set_data_device_focus, ClientDndGrabHandler, DataDeviceHandler, DataDeviceState,
 };
 use smithay::wayland::selection::{SelectionHandler, SelectionSource, SelectionTarget};
 use smithay::{delegate_data_device, delegate_output, delegate_seat};
@@ -91,7 +91,6 @@ impl DataDeviceHandler for DesComp {
 }
 
 impl ClientDndGrabHandler for DesComp {}
-impl ServerDndGrabHandler for DesComp {}
 
 delegate_data_device!(DesComp);
 

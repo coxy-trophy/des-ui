@@ -190,6 +190,10 @@ pub struct DesComp {
     pub layer_focus: Option<smithay::desktop::LayerSurface>,
     /// What the layers reserve on each output, as last applied to the windows.
     pub layer_reservations: Vec<(Rectangle<i32, Logical>, crate::handlers::layer_shell::Insets)>,
+    /// Pointer buttons held down now.
+    pub buttons_down: u32,
+    /// The files being dragged out of the shell, while a drag lasts.
+    pub dragged_files: Option<Vec<String>>,
 }
 
 /// A length of time in milliseconds that a test may set through the environment.
@@ -320,6 +324,8 @@ impl DesComp {
             layer_shell_state: smithay::wayland::shell::wlr_layer::WlrLayerShellState::new::<Self>(&dh),
             layer_focus: None,
             layer_reservations: Vec::new(),
+            buttons_down: 0,
+            dragged_files: None,
         }
     }
 

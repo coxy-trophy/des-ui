@@ -675,6 +675,38 @@ pub struct FsView {
     path: PathBuf,
     entries: Vec<(String, bool)>,
     loaded: Option<Instant>,
+    /// The file picked by a click, which the keys and quick-look act on.
+    selected: Option<String>,
+    /// Whether the panel has the keyboard: after a click on a file, until Escape or a
+    /// click elsewhere.
+    focused: bool,
+    /// Tiles in a row, as last laid out, for Up and Down.
+    columns: usize,
+    /// The preview over the workspace.
+    pub look: crate::quicklook::QuickLook,
+    /// A file dragged out of the panel, for the compositor to carry; once per drag.
+    drag: Option<PathBuf>,
+    dragging: bool,
+    /// Set when a preview opens, so the terminal is brought into view under it.
+    uncover: bool,
+}
+
+/// What a key does to the file panel while it has the keyboard.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FsKey {
+    Step(isize),
+    Look,
+    Open,
+    Escape,
+}
+
+/// The entry `step` away from `at`, kept inside `len`.
+pub fn stepped(at: Option<usize>, step: isize, len: usize) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let Some(at) = at else { return Some(0) };
+    Some((at as isize + step).clamp(0, len as isize - 1) as usize)
 }
 
 impl FsView {
@@ -683,7 +715,85 @@ impl FsView {
             path: PathBuf::new(),
             entries: Vec::new(),
             loaded: None,
+            selected: None,
+            focused: false,
+            columns: 1,
+            look: crate::quicklook::QuickLook::default(),
+            drag: None,
+            dragging: false,
+            uncover: false,
         }
+    }
+
+    /// Whether the panel or its preview has the keyboard, which the terminal then does not.
+    pub fn has_keyboard(&self) -> bool {
+        self.focused || self.look.is_open()
+    }
+
+    /// Lets go of the keyboard and closes the preview, as when the panel closes.
+    pub fn blur(&mut self) {
+        self.focused = false;
+        self.look.close();
+    }
+
+    pub fn take_drag(&mut self) -> Option<PathBuf> {
+        self.drag.take()
+    }
+
+    pub fn take_uncover(&mut self) -> bool {
+        std::mem::take(&mut self.uncover)
+    }
+
+    fn selected_index(&self) -> Option<usize> {
+        let name = self.selected.as_ref()?;
+        self.entries.iter().position(|(entry, _)| entry == name)
+    }
+
+    fn preview(&mut self, index: usize, ctx: &eframe::egui::Context) {
+        if let Some((name, _)) = self.entries.get(index) {
+            self.selected = Some(name.clone());
+            let path = self.path.join(name);
+            self.look.open(path, (index, self.entries.len()), ctx);
+        }
+    }
+
+    /// Applies a key; returns text to type into the terminal for Enter.
+    pub fn key(&mut self, key: FsKey, ctx: &eframe::egui::Context) -> Option<String> {
+        match key {
+            FsKey::Escape if self.look.is_open() => self.look.close(),
+            FsKey::Escape => self.focused = false,
+            FsKey::Step(step) => {
+                // In the preview, Left and Right go through the folder one by one.
+                let step = if self.look.is_open() { step.signum() } else { step };
+                if let Some(index) = stepped(self.selected_index(), step, self.entries.len()) {
+                    self.selected = Some(self.entries[index].0.clone());
+                    if self.look.is_open() {
+                        self.preview(index, ctx);
+                    }
+                }
+            }
+            FsKey::Look if self.look.is_open() => self.look.close(),
+            FsKey::Look => {
+                if let Some(index) = self.selected_index() {
+                    self.preview(index, ctx);
+                    self.uncover = true;
+                }
+            }
+            FsKey::Open => {
+                let index = self.selected_index()?;
+                let (name, is_dir) = self.entries[index].clone();
+                self.look.close();
+                return Some(self.typed_for(&name, is_dir));
+            }
+        }
+        None
+    }
+
+    /// What a click (folders) or Enter (files) types: `cd` into a folder, or the
+    /// file's quoted path.
+    fn typed_for(&self, name: &str, is_dir: bool) -> String {
+        let quoted = shell_quote(&self.path.join(name).to_string_lossy());
+        if is_dir { format!("cd {quoted}\r") } else { format!("{quoted} ") }
     }
 
     fn reload(&mut self, cwd: &Path) {
@@ -749,8 +859,35 @@ impl FsView {
         ui.add_space(8.0);
 
         let mut typed = None;
+        let panel = ui.max_rect();
+        if self.has_keyboard() {
+            let keys = ui.input(|input| {
+                input.events.iter().filter_map(|event| match event {
+                    eframe::egui::Event::Key { key, pressed: true, modifiers, .. } if modifiers.is_none() => match key {
+                        eframe::egui::Key::ArrowLeft => Some(FsKey::Step(-1)),
+                        eframe::egui::Key::ArrowRight => Some(FsKey::Step(1)),
+                        eframe::egui::Key::ArrowUp => Some(FsKey::Step(-(self.columns as isize))),
+                        eframe::egui::Key::ArrowDown => Some(FsKey::Step(self.columns as isize)),
+                        eframe::egui::Key::Space => Some(FsKey::Look),
+                        eframe::egui::Key::Enter => Some(FsKey::Open),
+                        eframe::egui::Key::Escape => Some(FsKey::Escape),
+                        _ => None,
+                    },
+                    _ => None,
+                }).collect::<Vec<_>>()
+            });
+            for key in keys {
+                typed = self.key(key, ui.ctx()).or(typed);
+            }
+            // A click elsewhere gives the keyboard back to the terminal.
+            let elsewhere = ui.input(|input| input.pointer.primary_pressed() && input.pointer.interact_pos().is_some_and(|at| !panel.contains(at)));
+            if elsewhere && !self.look.is_open() {
+                self.focused = false;
+            }
+        }
         let gap = 8.0;
         let columns = ((ui.available_width() + gap) / (200.0 + gap)).floor().max(1.0);
+        self.columns = columns as usize;
         let width = ((ui.available_width() + gap) / columns - gap).floor();
         let mut tiles: Vec<(String, bool, Option<String>)> = Vec::new();
         if self.path.parent().is_some() {
@@ -763,9 +900,16 @@ impl FsView {
             ui.spacing_mut().item_spacing = vec2(gap, gap);
             ui.horizontal_wrapped(|ui| {
                 for (name, is_dir, command) in &tiles {
-                    let (rect, response) = ui.allocate_exact_size(vec2(width, 44.0), Sense::click());
+                    let (rect, response) = ui.allocate_exact_size(vec2(width, 44.0), Sense::click_and_drag());
                     let painter = ui.painter_at(rect);
-                    let line = if response.hovered() { ui::LINE_STRONG } else { ui::LINE };
+                    let picked = command.is_none() && self.selected.as_deref() == Some(name.as_str());
+                    let line = if picked && self.focused {
+                        theme.main
+                    } else if response.hovered() || picked {
+                        ui::LINE_STRONG
+                    } else {
+                        ui::LINE
+                    };
                     painter.rect_filled(rect, 0.0, ui::GROUND);
                     painter.rect_stroke(rect, 0.0, Stroke::new(1.0, line), StrokeKind::Inside);
                     let icon = pos2(rect.left() + 20.0, rect.center().y);
@@ -782,15 +926,28 @@ impl FsView {
                         ui::mono(12.0),
                         if *is_dir && name != ".." { ui::TEXT } else { ui::SECONDARY },
                     );
+                    // Dragged out of its tile, a file or folder goes where it is dropped.
+                    if command.is_none() && response.dragged() && !self.dragging {
+                        let outside = response.interact_pointer_pos().is_some_and(|at| !rect.contains(at));
+                        if outside {
+                            self.dragging = true;
+                            self.drag = Some(self.path.join(name));
+                        }
+                    }
+                    if response.drag_stopped() {
+                        self.dragging = false;
+                    }
                     if response.clicked() {
-                        typed = command.clone().or_else(|| {
-                            let quoted = shell_quote(&self.path.join(name).to_string_lossy());
-                            Some(if *is_dir {
-                                format!("cd {quoted}\r")
-                            } else {
-                                format!("{quoted} ")
-                            })
-                        });
+                        if command.is_none() && !is_dir {
+                            // A file is picked, for Space to look at and Enter to type.
+                            self.selected = Some(name.clone());
+                            self.focused = true;
+                        } else {
+                            typed = command.clone().or_else(|| Some(self.typed_for(name, *is_dir)));
+                        }
+                    }
+                    if response.double_clicked() && command.is_none() && !is_dir {
+                        typed = Some(self.typed_for(name, false));
                     }
                 }
             });
@@ -827,6 +984,42 @@ fn file_icon(painter: &eframe::egui::Painter, center: eframe::egui::Pos2, color:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selection_steps_stay_inside_the_folder() {
+        assert_eq!(stepped(None, 1, 0), None);
+        assert_eq!(stepped(None, 3, 5), Some(0));
+        assert_eq!(stepped(Some(1), 3, 5), Some(4));
+        assert_eq!(stepped(Some(4), 3, 5), Some(4));
+        assert_eq!(stepped(Some(1), -3, 5), Some(0));
+    }
+
+    #[test]
+    fn keys_pick_preview_type_and_let_go() {
+        let ctx = eframe::egui::Context::default();
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(dir.path().join(name), name).unwrap();
+        }
+        let mut fs = FsView::new();
+        fs.reload(dir.path());
+        fs.selected = Some("a.txt".into());
+        fs.focused = true;
+        assert!(fs.has_keyboard());
+        assert_eq!(fs.key(FsKey::Step(1), &ctx), None);
+        assert_eq!(fs.selected.as_deref(), Some("b.txt"));
+        fs.key(FsKey::Look, &ctx);
+        assert!(fs.look.is_open() && fs.take_uncover());
+        // In the preview a row step goes one file at a time.
+        fs.key(FsKey::Step(3), &ctx);
+        assert_eq!(fs.look.path(), Some(dir.path().join("c.txt").as_path()));
+        fs.key(FsKey::Escape, &ctx);
+        assert!(!fs.look.is_open() && fs.has_keyboard());
+        let typed = fs.key(FsKey::Open, &ctx).unwrap();
+        assert!(typed.ends_with("c.txt' ") || typed.ends_with("c.txt "), "{typed}");
+        fs.key(FsKey::Escape, &ctx);
+        assert!(!fs.has_keyboard());
+    }
 
     #[test]
     fn quotes_for_the_shell() {
