@@ -302,3 +302,16 @@ watched work on a real machine. Tick them off, or note what went wrong.
 - [ ] Super+Shift+R (shell restart) with it down: the compositor drops the overlay and
       the new shell starts with it up
 - [ ] `exit` in it puts it away; the next Ctrl+Shift+` starts a fresh shell
+
+## Screenshot portal
+
+- [ ] Firefox: a screenshot through the portal (e.g. `flatpak run` an app that asks, or
+      `gdbus call --session --dest org.freedesktop.portal.Desktop --object-path
+      /org/freedesktop/portal/desktop --method org.freedesktop.portal.Screenshot.Screenshot
+      "" "{'interactive': <true>}"`), the chooser appears and the file is returned
+- [ ] Chromium and a Flatpak app the same way; GIMP's or Inkscape's colour picker via PickColor
+- [ ] Escape in the chooser makes the application see "cancelled", not a failure
+- [ ] `journalctl --user -u xdg-desktop-portal` shows des-ui chosen for Screenshot and
+      gtk for the rest; no 25-second waits on start
+- [ ] Locked: a portal request is refused at once and nothing is captured
+- [ ] A file name with spaces or non-ASCII letters arrives intact as a URI

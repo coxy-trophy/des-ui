@@ -496,7 +496,14 @@ Escape, Print again, or a click beside the choices calls it off. **Alt+Print**
 and **Shift+Print** go straight to the window and to a piece.
 
 Screenshots are saved in `~/Pictures/Screenshots` and, where `wl-copy` is
-installed, also copied, ready to paste. Recordings are saved in
+installed, also copied, ready to paste.
+
+Applications that ask the desktop for a screenshot, such as a browser's
+screen-capture extension or a colour picker in a design tool, go through the same
+chooser: the `des-portal` program answers xdg-desktop-portal's Screenshot portal by
+asking the shell. An interactive request lets you mark an area; a colour request asks
+for a click. `des-ui-ctl screenshot-file region` and `des-ui-ctl pick-color` do the
+same from a terminal and print the file or the colour as JSON. Recordings are saved in
 `~/Videos/Recordings` as MP4, with the pointer and without sound; they need
 `ffmpeg`. Both programs come with `sudo apt install ffmpeg wl-clipboard`.
 
