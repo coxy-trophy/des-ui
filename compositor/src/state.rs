@@ -178,6 +178,12 @@ pub struct DesComp {
     pub motions: crate::motion::Motions<Window>,
     /// Glow, scanlines and the night light, applied to each frame on its way out.
     pub phosphor: crate::phosphor::Phosphor,
+    /// Bars, wallpapers, launchers and notification daemons of other desktops' tools.
+    pub layer_shell_state: smithay::wayland::shell::wlr_layer::WlrLayerShellState,
+    /// The layer surface that has the keyboard, while it may keep it.
+    pub layer_focus: Option<smithay::desktop::LayerSurface>,
+    /// What the layers reserve on each output, as last applied to the windows.
+    pub layer_reservations: Vec<(Rectangle<i32, Logical>, crate::handlers::layer_shell::Insets)>,
 }
 
 /// A length of time in milliseconds that a test may set through the environment.
@@ -290,6 +296,9 @@ impl DesComp {
             screenshot: None,
             motions: crate::motion::Motions::new(crate::motion::wanted()),
             phosphor: crate::phosphor::Phosphor::new(),
+            layer_shell_state: smithay::wayland::shell::wlr_layer::WlrLayerShellState::new::<Self>(&dh),
+            layer_focus: None,
+            layer_reservations: Vec::new(),
         }
     }
 
@@ -348,6 +357,11 @@ impl DesComp {
                 let origin=display.loc.to_f64();
                 return shell.surface_under(pos-origin,WindowSurfaceType::ALL).map(|(surface,at)|(surface,at.to_f64()+origin));
             }
+        }
+        // Bars and launchers above the windows; beneath them, wallpapers and the like,
+        // where no application covers them.
+        if let Some((_, surface, at)) = self.layer_hit(pos) {
+            return Some((surface, at));
         }
         self.space.element_under(pos).and_then(|(window, location)| {
             window
@@ -470,6 +484,7 @@ impl DesComp {
         self.space.elements().for_each(|window| {
             window.send_frame(&output, elapsed, Some(Duration::ZERO), |_, _| Some(output.clone()))
         });
+        self.layer_frames(elapsed);
         // The shell draws all of its windows in one pass and waits for each to be shown.
         // A backdrop whose display has just gone is on no screen, and without this the
         // shell would wait on it forever, freezing the whole frame.

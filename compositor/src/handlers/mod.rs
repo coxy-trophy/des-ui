@@ -1,6 +1,7 @@
 mod compositor;
 pub mod input_protocols;
 mod xdg_shell;
+pub mod layer_shell;
 
 use crate::{DesComp, focus::Focus};
 use smithay::wayland::seat::WaylandFocus;

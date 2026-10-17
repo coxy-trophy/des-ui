@@ -55,6 +55,8 @@ impl CompositorHandler for DesComp {
         xdg_shell::handle_commit(&mut self.popups, window.as_ref(), surface);
         // An input method's list is placed once its size is known.
         self.place_ime_popup(surface);
+        // Bars, wallpapers and launchers: placed, configured, and the windows kept clear.
+        self.layer_commit(surface);
     }
 }
 

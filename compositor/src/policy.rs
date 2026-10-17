@@ -285,18 +285,21 @@ impl DesComp {
 
     /// The area applications occupy on a display: the workspace inside the frame on the
     /// main display, everything on the others, and everything anywhere in full screen.
-    fn workspace_of(&self, screen: usize) -> Rectangle<i32, Logical> {
+    /// Bars and other layer surfaces that reserve an edge keep applications clear of it.
+    pub(crate) fn workspace_of(&self, screen: usize) -> Rectangle<i32, Logical> {
         let rect = self.screens.get(screen).or(self.screens.first()).copied().unwrap_or_default();
         // The terminal lives inside the frame, so full screen needs an application in
         // the main slot: beside the terminal, an application stays in the workspace.
         let covered = self.in_place(screen, Place::Main).is_some();
-        if screen != 0 || (self.mode(screen).fullscreen && covered) {
-            return rect;
-        }
-        to_rectangle(
-            des_common::workspace_with_behavior(rect.size.w as f32, rect.size.h as f32, self.panels, self.side_panel_behavior),
-            rect.loc,
-        )
+        let area = if screen != 0 || (self.mode(screen).fullscreen && covered) {
+            rect
+        } else {
+            to_rectangle(
+                des_common::workspace_with_behavior(rect.size.w as f32, rect.size.h as f32, self.panels, self.side_panel_behavior),
+                rect.loc,
+            )
+        };
+        self.clear_of_layers(screen, area)
     }
 
     /// Where each slot of a display's workspace is: the whole of it for the main slot
@@ -399,10 +402,11 @@ impl DesComp {
             }
         }
 
-        // The dock and the shell's overlay take the keyboard while they are up.
-        let focus = focus_app.filter(|_| !self.dock_keyboard && self.overlay_area().is_none())
+        // The dock and the shell's overlay take the keyboard while they are up; a
+        // launcher or the like in a layer surface takes it while it asks to.
+        let focus = self.layer_keyboard().filter(|_| !self.dock_keyboard && self.overlay_area().is_none()).or_else(|| focus_app.filter(|_| !self.dock_keyboard && self.overlay_area().is_none())
             .and_then(|i|focus_of(&self.apps[i].window))
-            .or_else(||self.shell_on(if self.dock_keyboard{self.dock_keyboard_screen}else{0}).and_then(focus_of));
+            .or_else(||self.shell_on(if self.dock_keyboard{self.dock_keyboard_screen}else{0}).and_then(focus_of)));
         let keyboard = self.seat.get_keyboard().unwrap();
         keyboard.set_focus(self, focus, SERIAL_COUNTER.next_serial());
     }
@@ -956,6 +960,10 @@ impl DesComp {
 
     /// A click landed at `pos`: that display, and that half of it, are now in use.
     pub fn focus_at(&mut self, pos: Point<f64, Logical>) {
+        // A click on a layer surface that takes the keyboard on demand goes to it.
+        if self.layer_click(pos) {
+            return;
+        }
         let screen = self.screen_at(pos);
         if screen >= self.modes.len() {
             return;

@@ -323,6 +323,9 @@ pub fn window_elements<C>(
     output: &Output,
     motions: &Motions<Window>,
     beneath: &[&Window],
+    // Drawn below the applications and above what is `beneath`: the layer surfaces
+    // that belong under the windows.
+    under_apps: Vec<C>,
     now: Instant,
 ) -> Vec<C>
 where
@@ -358,6 +361,7 @@ where
             elements.extend(window_at::<C>(renderer, window, rect, alpha, true, output_geo, scale));
         }
     }
+    elements.extend(under_apps);
     elements.extend(bottom);
     elements
 }
