@@ -1,6 +1,7 @@
 //! des-ui: a Rust rewrite of the eDEX-UI sci-fi terminal desktop.
 
 mod apps;
+mod autostart;
 mod app_icons;
 mod dock;
 mod capture;
@@ -646,6 +647,15 @@ impl App {
                     Err(why) => self.notices.post("Picture not changed", &why, true),
                 }
             }
+            Change::Autostart(file_name, on) => {
+                if let Err(error) = autostart::set_enabled(&autostart::Dirs::from_env(), &file_name, on) {
+                    self.notices.post("Autostart not changed", &format!("{file_name}: {error}"), true);
+                }
+            }
+            Change::AutostartAdd(command_line) => match autostart::add(&autostart::Dirs::from_env(), &command_line) {
+                Ok(path) => self.notices.post("Added to autostart", &format!("{}\nIt starts from the next session.", path.display()), false),
+                Err(error) => self.notices.post("Not added to autostart", &error.to_string(), true),
+            },
             Change::LogOut => ctx.send_viewport_cmd(ViewportCommand::Close),
         }
     }

@@ -48,6 +48,10 @@ pub enum Change {
     LogOut,
     /// Use this picture on the lock and login screens; `None` goes back to none.
     Avatar(Option<std::path::PathBuf>),
+    /// Turn an autostart entry, named by its file, on or off.
+    Autostart(String, bool),
+    /// Start this command line with every session, through a new autostart entry.
+    AutostartAdd(String),
 }
 
 /// The pictures on offer for the lock and login screens, read in the background:
@@ -1110,6 +1114,8 @@ impl Settings {
         ui.add_space(22.0);
         note(ui, "Super+Shift+R restarts the shell on a newly installed build. Applications stay open; terminal tabs close.");
         ui.add_space(22.0);
+        autostart(ui, theme, changes);
+        ui.add_space(22.0);
         self.picture(ui, theme, changes);
         ui.add_space(26.0);
 
@@ -1192,6 +1198,56 @@ const LAYOUTS: [(&str, &str); 14] = [
 ];
 
 /// A named slider with its reading. Returns the new position while it is moved.
+/// Settings → Session → AUTOSTART: what starts with each session, with a switch each,
+/// and a field to add a command. The list is read again every few seconds and after a
+/// change, so that what is shown is what is on disk.
+fn autostart(ui: &mut Ui, theme: &Theme, changes: &mut Vec<Change>) {
+    type Cached = std::sync::Arc<(Instant, Vec<crate::autostart::Listed>)>;
+    let list_id = egui::Id::new("settings-autostart-list");
+    let text_id = egui::Id::new("settings-autostart-add");
+    let cached = ui.data(|data| data.get_temp::<Cached>(list_id));
+    let listed = match cached.filter(|cached| cached.0.elapsed() < Duration::from_secs(3)) {
+        Some(cached) => cached,
+        None => {
+            let fresh: Cached = std::sync::Arc::new((Instant::now(), crate::autostart::list(&crate::autostart::Dirs::from_env())));
+            ui.data_mut(|data| data.insert_temp(list_id, fresh.clone()));
+            fresh
+        }
+    };
+    heading(ui, "AUTOSTART", "Programs that start with every session, from ~/.config/autostart and the system's own list. Turning one off keeps a note of it in your folder.");
+    let mut changed = false;
+    if listed.1.is_empty() {
+        note(ui, "Nothing starts with the session.");
+    }
+    for entry in &listed.1 {
+        let what = entry.blocked.map_or(if entry.on { "Starts with the session" } else { "Off" }, crate::autostart::Skip::reason);
+        if switch_row(ui, theme, &entry.name, what, entry.on) {
+            changes.push(Change::Autostart(entry.file_name.clone(), !entry.on));
+            changed = true;
+        }
+    }
+    ui.add_space(10.0);
+    let mut text = ui.data(|data| data.get_temp::<String>(text_id)).unwrap_or_default();
+    let mut add = false;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 10.0;
+        let width = (ui.available_width() - 110.0).clamp(160.0, 420.0);
+        add = crate::users::field(ui, theme, &mut text, "A command to start, e.g. syncthing serve", false, width);
+        add |= ui::button(ui, theme, "ADD", None, false).clicked();
+    });
+    if add && !text.trim().is_empty() {
+        changes.push(Change::AutostartAdd(std::mem::take(&mut text)));
+        changed = true;
+    }
+    ui.data_mut(|data| {
+        data.insert_temp(text_id, text);
+        if changed {
+            data.remove::<Cached>(list_id);
+        }
+    });
+    note(ui, "The command runs as written, without a shell. It starts from the next session.");
+}
+
 fn slider_row(ui: &mut Ui, theme: &Theme, name: &str, frac: f32, reading: &str) -> Option<f32> {
     let mut picked = None;
     ui.horizontal(|ui| {
