@@ -62,6 +62,8 @@ pub enum Request {
     PickColor,
     /// Drop the scratchpad terminal, or put it away.
     Scratchpad,
+    /// Open the quick settings, or close them.
+    Quick,
 }
 
 impl Request {
@@ -153,6 +155,7 @@ pub fn parse(line: &str) -> Result<Request, String> {
         },
         "pick-color" => none(Request::PickColor),
         "scratchpad" => none(Request::Scratchpad),
+        "quick" => none(Request::Quick),
         "" => Err("nothing asked".to_string()),
         other => Err(format!("unknown request '{}'; des-ui-ctl --help lists them", other.chars().take(32).collect::<String>())),
     }
@@ -436,6 +439,7 @@ mod tests {
         assert_eq!(parse("screenshot-file"), Ok(Request::ScreenshotFile(ShotMode::Screen)));
         assert_eq!(parse("screenshot-file region"), Ok(Request::ScreenshotFile(ShotMode::Region)));
         assert_eq!(parse("scratchpad"), Ok(Request::Scratchpad));
+        assert_eq!(parse("quick"), Ok(Request::Quick));
         assert!(parse("scratchpad now").is_err());
         assert_eq!(parse("pick-color"), Ok(Request::PickColor));
         for bad in ["", "reboot", "workspace 4", "workspace x", "workspace", "toast", "toast \t\n",

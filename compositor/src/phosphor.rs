@@ -182,6 +182,18 @@ pub fn load() -> Settings {
         .map_or_else(Settings::default, |text| parse(&text))
 }
 
+/// The `accent = r, g, b` override the shell writes; the last such line counts.
+pub fn custom_accent(text: &str) -> Option<[u8; 3]> {
+    text.lines()
+        .filter_map(|line| line.split('#').next()?.split_once('='))
+        .filter(|(key, _)| key.trim() == "accent")
+        .last()
+        .and_then(|(_, value)| {
+            let channels: Vec<u8> = value.split(',').map(|part| part.trim().parse().ok()).collect::<Option<_>>()?;
+            channels.try_into().ok()
+        })
+}
+
 /// Whether `now` (minutes after midnight) falls in the window from `start` to `end`.
 pub fn in_window(now: u32, start: u32, end: u32) -> bool {
     if start < end { (start..end).contains(&now) } else { now >= start || now < end }
@@ -270,7 +282,10 @@ impl Phosphor {
     /// Reads the settings again; the night light ramps to any new temperature.
     pub fn reload(&mut self) {
         self.settings = load();
-        self.accent = crate::splash::chosen_accent().map(|channel| channel as f32 / 255.0);
+        // The user's own accent, when there is one, before the theme's.
+        let text = des_common::input::config_path().and_then(|path| std::fs::read_to_string(path).ok()).unwrap_or_default();
+        let accent = custom_accent(&text).unwrap_or_else(crate::splash::chosen_accent);
+        self.accent = accent.map(|channel| channel as f32 / 255.0);
     }
 
     fn wanted_kelvin(&self) -> f32 {
@@ -413,6 +428,15 @@ impl Phosphor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_user_s_accent_wins_and_bad_values_are_ignored() {
+        assert_eq!(custom_accent("theme = blade\naccent = 10, 20, 30\n"), Some([10, 20, 30]));
+        assert_eq!(custom_accent("accent = 1, 2, 3\naccent = 4, 5, 6"), Some([4, 5, 6]));
+        assert_eq!(custom_accent("accent = 300, 2, 3"), None);
+        assert_eq!(custom_accent("accent = 1, 2"), None);
+        assert_eq!(custom_accent("# accent = 1, 2, 3\ntheme = signal"), None);
+    }
 
     fn close(a: f32, b: f32) -> bool {
         (a - b).abs() < 0.02

@@ -402,6 +402,10 @@ pub enum Icon {
     SplitPane,
     /// Two sheets, one behind the other: copy.
     Copy,
+    /// A keyboard's outline with three rows of keys: the on-screen keyboard.
+    Keyboard,
+    /// Three sliders: the quick settings.
+    Quick,
 }
 
 /// A small square button drawn with lines. `lit` draws it in the accent.
@@ -432,6 +436,7 @@ impl Icon {
             Self::Battery => "Battery", Self::Charging => "Charging", Self::Wifi => "Wi-Fi signal",
             Self::Download => "Download", Self::Upload => "Upload", Self::Display => "Displays",
             Self::Copy => "Copy last command output",
+            Self::Keyboard => "On-screen keyboard", Self::Quick => "Quick settings",
         }
     }
 }
@@ -468,6 +473,23 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color3
             }
         }
         Icon::Search => {painter.circle_stroke(c+vec2(-2.0,-2.0),4.5,stroke);line((1.0,1.0),(6.0,6.0));}
+        Icon::Keyboard => {
+            painter.rect_stroke(Rect::from_min_max(c + vec2(-7.0, -4.5), c + vec2(7.0, 4.5)), 1.0, stroke, StrokeKind::Middle);
+            for (y, from, to) in [(-2.0, -4.5, 4.5), (0.5, -4.5, 4.5)] {
+                let mut x = from;
+                while x <= to + 0.01 {
+                    painter.circle_filled(c + vec2(x, y), 0.7, color);
+                    x += 3.0;
+                }
+            }
+            line((-3.0, 2.8), (3.0, 2.8));
+        }
+        Icon::Quick => {
+            for (y, knob) in [(-4.0, 2.5), (0.0, -2.5), (4.0, 0.5)] {
+                line((-6.0, y), (6.0, y));
+                painter.circle_filled(c + vec2(knob, y), 1.8, color);
+            }
+        }
         Icon::Copy => {
             painter.rect_stroke(Rect::from_min_max(c + vec2(-6.0, -6.0), c + vec2(2.0, 2.0)), 1.0, stroke, StrokeKind::Middle);
             painter.rect_stroke(Rect::from_min_max(c + vec2(-2.0, -2.0), c + vec2(6.0, 6.0)), 1.0, stroke, StrokeKind::Middle);
@@ -700,6 +722,12 @@ pub fn waterfall(ui: &mut Ui, above: &VecDeque<f32>, below: &VecDeque<f32>, max:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_icons_say_what_they_are() {
+        assert_eq!(Icon::Keyboard.label(), "On-screen keyboard");
+        assert_eq!(Icon::Quick.label(), "Quick settings");
+    }
 
     #[test]
     fn bar_grids_fit_their_column() {

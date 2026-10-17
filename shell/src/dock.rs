@@ -24,6 +24,14 @@ pub(crate) fn entry_for(id: &str, entries: &[AppEntry]) -> Option<usize> {
         .or_else(|| entries.iter().position(|entry| normalized(&entry.desktop_id) == key))
         .or_else(|| entries.iter().position(|entry| entry.exec.first().and_then(|exec| std::path::Path::new(exec).file_name()).is_some_and(|exec| normalized(&exec.to_string_lossy()) == key)))
 }
+/// How bright the attention dot is at `now` (seconds): a slow breath, or steady
+/// without animation. Never fades out entirely, so it is always seen.
+fn attention_alpha(now: f64, animate: bool) -> f32 {
+    if !animate { return 1.0; }
+    let phase = (now * std::f64::consts::TAU / 1.6).sin() as f32;
+    0.65 + 0.35 * phase
+}
+
 #[cfg(test)]
 fn items(entries: &[AppEntry],pins:&[String],state:&DesktopState)->Vec<Item>{items_on(entries,pins,state,None)}
 fn items_on(entries: &[AppEntry], pins: &[String], state: &DesktopState, display:Option<usize>) -> Vec<Item> {
@@ -241,6 +249,12 @@ impl Dock {
                     }
                     let running=terminal || item.is_some_and(|item| !item.windows.is_empty());
                     if running { ui.painter().circle_filled(rect.center_bottom()-vec2(0.0,3.0),if active { 2.5 } else { 1.7 },if active { theme.main } else { ui::SECONDARY }); }
+                    // A window that asked for attention: an accent dot at the corner, breathing.
+                    if item.is_some_and(|item| item.windows.iter().any(|&w| state.apps.get(w).is_some_and(|app| app.urgent))) {
+                        let alpha=attention_alpha(now,animate);
+                        ui.painter().circle_filled(rect.left_top()+vec2(9.0,9.0),3.5,theme.main.gamma_multiply(alpha));
+                        if animate { ui.ctx().request_repaint_after(std::time::Duration::from_millis(50)); }
+                    }
                     if let Some(item)=item {
                         if item.windows.len()>1 { ui.painter().text(rect.right_top()+vec2(-5.0,2.0),Align2::RIGHT_TOP,item.windows.len().to_string(),ui::mono(10.0),ui::TEXT); }
                         if pins.iter().any(|id| item.id.as_ref()==Some(id)) {
@@ -335,6 +349,13 @@ mod tests {
     }
     fn window(id:&str, title:&str) -> AppInfo {
         AppInfo { app_id:id.into(), title:title.into(), screen:0, place:Place::Main, workspace:0, pinned:false,urgent:false }
+    }
+    #[test]
+    fn the_attention_dot_breathes_but_never_vanishes(){
+        assert_eq!(attention_alpha(12.3,false),1.0);
+        let samples:Vec<f32>=(0..32).map(|i| attention_alpha(i as f64*0.05,true)).collect();
+        assert!(samples.iter().all(|a| (0.29..=1.01).contains(a)));
+        assert!(samples.iter().cloned().fold(f32::MAX,f32::min) < 0.4 && samples.iter().cloned().fold(0.0,f32::max) > 0.95);
     }
     #[test]
     fn display_docks_keep_shared_pins_but_only_their_own_window_indices(){

@@ -22,6 +22,8 @@ mod music;
 mod notify;
 mod oklch;
 mod osk;
+mod osd;
+mod quick;
 mod panels;
 mod pet;
 mod polkit;
@@ -197,6 +199,10 @@ struct App {
     pending_color: Option<control::Reply>,
     /// Asks for an administrator's password when an application needs one.
     polkit: polkit::Polkit,
+    /// The pull-down of things changed many times a day.
+    quick: quick::Quick,
+    /// The meter shown when the volume or brightness changes from outside.
+    osd: osd::Osd,
     /// Applications' status icons, for the status strip.
     tray: tray::Tray,
 }
@@ -291,6 +297,8 @@ impl App {
             remote: remote::Remote::new(),
             osk,
             polkit,
+            quick: quick::Quick::default(),
+            osd: osd::Osd::default(),
             tray,
             scratchpad: scratchpad::Scratchpad::default(),
             overlay_area: None,
@@ -567,6 +575,8 @@ impl App {
                         self.config.accent = accent;
                         self.theme = self.config.resolved_theme();
                         apply_style(ctx, &self.theme);
+                        // The compositor tints its glow with the accent too.
+                        self.send(Command::ReloadInput);
                     }
                     Err(error) => self.notices.post("Could not save accent", &format!("{error}. Your previous colour is still active."), false),
                 }
@@ -637,10 +647,15 @@ impl App {
                 }
             }
             Change::Volume(percent) => {
+                // The user is setting it; there is no news to announce.
+                self.osd.hold(osd::Kind::Volume, Instant::now());
                 let level = format!("{:.2}", percent as f32 / 100.0);
                 spawn_quietly("wpctl", &["set-volume", "@DEFAULT_AUDIO_SINK@", &level]);
             }
-            Change::Brightness(percent) => set_brightness(percent),
+            Change::Brightness(percent) => {
+                self.osd.hold(osd::Kind::Brightness, Instant::now());
+                set_brightness(percent);
+            }
             Change::ApplyDisplays(choices) => self.send(Command::ApplyDisplays(choices)),
             Change::KeepDisplays => self.send(Command::KeepDisplays),
             Change::RevertDisplays => self.send(Command::RevertDisplays),

@@ -25,6 +25,8 @@ pub struct Desktop {
     pub music_requested: bool,
     /// Likewise for the notifications shortcut.
     pub notifications_requested: bool,
+    /// Likewise for the quick settings shortcut.
+    pub quick_requested: bool,
     /// Likewise for the power key.
     pub power_requested: bool,
     /// Screenshots the compositor took, waiting to be taken over.
@@ -67,6 +69,7 @@ impl Desktop {
             settings_requested: false,
             music_requested: false,
             notifications_requested: false,
+            quick_requested: false,
             power_requested: false,
             shots: Vec::new(),
             recording_news: Vec::new(),
@@ -102,6 +105,7 @@ impl Desktop {
                 Event::Settings => self.settings_requested = true,
                 Event::Music => self.music_requested = true,
                 Event::Notifications => self.notifications_requested = true,
+                Event::Quick => self.quick_requested = true,
                 Event::Power => self.power_requested = true,
                 Event::Shot { mode, width, height, window, path } => self.shots.push(crate::capture::Shot { mode, width, height, window, path }),
                 Event::Recording(state) => self.recording_news.push(state),

@@ -25,6 +25,8 @@ enum Action {
     Settings,
     Music,
     Notifications,
+    /// Super+A: the quick settings, over whatever is in view.
+    Quick,
     /// The power key, or its shortcut.
     Power,
     Shot(des_common::ipc::ShotMode),
@@ -264,6 +266,7 @@ impl DesComp {
                             Keysym::comma => FilterResult::Intercept(Action::Settings),
                             Keysym::m | Keysym::M => FilterResult::Intercept(Action::Music),
                             Keysym::n | Keysym::N => FilterResult::Intercept(Action::Notifications),
+                            Keysym::a | Keysym::A => FilterResult::Intercept(Action::Quick),
                             Keysym::Escape => FilterResult::Intercept(Action::Power),
                             Keysym::l | Keysym::L => FilterResult::Intercept(Action::Lock),
                             Keysym::o | Keysym::O => FilterResult::Intercept(Action::MoveDisplay),
@@ -318,6 +321,7 @@ impl DesComp {
                     Some(Action::Settings) => self.open_settings(),
                     Some(Action::Music) => self.open_music(),
                     Some(Action::Notifications) => self.ask_notifications(),
+                    Some(Action::Quick) => self.ask_quick(),
                     // Behind the lock there is no menu to show: the key puts the machine to sleep.
                     // Nothing behind the lock is to be pictured.
                     Some(Action::Shot(_)) if self.locked => {}

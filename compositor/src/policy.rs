@@ -953,6 +953,17 @@ impl DesComp {
         self.ask_shell(Event::NOTIFICATIONS);
     }
 
+    /// Asks the shell for the quick settings. They float above applications, so the
+    /// workspace stays as it is.
+    pub fn ask_quick(&mut self) {
+        if self.modes.is_empty() || self.locked || self.picking {
+            return;
+        }
+        if let Some(ipc) = self.ipc.as_mut() {
+            ipc.send(Event::QUICK);
+        }
+    }
+
     /// Uncovers the shell's workspace, where it shows such things, and sends `event`.
     fn ask_shell(&mut self, event: &str) {
         if self.modes.is_empty() || self.locked {
