@@ -1,5 +1,6 @@
 //! des-ui: a Rust rewrite of the eDEX-UI sci-fi terminal desktop.
 
+mod agenda;
 mod apps;
 mod autostart;
 mod app_icons;
@@ -197,6 +198,8 @@ struct App {
     pending_color: Option<control::Reply>,
     /// Asks for an administrator's password when an application needs one.
     polkit: polkit::Polkit,
+    /// The calendar under the clock.
+    agenda: agenda::Agenda,
     /// Applications' status icons, for the status strip.
     tray: tray::Tray,
 }
@@ -231,6 +234,7 @@ impl App {
         let widgets = widgets::Widgets::new(ctx.clone());
         let tray = tray::Tray::start(ctx.clone());
         let polkit = polkit::Polkit::start(ctx.clone());
+        let agenda = agenda::Agenda::start(ctx.clone());
         // What the user asked to start at login, once per session, and only in one.
         if desktop_present {
             autostart::start();
@@ -240,6 +244,7 @@ impl App {
         let mut launcher = Launcher::default();
         launcher.set_clipboard(clipboard.handle());
         notices.sounds = config.notification_sounds;
+        notices.schedule = config.dnd_schedule;
         region::set_twelve_hour(config.twelve_hour);
         Ok(App {
             ctx,
@@ -291,6 +296,7 @@ impl App {
             remote: remote::Remote::new(),
             osk,
             polkit,
+            agenda,
             tray,
             scratchpad: scratchpad::Scratchpad::default(),
             overlay_area: None,
@@ -611,6 +617,7 @@ impl App {
                 self.config = config::Config::load();
                 self.config.theme = theme;
                 self.notices.sounds = self.config.notification_sounds;
+                self.notices.schedule = self.config.dnd_schedule;
                 region::set_twelve_hour(self.config.twelve_hour);
                 self.pet.choose(&self.config.pet);
                 self.input = des_common::input::InputSettings::load();

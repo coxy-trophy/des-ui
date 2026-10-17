@@ -80,7 +80,11 @@ fn clock(ui: &mut Ui, theme: &Theme, size: f32) {
     let seconds = ui::galley(ui, &now.format("%S").to_string(), ui::display(size * 0.35), theme.main, 0.0);
     let width = main.size().x + size * 0.12 + seconds.size().x;
     let height = main.size().y * 0.84;
-    let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+    let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
+    // A click opens the calendar below the clock.
+    if response.on_hover_cursor(eframe::egui::CursorIcon::PointingHand).on_hover_text("Calendar").clicked() {
+        crate::agenda::request(ui.ctx(), pos2(rect.left(), rect.bottom() + 40.0));
+    }
     let baseline = rect.bottom();
     let seconds_pos = pos2(rect.left() + main.size().x + size * 0.12, baseline - seconds.size().y * 0.95);
     ui.painter().galley(pos2(rect.left(), baseline - main.size().y * 0.92), main, ui::TEXT);

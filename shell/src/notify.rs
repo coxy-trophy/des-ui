@@ -12,7 +12,7 @@ use eframe::egui::{
     self, Align, Area, Id, Key, Layout, Modifiers, Order, Rect, ScrollArea, Sense, Stroke, StrokeKind, Ui,
     UiBuilder, pos2, vec2,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -277,7 +277,7 @@ struct Service {
 #[zbus::interface(name = "org.freedesktop.Notifications")]
 impl Service {
     fn get_capabilities(&self) -> Vec<String> {
-        ["body", "actions", "persistence", "icon-static", "sound"].map(str::to_string).to_vec()
+        ["body", "actions", "persistence", "icon-static", "sound", "inline-reply"].map(str::to_string).to_vec()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -369,6 +369,70 @@ pub struct Center {
     bus: Option<zbus::blocking::Connection>,
     /// Ids for the desktop's own notices, kept apart from the ones D-Bus hands out.
     own_id: u32,
+    /// Quiet hours, as minutes after midnight: from, to. Urgent ones still show.
+    pub schedule: Option<(u32, u32)>,
+    /// Applications whose notifications are folded away in the list.
+    collapsed: HashSet<String>,
+    /// The notification being answered in the list, and what has been typed.
+    replying: Option<(u32, String)>,
+}
+
+/// The action key applications offer for an answer typed in the notification.
+const INLINE_REPLY: &str = "inline-reply";
+/// The most of an answer sent back.
+const REPLY_LIMIT: usize = 4096;
+
+/// Whether `now` (minutes after midnight) is within quiet hours `from..to`, which may
+/// run past midnight. The same start and end is no quiet hours at all.
+pub fn in_window(from: u32, to: u32, now: u32) -> bool {
+    match from.cmp(&to) {
+        std::cmp::Ordering::Equal => false,
+        std::cmp::Ordering::Less => now >= from && now < to,
+        std::cmp::Ordering::Greater => now >= from || now < to,
+    }
+}
+
+/// `22:00-07:30` as minutes after midnight.
+pub fn parse_schedule(value: &str) -> Option<(u32, u32)> {
+    let (from, to) = value.trim().split_once('-')?;
+    let minutes = |text: &str| -> Option<u32> {
+        let (h, m) = text.trim().split_once(':')?;
+        let (h, m): (u32, u32) = (h.parse().ok()?, m.parse().ok()?);
+        (h < 24 && m < 60).then_some(h * 60 + m)
+    };
+    let (from, to) = (minutes(from)?, minutes(to)?);
+    (from != to).then_some((from, to))
+}
+
+pub fn schedule_value((from, to): (u32, u32)) -> String {
+    format!("{:02}:{:02}-{:02}:{:02}", from / 60, from % 60, to / 60, to % 60)
+}
+
+/// The applications in the list, the one heard from most recently first, each with
+/// its notifications (indices into `notices`), newest first.
+fn groups(notices: &[Notice]) -> Vec<(String, Vec<usize>)> {
+    let mut out: Vec<(String, Vec<usize>)> = Vec::new();
+    for (index, notice) in notices.iter().enumerate().rev() {
+        match out.iter_mut().find(|(app, _)| *app == notice.app) {
+            Some((_, members)) => members.push(index),
+            None => out.push((notice.app.clone(), vec![index])),
+        }
+    }
+    out
+}
+
+/// An answer as it may be sent: control characters other than line breaks left out,
+/// and no longer than the limit.
+fn clean_reply(text: &str) -> String {
+    let mut out: String = text.chars().filter(|c| *c == '\n' || !c.is_control()).collect();
+    if out.len() > REPLY_LIMIT {
+        let mut end = REPLY_LIMIT;
+        while !out.is_char_boundary(end) {
+            end -= 1;
+        }
+        out.truncate(end);
+    }
+    out.trim().to_string()
 }
 
 impl Center {
@@ -385,7 +449,29 @@ impl Center {
                     .build()
             })
             .and_then(|built| built.map_err(|e| eprintln!("des-ui: not taking applications' notifications: {e}")).ok());
-        Center { open: false, quiet, sounds: false, last_sound: None, notices: Vec::new(), inbox, bus, own_id: u32::MAX / 2 }
+        Center { open: false, quiet, sounds: false, last_sound: None, notices: Vec::new(), inbox, bus, own_id: u32::MAX / 2, schedule: None, collapsed: HashSet::new(), replying: None }
+    }
+
+    /// Whether only what is urgent shows now: switched on, or within quiet hours.
+    fn quiet_now(&self) -> bool {
+        use chrono::Timelike;
+        let now = chrono::Local::now();
+        self.quiet || self.schedule.is_some_and(|(from, to)| in_window(from, to, now.hour() * 60 + now.minute()))
+    }
+
+    /// Sends a typed answer back to the notification's sender, which settles it.
+    /// Returns what was sent.
+    fn reply(&mut self, id: u32, text: &str) -> Option<(u32, String)> {
+        let text = clean_reply(text);
+        let notice = self.notices.iter().find(|notice| notice.id == id)?;
+        if text.is_empty() || !notice.actions.iter().any(|(key, _)| key == INLINE_REPLY) {
+            return None;
+        }
+        if notice.foreign {
+            self.signal("NotificationReplied", &(id, text.as_str()));
+        }
+        self.dismiss(id);
+        Some((id, text))
     }
 
     /// A notice from the desktop itself.
@@ -413,7 +499,7 @@ impl Center {
 
     fn add(&mut self, mut notice: Notice, replaces: u32) {
         // Quiet, only what is urgent interrupts; the rest goes straight to the list.
-        notice.fresh = !self.quiet || notice.urgent;
+        notice.fresh = !self.quiet_now() || notice.urgent;
         let sound = self.sound_for(&notice);
         match self.notices.iter_mut().find(|old| replaces != 0 && old.id == replaces) {
             // The same thing said again, such as progress, is no new interruption.
@@ -550,7 +636,17 @@ impl Center {
                         notice.shown = None;
                     }
                 }
+                // An answer is typed in the list, where there is room for it.
+                Deed::Act(key) if key == INLINE_REPLY => {
+                    if let Some(notice) = self.notices.iter_mut().find(|n| n.id == notice.id) {
+                        notice.fresh = false;
+                        notice.shown = None;
+                    }
+                    self.replying = Some((notice.id, String::new()));
+                    self.open = true;
+                }
                 Deed::Act(key) => chosen = self.act(notice.id, &key),
+                Deed::Send => {}
             }
         }
         // The line that shows a toast's time running out has to keep moving.
@@ -673,16 +769,41 @@ impl Center {
                 return;
             }
             let mut put_away = None;
+            let mut send = None;
+            let mut fold = None;
+            let (notices, replying, collapsed) = (&self.notices, &mut self.replying, &self.collapsed);
             ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
-                for notice in self.notices.iter().rev() {
-                    match row(ui, theme, notice) {
-                        Deed::Put { .. } => put_away = Some(notice.id),
-                        Deed::Act(key) => chosen = Some((notice.id, key)),
-                        _ => {}
+                for (app, members) in groups(notices) {
+                    let folded = collapsed.contains(&app);
+                    if group_header(ui, theme, &app, members.len(), folded) {
+                        fold = Some(app.clone());
+                    }
+                    if folded {
+                        continue;
+                    }
+                    for index in members {
+                        let notice = &notices[index];
+                        let typing = replying.as_mut().filter(|(id, _)| *id == notice.id).map(|(_, text)| text);
+                        match row(ui, theme, notice, typing) {
+                            Deed::Put { .. } => put_away = Some(notice.id),
+                            Deed::Act(key) if key == INLINE_REPLY => *replying = Some((notice.id, String::new())),
+                            Deed::Act(key) => chosen = Some((notice.id, key)),
+                            Deed::Send => send = Some(notice.id),
+                            _ => {}
+                        }
                     }
                 }
             });
+            if let Some(app) = fold {
+                if !self.collapsed.remove(&app) {
+                    self.collapsed.insert(app);
+                }
+            }
+            if let Some(id) = send {
+                let text = self.replying.take().map(|(_, text)| text).unwrap_or_default();
+                self.reply(id, &text);
+            }
             if let Some(id) = put_away {
                 self.dismiss(id);
             }
@@ -792,6 +913,24 @@ enum Deed {
     /// Take it off the screen; `away` for good, otherwise it stays in the list.
     Put { away: bool },
     Act(String),
+    /// Send the answer typed in it.
+    Send,
+}
+
+/// The heading over one application's notifications; true when clicked to fold or
+/// unfold them.
+fn group_header(ui: &mut Ui, theme: &Theme, app: &str, count: usize, folded: bool) -> bool {
+    let width = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 28.0), Sense::click());
+    let painter = ui.painter();
+    let mark = if folded { "▸" } else { "▾" };
+    let ink = if response.hovered() { ui::TEXT } else { ui::SECONDARY };
+    painter.text(rect.left_center() + vec2(4.0, 0.0), egui::Align2::LEFT_CENTER, mark, ui::mono(12.0), ink);
+    let name = crate::panels::truncate(&app.to_uppercase(), 32);
+    painter.text(rect.left_center() + vec2(22.0, 0.0), egui::Align2::LEFT_CENTER, name, ui::display_bold(11.0), theme.main);
+    painter.text(rect.right_center() - vec2(6.0, 0.0), egui::Align2::RIGHT_CENTER, count.to_string(), ui::mono(11.0), ui::LABEL);
+    painter.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, ui::LINE));
+    response.on_hover_text(if folded { "Show these notifications" } else { "Fold these notifications away" }).clicked()
 }
 
 /// The small cross that puts a notification away.
@@ -816,7 +955,7 @@ fn wrapped(ui: &mut Ui, text: &str, font: egui::FontId, color: egui::Color32, ro
 }
 
 /// One notification in the list.
-fn row(ui: &mut Ui, theme: &Theme, notice: &Notice) -> Deed {
+fn row(ui: &mut Ui, theme: &Theme, notice: &Notice, typing: Option<&mut String>) -> Deed {
     let accent = if notice.urgent { ui::CAUTION } else { theme.main };
     let mut deed = Deed::Nothing;
     let top = ui.cursor().top();
@@ -853,6 +992,34 @@ fn row(ui: &mut Ui, theme: &Theme, notice: &Notice) -> Deed {
                 }
             });
         });
+        let offers_reply = notice.actions.iter().any(|(key, _)| key == INLINE_REPLY);
+        match typing {
+            Some(text) => {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(10.0);
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    let field = ui.add(egui::TextEdit::singleline(text).hint_text("Reply").desired_width((width - 120.0).max(80.0)).font(ui::mono(12.0)));
+                    if !field.has_focus() && text.is_empty() {
+                        field.request_focus();
+                    }
+                    let entered = field.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
+                    if (ui::button(ui, theme, "SEND", None, false).clicked() || entered) && !text.trim().is_empty() {
+                        deed = Deed::Send;
+                    }
+                });
+            }
+            None if offers_reply => {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(10.0);
+                    if ui::button(ui, theme, "REPLY", None, false).clicked() {
+                        deed = Deed::Act(INLINE_REPLY.to_string());
+                    }
+                });
+            }
+            None => {}
+        }
         ui.add_space(10.0);
     });
     let rect = Rect::from_min_max(pos2(inner.response.rect.left(), top), pos2(inner.response.rect.left() + width, inner.response.rect.bottom()));
@@ -947,7 +1114,7 @@ mod tests {
     }
 
     fn center() -> Center {
-        Center { open: false, quiet: false, sounds: false, last_sound: None, notices: Vec::new(), inbox: Arc::default(), bus: None, own_id: u32::MAX / 2 }
+        Center { open: false, quiet: false, sounds: false, last_sound: None, notices: Vec::new(), inbox: Arc::default(), bus: None, own_id: u32::MAX / 2, schedule: None, collapsed: HashSet::new(), replying: None }
     }
 
     #[test]
@@ -997,5 +1164,69 @@ mod tests {
         assert_eq!(titles, ["2 new messages", "other"]);
         center.dismiss(7);
         assert_eq!(center.count(), 1);
+    }
+
+    fn from(id: u32, app: &str, actions: &[(&str, &str)]) -> Notice {
+        Notice {
+            id, app: app.into(), title: format!("n{id}"), body: String::new(),
+            actions: actions.iter().map(|(k, l)| (k.to_string(), l.to_string())).collect(),
+            urgent: false, icon: None, sound: None, clock: "12:00".into(), stay: Some(STAY),
+            shown: None, fresh: true, foreign: true,
+        }
+    }
+
+    #[test]
+    fn groups_by_application_most_recent_first() {
+        let notices = vec![from(1, "Mail", &[]), from(2, "Chat", &[]), from(3, "Mail", &[]), from(4, "Build", &[])];
+        let grouped = groups(&notices);
+        let order: Vec<(&str, Vec<u32>)> = grouped.iter().map(|(app, members)| (app.as_str(), members.iter().map(|i| notices[*i].id).collect())).collect();
+        assert_eq!(order, [("Build", vec![4]), ("Mail", vec![3, 1]), ("Chat", vec![2])]);
+        assert!(groups(&[]).is_empty());
+    }
+
+    #[test]
+    fn inline_reply_is_offered_and_answers_with_id_and_text() {
+        let service = Service { inbox: Arc::default(), ctx: egui::Context::default() };
+        assert!(service.get_capabilities().contains(&"inline-reply".to_string()));
+        let mut center = center();
+        center.add(from(5, "Chat", &[("inline-reply", "Reply"), ("default", "Open")]), 0);
+        center.add(from(6, "Mail", &[("default", "Open")]), 0);
+        assert_eq!(center.reply(5, "  on my way\u{7}  "), Some((5, "on my way".to_string())));
+        assert_eq!(center.count(), 1, "answered, it is settled");
+        assert_eq!(center.reply(6, "hello"), None, "not offered");
+        assert_eq!(center.reply(99, "hello"), None);
+        center.add(from(7, "Chat", &[("inline-reply", "Reply")]), 0);
+        assert_eq!(center.reply(7, "   "), None, "nothing to send");
+        let long = "é".repeat(REPLY_LIMIT);
+        assert!(clean_reply(&long).len() <= REPLY_LIMIT);
+        assert_eq!(clean_reply("two\nlines"), "two\nlines");
+    }
+
+    #[test]
+    fn quiet_hours_run_past_midnight() {
+        assert!(in_window(22 * 60, 7 * 60, 23 * 60));
+        assert!(in_window(22 * 60, 7 * 60, 0));
+        assert!(in_window(22 * 60, 7 * 60, 6 * 60 + 59));
+        assert!(!in_window(22 * 60, 7 * 60, 7 * 60));
+        assert!(!in_window(22 * 60, 7 * 60, 12 * 60));
+        assert!(in_window(9 * 60, 17 * 60, 9 * 60));
+        assert!(!in_window(9 * 60, 17 * 60, 17 * 60));
+        assert!(!in_window(9 * 60, 9 * 60, 9 * 60));
+        assert_eq!(parse_schedule("22:00-07:30"), Some((1320, 450)));
+        assert_eq!(parse_schedule("22:00-22:00"), None);
+        assert_eq!(parse_schedule("24:00-07:00"), None);
+        assert_eq!(parse_schedule("nonsense"), None);
+        assert_eq!(schedule_value((1320, 450)), "22:00-07:30");
+        // Within quiet hours only the urgent shows.
+        let mut center = center();
+        center.schedule = Some((0, 24 * 60 - 1));
+        use chrono::Timelike;
+        let now = chrono::Local::now();
+        if now.hour() * 60 + now.minute() < 24 * 60 - 1 {
+            center.post("Quiet", "", false);
+            center.post("Loud", "", true);
+            let fresh: Vec<&str> = center.notices.iter().filter(|n| n.fresh).map(|n| n.title.as_str()).collect();
+            assert_eq!(fresh, ["Loud"]);
+        }
     }
 }

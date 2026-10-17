@@ -1005,6 +1005,26 @@ impl Settings {
         if switch_row(ui, theme, "Sounds", "A notification that shows also makes a sound, unless it asks not to", config.notification_sounds) {
             changes.push(Change::Set("notification_sounds", config.notification_sounds.then(|| "off".to_string())));
         }
+        // Do not disturb by the clock: what is not urgent waits in the list.
+        let schedule = config.dnd_schedule;
+        if switch_row(ui, theme, "Quiet hours", "Do not disturb every day between these hours; urgent ones still show", schedule.is_some()) {
+            let value = if schedule.is_some() { None } else { Some(crate::notify::schedule_value((22 * 60, 7 * 60))) };
+            changes.push(Change::Set("dnd_schedule", value));
+        }
+        if let Some((from, to)) = schedule {
+            let (mut start, mut end) = (from / 60, to / 60);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                ui.label(egui::RichText::new("From").font(ui::mono(13.0)));
+                ui.add(egui::DragValue::new(&mut start).range(0..=23).suffix(":00"));
+                ui.label(egui::RichText::new("to").font(ui::mono(13.0)));
+                ui.add(egui::DragValue::new(&mut end).range(0..=23).suffix(":00"));
+            });
+            // Only a change of hour is written, so minutes set by hand survive.
+            if (start, end) != (from / 60, to / 60) && start != end {
+                changes.push(Change::Set("dnd_schedule", Some(crate::notify::schedule_value((start * 60, end * 60)))));
+            }
+        }
     }
 
     /// The user's picture changed: show the new one.
