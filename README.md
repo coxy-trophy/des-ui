@@ -214,6 +214,20 @@ and launcher shortcuts remain available in the dock. **Settings → Frame → An
 dock** turns the sliding motion off. Each display has its own dock, showing windows on that display and the same saved pins. Super+D opens keyboard navigation on the display under the pointer.
 Launcher and dock use installed app icons; missing icons use a generic app symbol.
 
+## Calendar and notifications
+
+**Calendar.** Click the clock for a month calendar with today picked out; the day
+you choose lists its events. Put `.ics` files in `~/.config/des-ui/calendars/`, or
+list calendar addresses (`https://` or `webcal://`, one per line) in
+`~/.config/des-ui/calendars.list`; those are fetched at most every half hour. An
+event is announced fifteen minutes before it starts. Times in a named zone are
+taken as local time.
+
+**Notifications** are grouped by application in the list; click a heading to fold
+it. Applications that offer an answer get a REPLY field. **Settings → Sound &
+screen → Quiet hours** keeps all but urgent notifications in the list between the
+hours you choose.
+
 ## Command palette, sessions and health
 
 **Super+Space** opens the command palette. Search installed apps, open windows,

@@ -405,3 +405,19 @@ watched work on a real machine. Tick them off, or note what went wrong.
 - [ ] Locking while dragging: the drag is cancelled, nothing is dropped
 - [ ] Clicking a file then typing in the terminal after a click there: keys reach the
       terminal again
+
+## Calendar and notifications
+
+- [ ] Click the clock: the calendar opens below it, today in the accent; arrows change
+      month; a day with events has a dot; Escape and a click elsewhere close it
+- [ ] With an application open, the pop-up shows above it (lifted like the toasts)
+- [ ] A Google or Nextcloud calendar's `.ics` address in `calendars.list`: events show
+      after the first fetch, and again after 30 minutes offline from the cache
+- [ ] A weekly meeting with an exception and a monthly one on the 31st look right
+- [ ] An event 14 minutes away is announced once
+- [ ] Locale `en_US` starts weeks on Sunday, `en_GB` on Monday
+- [ ] A chat application with inline reply (e.g. a KDE Connect SMS, Telegram Desktop):
+      REPLY, type, SEND; the application receives the text
+- [ ] Notifications from three applications: grouped, folding a group, CLEAR ALL
+- [ ] Quiet hours across midnight: non-urgent notifications stay in the list, urgent
+      ones still show; turning the switch off ends it at once
