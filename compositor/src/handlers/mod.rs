@@ -1,4 +1,5 @@
 mod compositor;
+pub mod input_protocols;
 mod xdg_shell;
 
 use crate::{DesComp, focus::Focus};

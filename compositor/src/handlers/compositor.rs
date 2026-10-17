@@ -53,6 +53,8 @@ impl CompositorHandler for DesComp {
 
         let window = self.window_for(surface);
         xdg_shell::handle_commit(&mut self.popups, window.as_ref(), surface);
+        // An input method's list is placed once its size is known.
+        self.place_ime_popup(surface);
     }
 }
 

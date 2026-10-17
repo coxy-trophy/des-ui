@@ -237,6 +237,7 @@ impl DesComp {
             // The rest happens in the shell's window, which has to be the one in view
             // and the one the keys go to.
             self.focus_screen = 0;
+            self.release_pointer_constraint();
             self.picking = true;
             self.dock=None;self.docks.clear();self.dock_keyboard=false;
             let shell = self.shell.as_ref().and_then(crate::policy::focus_of);

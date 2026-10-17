@@ -905,6 +905,7 @@ impl DesComp {
             tracing::info!(locked, "screen lock");
             self.locked = locked;
             if locked {
+                self.release_pointer_constraint();
                 self.dock_keyboard = false;
                 self.dock = None;
                 self.docks.clear();

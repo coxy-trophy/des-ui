@@ -93,6 +93,8 @@ pub struct DesComp {
     /// Set while a restart of the shell was asked for and its old process is going away.
     shell_restarting: bool,
     pub shell_pid: Option<u32>,
+    /// Input methods, pointer constraints, shortcut inhibitors, the virtual keyboard.
+    pub input_protocols: crate::handlers::input_protocols::InputProtocols,
     /// The des-ui shell window: always fullscreen, always at the bottom.
     pub shell: Option<Window>,
     /// What is shown while the shell is being restarted, until it has a window again.
@@ -242,6 +244,7 @@ impl DesComp {
             shell_crashes: Vec::new(),
             shell_restarting: false,
             shell_pid: None,
+            input_protocols: crate::handlers::input_protocols::init(&dh),
             shell: None,
             last_input: Instant::now(),
             unsaid: Vec::new(),
@@ -437,6 +440,7 @@ impl DesComp {
             .map_err(|e| format!("cannot start shell {}: {e}", spec.program.display()))?;
         tracing::info!(pid = child.id(), shell = %spec.program.display(), "started shell");
         self.shell_pid = Some(child.id());
+        crate::handlers::input_protocols::SHELL_PID.store(child.id(), std::sync::atomic::Ordering::Relaxed);
         self.shell_child = Some(child);
         Ok(())
     }

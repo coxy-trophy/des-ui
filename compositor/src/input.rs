@@ -6,7 +6,7 @@ use smithay::{
     },
     input::{
         keyboard::{FilterResult, Keysym},
-        pointer::{AxisFrame, ButtonEvent, MotionEvent},
+        pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent},
     },
     utils::SERIAL_COUNTER,
 };
@@ -14,6 +14,7 @@ use smithay::{
 use crate::state::DesComp;
 
 /// A compositor shortcut, as opposed to a key press that belongs to the focused client.
+#[derive(Debug)]
 enum Action {
     Cycle,
     Close,
@@ -50,7 +51,7 @@ enum Action {
     Quit,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Media {
     VolumeUp,
     VolumeDown,
@@ -146,6 +147,14 @@ impl Media {
     }
 }
 
+/// Whether a shortcut is passed to an application that asked for the compositor's
+/// keys, such as a remote desktop or a virtual machine. Locking, ending the session,
+/// changing virtual terminal, the power key and the machine's own volume and
+/// brightness keys always stay with the compositor, so no window can trap the user.
+fn inhibitable(action: &Action) -> bool {
+    !matches!(action, Action::Lock | Action::Quit | Action::SwitchVt(_) | Action::Power | Action::Media(_))
+}
+
 /// The keysyms that Ctrl+Alt+F1..F12 produce.
 const SWITCH_VT_1: u32 = 0x1008_FE01;
 const SWITCH_VT_12: u32 = 0x1008_FE0C;
@@ -194,6 +203,7 @@ impl DesComp {
 
                 let pressed = event.state() == KeyState::Pressed;
                 let locked = self.locked;
+                let inhibited = self.shortcuts_inhibited();
                 let action = self.seat.get_keyboard().unwrap().input(
                     self,
                     event.key_code(),
@@ -201,6 +211,7 @@ impl DesComp {
                     serial,
                     time,
                     |_, modifiers, handle| {
+                        let decide = || {
                         // Super is the real shortcut key. Ctrl+Alt also works, because a
                         // host desktop keeps Super for itself when we run in a window.
                         let held = modifiers.logo || (modifiers.ctrl && modifiers.alt);
@@ -278,8 +289,17 @@ impl DesComp {
                             }
                             _ => FilterResult::Forward,
                         }
+                        };
+                        match decide() {
+                            FilterResult::Intercept(action) if inhibited && inhibitable(&action) => FilterResult::Forward,
+                            result => result,
+                        }
                     },
                 );
+                // A compositor shortcut lets go of the pointer, so a game cannot keep it.
+                if action.is_some() {
+                    self.release_pointer_constraint();
+                }
                 match action {
                     Some(Action::Cycle) => self.cycle(),
                     Some(Action::Workspace(workspace)) => self.switch_workspace(workspace),
@@ -328,7 +348,29 @@ impl DesComp {
             InputEvent::PointerMotion { event, .. } => {
                 let pointer = self.seat.get_pointer().unwrap();
                 let from = pointer.current_location();
-                let pos = self.clamp_to_screens(from, from + event.delta());
+                // Raw movement first, for games and 3D views, wherever the pointer is held.
+                let under_from = self.surface_under(from);
+                pointer.relative_motion(
+                    self,
+                    under_from,
+                    &RelativeMotionEvent {
+                        delta: event.delta(),
+                        delta_unaccel: event.delta_unaccel(),
+                        utime: event.time(),
+                    },
+                );
+                let pos = match self.pointer_hold() {
+                    // Held in place: the pointer stays where the application put it.
+                    crate::handlers::input_protocols::Hold::Locked => {
+                        pointer.frame(self);
+                        return;
+                    }
+                    crate::handlers::input_protocols::Hold::Confined => {
+                        let to = self.clamp_to_screens(from, from + event.delta());
+                        if self.confined_allows(to) { to } else { from }
+                    }
+                    crate::handlers::input_protocols::Hold::Free => self.clamp_to_screens(from, from + event.delta()),
+                };
 
                 let serial = SERIAL_COUNTER.next_serial();
                 let under = self.surface_under(pos);
@@ -342,6 +384,7 @@ impl DesComp {
                     },
                 );
                 pointer.frame(self);
+                self.activate_pointer_constraint();
             }
             InputEvent::PointerMotionAbsolute { event, .. } => {
                 let output = self.space.outputs().next().unwrap();
@@ -433,6 +476,21 @@ impl DesComp {
                 pointer.frame(self);
             }
             _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_safety_keys_cannot_be_taken_by_an_application() {
+        for kept in [Action::Lock, Action::Quit, Action::SwitchVt(2), Action::Power, Action::Media(Media::Mute)] {
+            assert!(!inhibitable(&kept), "{kept:?} must stay with the compositor");
+        }
+        for passed in [Action::Cycle, Action::Launcher, Action::Close, Action::Workspace(1), Action::Ignore, Action::Split] {
+            assert!(inhibitable(&passed), "{passed:?} goes to the application that asked");
         }
     }
 }
