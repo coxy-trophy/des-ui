@@ -30,7 +30,15 @@
 //!   acknowledgement of each `lock` or `unlock` command;
 //! - `displays <seconds left to confirm a change, or 0>` followed by one tab-separated
 //!   field per monitor, left to right, each `<name> <0|1 main> <x> <y> <mode in use>
-//!   <modes it offers, comma-separated>`. A mode is `<width>x<height>@<millihertz>`.
+//!   <modes it offers, comma-separated>`. A mode is `<width>x<height>@<millihertz>`;
+//! - `overview none` when the overview or the window switcher closes, and while one
+//!   is open, whenever what it shows changes, `overview <w|s> <display> <selected
+//!   picture, or -> <hex filter text, or -> <x y w h of the switcher's strip, or ->`
+//!   followed by one tab-separated field per workspace, `w <n> <x> <y> <w> <h> <0|1
+//!   in view>`, and per window picture, `t <app> <x> <y> <w> <h>`. `w` is the overview
+//!   of every workspace, `s` the switcher; places are in the display's own logical
+//!   coordinates. The compositor draws the pictures of the windows; the shell draws
+//!   everything else around them, the names and the selection.
 //!
 //! The shell sends, one per line:
 //! - `activate <n>`, `close <n>`, `move <n>` (to the next display) for the
@@ -40,6 +48,8 @@
 //! - `pin <n>` to keep the application at that index in a corner above everything,
 //!   on every workspace of its display, and `unpin` to put it back where it was;
 //! - `terminal`, `split`, `fullscreen`, `panel <left|right|bottom>`;
+//! - `overview` to open the overview of every workspace on the display under the
+//!   pointer, or to close it;
 //! - `lock` and `unlock`;
 //! - `toast <x y w h|none>`, `dock <x y w h|none>` and `dock-screen <display>
 //!   <x y w h|none>`: where in its window the shell is showing notifications, or
@@ -486,6 +496,164 @@ pub enum Recording {
     Failed,
 }
 
+/// Which of the two pictures of the windows is open.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum OverviewKind {
+    /// Every workspace of a display side by side, each with its windows.
+    Workspaces,
+    /// The windows of a display in the order they were last used, while Alt is held.
+    Switcher,
+}
+
+/// A rectangle in a display's own logical coordinates: left, top, width, height.
+pub type Area = (i32, i32, i32, i32);
+
+/// One workspace as the overview shows it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OverviewWorkspace {
+    pub workspace: usize,
+    pub area: Area,
+    /// The one in view.
+    pub current: bool,
+}
+
+/// One window's picture: the application at this index, drawn in `area`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OverviewThumb {
+    pub app: usize,
+    pub area: Area,
+}
+
+/// Where the compositor draws the pictures of the windows, so that the shell can draw
+/// what goes around them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OverviewLayout {
+    pub kind: OverviewKind,
+    pub screen: usize,
+    /// Index into `thumbs` of the picture that Enter would choose.
+    pub selected: Option<usize>,
+    /// What has been typed to narrow the pictures down.
+    pub filter: String,
+    /// The switcher's strip, which the shell draws behind its pictures.
+    pub strip: Option<Area>,
+    pub workspaces: Vec<OverviewWorkspace>,
+    pub thumbs: Vec<OverviewThumb>,
+}
+
+/// At most this many pictures are described, however many windows there are.
+pub const OVERVIEW_THUMBS: usize = 256;
+const OVERVIEW_FILTER_BYTES: usize = 256;
+
+fn area_ok((_, _, w, h): Area) -> bool {
+    w > 0 && h > 0
+}
+
+fn decode_area(words: &mut std::str::SplitWhitespace<'_>) -> Option<Area> {
+    let area = (words.next()?.parse().ok()?, words.next()?.parse().ok()?, words.next()?.parse().ok()?, words.next()?.parse().ok()?);
+    area_ok(area).then_some(area)
+}
+
+impl OverviewLayout {
+    /// The line telling the shell what is open, or that nothing is.
+    pub fn encode(layout: Option<&OverviewLayout>) -> String {
+        let Some(layout) = layout else {
+            return "overview none\n".to_string();
+        };
+        let kind = match layout.kind {
+            OverviewKind::Workspaces => "w",
+            OverviewKind::Switcher => "s",
+        };
+        let selected = layout.selected.map_or("-".to_string(), |selected| selected.to_string());
+        let mut filter: String = layout.filter.chars().filter(|c| !c.is_control()).collect();
+        while filter.len() > OVERVIEW_FILTER_BYTES {
+            filter.pop();
+        }
+        let filter = if filter.is_empty() { "-".to_string() } else { filter.bytes().map(|b| format!("{b:02x}")).collect() };
+        let strip = layout.strip.map_or("-".to_string(), |(x, y, w, h)| format!("{x} {y} {w} {h}"));
+        let mut line = format!("overview {kind} {} {selected} {filter} {strip}", layout.screen);
+        for workspace in &layout.workspaces {
+            let (x, y, w, h) = workspace.area;
+            line.push_str(&format!("\tw {} {x} {y} {w} {h} {}", workspace.workspace, workspace.current as u8));
+        }
+        for thumb in layout.thumbs.iter().take(OVERVIEW_THUMBS) {
+            let (x, y, w, h) = thumb.area;
+            line.push_str(&format!("\tt {} {x} {y} {w} {h}", thumb.app));
+        }
+        line.push('\n');
+        line
+    }
+
+    /// Reads an `overview` line: `Some(None)` when it closed, `None` when the line is
+    /// not one or is malformed.
+    pub fn decode(line: &str) -> Option<Option<OverviewLayout>> {
+        let line = line.trim_end_matches('\n').strip_prefix("overview ")?;
+        if line == "none" {
+            return Some(None);
+        }
+        let mut fields = line.split('\t');
+        let mut words = fields.next()?.split_whitespace();
+        let kind = match words.next()? {
+            "w" => OverviewKind::Workspaces,
+            "s" => OverviewKind::Switcher,
+            _ => return None,
+        };
+        let screen = words.next()?.parse::<usize>().ok().filter(|screen| *screen < 32)?;
+        let selected = match words.next()? {
+            "-" => None,
+            index => Some(index.parse::<usize>().ok()?),
+        };
+        let filter = match words.next()? {
+            "-" => String::new(),
+            hex => {
+                if hex.len() % 2 != 0 || hex.len() > OVERVIEW_FILTER_BYTES * 2 {
+                    return None;
+                }
+                let bytes: Option<Vec<u8>> = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok()).collect();
+                String::from_utf8(bytes?).ok()?
+            }
+        };
+        let strip = match words.clone().next()? {
+            "-" => {
+                words.next();
+                None
+            }
+            _ => Some(decode_area(&mut words)?),
+        };
+        if words.next().is_some() {
+            return None;
+        }
+        let mut workspaces = Vec::new();
+        let mut thumbs = Vec::new();
+        for field in fields {
+            let mut words = field.split_whitespace();
+            match words.next()? {
+                "w" => {
+                    let workspace = words.next()?.parse::<usize>().ok().filter(|w| *w < WORKSPACES)?;
+                    let area = decode_area(&mut words)?;
+                    let current = match words.next()? {
+                        "0" => false,
+                        "1" => true,
+                        _ => return None,
+                    };
+                    workspaces.push(OverviewWorkspace { workspace, area, current });
+                }
+                "t" => {
+                    let app = words.next()?.parse::<usize>().ok()?;
+                    thumbs.push(OverviewThumb { app, area: decode_area(&mut words)? });
+                }
+                _ => return None,
+            }
+            if words.next().is_some() || thumbs.len() > OVERVIEW_THUMBS {
+                return None;
+            }
+        }
+        if selected.is_some_and(|selected| selected >= thumbs.len()) {
+            return None;
+        }
+        Some(Some(OverviewLayout { kind, screen, selected, filter, strip, workspaces, thumbs }))
+    }
+}
+
 /// A message from the compositor to the shell.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
@@ -514,6 +682,8 @@ pub enum Event {
     /// The screen is now locked, or no longer.
     Locked(bool),
     Displays(Displays),
+    /// The overview or the window switcher opened or changed (`Some`), or closed.
+    Overview(Option<OverviewLayout>),
 }
 
 impl Event {
@@ -562,6 +732,9 @@ impl Event {
         }
         if line.starts_with("displays ") {
             return Displays::decode(line).map(Event::Displays);
+        }
+        if line.starts_with("overview ") {
+            return OverviewLayout::decode(line).map(Event::Overview);
         }
         if let Some(shot) = line.trim_end_matches('\n').strip_prefix("shot ") {
             // The path comes last and may hold spaces.
@@ -641,6 +814,8 @@ pub enum Command {
     /// (x, y, width, height) that is to be seen above any application, and has the
     /// keyboard meanwhile; or no longer.
     Overlay(Option<(i32, i32, i32, i32)>),
+    /// Open the overview on the display under the pointer, or close it.
+    Overview,
 }
 
 impl Command {
@@ -676,6 +851,7 @@ impl Command {
             Command::RecordStop => "record-stop\n".to_string(),
             Command::Pin(index) => format!("pin {index}\n"),
             Command::Unpin => "unpin\n".to_string(),
+            Command::Overview => "overview\n".to_string(),
             Command::Overlay(None) => "overlay none\n".to_string(),
             Command::Overlay(Some((x, y, w, h))) => format!("overlay {x} {y} {w} {h}\n"),
             Command::Toast(Some((x, y, w, h))) => format!("toast {x} {y} {w} {h}\n"),
@@ -766,6 +942,7 @@ impl Command {
             ("record-stop", None) => Command::RecordStop,
             ("pin", Some(index)) => Command::Pin(index.parse().ok()?),
             ("unpin", None) => Command::Unpin,
+            ("overview", None) => Command::Overview,
             ("hold-idle", Some("on")) => Command::HoldIdle(true),
             ("hold-idle", Some("off")) => Command::HoldIdle(false),
             ("panel", Some("left")) => Command::TogglePanel(Panel::Left),
@@ -789,6 +966,53 @@ impl Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn layout() -> OverviewLayout {
+        OverviewLayout {
+            kind: OverviewKind::Workspaces,
+            screen: 1,
+            selected: Some(1),
+            filter: "fire Ω".into(),
+            strip: None,
+            workspaces: (0..WORKSPACES).map(|w| OverviewWorkspace { workspace: w, area: (48 + w as i32 * 400, 48, 376, 900), current: w == 2 }).collect(),
+            thumbs: vec![OverviewThumb { app: 3, area: (60, 100, 300, 200) }, OverviewThumb { app: 0, area: (460, 100, 300, 170) }],
+        }
+    }
+
+    #[test]
+    fn the_overview_round_trips_and_closes() {
+        let open = layout();
+        let line = OverviewLayout::encode(Some(&open));
+        assert!(line.ends_with('\n') && line.lines().count() == 1);
+        assert_eq!(Event::decode(&line), Some(Event::Overview(Some(open.clone()))));
+        assert_eq!(Event::decode(&OverviewLayout::encode(None)), Some(Event::Overview(None)));
+        let switcher = OverviewLayout { kind: OverviewKind::Switcher, selected: None, filter: String::new(), strip: Some((100, 400, 800, 220)), workspaces: Vec::new(), ..open };
+        assert_eq!(Event::decode(&OverviewLayout::encode(Some(&switcher))), Some(Event::Overview(Some(switcher))));
+        assert_eq!(Command::decode(&Command::Overview.encode()), Some(Command::Overview));
+    }
+
+    #[test]
+    fn malformed_overview_lines_are_refused() {
+        for bad in [
+            "overview x 0 - - -\n",
+            "overview w 99 - - -\n",
+            "overview w 0 - zz -\n",
+            "overview w 0 - - -\tt 0 1 2 0 4\n",
+            "overview w 0 - - -\tw 9 1 2 3 4 0\n",
+            "overview w 0 3 - -\tt 0 1 2 3 4\n",
+            "overview w 0 - - -\tq 1\n",
+            "overview w 0 - - 1 2 3\n",
+        ] {
+            assert_eq!(OverviewLayout::decode(bad), None, "{bad:?}");
+        }
+        // Control characters typed into the filter never break the line.
+        let mut odd = layout();
+        odd.filter = "a\tb\nc".into();
+        let line = OverviewLayout::encode(Some(&odd));
+        assert_eq!(line.matches('\n').count(), 1);
+        let Some(Some(back)) = OverviewLayout::decode(&line) else { panic!("{line}") };
+        assert_eq!(back.filter, "abc");
+    }
 
     fn app(title: &str, screen: usize, place: Place) -> AppInfo {
         AppInfo {

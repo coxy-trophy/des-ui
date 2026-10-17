@@ -190,6 +190,18 @@ pub struct DesComp {
     pub layer_focus: Option<smithay::desktop::LayerSurface>,
     /// What the layers reserve on each output, as last applied to the windows.
     pub layer_reservations: Vec<(Rectangle<i32, Logical>, crate::handlers::layer_shell::Insets)>,
+    /// The overview or the window switcher, while open or closing.
+    pub overview: Option<crate::overview::Overview>,
+    /// Application windows, most recently given the keyboard first.
+    pub recency: crate::switcher::Recency<Window>,
+    /// Super pressed on its own, which opens the overview when let go.
+    pub super_tap: crate::overview::SuperTap,
+    /// Set while a key is read: the overview is to toggle, or the switcher to choose,
+    /// once the key has gone to whoever it was for.
+    pub overview_wanted: bool,
+    pub switcher_released: bool,
+    /// A touchpad swipe the desktop took, while the fingers are down.
+    pub swipe: Option<crate::gestures::Swipe>,
 }
 
 /// A length of time in milliseconds that a test may set through the environment.
@@ -221,6 +233,8 @@ impl DesComp {
         smithay::wayland::viewporter::ViewporterState::new::<Self>(&dh);
         smithay::wayland::single_pixel_buffer::SinglePixelBufferState::new::<Self>(&dh);
         smithay::wayland::cursor_shape::CursorShapeManagerState::new::<Self>(&dh);
+        // Swipes and pinches the desktop does not take reach applications this way.
+        smithay::wayland::pointer_gestures::PointerGesturesState::new::<Self>(&dh);
         smithay::wayland::presentation::PresentationState::new::<Self>(&dh, {
             use smithay::utils::ClockSource;
             smithay::utils::Monotonic::ID as u32
@@ -320,6 +334,12 @@ impl DesComp {
             layer_shell_state: smithay::wayland::shell::wlr_layer::WlrLayerShellState::new::<Self>(&dh),
             layer_focus: None,
             layer_reservations: Vec::new(),
+            overview: None,
+            recency: Default::default(),
+            super_tap: Default::default(),
+            overview_wanted: false,
+            switcher_released: false,
+            swipe: None,
         }
     }
 
@@ -403,6 +423,7 @@ impl DesComp {
     /// Work due before drawing a frame. Returns false once the session is over.
     pub fn before_frame(&mut self) -> bool {
         self.motions.tick(Instant::now());
+        self.refresh_overview();
         self.prefer_scales();
         if self.splash.as_ref().is_some_and(|splash| splash.done()) {
             self.splash = None;

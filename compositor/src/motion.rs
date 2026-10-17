@@ -283,7 +283,7 @@ type Surface = WaylandSurfaceRenderElement<GlesRenderer>;
 
 /// What one window contributes to a display: drawn at `rect`, scaled from the size
 /// the client has given it, and `alpha` opaque.
-fn window_at<C>(
+pub(crate) fn window_at<C>(
     renderer: &mut GlesRenderer,
     window: &Window,
     rect: Rectangle<f64, Logical>,

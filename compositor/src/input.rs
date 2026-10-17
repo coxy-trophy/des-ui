@@ -1,9 +1,11 @@
 use smithay::{
     backend::session::Session,
     backend::input::{
-        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent, KeyState,
+        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent, GestureEndEvent,
+        GesturePinchUpdateEvent as _, GestureSwipeUpdateEvent as _, InputBackend, InputEvent, KeyState,
         KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
     },
+    input::pointer as gesture,
     input::{
         keyboard::{FilterResult, Keysym},
         pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent},
@@ -11,7 +13,11 @@ use smithay::{
     utils::SERIAL_COUNTER,
 };
 
-use crate::state::DesComp;
+use crate::{
+    overview::{OverviewKey, SwitchKey},
+    state::DesComp,
+};
+use des_common::ipc::OverviewKind;
 
 /// A compositor shortcut, as opposed to a key press that belongs to the focused client.
 #[derive(Debug)]
@@ -49,6 +55,30 @@ enum Action {
     SwitchVt(i32),
     /// End the session (Ctrl+Alt+Backspace).
     Quit,
+    /// A key for the open overview.
+    Overview(OverviewKey),
+    /// A key for the open window switcher.
+    Switch(SwitchKey),
+    /// Open the overview, or close it (Super+W).
+    ToggleOverview,
+    /// Alt+Tab, Alt+Shift+Tab, and with ` the windows of the application in use.
+    OpenSwitcher { forward: bool, same_app: bool },
+}
+
+/// Whether a shortcut takes the user somewhere the overview would hide: anything but
+/// moving between workspaces, which the overview shows, and keys that act in place.
+fn closes_overview(action: &Action) -> bool {
+    !matches!(
+        action,
+        Action::Overview(_)
+            | Action::Switch(_)
+            | Action::ToggleOverview
+            | Action::Workspace(_)
+            | Action::SendTo(_)
+            | Action::Media(_)
+            | Action::SwitchVt(_)
+            | Action::Ignore
+    )
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -210,7 +240,23 @@ impl DesComp {
                     event.state(),
                     serial,
                     time,
-                    |_, modifiers, handle| {
+                    |state, modifiers, handle| {
+                        // Super pressed and let go on its own opens the overview. The
+                        // key itself still goes where it was going.
+                        let now = std::time::Instant::now();
+                        let super_key = matches!(handle.modified_sym(), Keysym::Super_L | Keysym::Super_R);
+                        if pressed && super_key {
+                            state.super_tap.press(now);
+                        } else if pressed {
+                            state.super_tap.spoil();
+                        } else if super_key && state.super_tap.release(now) && !locked && !inhibited {
+                            state.overview_wanted = true;
+                        }
+                        let open = state.overview_open();
+                        // Letting go of Alt chooses the window the switcher is on.
+                        if !pressed && open == Some(OverviewKind::Switcher) && !modifiers.alt {
+                            state.switcher_released = true;
+                        }
                         let decide = || {
                         // Super is the real shortcut key. Ctrl+Alt also works, because a
                         // host desktop keeps Super for itself when we run in a window.
@@ -241,6 +287,50 @@ impl DesComp {
                         }
                         if sym == Keysym::XF86_PowerOff {
                             return FilterResult::Intercept(Action::Power);
+                        }
+                        if !locked {
+                            // The switcher has every key while Alt is held.
+                            if open == Some(OverviewKind::Switcher) {
+                                return FilterResult::Intercept(Action::Switch(match sym {
+                                    Keysym::Tab if modifiers.shift => SwitchKey::Previous,
+                                    Keysym::Tab | Keysym::grave | Keysym::Right => SwitchKey::Next,
+                                    Keysym::ISO_Left_Tab | Keysym::asciitilde | Keysym::Left => SwitchKey::Previous,
+                                    Keysym::Return | Keysym::KP_Enter => SwitchKey::Choose,
+                                    Keysym::Escape => SwitchKey::Cancel,
+                                    _ => SwitchKey::Ignore,
+                                }));
+                            }
+                            // The overview has every key but the shortcuts, so that
+                            // locking, workspaces and the rest still work over it.
+                            if open == Some(OverviewKind::Workspaces) && !held {
+                                use crate::overview::Direction;
+                                return FilterResult::Intercept(Action::Overview(match sym {
+                                    Keysym::Escape => OverviewKey::Close,
+                                    Keysym::Return | Keysym::KP_Enter => OverviewKey::Choose,
+                                    Keysym::Left => OverviewKey::Move(Direction::Left),
+                                    Keysym::Right => OverviewKey::Move(Direction::Right),
+                                    Keysym::Up => OverviewKey::Move(Direction::Up),
+                                    Keysym::Down => OverviewKey::Move(Direction::Down),
+                                    Keysym::BackSpace => OverviewKey::Erase,
+                                    other => match other.key_char().filter(|c| !c.is_control()) {
+                                        Some(c) if !modifiers.ctrl => OverviewKey::Type(c),
+                                        _ => OverviewKey::Ignore,
+                                    },
+                                }));
+                            }
+                            // Alt+Tab, and Alt+` among the windows of the application in use.
+                            if modifiers.alt && !modifiers.ctrl && !modifiers.logo {
+                                let opening = match sym {
+                                    Keysym::Tab => Some((!modifiers.shift, false)),
+                                    Keysym::ISO_Left_Tab => Some((false, false)),
+                                    Keysym::grave => Some((true, true)),
+                                    Keysym::asciitilde => Some((false, true)),
+                                    _ => None,
+                                };
+                                if let Some((forward, same_app)) = opening {
+                                    return FilterResult::Intercept(Action::OpenSwitcher { forward, same_app });
+                                }
+                            }
                         }
                         // Locked, every other key goes to the lock screen: no shortcut
                         // reaches what is behind it, and the session cannot be ended.
@@ -283,6 +373,7 @@ impl DesComp {
                             }
                             Keysym::q | Keysym::Q => FilterResult::Intercept(Action::Close),
                             Keysym::p | Keysym::P => FilterResult::Intercept(Action::Pin),
+                            Keysym::w | Keysym::W => FilterResult::Intercept(Action::ToggleOverview),
                             // Not a shortcut, but not a letter for the application either.
                             other if modifiers.logo && other.key_char().is_some_and(|c| !c.is_control()) => {
                                 FilterResult::Intercept(Action::Ignore)
@@ -291,16 +382,33 @@ impl DesComp {
                         }
                         };
                         match decide() {
-                            FilterResult::Intercept(action) if inhibited && inhibitable(&action) => FilterResult::Forward,
+                            // An open overview or switcher is the desktop's own, whatever
+                            // an application asked for.
+                            FilterResult::Intercept(action) if inhibited && open.is_none() && inhibitable(&action) => FilterResult::Forward,
                             result => result,
                         }
                     },
                 );
+                if std::mem::take(&mut self.overview_wanted) {
+                    self.toggle_overview();
+                }
+                if std::mem::take(&mut self.switcher_released) {
+                    self.switcher_key(SwitchKey::Choose);
+                }
+                // A shortcut that leads elsewhere closes the overview first; moving
+                // between workspaces is seen in it.
+                if self.overview_open() == Some(OverviewKind::Workspaces) && action.as_ref().is_some_and(closes_overview) {
+                    self.close_overview_now();
+                }
                 // A compositor shortcut lets go of the pointer, so a game cannot keep it.
                 if action.is_some() {
                     self.release_pointer_constraint();
                 }
                 match action {
+                    Some(Action::Overview(key)) => self.overview_key(key),
+                    Some(Action::Switch(key)) => self.switcher_key(key),
+                    Some(Action::ToggleOverview) => self.toggle_overview(),
+                    Some(Action::OpenSwitcher { forward, same_app }) => self.open_switcher(forward, same_app),
                     Some(Action::Cycle) => self.cycle(),
                     Some(Action::Workspace(workspace)) => self.switch_workspace(workspace),
                     Some(Action::SendTo(workspace)) => self.send_active_to(workspace),
@@ -348,6 +456,14 @@ impl DesComp {
             InputEvent::PointerMotion { event, .. } => {
                 let pointer = self.seat.get_pointer().unwrap();
                 let from = pointer.current_location();
+                // Over the overview or the switcher the pointer is theirs alone.
+                if self.overview_open().is_some() {
+                    let pos = self.clamp_to_screens(from, from + event.delta());
+                    pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time: event.time_msec() });
+                    pointer.frame(self);
+                    self.overview_pointer(pos);
+                    return;
+                }
                 // Raw movement first, for games and 3D views, wherever the pointer is held.
                 let under_from = self.surface_under(from);
                 pointer.relative_motion(
@@ -397,7 +513,8 @@ impl DesComp {
 
                 let pointer = self.seat.get_pointer().unwrap();
 
-                let under = self.surface_under(pos);
+                let under = if self.overview_open().is_some() { None } else { self.surface_under(pos) };
+                self.overview_pointer(pos);
 
                 pointer.motion(
                     self,
@@ -418,6 +535,15 @@ impl DesComp {
 
                 let button_state = event.state();
 
+                if button_state == ButtonState::Pressed {
+                    self.super_tap.spoil();
+                }
+                // The overview and the switcher take their own clicks.
+                if self.overview_open().is_some() {
+                    self.overview_button(pointer.current_location(), button_state == ButtonState::Pressed);
+                    return;
+                }
+
                 // Click to focus: the keyboard follows the display that was clicked.
                 // Shell overlays own their clicks; only their explicit commands change focus.
                 let on_overlay = self.shell_overlay_contains(pointer.current_location());
@@ -436,6 +562,8 @@ impl DesComp {
                 );
                 pointer.frame(self);
             }
+            // Nothing behind the overview scrolls.
+            InputEvent::PointerAxis { .. } if self.overview_open().is_some() => {}
             InputEvent::PointerAxis { event, .. } => {
                 let source = event.source();
 
@@ -474,6 +602,70 @@ impl DesComp {
                 let pointer = self.seat.get_pointer().unwrap();
                 pointer.axis(self, frame);
                 pointer.frame(self);
+            }
+            // Three or four fingers swiping are the desktop's; anything else is the
+            // application's under the pointer.
+            InputEvent::GestureSwipeBegin { event, .. } => {
+                let fingers = event.fingers();
+                if crate::gestures::ours(fingers) && !self.locked && !self.picking {
+                    self.swipe = Some(crate::gestures::Swipe::default());
+                } else {
+                    self.swipe = None;
+                    let pointer = self.seat.get_pointer().unwrap();
+                    let serial = SERIAL_COUNTER.next_serial();
+                    pointer.gesture_swipe_begin(self, &gesture::GestureSwipeBeginEvent { serial, time: event.time_msec(), fingers });
+                }
+            }
+            InputEvent::GestureSwipeUpdate { event, .. } => match self.swipe.as_mut() {
+                Some(swipe) => swipe.update(event.delta_x(), event.delta_y()),
+                None => {
+                    let pointer = self.seat.get_pointer().unwrap();
+                    pointer.gesture_swipe_update(self, &gesture::GestureSwipeUpdateEvent { time: event.time_msec(), delta: event.delta() });
+                }
+            },
+            InputEvent::GestureSwipeEnd { event, .. } => match self.swipe.take() {
+                Some(swipe) => {
+                    let open = self.overview_open() == Some(OverviewKind::Workspaces);
+                    match swipe.outcome(event.cancelled(), open) {
+                        Some(crate::gestures::Outcome::Previous) if self.workspace > 0 => self.switch_workspace(self.workspace - 1),
+                        Some(crate::gestures::Outcome::Next) => self.switch_workspace(self.workspace + 1),
+                        Some(crate::gestures::Outcome::OpenOverview) if self.overview.is_none() => self.toggle_overview(),
+                        Some(crate::gestures::Outcome::CloseOverview) => self.close_overview(),
+                        _ => {}
+                    }
+                }
+                None => {
+                    let pointer = self.seat.get_pointer().unwrap();
+                    let serial = SERIAL_COUNTER.next_serial();
+                    pointer.gesture_swipe_end(self, &gesture::GestureSwipeEndEvent { serial, time: event.time_msec(), cancelled: event.cancelled() });
+                }
+            },
+            InputEvent::GesturePinchBegin { event, .. } => {
+                let pointer = self.seat.get_pointer().unwrap();
+                let serial = SERIAL_COUNTER.next_serial();
+                pointer.gesture_pinch_begin(self, &gesture::GesturePinchBeginEvent { serial, time: event.time_msec(), fingers: event.fingers() });
+            }
+            InputEvent::GesturePinchUpdate { event, .. } => {
+                let pointer = self.seat.get_pointer().unwrap();
+                pointer.gesture_pinch_update(
+                    self,
+                    &gesture::GesturePinchUpdateEvent { time: event.time_msec(), delta: event.delta(), scale: event.scale(), rotation: event.rotation() },
+                );
+            }
+            InputEvent::GesturePinchEnd { event, .. } => {
+                let pointer = self.seat.get_pointer().unwrap();
+                let serial = SERIAL_COUNTER.next_serial();
+                pointer.gesture_pinch_end(self, &gesture::GesturePinchEndEvent { serial, time: event.time_msec(), cancelled: event.cancelled() });
+            }
+            InputEvent::GestureHoldBegin { event, .. } => {
+                let pointer = self.seat.get_pointer().unwrap();
+                let serial = SERIAL_COUNTER.next_serial();
+                pointer.gesture_hold_begin(self, &gesture::GestureHoldBeginEvent { serial, time: event.time_msec(), fingers: event.fingers() });
+            }
+            InputEvent::GestureHoldEnd { event, .. } => {
+                let pointer = self.seat.get_pointer().unwrap();
+                let serial = SERIAL_COUNTER.next_serial();
+                pointer.gesture_hold_end(self, &gesture::GestureHoldEndEvent { serial, time: event.time_msec(), cancelled: event.cancelled() });
             }
             _ => {}
         }
