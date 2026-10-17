@@ -194,6 +194,8 @@ struct App {
     pending_shot_replies: Vec<control::Reply>,
     /// A program waiting for a colour picked with one click.
     pending_color: Option<control::Reply>,
+    /// Asks for an administrator's password when an application needs one.
+    polkit: polkit::Polkit,
 }
 
 impl App {
@@ -224,6 +226,11 @@ impl App {
         };
         let clipboard = clipboard::Clipboard::start(ctx.clone());
         let widgets = widgets::Widgets::new(ctx.clone());
+        let polkit = polkit::Polkit::start(ctx.clone());
+        // What the user asked to start at login, once per session, and only in one.
+        if desktop_present {
+            autostart::start();
+        }
         let mut osk = osk::Osk::default();
         osk.open = config.osk;
         let mut launcher = Launcher::default();
@@ -279,6 +286,7 @@ impl App {
             widgets,
             remote: remote::Remote::new(),
             osk,
+            polkit,
             scratchpad: scratchpad::Scratchpad::default(),
             overlay_area: None,
             pending_shot_replies: Vec::new(),
@@ -713,6 +721,10 @@ impl App {
 
     /// Handles app-level shortcuts and returns the events left over for the terminal.
     fn take_shortcuts(&mut self, ctx: &egui::Context) -> Vec<Event> {
+        // The password dialog has the keyboard; no shortcut fires behind it.
+        if self.polkit.active() {
+            return Vec::new();
+        }
         let mut rest = Vec::new();
         for event in ctx.input(|i| i.events.clone()) {
             if let Event::Key {

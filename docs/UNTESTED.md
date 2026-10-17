@@ -340,3 +340,39 @@ watched work on a real machine. Tick them off, or note what went wrong.
 - [ ] A waybar tray menu opens within the display
 - [ ] Lock with all of the above running: none of them shows or takes keys until unlocked
 - [ ] Screenshot chooser with waybar up: the bar stays visible, clicks go to the chooser
+
+## Standard protocols (scaling, middle-click, activation)
+
+- [ ] At 150%: Firefox, a GTK4 application and a Qt 6 application are sharp, not blurry; the
+      shell itself is sharp; moving a window between a 100% and a 150% display changes it
+- [ ] Middle-click paste from a Wayland application to an X11 one (xterm) and back
+- [ ] Ctrl+click on a link in the terminal brings the running browser forward; a link
+      opened by a background program marks the browser urgent instead of taking the keyboard
+- [ ] Nothing is brought forward over the lock or the screenshot chooser
+- [ ] Video in mpv and a browser plays without judder; `mpv --video-sync=display-resample`
+      reports the display's refresh
+- [ ] The I-beam over text fields and the hand over links in GTK4 and Qt 6 applications;
+      the hotspots point where they should
+- [ ] A Flatpak application's file chooser stays attached to its window
+
+## Administrator password (polkit)
+
+- [ ] `pkexec true` in the terminal: the dialog shows the action and your name; the right
+      password succeeds, and `pkexec` exits 0
+- [ ] GNOME Software (or `pkcon install`): installing a package asks here and proceeds
+- [ ] A wrong password three times: each refusal says so, the third fails the request
+- [ ] CANCEL and Escape: the program reports the request was dismissed
+- [ ] A request made while the screen is locked (e.g. `sleep 5; pkexec true` then lock): nothing
+      shows over the lock screen; the dialog appears after unlocking
+- [ ] A user who is not an administrator: the dialog offers the administrators to choose from
+- [ ] A fingerprint or security-key PAM stack: the helper's info lines show in the dialog
+
+## Autostart
+
+- [ ] A real login starts the entries in `~/.config/autostart` and `/etc/xdg/autostart`
+      (e.g. Nextcloud, a GNOME keyring entry marked `OnlyShowIn=GNOME` stays out)
+- [ ] Super+Shift+R does not start them a second time; logging out and in does
+- [ ] An entry with `X-GNOME-Autostart-Delay=10` starts about ten seconds in
+- [ ] Turning a system entry off and on in Settings → Session leaves no file behind
+- [ ] ADD with a quoted argument (`foo --name "a b"`) starts exactly that next session
+- [ ] polkit-gnome or polkit-kde installed: their agent is not started

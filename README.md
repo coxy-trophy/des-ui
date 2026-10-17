@@ -277,6 +277,25 @@ foot of the desktop for a touchscreen. Shift, Ctrl and Alt hold for one key; `12
 switches to symbols. They type into the terminal and the desktop's own fields, not
 into other applications.
 
+## Starting with the session
+
+**Autostart** — the programs that start with every session: those in
+`~/.config/autostart` and the system's `/etc/xdg/autostart`, following the usual
+rules (`Hidden`, `OnlyShowIn`/`NotShowIn` with `des-ui`, `TryExec`, GNOME's
+enabled switch and delay). Each has a switch; turning a system entry off writes
+your own copy with `Hidden=true`, and turning it back on removes that copy again.
+ADD takes a command line, run as written without a shell, from the next session.
+Other desktops' authentication agents, notification daemons and panels are left
+out, since this desktop is each of those itself. Restarting the shell does not
+start them again.
+
+When an application needs an administrator (`pkexec`, a software centre, a disk
+tool), the desktop asks for the password itself, in its own dialog over everything
+but the lock screen. Three wrong tries end the request. Applications in a system tray
+show in the status strip. Apps look sharp at fractional scales, middle-click pastes
+what was last selected, and a window that wants your attention without having been
+asked for is marked rather than pushed in front of you.
+
 ## Bars, wallpapers and launchers of your own
 
 Tools made for wlroots desktops work here: `swaybg` for a wallpaper inside the

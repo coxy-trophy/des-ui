@@ -207,6 +207,8 @@ impl eframe::App for App {
                 self.send(Command::Unlock);
             }
             self.powerup.publish(ctx, self.config.animate, true);
+            // A password request waits; nothing is drawn over the lock.
+            self.polkit.show(ctx, &theme, true);
             return;
         }
         let stage = self.powerup.publish(ctx, self.config.animate, false);
@@ -253,7 +255,7 @@ impl eframe::App for App {
         let workspace = Rect::from_min_max(workspace.min, pos2(workspace.max.x, (workspace.max.y - osk_height).max(workspace.min.y)));
         let dock_keys = self.dock.reserve_keyboard(ctx);
         // While the scratchpad is down it has the keyboard, not the panes.
-        let scratch_keys = self.scratchpad.visible();
+        let scratch_keys = self.scratchpad.visible() || self.polkit.active();
         CentralPanel::default()
             .frame(Frame::new().fill(ui::GROUND))
             .show(ctx, |ui| {
@@ -551,6 +553,8 @@ impl eframe::App for App {
         }
 
         self.secondary_views(ctx,state.as_ref(),false);
+        // Last, so that it is above everything else.
+        self.polkit.show(ctx, &theme, false);
 
         // The globe turns continuously; without it, the clock sets the pace.
         let pace = if open.right && self.config.globe_rotation { 66 } else { 500 };
