@@ -17,6 +17,9 @@ mod state;
 mod splash;
 mod toast;
 mod motion;
+mod overview;
+mod switcher;
+mod gestures;
 mod phosphor;
 mod udev;
 mod winit;
@@ -71,6 +74,13 @@ Keys (hold Super, or Ctrl+Alt):
   Shift+R              Restart the shell, to load a newly installed build (its
                        terminal tabs close; applications stay open)
   Q                    Close the current application
+  W                    Open the overview of every workspace, or close it (Super
+                       pressed and let go on its own does the same)
+
+Alt+Tab and Alt+Shift+Tab go through the windows on the display in use, last used
+first; let go of Alt to bring the chosen one forward. Alt+` does the same among the
+windows of the application in use. On a touchpad, three or four fingers swiped left
+or right change workspace, up open the overview and down close it.
 
 Ctrl+Alt+Backspace ends the session; Ctrl+Alt+F1..F12 switch virtual terminals.";
 

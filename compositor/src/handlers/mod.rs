@@ -47,6 +47,16 @@ impl SeatHandler for DesComp {
             .and_then(|surface| dh.get_client(surface.id()).ok());
         set_data_device_focus(dh, seat, client.clone());
         smithay::wayland::selection::primary_selection::set_primary_focus(dh, seat, client);
+        // The window switcher lists windows in the order they had the keyboard.
+        let given = focused.and_then(|focus| {
+            self.apps.iter().find(|app| match focus {
+                Focus::X11(x11) => app.window.x11_surface() == Some(x11),
+                Focus::Surface(surface) => app.window.wl_surface().as_deref() == Some(surface),
+            })
+        });
+        if let Some(window) = given.map(|app| app.window.clone()) {
+            self.recency.touch(&window);
+        }
     }
 }
 

@@ -39,6 +39,9 @@ pub struct Desktop {
     pub displays: Displays,
     /// The layouts other than the plain one, on every display and workspace.
     pub layouts: Vec<des_common::ipc::LayoutInfo>,
+    /// The overview or window switcher the compositor has open, for the shell to
+    /// draw the names and the selection around its pictures.
+    pub overview: Option<des_common::ipc::OverviewLayout>,
     heard: bool,
     /// Confirmation of the most recent security intent, consumed by the UI.
     pub security_confirmed: Option<bool>,
@@ -76,6 +79,7 @@ impl Desktop {
             locked: false,
             displays: Displays::default(),
             layouts: Vec::new(),
+            overview: None,
             heard: false,
             security_confirmed: None,
             security_generation: 0,
@@ -88,7 +92,7 @@ impl Desktop {
             let Ok(message) = self.rx.try_recv() else { break };
             let event = match message {
                 Message::Ready => { self.heard = true; continue; }
-                Message::Disconnected => { self.heard = false; continue; }
+                Message::Disconnected => { self.heard = false; self.overview = None; continue; }
                 Message::SecurityConfirmed(generation, locked) => {
                     if generation == self.security_generation { self.security_confirmed = Some(locked); }
                     continue;
@@ -112,6 +116,7 @@ impl Desktop {
                 Event::Layouts(layouts) => self.layouts = layouts,
                 Event::LockRequested => self.lock_requested = true,
                 Event::Locked(locked) => self.locked = locked,
+                Event::Overview(layout) => self.overview = layout,
             }
         }
     }

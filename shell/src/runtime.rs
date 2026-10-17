@@ -564,6 +564,10 @@ impl eframe::App for App {
             self.follow(chosen);
         }
 
+        // The names and the selection around the compositor's pictures of the windows.
+        if let Some(layout) = self.desktop.as_ref().and_then(|desktop| desktop.overview.as_ref()) {
+            overview::show(ctx, &theme, layout, state.as_ref());
+        }
         self.secondary_views(ctx,state.as_ref(),false);
         // The file panel's preview, over the workspace, with the terminal brought into
         // view beneath it.
@@ -609,7 +613,7 @@ impl App {
                 }
                 _ if locked => Answer::Error("locked".into()),
                 Request::Dock | Request::Screenshot(_) | Request::ScreenshotFile(_) | Request::PickColor if self.capture.marking() => Answer::Error("a screenshot is being marked".into()),
-                Request::Workspace(_) | Request::Panel(_) | Request::Screenshot(_) | Request::ScreenshotFile(_) | Request::PickColor if !compositor => Answer::Error("no compositor".into()),
+                Request::Workspace(_) | Request::Panel(_) | Request::Screenshot(_) | Request::ScreenshotFile(_) | Request::PickColor | Request::Overview if !compositor => Answer::Error("no compositor".into()),
                 // These two are answered once the user has chosen, so the reply is held.
                 Request::ScreenshotFile(_) if !self.pending_shot_replies.is_empty() => Answer::Error("busy".into()),
                 Request::PickColor if self.pending_color.is_some() => Answer::Error("busy".into()),
@@ -639,6 +643,7 @@ impl App {
                     Answer::Ok
                 }
                 Request::Scratchpad => { self.scratchpad.toggle(); Answer::Ok }
+                Request::Overview => { self.send(Command::Overview); Answer::Ok }
                 Request::Music(word) => { self.music.command(word.word()); Answer::Ok }
                 Request::Panel(panel) => { self.send(Command::TogglePanel(panel)); Answer::Ok }
                 Request::Screenshot(mode) => { self.send(Command::Shot(mode)); Answer::Ok }

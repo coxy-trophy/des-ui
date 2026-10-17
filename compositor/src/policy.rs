@@ -116,7 +116,7 @@ fn layout_info(workspace: usize, screen: usize, mode: &ScreenMode, split_anyway:
 }
 
 fn command_allowed(locked: bool, picking:bool, command: &Command) -> bool {
-    (!locked || matches!(command, Command::Lock | Command::Unlock | Command::ReloadInput)) && (!picking || !matches!(command,Command::Dock(Some(_))|Command::DockOn(_,Some(_))|Command::Overlay(Some(_))|Command::DragFiles(_)))
+    (!locked || matches!(command, Command::Lock | Command::Unlock | Command::ReloadInput)) && (!picking || !matches!(command,Command::Dock(Some(_))|Command::DockOn(_,Some(_))|Command::Overlay(Some(_))|Command::DragFiles(_)|Command::Overview))
 }
 
 #[cfg(test)]
@@ -154,6 +154,12 @@ mod lock_command_tests {
         assert!(!command_allowed(true, false, &Command::Ratio(0.3)));
     }
 
+    #[test]
+    fn the_overview_never_opens_behind_the_lock_or_over_a_screenshot() {
+        assert!(command_allowed(false, false, &Command::Overview));
+        assert!(!command_allowed(true, false, &Command::Overview));
+        assert!(!command_allowed(false, true, &Command::Overview));
+    }
     #[test]
     fn already_locked_requests_can_receive_their_confirmation() {
         assert!(command_allowed(true, false, &Command::Lock));
@@ -587,6 +593,7 @@ impl DesComp {
         let app = self.apps.remove(index);
         self.space.unmap_elem(&app.window);
         self.motions.forget(&app.window);
+        self.recency.forget(&app.window);
         // Whatever opened on top of this one is now on top of what this one was on.
         for other in self.apps.iter_mut().filter(|other| other.over.as_ref() == Some(&app.window)) {
             other.over = app.over.clone();
@@ -1191,6 +1198,7 @@ impl DesComp {
             if locked {
                 self.release_pointer_constraint();
                 self.cancel_file_drag();
+                self.close_overview_now();
                 self.dock_keyboard = false;
                 self.dock = None;
                 self.docks.clear();
@@ -1354,6 +1362,7 @@ impl DesComp {
                 Command::Pin(index) => self.pin(index),
                 Command::Unpin => self.unpin(),
                 Command::DragFiles(uris) => self.start_file_drag(uris),
+                Command::Overview => self.toggle_overview(),
                 Command::Overlay(area) => {
                     self.overlay = area.map(|(x, y, w, h)| Rectangle::new((x, y).into(), (w, h).into()));
                     // The keyboard goes to the shell while the overlay shows, and back after.
@@ -1430,7 +1439,7 @@ fn to_rectangle(rect: des_common::Rect, origin: Point<i32, Logical>) -> Rectangl
 }
 
 /// The protocol identity supplied by the application itself.
-fn window_app_id(window: &Window) -> String {
+pub(crate) fn window_app_id(window: &Window) -> String {
     if let Some(x11) = window.x11_surface() { return x11.class(); }
     let Some(toplevel) = window.toplevel() else { return String::new(); };
     with_states(toplevel.wl_surface(), |states| {
@@ -1439,7 +1448,7 @@ fn window_app_id(window: &Window) -> String {
 }
 
 /// The title a window gave itself, falling back to its application id.
-fn window_title(window: &Window) -> String {
+pub(crate) fn window_title(window: &Window) -> String {
     if let Some(x11) = window.x11_surface() {
         let title = x11.title();
         return if title.is_empty() { x11.class() } else { title };

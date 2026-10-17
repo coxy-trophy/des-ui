@@ -157,6 +157,7 @@ window.
 | <kbd>Q</kbd> | Close the current application |
 | <kbd>O</kbd> | Move the current application to the next display |
 | <kbd>P</kbd> | Keep the current application in a corner above everything, or put it back |
+| <kbd>W</kbd>, or <kbd>Super</kbd> alone | Open the overview of every workspace, or close it |
 | <kbd>M</kbd> | Open the music player |
 | <kbd>N</kbd> | Open the notifications |
 | <kbd>Esc</kbd> | Open the power menu |
@@ -164,6 +165,19 @@ window.
 
 Without Super: <kbd>Print</kbd> takes a screenshot or starts a recording, and
 <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Backspace</kbd> ends the session.
+
+**The overview** shows the four workspaces of the display under the pointer side by
+side (two by two on a narrow or turned display), each with live pictures of its
+windows. Click a picture to go to it, click a workspace's empty ground to go there,
+or drag a picture onto another workspace to send it there. Type to narrow the
+pictures down by title or application; the arrows move the selection, Enter opens
+it, Escape closes. `des-ui-ctl overview` opens it from a script.
+
+**Alt+Tab** goes through the windows on the display in use, last used first, in a
+strip over the desktop; Alt+Shift+Tab goes back, and letting go of Alt brings the
+chosen one forward. **Alt+`** does the same among the windows of the application in
+use. On a touchpad, three or four fingers swiped left or right change workspace, up
+open the overview and down close it; other gestures go to the application.
 
 The bar above the workspace lists the terminal tabs and every open application;
 click one to switch to it. The application in use shows an arrow, to send it to

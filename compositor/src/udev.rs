@@ -835,6 +835,13 @@ impl DesComp {
                 };
                 elements.extend(cursor_elements(renderer, cursor, &status, position, scale));
             }
+            // The overview, or the switcher's strip, above all but the pointer. The
+            // overview is everything on its display; the switcher sits over the desktop.
+            let overview = self.overview.as_ref().filter(|overview| overview.layout.display == geometry);
+            if let Some(overview) = overview {
+                elements.extend(crate::overview::elements::<OutputElements>(renderer, overview, &self.space, self.shell.as_ref(), &monitor.output, now));
+            }
+            if !overview.is_some_and(|overview| overview.kind == des_common::ipc::OverviewKind::Workspaces) {
             elements.extend(
                 crate::toast::elements(renderer, self.shell.as_ref(), toast_area, primary, &self.toast_id, geometry.loc, scale)
                     .into_iter()
@@ -853,6 +860,7 @@ impl DesComp {
             elements.extend(crate::handlers::layer_shell::layer_elements::<OutputElements>(renderer, &self.space, &monitor.output, true, layers));
             let under = crate::handlers::layer_shell::layer_elements::<OutputElements>(renderer, &self.space, &monitor.output, false, layers);
             elements.extend(crate::motion::window_elements::<OutputElements>(renderer, &self.space, &monitor.output, &self.motions, &beneath, under, now));
+            }
 
             // Glow, scanlines and the night light: the frame drawn off screen, then shown
             // through one shader. With none of them on, the scene is drawn as it is.

@@ -164,6 +164,17 @@ pub fn init_winit(
                     if let Some(splash) = state.splash.as_mut() {
                         toasts.extend(splash.elements(renderer, size.to_f64().to_logical(scale).to_i32_round(), scale));
                     }
+                    // The overview, or the switcher's strip, as on the hardware; in a
+                    // window split in two for testing, on the half it opened on.
+                    let now = std::time::Instant::now();
+                    let overview = state.overview.as_ref();
+                    if let Some(overview) = overview {
+                        toasts.extend(crate::overview::elements::<crate::splash::TopElements>(renderer, overview, &state.space, state.shell.as_ref(), &output, now));
+                    }
+                    let covered = overview.is_some_and(|overview| {
+                        overview.kind == des_common::ipc::OverviewKind::Workspaces && state.space.output_geometry(&output).is_some_and(|geometry| geometry.contains_rect(overview.layout.display))
+                    });
+                    if !covered {
                     toasts.extend(
                         crate::toast::elements(renderer, state.shell.as_ref(), toast_area, primary, &state.toast_id, (0, 0).into(), scale)
                             .into_iter()
@@ -191,8 +202,9 @@ pub fn init_winit(
                         &state.motions,
                         &beneath,
                         under,
-                        std::time::Instant::now(),
+                        now,
                     ));
+                    }
                     // Glow, scanlines and the night light, as on the hardware. A window
                     // always presents a frame, so one is drawn even when nothing changed.
                     state.phosphor.begin_frame();
