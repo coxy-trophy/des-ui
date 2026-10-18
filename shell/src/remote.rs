@@ -13,6 +13,7 @@ use crate::term::TermTab;
 use eframe::egui;
 use std::collections::VecDeque;
 use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -89,11 +90,6 @@ impl Target {
     }
 }
 
-/// Options of `ssh` that take the next word as their value.
-const WITH_VALUE: &[&str] = &[
-    "-p", "-l", "-i", "-o", "-J", "-F", "-L", "-R", "-D", "-W", "-b", "-c", "-e", "-m", "-E", "-S", "-Q", "-B", "-I", "-O",
-];
-
 /// Reads `ssh [options] [user@]host [command]`. `None` for anything that is not ssh,
 /// and for tunnels (`-N`, `-W`), which reach no shell worth following.
 pub fn parse_ssh(argv: &[String]) -> Option<Target> {
@@ -112,19 +108,21 @@ pub fn parse_ssh(argv: &[String]) -> Option<Target> {
             break;
         }
         if let Some(flags) = word.strip_prefix('-').filter(|rest| !rest.is_empty()) {
-            // `-N` and `-W` make a tunnel; `-W` also takes a value, so it is caught here.
-            if flags.contains('N') || flags.starts_with('W') {
-                return None;
-            }
-            let option = format!("-{}", flags.chars().next()?);
-            if WITH_VALUE.contains(&option.as_str()) {
-                // The value is the rest of the word, or the next one: `-p2222` or `-p 2222`.
-                let value = if flags.len() > 1 { flags[1..].to_string() } else { words.next()?.clone() };
-                match option.as_str() {
-                    "-p" => port = value.parse().ok(),
-                    "-l" => user = Some(value),
-                    _ => {}
+            // Only simple display/session flags and explicit user/port are reproduced.
+            // Refuse configuration, identity, proxy and unknown options: dropping them
+            // could follow another machine, while copying them could run local code.
+            let option = flags.chars().next()?;
+            match option {
+                'p' | 'l' => {
+                    let value = if flags.len() > 1 { flags[1..].to_string() } else { words.next()?.clone() };
+                    if option == 'p' {
+                        port = Some(value.parse::<u16>().ok().filter(|port| *port != 0)?);
+                    } else {
+                        user = Some(value);
+                    }
                 }
+                _ if flags.chars().all(|flag| "vqtT".contains(flag)) => {}
+                _ => return None,
             }
             continue;
         }
@@ -140,10 +138,11 @@ pub fn parse_ssh(argv: &[String]) -> Option<Target> {
     let (host, url_port) = match rest.strip_prefix('[') {
         Some(bracketed) => {
             let (host, after) = bracketed.split_once(']')?;
-            (host.to_string(), after.strip_prefix(':').and_then(|p| p.parse().ok()))
+            let port = if after.is_empty() { None } else { Some(after.strip_prefix(':')?.parse::<u16>().ok().filter(|p| *p != 0)?) };
+            (host.to_string(), port)
         }
         None if destination.starts_with("ssh://") || rest.matches(':').count() == 1 => match rest.split_once(':') {
-            Some((host, p)) => (host.to_string(), p.parse().ok()),
+            Some((host, p)) => (host.to_string(), Some(p.parse::<u16>().ok().filter(|p| *p != 0)?)),
             None => (rest.to_string(), None),
         },
         None => (rest.to_string(), None),
@@ -167,6 +166,8 @@ pub enum State {
     Unreachable,
     /// It answered, but not with what Linux prints.
     NotLinux,
+    /// SSH arguments cannot be reproduced safely.
+    Unsupported,
 }
 
 impl State {
@@ -178,6 +179,7 @@ impl State {
             State::NoKey => "NEEDS A KEY",
             State::Unreachable => "UNREACHABLE",
             State::NotLinux => "NOT LINUX",
+            State::Unsupported => "SSH OPTIONS UNSUPPORTED",
         }
     }
 }
@@ -461,48 +463,78 @@ enum Outcome {
     TimedOut,
 }
 
-/// Runs a program with a deadline, keeping what it prints on both channels up to a
-/// bound; on overrun it is killed.
+/// Reads both pipes without blocking, sharing the child's deadline. A separate
+/// process group lets timeout cleanup reach children holding inherited pipes.
 fn run_capturing(program: &str, args: &[String], timeout: Duration) -> Outcome {
+    let deadline = Instant::now() + timeout;
     let Ok(mut child) = Command::new(program)
         .args(args)
+        .process_group(0)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
     else {
-        return Outcome::Exited { code: 127, stdout: String::new(), stderr: "no ssh".into() };
+        return Outcome::Exited { code: 127, stdout: String::new(), stderr: "could not start program".into() };
     };
-    let stdout = read_bounded(child.stdout.take());
-    let stderr = read_bounded(child.stderr.take());
-    let deadline = Instant::now() + timeout;
-    let code = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status.code().unwrap_or(-1),
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(25)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Outcome::TimedOut;
+    // process_group(0) creates a new group whose positive ID is this child PID.
+    let group = rustix::process::Pid::from_raw(child.id() as i32).unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+    let nonblocking = || -> rustix::io::Result<()> {
+        for fd in [&stdout as &dyn std::os::fd::AsFd, &stderr as &dyn std::os::fd::AsFd] {
+            let flags = rustix::fs::fcntl_getfl(fd)?;
+            rustix::fs::fcntl_setfl(fd, flags | rustix::fs::OFlags::NONBLOCK)?;
+        }
+        Ok(())
+    };
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let (mut out_done, mut err_done, mut code) = (false, false, None);
+    let ready = nonblocking().is_ok();
+    loop {
+        if !ready || Instant::now() >= deadline {
+            let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+            let _ = child.kill();
+            let _ = child.wait();
+            return Outcome::TimedOut;
+        }
+        out_done |= drain_pipe(&mut stdout, &mut out);
+        err_done |= drain_pipe(&mut stderr, &mut err);
+        if code.is_none() {
+            match child.try_wait() {
+                Ok(Some(status)) => code = Some(status.code().unwrap_or(-1)),
+                Ok(None) => {}
+                Err(_) => {
+                    let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+                    let _ = child.wait();
+                    return Outcome::TimedOut;
+                }
             }
         }
-    };
-    Outcome::Exited {
-        code,
-        stdout: stdout.join().unwrap_or_default(),
-        stderr: stderr.join().unwrap_or_default(),
+        if let Some(code) = code.filter(|_| out_done && err_done) {
+            // Do not leave detached command descendants after a completed sample.
+            let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+            return Outcome::Exited { code, stdout: String::from_utf8_lossy(&out).into_owned(), stderr: String::from_utf8_lossy(&err).into_owned() };
+        }
+        std::thread::sleep(Duration::from_millis(5));
     }
 }
 
-/// Reads a pipe to its end on a thread of its own, keeping at most [`MAX_OUTPUT`].
-fn read_bounded<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<String> {
-    std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        if let Some(pipe) = pipe {
-            let _ = pipe.take(MAX_OUTPUT as u64).read_to_end(&mut bytes);
+/// Drain a limited batch per poll so even continuously writable pipes cannot
+/// starve the deadline or the other stream. Excess output is discarded.
+fn drain_pipe(pipe: &mut impl Read, kept: &mut Vec<u8>) -> bool {
+    let mut buffer = [0; 8192];
+    for _ in 0..8 {
+        match pipe.read(&mut buffer) {
+            Ok(0) => return true,
+            Ok(n) => kept.extend_from_slice(&buffer[..n.min(MAX_OUTPUT.saturating_sub(kept.len()))]),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return false,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return true,
         }
-        String::from_utf8_lossy(&bytes).into_owned()
-    })
+    }
+    false
 }
 
 /// What an outcome means, and the sample when there is one.
@@ -542,6 +574,7 @@ pub struct Remote {
     shared: Option<Arc<Mutex<Shared>>>,
     stop: Option<mpsc::Sender<()>>,
     checked: Option<Instant>,
+    unsupported: bool,
 }
 
 impl Default for Remote {
@@ -552,7 +585,7 @@ impl Default for Remote {
 
 impl Remote {
     pub fn new() -> Remote {
-        Remote { target: None, shared: None, stop: None, checked: None }
+        Remote { target: None, shared: None, stop: None, checked: None, unsupported: false }
     }
 
     /// Looks at the terminal in use, at most twice a second, and follows wherever its
@@ -562,12 +595,21 @@ impl Remote {
             return;
         }
         self.checked = Some(Instant::now());
-        let target = tab.and_then(TermTab::foreground_command_line).and_then(|argv| parse_ssh(&argv));
+        let argv = tab.and_then(TermTab::foreground_command_line);
+        self.follow_command(argv.as_deref(), ctx);
+    }
+
+    fn follow_command(&mut self, argv: Option<&[String]>, ctx: &egui::Context) {
+        let target = argv.and_then(parse_ssh);
+        let unsupported = target.is_none() && argv.and_then(|args| args.first())
+            .is_some_and(|program| Path::new(program).file_name().is_some_and(|name| name == "ssh"));
         self.follow(target, ctx);
+        self.unsupported = unsupported;
     }
 
     /// Follows this host, or none. Nothing happens when it is the one already followed.
     pub fn follow(&mut self, target: Option<Target>, ctx: &egui::Context) {
+        self.unsupported = false;
         if target == self.target {
             return;
         }
@@ -624,6 +666,7 @@ impl Remote {
 
     /// How following stands; `None` when nothing is followed.
     pub fn state(&self) -> Option<State> {
+        if self.unsupported { return Some(State::Unsupported); }
         self.shared.as_ref().and_then(|shared| shared.lock().ok().map(|shared| shared.state))
     }
 
@@ -646,7 +689,7 @@ mod tests {
 
     #[test]
     fn reads_where_ssh_went() {
-        let target = parse_ssh(&argv("ssh -v -p 2222 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no deploy@build.example.net")).unwrap();
+        let target = parse_ssh(&argv("ssh -v -p 2222 deploy@build.example.net")).unwrap();
         assert_eq!(target, Target { user: Some("deploy".into()), host: "build.example.net".into(), port: Some(2222) });
         assert_eq!(target.name(), "deploy@build.example.net");
         assert_eq!(parse_ssh(&argv("/usr/bin/ssh -l root -p2222 box uptime")).unwrap(), Target { user: Some("root".into()), host: "box".into(), port: Some(2222) });
@@ -663,6 +706,32 @@ mod tests {
         assert_eq!(parse_ssh(&argv("ssh")), None);
         assert_eq!(parse_ssh(&argv("ssh -p")), None);
         assert_eq!(parse_ssh(&argv("ssh -- -evil")), None);
+    }
+
+    #[test]
+    fn unsupported_transport_options_are_not_followed() {
+        for command in ["ssh -J jump host", "ssh -i key host", "ssh -F other-config host", "ssh -o HostName=elsewhere host", "ssh -o ProxyCommand=evil host", "ssh -vp2222 host"] {
+            assert_eq!(parse_ssh(&argv(command)), None, "{command}");
+        }
+    }
+
+    #[test]
+    fn unsupported_ssh_has_an_explicit_panel_state() {
+        let mut remote = Remote::new();
+        let ctx = egui::Context::default();
+        remote.follow_command(Some(&argv("ssh -J jump host")), &ctx);
+        assert_eq!(remote.state(), Some(State::Unsupported));
+        assert!(remote.shared.is_none());
+        remote.follow_command(None, &ctx);
+        assert_eq!(remote.state(), None);
+    }
+
+    #[test]
+    fn deadline_covers_inherited_output_pipes() {
+        let start = Instant::now();
+        let outcome = run_capturing("sh", &argv("-c").into_iter().chain(["sleep 1 & exit 0".into()]).collect::<Vec<_>>(), Duration::from_millis(80));
+        assert_eq!(outcome, Outcome::TimedOut);
+        assert!(start.elapsed() < Duration::from_millis(600));
     }
 
     const FIRST: &str = "=hostname\nbuild\n=os\n\"Debian GNU/Linux 13 (trixie)\"\n6.12.0-amd64\n=uptime\n86400.50 170000.00\n=stat\ncpu  1000 0 500 8000 500 0 0 0 0 0\ncpu0 500 0 250 4000 250 0 0 0 0 0\ncpu1 500 0 250 4000 250 0 0 0 0 0\n=meminfo\nMemTotal:        8000000 kB\nMemFree:         1000000 kB\nMemAvailable:    4000000 kB\nSwapTotal:       2000000 kB\nSwapFree:        1500000 kB\n=loadavg\n0.50 0.40 0.30 1/200 1234\n=netdev\nInter-|   Receive\n face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n    lo: 100 1 0 0 0 0 0 0 100 1 0 0 0 0 0 0\n  eth0: 1000000 10 0 0 0 0 0 0 500000 5 0 0 0 0 0 0\n=ip\n10.0.0.7 fd00::7\n=ps\n  123 50.0 102400 cargo\n  456  2.5  8192 sshd: me\n=df\n/dev/sda1 100000 60000 40000 60% /\ntmpfs 1000 10 990 1% /run\n/dev/sdb1 100 90 10 90% /data\n=conn\nESTAB 0 0 10.0.0.7:22 203.0.113.5:51234\nESTAB 0 0 [fd00::7]:443 [2001:db8::9]:1234\nESTAB 0 0 10.0.0.7:5432 10.0.0.9:4000\n=end\n";
@@ -734,6 +803,31 @@ mod tests {
         let (state, sample) = classify(&fine);
         assert_eq!(state, State::Live);
         assert_eq!(sample.unwrap().hostname, "build");
+    }
+
+    #[test]
+    fn verbose_output_is_capped_without_blocking_the_program() {
+        let args = vec!["-c".into(), "head -c 400000 /dev/zero; head -c 400000 /dev/zero >&2".into()];
+        let Outcome::Exited { code, stdout, stderr } = run_capturing("sh", &args, Duration::from_secs(2)) else { panic!("verbose child timed out") };
+        assert_eq!(code, 0);
+        assert_eq!(stdout.len(), MAX_OUTPUT);
+        assert_eq!(stderr.len(), MAX_OUTPUT);
+    }
+
+    #[test]
+    fn timeout_kills_descendants_holding_the_pipes() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("child-pid");
+        let args = vec!["-c".into(), "sleep 20 & echo $! > \"$1\"; exit 0".into(), "test".into(), pidfile.to_string_lossy().into_owned()];
+        assert_eq!(run_capturing("sh", &args, Duration::from_millis(150)), Outcome::TimedOut);
+        let pid: u32 = std::fs::read_to_string(pidfile).unwrap().trim().parse().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let status = std::fs::read_to_string(format!("/proc/{pid}/status"));
+            if status.as_ref().map_or(true, |text| text.lines().any(|line| line.starts_with("State:") && line.contains('Z'))) { break; }
+            assert!(Instant::now() < deadline, "descendant {pid} survived timeout");
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]

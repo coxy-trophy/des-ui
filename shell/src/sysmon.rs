@@ -58,6 +58,7 @@ pub struct SysMon {
     pub battery_health: Option<u8>,
     pub failed_units: Vec<String>,
     alarms: Alarms,
+    processor_temperature_warnings: bool,
     alerts: Vec<Alert>,
     pub mem_used: u64,
     pub mem_total: u64,
@@ -135,6 +136,7 @@ impl SysMon {
             battery_health: None,
             failed_units: Vec::new(),
             alarms: Alarms::default(),
+            processor_temperature_warnings: true,
             alerts: Vec::new(),
             mem_used: 0,
             mem_total: 0,
@@ -158,6 +160,15 @@ impl SysMon {
         }
     }
 
+    /// Suppress only CPU heat alerts, including any not yet posted to the center.
+    pub fn set_processor_temperature_warnings(&mut self, enabled: bool) {
+        if self.processor_temperature_warnings != enabled {
+            self.processor_temperature_warnings = enabled;
+            self.alarms.temperature = Latch::default();
+        }
+        if !enabled { self.alerts.retain(|alert| alert.kind != AlertKind::ProcessorTemperature); }
+    }
+
     /// Applies the latest complete sample without waiting for the worker.
     pub fn tick(&mut self) {
         let snapshot = self.latest.try_lock().ok().and_then(|mut latest| latest.take());
@@ -165,7 +176,7 @@ impl SysMon {
         // Alarms are about this machine, whatever the panels are showing.
         let mem_frac = snapshot.mem_used as f32 / snapshot.mem_total.max(1) as f32;
         let cpu_temperature = snapshot.temps.iter().find(|t| t.label == "CPU").or_else(|| snapshot.temps.first()).map(|t| t.degrees);
-        let raised = self.alarms.evaluate(cpu_temperature, mem_frac, &snapshot.filesystems, &snapshot.failed_units);
+        let raised = self.alarms.evaluate(cpu_temperature.filter(|_| self.processor_temperature_warnings), mem_frac, &snapshot.filesystems, &snapshot.failed_units);
         self.alerts.extend(raised);
         while self.alerts.len() > PENDING_ALERTS {
             self.alerts.remove(0);
@@ -276,6 +287,7 @@ impl SysMon {
     }
 
     /// The processor's temperature, or failing a sensor of its own the hottest there is.
+    #[cfg(test)]
     pub fn cpu_temperature(&self) -> Option<f32> {
         self.temps
             .iter()
@@ -303,8 +315,12 @@ impl SysMon {
 }
 
 /// Something the user should hear about, as the notification centre shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AlertKind { ProcessorTemperature, Memory, Disk, Service }
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Alert {
+    pub kind: AlertKind,
     pub title: String,
     pub body: String,
     pub urgent: bool,
@@ -353,6 +369,7 @@ impl Alarms {
         if let Some(degrees) = cpu_temperature {
             if self.temperature.update(degrees, Self::HOT, Self::COOLED) {
                 raised.push(Alert {
+                    kind: AlertKind::ProcessorTemperature,
                     title: "Processor running hot".into(),
                     body: format!("{degrees:.0} °C. Check what is working it, and that the air can get through."),
                     urgent: true,
@@ -361,7 +378,8 @@ impl Alarms {
         }
         if self.memory.update(memory, Self::MEMORY_FULL, Self::MEMORY_CLEARED) {
             raised.push(Alert {
-                title: "Memory nearly full".into(),
+                kind: AlertKind::Memory,
+                    title: "Memory nearly full".into(),
                 body: format!("{:.0}% in use. The machine may start to swap and slow down.", memory * 100.0),
                 urgent: true,
             });
@@ -370,6 +388,7 @@ impl Alarms {
             let latch = self.disks.entry(fs.mount.clone()).or_default();
             if latch.update(fs.used, Self::DISK_FULL, Self::DISK_CLEARED) {
                 raised.push(Alert {
+                    kind: AlertKind::Disk,
                     title: "Disk nearly full".into(),
                     body: format!("{} is {:.0}% full.", fs.mount, fs.used * 100.0),
                     urgent: false,
@@ -380,6 +399,7 @@ impl Alarms {
         for unit in failed {
             if self.failed.insert(unit.clone()) {
                 raised.push(Alert {
+                    kind: AlertKind::Service,
                     title: "A service failed".into(),
                     body: format!("{unit} has failed. `systemctl status {unit}` says why."),
                     urgent: false,
@@ -782,6 +802,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn processor_warning_opt_out_keeps_other_alarms_and_readings() {
+        let mut mon = SysMon::new();
+        mon.set_processor_temperature_warnings(false);
+        let mut snapshot = Snapshot::default();
+        snapshot.temps = vec![Temperature { label: "CPU".into(), degrees: 95.0 }];
+        snapshot.mem_total = 100;
+        snapshot.mem_used = 96;
+        snapshot.filesystems = vec![Filesystem { mount: "/".into(), used: 0.96 }];
+        snapshot.failed_units = vec!["example.service".into()];
+        *mon.latest.lock().unwrap() = Some(snapshot.clone());
+        mon.tick();
+        let alerts = mon.take_alerts();
+        assert_eq!(alerts.len(), 3);
+        assert!(alerts.iter().all(|alert| alert.kind != AlertKind::ProcessorTemperature));
+        assert_eq!(mon.cpu_temperature(), Some(95.0));
+        mon.set_processor_temperature_warnings(true);
+        *mon.latest.lock().unwrap() = Some(snapshot.clone());
+        mon.tick();
+        assert_eq!(mon.take_alerts().iter().filter(|alert| alert.kind == AlertKind::ProcessorTemperature).count(), 1);
+        mon.set_processor_temperature_warnings(false);
+        *mon.latest.lock().unwrap() = Some(snapshot);
+        mon.tick();
+        assert!(mon.take_alerts().is_empty());
+    }
+
+    #[test]
     fn works_out_the_time_left() {
         // Half of a 4 Ah battery, drawn at 1 A: two hours to empty.
         assert_eq!(minutes_left(2.0, 4.0, 1.0, false), Some(120));
@@ -960,7 +1006,7 @@ mod tests {
         let mut mon = SysMon::new();
         assert!(mon.take_alerts().is_empty());
         for i in 0..(PENDING_ALERTS + 4) {
-            mon.alerts.push(Alert { title: format!("{i}"), body: String::new(), urgent: false });
+            mon.alerts.push(Alert { kind: AlertKind::Service, title: format!("{i}"), body: String::new(), urgent: false });
         }
         let mut snapshot = Snapshot::default();
         snapshot.mem_total = 100;

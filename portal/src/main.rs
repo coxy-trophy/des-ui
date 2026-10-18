@@ -10,7 +10,7 @@
 mod protocol;
 
 use async_io::{Async, Timer};
-use futures_lite::{AsyncBufReadExt, AsyncWriteExt, future, io::BufReader};
+use futures_lite::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, future, io::BufReader};
 use protocol::{Answer, Outcome};
 use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
@@ -25,6 +25,7 @@ const NAME: &str = "org.freedesktop.impl.portal.desktop.des-ui";
 const PATH: &str = "/org/freedesktop/portal/desktop";
 /// How long the shell may take to accept a connection and start answering.
 const CONNECT: Duration = Duration::from_secs(5);
+const MAX_ANSWER: usize = 16 * 1024;
 
 /// The request object the portal may close while the user is still choosing.
 struct Request {
@@ -77,7 +78,8 @@ impl Screenshot {
 async fn serve_request(server: &ObjectServer, handle: OwnedObjectPath, line: &str, outcome: fn(Answer) -> Outcome) -> Outcome {
     let closed = Arc::new(AtomicBool::new(false));
     let exported = server.at(&handle, Request { closed: closed.clone() }).await.unwrap_or(false);
-    let answer = match ask_shell(line).await {
+    if !exported { return (protocol::FAILED, HashMap::new()); }
+    let answer = match future::or(ask_shell(line), wait_closed(&closed)).await {
         Ok(answer) => answer,
         Err(why) => Answer::Error(why),
     };
@@ -88,6 +90,13 @@ async fn serve_request(server: &ObjectServer, handle: OwnedObjectPath, line: &st
         return (protocol::CANCELLED, HashMap::new());
     }
     outcome(answer)
+}
+
+async fn wait_closed(closed: &AtomicBool) -> Result<Answer, String> {
+    while !closed.load(Ordering::SeqCst) {
+        Timer::after(Duration::from_millis(10)).await;
+    }
+    Ok(Answer::Error("cancelled".into()))
 }
 
 /// One line to the shell's control socket, one line back, within the time a person
@@ -105,18 +114,24 @@ async fn ask_shell(line: &str) -> Result<Answer, String> {
     let exchange = async {
         let mut writer = &stream;
         writer.write_all(format!("{line}\n").as_bytes()).await.map_err(|error| format!("could not ask the shell: {error}"))?;
-        let mut reply = String::new();
-        BufReader::new(&stream).read_line(&mut reply).await.map_err(|error| format!("the shell gave no answer: {error}"))?;
-        if reply.is_empty() {
-            return Err("the shell closed the connection".to_string());
-        }
-        Ok(protocol::parse_answer(&reply))
+        read_answer(&stream).await
     };
     future::or(exchange, async {
         Timer::after(protocol::INTERACTION).await;
         Err("the shell did not answer in time".to_string())
     })
     .await
+}
+
+/// Cap bytes before allocation; an unterminated answer is not a complete reply.
+async fn read_answer(reader: impl futures_lite::AsyncRead + Unpin) -> Result<Answer, String> {
+    let mut bytes = Vec::new();
+    BufReader::new(reader.take((MAX_ANSWER + 1) as u64)).read_until(b'\n', &mut bytes).await
+        .map_err(|error| format!("the shell gave no answer: {error}"))?;
+    if bytes.len() > MAX_ANSWER { return Err("the shell's answer was too long".into()); }
+    if bytes.last() != Some(&b'\n') { return Err("the shell closed before a complete answer".into()); }
+    let line = std::str::from_utf8(&bytes).map_err(|_| "the shell's answer was not UTF-8".to_string())?;
+    Ok(protocol::parse_answer(line))
 }
 
 fn main() {
@@ -138,6 +153,30 @@ async fn serve() -> zbus::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn close_interrupts_a_shell_that_never_answers() {
+        async_io::block_on(async {
+            let closed = Arc::new(AtomicBool::new(false));
+            let began = std::time::Instant::now();
+            let close = async {
+                Timer::after(Duration::from_millis(15)).await;
+                Request { closed: closed.clone() }.close();
+                future::pending::<Result<Answer, String>>().await
+            };
+            assert!(matches!(future::or(close, wait_closed(&closed)).await.unwrap(), Answer::Error(ref why) if why == "cancelled"));
+            assert!(began.elapsed() < Duration::from_secs(1));
+        });
+    }
+
+    #[test]
+    fn shell_answers_are_bounded_and_require_a_complete_line() {
+        async_io::block_on(async {
+            assert!(read_answer(futures_lite::io::Cursor::new(vec![b'x'; MAX_ANSWER + 1])).await.is_err());
+            assert!(read_answer(futures_lite::io::Cursor::new(b"ok".to_vec())).await.is_err());
+            assert!(matches!(read_answer(futures_lite::io::Cursor::new(b"error cancelled\n".to_vec())).await.unwrap(), Answer::Error(ref why) if why == "cancelled"));
+        });
+    }
 
     /// The interface declarations hold together: zbus can describe them.
     #[test]

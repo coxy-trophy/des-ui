@@ -111,6 +111,7 @@ impl Stage {
         }
     }
 
+    #[cfg(test)]
     pub fn done(&self) -> bool {
         *self == Stage::finished()
     }
@@ -196,11 +197,13 @@ impl PowerUp {
     }
 
     /// Run again from the start, as after the shell restarts.
+    #[cfg(test)]
     pub fn restart(&mut self) {
         self.began = None;
         self.finished = false;
     }
 
+    #[cfg(test)]
     pub fn done(&self) -> bool {
         self.finished
     }

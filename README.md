@@ -695,14 +695,21 @@ run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`
 - `./dev.sh` builds the working copy and runs it in a window inside the running
   session. Nothing installed is touched.
 - `./install.sh` can be run from inside the session. **Super+Shift+R** then restarts
-  the shell on the new build: its terminal tabs close, applications stay open. A new
+  the shell on the new build: managed terminal tabs reconnect, applications stay open. A new
   compositor takes effect at the next login.
 - If the shell crashes it is started again and applications stay open. Only quitting
   it (Ctrl+Shift+Q, or closing the last tab) ends the session.
 - `install.sh` keeps the build it replaces. If a new build cannot start at login, the
   session tries that one, then `cage`.
-- Anything that must survive a shell restart should not run in the shell's own
-  terminal tabs: use a terminal application such as `ptyxis`, or `tmux`.
+- Keeping terminals across shell restarts requires `tmux` 3.3 or newer and the
+  Session setting enabled for new terminals. The compositor owns a private foreground server in its watchdog process group;
+  it preserves running commands through a shell restart or crash, and cleans up
+  when the desktop exits. Logout and reboot do not preserve live processes.
+  Standalone shells and direct terminals close their processes when they exit.
+  **Terminals created before this feature cannot be converted. Save their work
+  before the first upgrade or restart.** Both the compositor and shell need the
+  updated build; a shell-only update on an older compositor cannot enable live
+  preservation. Settings → Session controls the default for new terminals.
 
 ## Layout
 
@@ -790,3 +797,11 @@ see `CREDITS.md` there. The dog is under Creative Commons Attribution-NoDerivati
 
 eDEX-UI's own theme files are GPL-3.0 and are not part of this repository. They
 work as themes here: copy them into `~/.config/des-ui/themes/`.
+
+### Processor temperature notifications
+
+In **Settings → Sound & Screen → Notifications**, turn off **Processor temperature warnings** to stop “Processor running hot” notices. The choice is saved as `processor_temperature_warnings = off` in the configuration. Temperature readings and memory, disk and service warnings remain enabled. Existing notification history is retained.
+
+### Startup recovery and input-method security
+
+The login session now uses a Python 3 startup watchdog that waits for initialized shell readiness. See [session/STARTUP.md](session/STARTUP.md) for recovery behavior and compatibility. Privileged external Wayland input-method integration is disabled until a trusted launch mechanism is available; ordinary text-input and the shell keyboard remain supported.

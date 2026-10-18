@@ -10,6 +10,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Before anything reads input: what the on-screen keys pressed last frame.
         self.osk.inject(ctx);
+        self.mon.set_processor_temperature_warnings(self.config.processor_temperature_warnings);
         self.mon.tick();
         // Volume and brightness changed from outside the shell's sliders get a meter.
         let quiet = self.settings.open || self.quick.open;
@@ -25,7 +26,9 @@ impl eframe::App for App {
             name: target.name(),
             live: view.is_some(),
             word: self.remote.state().map_or("", remote::State::word),
-        });
+        }).or_else(|| (self.remote.state() == Some(remote::State::Unsupported)).then(|| sysmon::Following {
+            name: "SSH".into(), live: false, word: remote::State::Unsupported.word(),
+        }));
         self.geo.set_remote_connections(view.as_ref().map(|view| view.connections.clone()));
         self.mon.set_remote(following, view.as_ref());
         // Threshold crossings the sampler noticed: heat, a full disk, memory, a failed unit.
@@ -113,6 +116,7 @@ impl eframe::App for App {
         let (active, side) = remap_panes(&alive, self.active, self.side);
         self.tabs.retain(|tab| !tab.exited);
         if self.tabs.is_empty() {
+            self.checkpoint_live_terminals();
             ctx.send_viewport_cmd(ViewportCommand::Close);
             return;
         }
@@ -221,6 +225,8 @@ impl eframe::App for App {
             self.powerup.publish(ctx, self.config.animate, true);
             // A password request waits; nothing is drawn over the lock.
             self.polkit.show(ctx, &theme, true);
+            self.checkpoint_live_terminals();
+            if self.desktop.as_ref().is_some_and(|desktop| desktop.connected()) { self.readiness.notify(); }
             return;
         }
         let stage = self.powerup.publish(ctx, self.config.animate, false);
@@ -385,6 +391,7 @@ impl eframe::App for App {
                     let changes = region(ui, mine, vec2(0.0, 0.0), Layout::top_down(Align::Min), |ui| {
                         let displays = self.desktop.as_ref().map(|desktop| &desktop.displays);
                         self.settings.set_music_status(self.music.connection_status());
+                        self.settings.set_live_terminal_counts(self.tabs.iter().filter(|tab| tab.persistent_id.is_some()).count(), self.tabs.len());
                         self.settings.set_desktop_connected(self.desktop.as_ref().is_some_and(|d|d.connected()));
                         self.settings.show(ui, mine, &theme, &self.config, open, &self.mon, &places, displays, &self.input)
                     });
@@ -511,7 +518,7 @@ impl eframe::App for App {
         let look = self.config.term_look();
         let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
         let scratch = self.scratchpad.show(ctx, workspace, screen, &theme, &look, self.config.animate,
-            (&self.shell, &home, self.config.scrollback), &events);
+            (&self.shell, &home, self.config.scrollback, self.config.keep_terminal_sessions && self.live_terminal_lease.is_some()), &events);
         // The quick settings, when open, take the lifted area: they are the one in use.
         let readings = quick::Readings {
             volume: self.mon.volume(),
@@ -577,14 +584,18 @@ impl eframe::App for App {
         }
         // Marking out a piece for a screenshot takes the whole display, above everything.
         if self.capture.marking() {
+            let request_owned = self.capture.request_marking();
             match self.capture.mark(ctx, theme.main) {
                 capture::Marked::Record => self.toggle_recording(),
                 capture::Marked::Colour(rgb) => {
-                    if let Some(reply) = self.pending_color.take() {
-                        reply.send(control::colour_answer(Some(rgb)));
+                    if request_owned {
+                        self.capture.cancel_request();
+                        if let Some(reply) = self.pending_color.take() {
+                            reply.send(control::colour_answer(Some(rgb)));
+                        }
                     }
                 }
-                capture::Marked::Cancelled => self.answer_held(None, true),
+                capture::Marked::Cancelled => { if request_owned { self.answer_held(None, true); } },
                 capture::Marked::Going => {}
             }
             covered = Some(screen);
@@ -625,6 +636,8 @@ impl eframe::App for App {
         // The globe turns continuously; without it, the clock sets the pace.
         let pace = if open.right && self.config.globe_rotation { 66 } else { 500 };
         ctx.request_repaint_after(Duration::from_millis(pace));
+        self.checkpoint_live_terminals();
+        if self.desktop.as_ref().is_some_and(|desktop| desktop.connected()) { self.readiness.notify(); }
     }
 }
 
@@ -633,8 +646,16 @@ impl App {
     /// `state` are allowed, so no script opens anything over the lock screen.
     fn answer_control(&mut self) {
         use control::{Answer, Request};
+        let cancelled_shot = self.pending_shot_replies.iter().any(control::Reply::is_cancelled);
+        let cancelled_color = self.pending_color.as_ref().is_some_and(control::Reply::is_cancelled);
+        if cancelled_shot || cancelled_color {
+            self.capture.cancel_request();
+            self.pending_shot_replies.retain(|reply| !reply.is_cancelled());
+            if cancelled_color { self.pending_color = None; }
+        }
         let requests = self.control.as_mut().map(|control| control.take()).unwrap_or_default();
         for (request, reply) in requests {
+            if reply.is_cancelled() { continue; }
             let locked = self.lock_confirmed || self.unlock_pending;
             let compositor = self.desktop.as_ref().is_some_and(Desktop::connected);
             let answer = match request {
@@ -650,18 +671,20 @@ impl App {
                 _ if locked => Answer::Error("locked".into()),
                 Request::Dock | Request::Screenshot(_) | Request::ScreenshotFile(_) | Request::PickColor if self.capture.marking() => Answer::Error("a screenshot is being marked".into()),
                 Request::Workspace(_) | Request::Panel(_) | Request::Screenshot(_) | Request::ScreenshotFile(_) | Request::PickColor | Request::Overview if !compositor => Answer::Error("no compositor".into()),
+                Request::Screenshot(_) | Request::ScreenshotFile(_) | Request::PickColor
+                    if !self.pending_shot_replies.is_empty() || self.pending_color.is_some() => Answer::Error("busy".into()),
                 // These two are answered once the user has chosen, so the reply is held.
-                Request::ScreenshotFile(_) if !self.pending_shot_replies.is_empty() => Answer::Error("busy".into()),
-                Request::PickColor if self.pending_color.is_some() => Answer::Error("busy".into()),
                 Request::ScreenshotFile(mode) => {
+                    let id = self.capture.begin_request(mode);
                     self.pending_shot_replies.push(reply);
-                    self.send(Command::Shot(mode));
+                    self.send(Command::ShotRequest { id, mode });
                     continue;
                 }
                 Request::PickColor => {
+                    let id = self.capture.begin_request(des_common::ipc::ShotMode::Region);
                     self.pending_color = Some(reply);
                     self.capture.pick_colour_next();
-                    self.send(Command::Shot(des_common::ipc::ShotMode::Region));
+                    self.send(Command::ShotRequest { id, mode: des_common::ipc::ShotMode::Region });
                     continue;
                 }
                 Request::Workspace(n) => { self.send(Command::Workspace(n)); Answer::Ok }
@@ -699,6 +722,7 @@ impl App {
             self.pending_shot_replies.remove(0).send(control::shot_answer(&result));
         }
         if called_off {
+            self.capture.cancel_request();
             for reply in self.pending_shot_replies.drain(..) {
                 reply.send(control::Answer::Error("cancelled".into()));
             }

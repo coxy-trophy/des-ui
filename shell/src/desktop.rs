@@ -114,7 +114,7 @@ impl Desktop {
                 Event::Notifications => self.notifications_requested = true,
                 Event::Quick => self.quick_requested = true,
                 Event::Power => self.power_requested = true,
-                Event::Shot { mode, width, height, window, path } => self.shots.push(crate::capture::Shot { mode, width, height, window, path }),
+                Event::Shot { request, mode, width, height, window, path } => self.shots.push(crate::capture::Shot { request, mode, width, height, window, path }),
                 Event::Recording(state) => self.recording_news.push(state),
                 Event::Displays(displays) => self.displays = displays,
                 Event::Layouts(layouts) => self.layouts = layouts,

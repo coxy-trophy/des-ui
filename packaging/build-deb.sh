@@ -68,6 +68,7 @@ install -Dm755 target/release/des-ui-ctl "$root/usr/bin/des-ui-ctl"
 install -Dm755 target/release/des-comp "$root/usr/bin/des-comp"
 install -Dm755 target/release/des-portal "$root/usr/bin/des-portal"
 install -Dm755 session/des-ui-session "$root/usr/bin/des-ui-session"
+install -Dm755 session/des-ui-startup "$root/usr/bin/des-ui-startup"
 install -Dm644 session/des-ui.desktop "$root/usr/share/wayland-sessions/des-ui.desktop"
 sed -i 's|/usr/local/bin/|/usr/bin/|' "$root/usr/share/wayland-sessions/des-ui.desktop"
 install -Dm644 session/des-ui-portals.conf "$root/usr/share/xdg-desktop-portal/des-ui-portals.conf"
@@ -84,7 +85,7 @@ install -d -m 1777 "$root/var/lib/des-ui/avatars"
 # Wayland and the graphics libraries are loaded while running, so nothing finds them
 # by looking at the programs: they are named here.
 pack des-ui \
-    "$(linked target/release/des-ui target/release/des-ui-ctl target/release/des-comp target/release/des-portal), libegl1, libwayland-client0, libwayland-cursor0, libwayland-egl1, fontconfig" \
+    "$(linked target/release/des-ui target/release/des-ui-ctl target/release/des-comp target/release/des-portal), python3, tmux (>= 3.3), libegl1, libwayland-client0, libwayland-cursor0, libwayland-egl1, fontconfig" \
     "libgl1-mesa-dri, xwayland, cage, xdg-desktop-portal-gtk, wireplumber, pipewire-bin, network-manager, bluez, iproute2, sudo, curl, wl-clipboard, sound-theme-freedesktop, des-ui-music" \
     "ffmpeg, des-ui-greeter, des-ui-plymouth" \
     "sci-fi terminal desktop" <<'TEXT'

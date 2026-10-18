@@ -157,6 +157,7 @@ pub struct Settings {
     health: crate::health::Health,
     desktop_connected: Option<bool>,
     music_status: &'static str,
+    live_terminal_counts: (usize, usize),
 }
 
 impl Default for Settings {
@@ -184,6 +185,7 @@ impl Default for Settings {
             health: Default::default(),
             desktop_connected: None,
             music_status: "unknown",
+            live_terminal_counts: (0, 0),
         }
     }
 }
@@ -244,6 +246,7 @@ fn held(slot: &mut Option<(u8, Instant)>, reading: Option<u8>) -> Option<u8> {
 }
 
 impl Settings {
+    pub fn set_live_terminal_counts(&mut self, managed: usize, total: usize) { self.live_terminal_counts = (managed, total); }
     pub fn set_music_status(&mut self,status:&'static str){self.music_status=status;}
 
     pub fn set_desktop_connected(&mut self, connected: bool) {
@@ -1005,6 +1008,9 @@ impl Settings {
         if switch_row(ui, theme, "Sounds", "A notification that shows also makes a sound, unless it asks not to", config.notification_sounds) {
             changes.push(Change::Set("notification_sounds", config.notification_sounds.then(|| "off".to_string())));
         }
+        if switch_row(ui, theme, "Processor temperature warnings", "Notify when the processor is running hot. Turning this off keeps other alerts enabled", config.processor_temperature_warnings) {
+            changes.push(Change::Set("processor_temperature_warnings", config.processor_temperature_warnings.then(|| "off".to_string())));
+        }
         // Do not disturb by the clock: what is not urgent waits in the list.
         let schedule = config.dnd_schedule;
         if switch_row(ui, theme, "Quiet hours", "Do not disturb every day between these hours; urgent ones still show", schedule.is_some()) {
@@ -1111,6 +1117,16 @@ impl Settings {
     }
 
     fn session(&mut self, ui: &mut Ui, theme: &Theme, config: &Config, input: &InputSettings, changes: &mut Vec<Change>) {
+        heading(ui, "LIVE TERMINALS", "Keep running commands alive while the graphical shell restarts. Reconnection is automatic within this desktop session.");
+        if switch_row(ui, theme, "Keep terminals across shell restarts", "Applies to new terminals. Existing managed terminals remain reconnectable", config.keep_terminal_sessions) {
+            changes.push(Change::Set("keep_terminal_sessions", config.keep_terminal_sessions.then(|| "off".to_string())));
+        }
+        let (managed, total) = self.live_terminal_counts;
+        note(ui, &format!("{managed} live terminal tab(s); {} temporary tab(s) that close on shell restart.", total.saturating_sub(managed)));
+        note(ui, "Requires the updated desktop session and tmux 3.3+. Logout and reboot end these live sessions.");
+        note(ui, "Terminals opened before this feature cannot be converted; save their work before your first restart.");
+        ui.add_space(18.0);
+
         heading(ui, "SAVED SESSION", "Save application placement and terminal folders. Restore keeps existing terminals; documents and commands are not replayed.");
         ui.horizontal_wrapped(|ui| {
             if ui::button(ui, theme, "SAVE SESSION", None, false).clicked() { changes.push(Change::SaveSession); }
@@ -1132,7 +1148,7 @@ impl Settings {
             });
         }
         ui.add_space(22.0);
-        note(ui, "Super+Shift+R restarts the shell on a newly installed build. Applications stay open; terminal tabs close.");
+        note(ui, "Super+Shift+R restarts the graphical shell. Applications and managed terminal sessions stay running.");
         ui.add_space(22.0);
         autostart(ui, theme, changes);
         ui.add_space(22.0);

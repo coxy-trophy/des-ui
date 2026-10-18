@@ -72,7 +72,7 @@ Keys (hold Super, or Ctrl+Alt):
                        on every workspace, or put it back where it was
   [  ]  \\              Collapse or open the left, right and bottom panels
   Shift+R              Restart the shell, to load a newly installed build (its
-                       terminal tabs close; applications stay open)
+                       managed terminals reconnect; applications stay open)
   Q                    Close the current application
   W                    Open the overview of every workspace, or close it (Super
                        pressed and let go on its own does the same)
@@ -218,6 +218,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = child.kill();
         let _ = child.wait();
     }
+    // The hardware backend exits without dropping DesComp to avoid slow display
+    // teardown. Finish the private terminal lifetime first, on success and failure.
+    data.shutdown_terminals();
     data.ipc = None;
     let fatal = data.fatal.take();
     // On real displays, leave at once. Taking everything down in order switches each

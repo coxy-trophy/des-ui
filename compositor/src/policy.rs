@@ -1196,6 +1196,10 @@ impl DesComp {
             tracing::info!(locked, "screen lock");
             self.locked = locked;
             if locked {
+                // No pre-lock keyboard grab may intercept the lock screen.
+                if let Some(keyboard) = self.seat.get_keyboard() {
+                    keyboard.unset_grab(self);
+                }
                 self.release_pointer_constraint();
                 self.cancel_file_drag();
                 self.close_overview_now();
@@ -1347,6 +1351,7 @@ impl DesComp {
                     self.tell(Event::locked(false));
                 }
                 Command::Shot(mode) => self.take_shot(mode),
+                Command::ShotRequest { id, mode } => self.take_requested_shot(mode, Some(id)),
                 Command::Record(path) => self.start_recording(&path),
                 Command::RecordStop => self.stop_recording(),
                 Command::HoldIdle(held) => {

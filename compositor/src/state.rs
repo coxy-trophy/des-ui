@@ -94,6 +94,8 @@ pub struct DesComp {
     // Desktop policy
     pub shell_spec: Option<ShellSpec>,
     pub shell_child: Option<Child>,
+    /// Keeps terminal work alive across replacement shell processes.
+    terminal_runtime: Option<des_common::terminal::Runtime>,
     /// When the shell last died without being asked to.
     shell_crashes: Vec<Instant>,
     /// Set while a restart of the shell was asked for and its old process is going away.
@@ -292,6 +294,7 @@ impl DesComp {
 
             shell_spec: None,
             shell_child: None,
+            terminal_runtime: None,
             shell_crashes: Vec::new(),
             shell_restarting: false,
             shell_pid: None,
@@ -370,9 +373,17 @@ impl DesComp {
 
         loop_handle
             .insert_source(listening_socket, move |client_stream, _, state| {
+                // Global visibility filters run under the Wayland backend lock.
+                // Capture credentials now so they never need to re-enter it.
+                let peer_pid = smithay::reexports::rustix::net::sockopt::socket_peercred(&client_stream)
+                    .ok()
+                    .map(|credentials| credentials.pid.as_raw_pid() as u32);
                 state
                     .display_handle
-                    .insert_client(client_stream, Arc::new(ClientState::default()))
+                    .insert_client(client_stream, Arc::new(ClientState {
+                        peer_pid,
+                        ..Default::default()
+                    }))
                     .unwrap();
             })
             .expect("Failed to init the wayland event source.");
@@ -479,6 +490,12 @@ impl DesComp {
         true
     }
 
+    /// End this desktop's terminal work before fast process exit skips destructors.
+    /// Shell replacement deliberately leaves this owner intact.
+    pub fn shutdown_terminals(&mut self) {
+        drop(self.terminal_runtime.take());
+    }
+
     /// Starts the shell, pointed at this compositor.
     pub fn spawn_shell(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         self.dock = None;
@@ -489,6 +506,22 @@ impl DesComp {
             return Err("no shell configured".into());
         };
         let mut command = std::process::Command::new(&spec.program);
+        // Login screens never own a real user terminal backend.
+        if !spec.args.iter().any(|arg| arg == "--greeter") {
+            if self.terminal_runtime.is_none() {
+                match des_common::terminal::Runtime::new() {
+                    Ok(runtime) => self.terminal_runtime = Some(runtime),
+                    Err(error) => tracing::warn!("terminal preservation unavailable: {error}"),
+                }
+            }
+            if let Some(runtime) = &self.terminal_runtime {
+                command.env(des_common::terminal::ENV, runtime.path());
+            } else {
+                command.env_remove(des_common::terminal::ENV);
+            }
+        } else {
+            command.env_remove(des_common::terminal::ENV);
+        }
         if let Some(server) = &self.ipc {
             command.env(des_common::ipc::SOCKET_ENV, server.path());
         }
@@ -518,7 +551,7 @@ impl DesComp {
     }
 
     /// Replaces the running shell with a fresh one, which picks up a newly installed
-    /// build. Its terminal tabs go with it; applications are untouched.
+    /// build. Managed terminals reconnect through the compositor-owned backend.
     pub fn restart_shell(&mut self) {
         self.dock = None;
         self.docks.clear();
@@ -564,6 +597,7 @@ impl DesComp {
 #[derive(Default)]
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
+    pub peer_pid: Option<u32>,
 }
 
 impl ClientData for ClientState {

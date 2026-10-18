@@ -817,7 +817,7 @@ pub enum Event {
     /// (four bytes each, rows from the top) that holds it. `window` is where in it
     /// the window in use lies (left, top, width, height), when the shell may need to
     /// cut that out.
-    Shot { mode: ShotMode, width: u32, height: u32, window: Option<(u32, u32, u32, u32)>, path: String },
+    Shot { request: Option<u64>, mode: ShotMode, width: u32, height: u32, window: Option<(u32, u32, u32, u32)>, path: String },
     Recording(Recording),
     /// The lock shortcut was pressed.
     LockRequested,
@@ -845,6 +845,10 @@ impl Event {
     pub fn shot(mode: ShotMode, width: i32, height: i32, window: Option<(i32, i32, i32, i32)>, path: &str) -> String {
         let window = window.map_or("-".to_string(), |(x, y, w, h)| format!("{x},{y},{w},{h}"));
         format!("shot {} {width} {height} {window} {path}\n", mode.word())
+    }
+
+    pub fn shot_request(id: u64, mode: ShotMode, width: i32, height: i32, window: Option<(i32, i32, i32, i32)>, path: &str) -> String {
+        format!("shot-request {id} {}", Self::shot(mode, width, height, window, path).strip_prefix("shot ").unwrap())
     }
 
     /// `state` is `on`, `off` or `failed`.
@@ -889,6 +893,12 @@ impl Event {
         if line.starts_with("overview ") {
             return OverviewLayout::decode(line).map(Event::Overview);
         }
+        if let Some(tagged) = line.strip_prefix("shot-request ") {
+            let (id, rest) = tagged.split_once(' ')?;
+            let request = id.parse::<u64>().ok().filter(|id| *id != 0)?;
+            let Event::Shot { mode, width, height, window, path, .. } = Event::decode(&format!("shot {rest}"))? else { return None };
+            return Some(Event::Shot { request: Some(request), mode, width, height, window, path });
+        }
         if let Some(shot) = line.trim_end_matches('\n').strip_prefix("shot ") {
             // The path comes last and may hold spaces.
             let mut parts = shot.splitn(5, ' ');
@@ -904,7 +914,7 @@ impl Event {
                 }
             };
             let path = parts.next().filter(|path| !path.is_empty())?.to_string();
-            return Some(Event::Shot { mode, width, height, window, path });
+            return Some(Event::Shot { request: None, mode, width, height, window, path });
         }
         DesktopState::decode(line).map(Event::State)
     }
@@ -955,6 +965,8 @@ pub enum Command {
     HoldIdle(bool),
     /// Take a screenshot.
     Shot(ShotMode),
+    /// A control capture, correlated end to end independently of local hotkeys.
+    ShotRequest { id: u64, mode: ShotMode },
     /// Record the display in use into this file.
     Record(String),
     RecordStop,
@@ -1023,6 +1035,7 @@ impl Command {
             Command::Toast(None) => "toast none\n".to_string(),
             Command::HoldIdle(true) => "hold-idle on\n".to_string(),
             Command::HoldIdle(false) => "hold-idle off\n".to_string(),
+            Command::ShotRequest { id, mode } => format!("shot-request {id} {}\n", mode.word()),
             Command::Shot(mode) => format!("shot {}\n", mode.word()),
             Command::Record(path) => format!("record {path}\n"),
             Command::RecordStop => "record-stop\n".to_string(),
@@ -1122,6 +1135,10 @@ impl Command {
                 let (index, workspace) = pair.split_once(':')?;
                 Command::SendTo(index.parse().ok()?, workspace.parse().ok().filter(|workspace| *workspace < WORKSPACES)?)
             }
+            ("shot-request", Some(id)) => Command::ShotRequest {
+                id: id.parse::<u64>().ok().filter(|id| *id != 0)?,
+                mode: ShotMode::from_word(words.next()?)?,
+            },
             ("shot", Some(word)) => Command::Shot(ShotMode::from_word(word)?),
             ("record-stop", None) => Command::RecordStop,
             ("pin", Some(index)) => Command::Pin(index.parse().ok()?),
@@ -1164,6 +1181,15 @@ mod tests {
             workspaces: (0..WORKSPACES).map(|w| OverviewWorkspace { workspace: w, area: (48 + w as i32 * 400, 48, 376, 900), current: w == 2 }).collect(),
             thumbs: vec![OverviewThumb { app: 3, area: (60, 100, 300, 200) }, OverviewThumb { app: 0, area: (460, 100, 300, 170) }],
         }
+    }
+
+    #[test]
+    fn tagged_capture_results_keep_the_request_identity_and_paths() {
+        let wire = Event::shot_request(42, ShotMode::Region, 2, 3, None, "/tmp/a shot.rgba");
+        assert_eq!(Event::decode(&wire), Some(Event::Shot { request: Some(42), mode: ShotMode::Region, width: 2, height: 3, window: None, path: "/tmp/a shot.rgba".into() }));
+        assert!(Event::decode("shot-request 0 region 2 3 - /tmp/a").is_none());
+        assert!(Command::decode("shot-request 0 region").is_none());
+        assert!(Command::decode("shot-request 42 region extra").is_none());
     }
 
     #[test]
@@ -1446,11 +1472,11 @@ mod tests {
         assert_eq!(Event::decode(&Event::recording("failed")), Some(Event::Recording(Recording::Failed)));
         assert_eq!(
             Event::decode(&Event::shot(ShotMode::Region, 1920, 1080, None, "/run/user/1000/a shot.rgba")),
-            Some(Event::Shot { mode: ShotMode::Region, width: 1920, height: 1080, window: None, path: "/run/user/1000/a shot.rgba".into() })
+            Some(Event::Shot { request: None, mode: ShotMode::Region, width: 1920, height: 1080, window: None, path: "/run/user/1000/a shot.rgba".into() })
         );
         assert_eq!(
             Event::decode(&Event::shot(ShotMode::Pick, 1920, 1080, Some((300, 40, 1066, 701)), "/run/a.rgba")),
-            Some(Event::Shot { mode: ShotMode::Pick, width: 1920, height: 1080, window: Some((300, 40, 1066, 701)), path: "/run/a.rgba".into() })
+            Some(Event::Shot { request: None, mode: ShotMode::Pick, width: 1920, height: 1080, window: Some((300, 40, 1066, 701)), path: "/run/a.rgba".into() })
         );
         assert_eq!(Event::decode("shot region 1920 1080 - "), None);
         assert_eq!(Event::decode("shot pick 1920 1080 1,2,3 /run/a.rgba"), None);
@@ -1485,6 +1511,7 @@ mod tests {
             Command::HoldIdle(true),
             Command::HoldIdle(false),
             Command::Shot(ShotMode::Window),
+            Command::ShotRequest { id: 42, mode: ShotMode::Region },
             Command::Record("/home/ada/Videos/a film.mp4".into()),
             Command::RecordStop,
             Command::Toast(Some((1500, 52, 380, 240))),

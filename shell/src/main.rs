@@ -37,6 +37,8 @@ mod radio;
 mod remote;
 mod runtime;
 mod workflows;
+mod session_ready;
+mod live_terminals;
 mod screen_views;
 mod scratchpad;
 mod quicklook;
@@ -145,6 +147,12 @@ struct App {
     restore: Option<(session_restore::Restore, Vec<apps::AppEntry>, Instant)>,
     restore_placements: std::collections::VecDeque<(session_restore::Placement,String)>,
     restore_workspace: Option<usize>,
+    live_terminal_lease: Option<live_terminals::Lease>,
+    live_terminal_layout: Option<live_terminals::Layout>,
+    live_terminal_save_failed: bool,
+    live_terminal_recovery_incomplete: bool,
+    readiness: session_ready::Readiness,
+    browser_openers: Vec<std::sync::mpsc::Receiver<Result<(), String>>>,
     document_openers: Vec<std::sync::mpsc::Receiver<Result<(),String>>>,
     dock_area: Option<Option<(i32, i32, i32, i32)>>,
     settings: settings::Settings,
@@ -224,9 +232,81 @@ impl App {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/"));
-        let first = TermTab::spawn(&shell, &home, ctx.clone(), config.scrollback)?;
+        let mut terminal_notes = Vec::new();
+        let live_terminal_lease = match live_terminals::Lease::acquire() {
+            Ok(lease) => lease,
+            Err(error) => {
+                terminal_notes.push(("Live terminals unavailable", format!("{error}. This window will use temporary terminals that close on restart.")));
+                None
+            }
+        };
+        let saved_layout = live_terminal_lease.as_ref().and_then(|lease| match live_terminals::load_in(lease.directory()) {
+            Ok(layout) => layout,
+            Err(error) => {
+                terminal_notes.push(("Terminal layout unavailable", format!("{error}. Running terminals will be recovered in server order.")));
+                None
+            }
+        }).unwrap_or_default();
+        // Reconnect existing managed sessions even if the preference was turned off:
+        // the setting affects new terminals and must never strand existing work.
+        let recovery_started = Instant::now();
+        let mut enumeration_failed = false;
+        let live: Vec<term::SessionRef> = if live_terminal_lease.is_some() {
+            match term::live_sessions() {
+                Ok(live) => live,
+                Err(error) => { enumeration_failed = true; terminal_notes.push(("Live terminal recovery failed", format!("{error}. Existing work has not been terminated."))); Vec::new() }
+            }
+        } else { Vec::new() };
+        let ids: Vec<String> = live.iter().filter(|session| session.role == term::SessionRole::Tab).map(|session| session.id.clone()).collect();
+        let order = saved_layout.order(&ids, MAX_TABS);
+        let mut tabs = Vec::new();
+        for id in order {
+            if recovery_started.elapsed() >= Duration::from_secs(6) {
+                terminal_notes.push(("Some terminals are still detached", "Recovery took longer than expected. Their processes remain running; try restarting the shell again.".into()));
+                break;
+            }
+            if let Some(session) = live.iter().find(|session| session.id == id) {
+                match TermTab::reattach(session, ctx.clone(), config.scrollback) {
+                    Ok(tab) => tabs.push(tab),
+                    Err(error) => {
+                        terminal_notes.push(("Terminal could not reconnect", format!("{error}. Existing running processes were left alone; try restarting the shell again.")));
+                        break;
+                    },
+                }
+            }
+        }
+        let reconnected = tabs.len();
+        if tabs.is_empty() {
+            let first = match TermTab::spawn_managed(&shell, &home, ctx.clone(), config.scrollback,
+                config.keep_terminal_sessions && live_terminal_lease.is_some() && ids.is_empty(), term::SessionRole::Tab) {
+                Ok(tab) => tab,
+                Err(error) => {
+                    terminal_notes.push(("Live terminal restore unavailable", format!("{error}. Started a temporary terminal; this tab will close on shell restart.")));
+                    TermTab::spawn(&shell, &home, ctx.clone(), config.scrollback)?
+                }
+            };
+            tabs.push(first);
+        }
+        let connected_ids: Vec<String> = tabs.iter().filter_map(|tab| tab.persistent_id.clone()).collect();
+        let (active, side) = saved_layout.selected(&connected_ids);
+        let active = active.min(tabs.len() - 1);
+        let side = side.filter(|index| *index < tabs.len() && *index != active);
+        let mut scratchpad = scratchpad::Scratchpad::default();
+        let scratch = saved_layout.scratchpad.as_ref().and_then(|id| live.iter().find(|session| &session.id == id && session.role == term::SessionRole::Scratchpad))
+            .or_else(|| live.iter().find(|session| session.role == term::SessionRole::Scratchpad));
+        if let Some(session) = scratch.filter(|_| recovery_started.elapsed() < Duration::from_secs(6)) {
+            match TermTab::reattach(session, ctx.clone(), config.scrollback) {
+                Ok(tab) => scratchpad.restore_tab(tab),
+                Err(error) => terminal_notes.push(("Scratchpad could not reconnect", format!("{error}. Its running process was left alone."))),
+            }
+        }
+        let live_terminal_recovery_incomplete = enumeration_failed || reconnected < ids.len().min(MAX_TABS)
+            || (scratch.is_some() && scratchpad.persistent_id().is_none());
         let desktop = Desktop::connect(ctx.clone());
         let desktop_present = desktop.is_some();
+        if config.keep_terminal_sessions && live_terminal_lease.is_none() && desktop_present && terminal_notes.is_empty() {
+            terminal_notes.push(("Terminal preservation unavailable", "This desktop has no live terminal backend. These tabs are temporary and close on shell restart. Use the updated compositor with tmux 3.3+ to enable preservation.".into()));
+        }
         let music = music::Music::new(ctx.clone());
         let capture = capture::Capture::new(ctx.clone());
         let power = power::Power::start(ctx.clone(), desktop.is_some());
@@ -253,16 +333,18 @@ impl App {
         launcher.set_clipboard(clipboard.handle());
         notices.sounds = config.notification_sounds;
         notices.schedule = config.dnd_schedule;
+        for (title, body) in terminal_notes { notices.post(title, &body, false); }
+        if reconnected > 0 { notices.post("Terminals reconnected", &format!("{reconnected} running terminal(s) reconnected. Commands were not restarted."), false); }
         region::set_twelve_hour(config.twelve_hour);
         Ok(App {
             ctx,
             theme,
             shell,
-            tabs: vec![first],
-            active: 0,
-            side: None,
-            side_focused: false,
-            stacked: false,
+            tabs,
+            active,
+            side,
+            side_focused: saved_layout.side_focused && side.is_some(),
+            stacked: saved_layout.stacked,
             mon: SysMon::new(),
             pet: pet::Pet::new(&config.pet),
             fs: FsView::new(),
@@ -274,6 +356,12 @@ impl App {
             restore: None,
             restore_placements: Default::default(),
             restore_workspace: None,
+            live_terminal_lease,
+            live_terminal_layout: None,
+            live_terminal_save_failed: false,
+            live_terminal_recovery_incomplete,
+            readiness: session_ready::Readiness::from_env(),
+            browser_openers: Vec::new(),
             document_openers: Vec::new(),
             dock_area: None,
             settings: settings::Settings::default(),
@@ -308,7 +396,7 @@ impl App {
             quick: quick::Quick::default(),
             osd: osd::Osd::default(),
             tray,
-            scratchpad: scratchpad::Scratchpad::default(),
+            scratchpad,
             overlay_area: None,
             pending_shot_replies: Vec::new(),
             pending_color: None,
@@ -379,12 +467,13 @@ impl App {
             .get(self.focus_tab())
             .and_then(|t| t.cwd())
             .unwrap_or_else(|| PathBuf::from("/"));
-        match TermTab::spawn(&self.shell, &cwd, self.ctx.clone(), self.config.scrollback) {
+        match TermTab::spawn_managed(&self.shell, &cwd, self.ctx.clone(), self.config.scrollback,
+            self.config.keep_terminal_sessions && self.live_terminal_lease.is_some(), term::SessionRole::Tab) {
             Ok(tab) => {
                 self.tabs.push(tab);
                 self.show_tab(self.tabs.len() - 1);
             }
-            Err(e) => eprintln!("des-ui: cannot open tab: {e}"),
+            Err(e) => self.notices.post("Terminal not opened", &format!("{e}. Existing terminals are still running."), false),
         }
     }
 
@@ -982,7 +1071,10 @@ impl App {
                 badge: None,
                 selected: (i == self.active || Some(i) == self.side) && terminal_in_use,
             };
-            if tab(ui, theme, look).clicked() {
+            let persistence = if self.tabs[i].persistent_id.is_some() {
+                "Live terminal: reconnects after a graphical-shell restart"
+            } else { "Temporary terminal: closes when the graphical shell restarts" };
+            if tab(ui, theme, look).on_hover_text(persistence).clicked() {
                 self.show_tab(i);
                 self.launcher.open = false;
                 self.settings.open = false;

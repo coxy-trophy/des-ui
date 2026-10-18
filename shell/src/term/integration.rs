@@ -164,6 +164,54 @@ mod tests {
     }
 
     #[test]
+    fn integration_markers_pass_through_only_managed_tmux() {
+        let dir = tempfile::tempdir().unwrap();
+        install(dir.path()).unwrap();
+        for shell in ["bash", "zsh", "fish"] {
+            if !has(shell) {
+                eprintln!("{shell} is not installed; emission test skipped");
+                continue;
+            }
+            for (managed, tmux, wrapped) in [("1", "private,1,0", true), ("0", "private,1,0", false), ("1", "", false)] {
+                let script = match shell {
+                    "fish" => "fish-data/fish/vendor_conf.d/des-ui.fish",
+                    "bash" => "des-ui.bash",
+                    _ => "des-ui.zsh",
+                };
+                let body = match shell {
+                    "fish" => "source \"$DES_UI_TEST_SCRIPT\"; __des_ui_preexec; false; __des_ui_precmd; true",
+                    "bash" => "PS1='prompt> '; source \"$1\"; __des_ui_at_prompt=1; __des_ui_preexec; false; __des_ui_precmd; __des_ui_ready; printf '%s' \"${PS1@P}\"",
+                    _ => "PS1='prompt> '; source \"$1\"; __des_ui_preexec; false; __des_ui_precmd; print -rPn -- \"$PS1\"; printf '%s' \"$PS1\"",
+                };
+                let mut command = Command::new(shell);
+                if shell == "bash" { command.args(["--noprofile", "--norc"]); }
+                if shell == "zsh" { command.arg("-f"); }
+                if shell == "fish" { command.arg("--no-config"); }
+                let output = command.args(["-ic", body, "des-ui-test"])
+                    .arg(dir.path().join(script))
+                    .env("DES_UI_TEST_SCRIPT", dir.path().join(script))
+                    .env("DES_UI_PERSISTENT_TERMINAL", managed).env("TMUX", tmux)
+                    .env("DES_UI_SHELL_INTEGRATION", "1").env("PS1", "prompt> ")
+                    .output().unwrap();
+                assert!(output.status.success(), "{shell}: {}", String::from_utf8_lossy(&output.stderr));
+                let out = String::from_utf8_lossy(&output.stdout);
+                for marker in ["133;A", "133;C", "133;D;1", "7;file://"] {
+                    let expected = if wrapped { format!("\x1bPtmux;\x1b\x1b]{marker}") } else { format!("\x1b]{marker}") };
+                    assert!(out.contains(&expected), "{shell} managed={managed} tmux={tmux}: {out:?}");
+                }
+                if shell != "fish" {
+                    let marker = if wrapped { "\x1bPtmux;\x1b\x1b]133;B\x07\x1b\\" } else { "\x1b]133;B\x07" };
+                    assert!(out.contains(marker), "{shell} prompt end: {out:?}");
+                    let invisible = if shell == "bash" { format!("\x01{marker}\x02") } else { format!("%{{{marker}%}}") };
+                    assert!(out.contains(&invisible), "{shell} prompt width: {out:?}");
+                }
+                assert_eq!(out.contains("\x1bPtmux;"), wrapped);
+                if wrapped { assert!(out.contains("\x07\x1b\\")); }
+            }
+        }
+    }
+
+    #[test]
     fn scripts_and_wrappers_parse_in_their_shells() {
         let dir = tempfile::tempdir().unwrap();
         install(dir.path()).unwrap();

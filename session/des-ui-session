@@ -53,25 +53,29 @@ leave() {
 stop_portal
 
 started=$(date +%s)
-"$bin/des-comp" --session --backend drm "$@" >"$log_dir/session.log" 2>&1
+"$bin/des-ui-startup" "$bin/des-comp" --session --backend drm "$@" >"$log_dir/session.log" 2>&1
 status=$?
 elapsed=$(( $(date +%s) - started ))
 
 # A clean exit, or a session that ran for a while, is an ordinary logout.
-if [ "$status" -eq 0 ] || [ "$elapsed" -ge 15 ]; then
+# A readiness timeout (124) always attempts recovery, however long cleanup took.
+if [ "$status" -eq 0 ] || { [ "$status" -ne 124 ] && [ "$elapsed" -ge 15 ]; }; then
     leave "$status"
 fi
 
 previous="${bin%/bin}/lib/des-ui/previous"
-if [ -x "$previous/des-comp" ] && [ -x "$previous/des-ui" ]; then
+# Legacy shells cannot acknowledge initialized readiness. Skip them rather than
+# terminating a healthy older desktop just because it lacks this protocol.
+if [ -x "$previous/des-comp" ] && [ -x "$previous/des-ui" ] &&
+    LC_ALL=C grep -aFq DES_UI_SESSION_READY "$previous/des-ui"; then
     echo "des-comp exited with status $status after ${elapsed}s; trying the previous build" \
         >>"$log_dir/session.log"
     started=$(date +%s)
-    "$previous/des-comp" --session --backend drm --shell "$previous/des-ui" "$@" \
+    "$bin/des-ui-startup" "$previous/des-comp" --session --backend drm --shell "$previous/des-ui" "$@" \
         >"$log_dir/session-previous.log" 2>&1
     status=$?
     elapsed=$(( $(date +%s) - started ))
-    if [ "$status" -eq 0 ] || [ "$elapsed" -ge 15 ]; then
+    if [ "$status" -eq 0 ] || { [ "$status" -ne 124 ] && [ "$elapsed" -ge 15 ]; }; then
         leave "$status"
     fi
 fi

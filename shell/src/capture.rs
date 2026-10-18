@@ -100,6 +100,7 @@ fn save(picture: Picture) -> Result<(PathBuf, bool), String> {
 
 /// A screenshot as the compositor announces it.
 pub struct Shot {
+    pub request: Option<u64>,
     pub mode: ShotMode,
     pub width: u32,
     pub height: u32,
@@ -110,6 +111,7 @@ pub struct Shot {
 
 /// A still of the display, shown while the user says what of it to keep.
 struct Marking {
+    request: Option<u64>,
     picture: Picture,
     texture: Option<TextureHandle>,
     /// Where the window in use lies in the picture.
@@ -146,7 +148,8 @@ pub enum Marked {
 
 pub struct Capture {
     marking: Option<Marking>,
-    saved: (Sender<Result<(PathBuf, bool), String>>, Receiver<Result<(PathBuf, bool), String>>),
+    active_request: Option<u64>,
+    saved: (Sender<(Option<u64>, Result<(PathBuf, bool), String>)>, Receiver<(Option<u64>, Result<(PathBuf, bool), String>)>),
     /// When the recording under way began.
     pub recording: Option<Instant>,
     /// The file the recording is going into, or went into.
@@ -160,41 +163,51 @@ pub struct Capture {
 
 impl Capture {
     pub fn new(ctx: egui::Context) -> Capture {
-        Capture { marking: None, saved: channel(), recording: None, film: None, ctx, colour_next: false, called_off: false }
+        Capture { marking: None, active_request: None, saved: channel(), recording: None, film: None, ctx, colour_next: false, called_off: false }
     }
 
     /// Takes over a screenshot the compositor took.
     pub fn take(&mut self, shot: Shot) {
         let read = std::fs::read(&shot.path);
         let _ = std::fs::remove_file(&shot.path);
+        // Tagged results belonging to a closed/expired request are deleted above
+        // and ignored. An untagged local hotkey can never be mistaken for one.
+        if shot.request.is_some() && shot.request != self.active_request { return; }
         // The key pressed again while asking calls it off.
-        if shot.mode == ShotMode::Pick && self.marking.take().is_some() {
-            self.called_off = true;
-            return;
+        if shot.mode == ShotMode::Pick {
+            if let Some(marking) = self.marking.take() {
+                self.called_off |= marking.request == self.active_request;
+                return;
+            }
         }
         let Ok(rgba) = read else {
-            self.called_off = true;
+            self.called_off |= shot.request == self.active_request;
             return;
         };
         if rgba.len() != (shot.width as usize) * (shot.height as usize) * 4 || rgba.is_empty() {
-            self.called_off = true;
+            self.called_off |= shot.request == self.active_request;
             return;
         }
         let picture = Picture { width: shot.width, height: shot.height, rgba };
         match shot.mode {
             ShotMode::Pick | ShotMode::Region => {
+                if let Some(marking) = &self.marking {
+                    // A local hotkey may replace the portal chooser. Release its
+                    // held reply without treating the new local chooser as owned.
+                    self.called_off |= marking.request.is_some() && marking.request == self.active_request;
+                }
                 let choosing = shot.mode == ShotMode::Pick;
-                let colour = shot.mode == ShotMode::Region && std::mem::take(&mut self.colour_next);
-                self.marking = Some(Marking { picture, texture: None, window: shot.window, choosing, from: None, colour });
+                let colour = shot.mode == ShotMode::Region && shot.request == self.active_request && std::mem::take(&mut self.colour_next);
+                self.marking = Some(Marking { request: shot.request, picture, texture: None, window: shot.window, choosing, from: None, colour });
             }
-            ShotMode::Screen | ShotMode::Window => self.keep(picture),
+            ShotMode::Screen | ShotMode::Window => self.keep(picture, shot.request),
         }
     }
 
-    fn keep(&self, picture: Picture) {
+    fn keep(&self, picture: Picture, request: Option<u64>) {
         let (results, ctx) = (self.saved.0.clone(), self.ctx.clone());
         std::thread::spawn(move || {
-            let _ = results.send(save(picture));
+            let _ = results.send((request, save(picture)));
             ctx.request_repaint();
         });
     }
@@ -204,8 +217,30 @@ impl Capture {
         self.marking.is_some()
     }
 
+    pub fn request_marking(&self) -> bool {
+        self.active_request.is_some() && self.marking.as_ref().is_some_and(|marking| marking.request == self.active_request)
+    }
+
+    /// Associate a compositor result with the held control reply.
+    pub fn begin_request(&mut self, _mode: ShotMode) -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.active_request = Some(id);
+        id
+    }
+
+    /// Cancel only capture state owned by the originating control request.
+    pub fn cancel_request(&mut self) {
+        let request = self.active_request.take();
+        if request.is_some() && self.marking.as_ref().is_some_and(|marking| marking.request == request) {
+            self.marking = None;
+        }
+        self.colour_next = false;
+    }
+
     pub fn cancel(&mut self) {
-        if self.marking.take().is_some() {
+        if self.active_request.take().is_some() || self.marking.is_some() {
+            self.marking = None;
             self.called_off = true;
         }
         self.colour_next = false;
@@ -225,8 +260,11 @@ impl Capture {
     /// each went, for a program waiting on one.
     pub fn report(&mut self, notices: &mut Center) -> Vec<Result<PathBuf, String>> {
         let mut saved = Vec::new();
-        while let Ok(result) = self.saved.1.try_recv() {
-            saved.push(result.clone().map(|(path, _)| path));
+        while let Ok((request, result)) = self.saved.1.try_recv() {
+            if request.is_some() && request == self.active_request {
+                saved.push(result.clone().map(|(path, _)| path));
+                self.active_request = None;
+            }
             match result {
                 Ok((path, true)) => notices.post("Screenshot saved", &format!("{}\nAlso copied, ready to paste.", spoken(&path)), false),
                 Ok((path, false)) => notices.post("Screenshot saved", &spoken(&path), false),
@@ -474,7 +512,7 @@ impl Capture {
         };
         match kept {
             Some(kept) => {
-                self.keep(kept);
+                self.keep(kept, marking.request);
                 Marked::Going
             }
             None => Marked::Cancelled,
@@ -485,6 +523,67 @@ impl Capture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelling_an_owned_request_preserves_an_unrelated_chooser() {
+        let ctx = egui::Context::default();
+        let mut capture = colour_marking(&ctx);
+        capture.cancel_request();
+        assert!(capture.marking());
+        let id = capture.begin_request(ShotMode::Region);
+        capture.marking.as_mut().unwrap().request = Some(id);
+        capture.cancel_request();
+        assert!(!capture.marking());
+        assert!(!capture.take_called_off(), "scoped cancellation must not cancel another reply");
+    }
+
+    #[test]
+    fn cancelling_a_tagged_request_does_not_consume_a_local_hotkey_shot() {
+        let ctx = egui::Context::default();
+        let mut capture = Capture::new(ctx);
+        let id = capture.begin_request(ShotMode::Region);
+        capture.cancel_request();
+        let dir = tempfile::tempdir().unwrap();
+        let shot = |name: &str, request| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, [1u8, 2, 3, 255]).unwrap();
+            Shot { request, mode: ShotMode::Region, width: 1, height: 1, window: None, path: path.to_string_lossy().into_owned() }
+        };
+        capture.take(shot("local", None));
+        assert!(capture.marking());
+        capture.take(shot("late", Some(id)));
+        assert!(capture.marking());
+        assert_eq!(capture.marking.as_ref().unwrap().request, None);
+    }
+
+    #[test]
+    fn old_or_local_save_results_do_not_complete_another_request() {
+        let ctx = egui::Context::default();
+        let mut capture = Capture::new(ctx.clone());
+        let old = capture.begin_request(ShotMode::Screen);
+        capture.cancel_request();
+        let current = capture.begin_request(ShotMode::Screen);
+        let result = |name| Ok((PathBuf::from(name), false));
+        capture.saved.0.send((Some(old), result("/tmp/old.png"))).unwrap();
+        capture.saved.0.send((None, result("/tmp/local.png"))).unwrap();
+        capture.saved.0.send((Some(current), result("/tmp/current.png"))).unwrap();
+        let mut notices = Center::new(ctx, false, false);
+        assert_eq!(capture.report(&mut notices), vec![Ok(PathBuf::from("/tmp/current.png"))]);
+    }
+
+    #[test]
+    fn cancelled_inflight_request_discards_its_late_picture() {
+        let mut capture = Capture::new(egui::Context::default());
+        let id = capture.begin_request(ShotMode::Region);
+        capture.pick_colour_next();
+        capture.cancel_request();
+        let path = std::env::temp_dir().join(format!("des-ui-cancelled-shot-{}", std::process::id()));
+        std::fs::write(&path, [1u8, 2, 3, 255]).unwrap();
+        capture.take(Shot { request: Some(id), mode: ShotMode::Region, width: 1, height: 1, window: None, path: path.to_string_lossy().into_owned() });
+        assert!(!capture.marking());
+        assert!(!capture.colour_next);
+        assert!(!path.exists());
+    }
 
     #[test]
     fn cuts_a_piece_and_keeps_inside_the_picture() {
@@ -531,7 +630,7 @@ mod tests {
         // The left half red, the right half blue, at one pixel a point.
         let rgba = (0..100 * 100).flat_map(|n| if n % 100 < 50 { [200, 10, 10, 255] } else { [10, 10, 200, 255] }).collect();
         let picture = Picture { width: 100, height: 100, rgba };
-        capture.marking = Some(Marking { picture, texture: None, window: None, choosing: false, from: None, colour: true });
+        capture.marking = Some(Marking { request: None, picture, texture: None, window: None, choosing: false, from: None, colour: true });
         capture
     }
 
@@ -570,7 +669,7 @@ mod tests {
         let shot = |name: &str| {
             let path = dir.path().join(name);
             std::fs::write(&path, [1u8, 2, 3, 255]).unwrap();
-            Shot { mode: ShotMode::Region, width: 1, height: 1, window: None, path: path.to_string_lossy().into_owned() }
+            Shot { request: None, mode: ShotMode::Region, width: 1, height: 1, window: None, path: path.to_string_lossy().into_owned() }
         };
         capture.take(shot("a"));
         assert!(capture.marking.as_ref().unwrap().colour);

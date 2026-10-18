@@ -27,6 +27,8 @@ pub enum Palette {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub theme: String,
+    /// New managed terminals keep their processes alive across UI replacement.
+    pub keep_terminal_sessions: bool,
     /// Optional opaque sRGB accent, independent of the preset terminal palette.
     pub accent: Option<[u8; 3]>,
     /// Whether the terminal's colours, the caution colour and the glow are the
@@ -53,6 +55,8 @@ pub struct Config {
     pub lock_on_sleep: bool,
     /// Whether a notification that shows also makes a sound.
     pub notification_sounds: bool,
+    /// Whether processor heat threshold crossings produce notifications.
+    pub processor_temperature_warnings: bool,
     /// Whether notifications are kept off the screen as they arrive.
     pub do_not_disturb: bool,
     /// Quiet hours, as minutes after midnight: from, to (`dnd_schedule = 22:00-07:00`).
@@ -82,6 +86,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             theme: theme::DEFAULT_NAME.to_string(),
+            keep_terminal_sessions: true,
             accent: None,
             palette: Palette::Preset,
             font_size: DEFAULT_FONT_SIZE,
@@ -97,6 +102,7 @@ impl Default for Config {
             location: None,
             lock_on_sleep: true,
             notification_sounds: true,
+            processor_temperature_warnings: true,
             do_not_disturb: false,
             dnd_schedule: None,
             twelve_hour: false,
@@ -131,6 +137,7 @@ impl Config {
             let value = value.trim();
             match key.trim() {
                 "theme" if !value.is_empty() => config.theme = value.to_string(),
+                "keep_terminal_sessions" => config.keep_terminal_sessions = value != "off",
                 "accent" => {
                     config.accent = value.split(',').map(|part| part.trim().parse::<u8>())
                         .collect::<Result<Vec<_>, _>>().ok().and_then(|rgb| rgb.try_into().ok());
@@ -175,6 +182,7 @@ impl Config {
                 "dnd_schedule" => config.dnd_schedule = crate::notify::parse_schedule(value),
                 "lock_on_sleep" => config.lock_on_sleep = value != "off",
                 "notification_sounds" => config.notification_sounds = value != "off",
+                "processor_temperature_warnings" => config.processor_temperature_warnings = value != "off",
                 "animate" => {
                     config.animate = value != "off";
                     parsed_animate = true;
@@ -311,6 +319,29 @@ pub fn night_light_value((from, to, kelvin): (u8, u8, u32)) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn live_terminal_preservation_defaults_on_and_opt_out_persists() {
+        assert!(Config::default().keep_terminal_sessions);
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config");
+        set_at(&file, "keep_terminal_sessions", Some("off")).unwrap();
+        assert!(!Config::parse(&std::fs::read_to_string(&file).unwrap()).keep_terminal_sessions);
+        set_at(&file, "keep_terminal_sessions", None).unwrap();
+        assert!(Config::parse(&std::fs::read_to_string(&file).unwrap()).keep_terminal_sessions);
+    }
+
+    #[test]
+    fn processor_temperature_warning_preference_round_trips() {
+        assert!(Config::default().processor_temperature_warnings);
+        assert!(Config::parse("processor_temperature_warnings = invalid").processor_temperature_warnings);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config");
+        set_at(&path, "processor_temperature_warnings", Some("off")).unwrap();
+        assert!(!Config::parse(&std::fs::read_to_string(&path).unwrap()).processor_temperature_warnings);
+        set_at(&path, "processor_temperature_warnings", None).unwrap();
+        assert!(Config::parse(&std::fs::read_to_string(&path).unwrap()).processor_temperature_warnings);
+    }
+
     #[test]
     fn reads_the_compositor_s_look() {
         let config = Config::parse("glow = 0.4\nscanlines = on\nnight_light = 19:00-07:30 4500");

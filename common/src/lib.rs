@@ -10,6 +10,7 @@ pub mod music;
 pub mod splash;
 pub mod control;
 pub mod transport;
+pub mod terminal;
 
 /// Height of the bar along the top of the workspace that lists terminal tabs and open
 /// applications. It stays visible while an application is shown.

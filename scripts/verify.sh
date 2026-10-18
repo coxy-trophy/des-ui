@@ -6,5 +6,6 @@ for script in ./*.sh scripts/*.sh session/des-ui-session session/des-ui-greeter 
     [ -f "$script" ] || continue
     sh -n "$script"
 done
+python3 -m unittest discover -s session/tests -v
 cargo test --workspace --locked --no-fail-fast
 cargo build --workspace --locked

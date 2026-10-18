@@ -55,12 +55,27 @@ impl App {
         let program=argv.first().map_or("",String::as_str);
         if self.tabs.len()>=MAX_TABS{self.notices.post("No room for another tab",&format!("Close a terminal tab to run {program}."),true);return;}
         let cwd=self.tabs.get(self.focus_tab()).and_then(|t|t.cwd()).unwrap_or_else(||PathBuf::from("/"));
-        match TermTab::spawn_command(argv,&cwd,self.ctx.clone(),self.config.scrollback){
+        match TermTab::spawn_command_managed(argv,&cwd,self.ctx.clone(),self.config.scrollback,self.config.keep_terminal_sessions && self.live_terminal_lease.is_some(),term::SessionRole::Tab){
             Ok(tab)=>{self.tabs.push(tab);self.show_tab(self.tabs.len()-1);self.send(Command::Terminal);}
             Err(e)=>self.notices.post("Could not run program",&format!("{program}: {e}"),true),
         }
     }
     pub(super) fn pump_documents(&mut self){
+        let mut browser_errors = Vec::new();
+        self.browser_openers.retain(|rx| match rx.try_recv() {
+            Ok(Ok(())) => false,
+            Ok(Err(error)) => { browser_errors.push(error); false },
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => { browser_errors.push("Browser launcher stopped unexpectedly.".into()); false },
+            Err(std::sync::mpsc::TryRecvError::Empty) => true,
+        });
+        let mut links = self.scratchpad.take_links();
+        for tab in &mut self.tabs { links.extend(tab.take_links()); }
+        for url in links {
+            if self.lock.locked { continue; }
+            if self.browser_openers.len() < 8 { self.browser_openers.push(apps::open_url(url, self.ctx.clone())); }
+            else { browser_errors.push("Wait for the existing browser requests to finish before opening another link.".into()); }
+        }
+        for error in browser_errors { self.notices.post("Could not open browser", &error, false); }
         let mut errors=Vec::new();
         self.document_openers.retain(|rx|match rx.try_recv(){
             Ok(Ok(()))=>false,Ok(Err(error))=>{errors.push(error);false},
@@ -70,6 +85,30 @@ impl App {
         for error in errors{self.notices.post("Could not open document",&error,true);}
         for (title,body,urgent) in self.launcher.take_outcomes(){self.notices.post(&title,&body,urgent);}
     }
+    /// Checkpoint only identity and layout, and only when they change.
+    pub(super) fn checkpoint_live_terminals(&mut self) {
+        // A partial reconnect must not erase the layout of still-running work.
+        if self.live_terminal_recovery_incomplete { return; }
+        let Some(lease) = self.live_terminal_lease.as_ref() else { return; };
+        let tabs: Vec<String> = self.tabs.iter().filter_map(|tab| tab.persistent_id.clone()).collect();
+        let index = |old: usize| self.tabs.get(old).and_then(|tab| tab.persistent_id.as_ref()).and_then(|id| tabs.iter().position(|live| live == id));
+        let active = index(self.active).unwrap_or(0);
+        let side = self.side.and_then(index).filter(|side| *side != active);
+        let layout = live_terminals::Layout { tabs, active, side, side_focused: self.side_focused && side.is_some(),
+            stacked: self.stacked, scratchpad: self.scratchpad.persistent_id().map(str::to_owned) };
+        if self.live_terminal_layout.as_ref() == Some(&layout) { return; }
+        let result = live_terminals::save_in(lease.directory(), &layout);
+        self.live_terminal_layout = Some(layout);
+        match result {
+            Ok(()) => self.live_terminal_save_failed = false,
+            Err(error) if !self.live_terminal_save_failed => {
+                self.live_terminal_save_failed = true;
+                self.notices.post("Terminal layout not saved", &format!("{error}. Running sessions remain available, but their tab order may not be restored."), false);
+            }
+            Err(_) => {},
+        }
+    }
+
     pub(super) fn save_session(&mut self){
         let home=std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(||PathBuf::from("/"));
         let terminals=session_restore::TerminalLayout {directories:self.tabs.iter().map(|t|t.cwd().unwrap_or_else(||home.clone())).collect(),active:self.active,side:self.side,stacked:self.stacked};
@@ -95,7 +134,7 @@ impl App {
         for cwd in session.terminals.directories.iter().take(MAX_TABS){
             if let Some(i)=self.tabs.iter().enumerate().find_map(|(i,t)|(!used.contains(&i)&&t.cwd().as_ref()==Some(cwd)).then_some(i)){used.insert(i);mapping.push(i);continue;}
             if self.tabs.len()>=MAX_TABS || !cwd.is_dir(){unavailable+=1;mapping.push(self.active);continue;}
-            match TermTab::spawn(&self.shell,cwd,self.ctx.clone(),self.config.scrollback){Ok(tab)=>{let i=self.tabs.len();self.tabs.push(tab);used.insert(i);mapping.push(i);},Err(_)=>{unavailable+=1;mapping.push(self.active);}}
+            match TermTab::spawn_managed(&self.shell,cwd,self.ctx.clone(),self.config.scrollback,self.config.keep_terminal_sessions && self.live_terminal_lease.is_some(),term::SessionRole::Tab){Ok(tab)=>{let i=self.tabs.len();self.tabs.push(tab);used.insert(i);mapping.push(i);},Err(_)=>{unavailable+=1;mapping.push(self.active);}}
         }
         if let Some(&i)=mapping.get(session.terminals.active){self.active=i;}
         self.side=session.terminals.side.and_then(|i|mapping.get(i).copied()).filter(|i|*i!=self.active);

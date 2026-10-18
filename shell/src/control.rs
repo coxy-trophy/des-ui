@@ -94,9 +94,10 @@ impl Answer {
 }
 
 /// The way back to the client that asked; answered once, after the request is done.
-pub struct Reply(SyncSender<Answer>);
+pub struct Reply(SyncSender<Answer>, des_common::control::Cancellation);
 
 impl Reply {
+    pub fn is_cancelled(&self) -> bool { self.1.is_cancelled() }
     pub fn send(self, answer: Answer) {
         let _ = self.0.send(answer);
     }
@@ -336,10 +337,11 @@ fn serve(stream: UnixStream, sender: &SyncSender<(Request, Reply)>, ctx: &egui::
             Ok(request) => {
                 let (reply, answered) = mpsc::sync_channel(1);
                 let deadline = request.deadline();
-                match sender.try_send((request, Reply(reply))) {
+                let cancellation = des_common::control::Cancellation::default();
+                match sender.try_send((request, Reply(reply, cancellation.clone()))) {
                     Ok(()) => {
                         ctx.request_repaint();
-                        match answered.recv_timeout(deadline) {
+                        match wait_for_answer(&answered, deadline, &out, &cancellation, ctx) {
                             Ok(answer) => answer,
                             Err(mpsc::RecvTimeoutError::Timeout) => Answer::Error("the shell did not answer in time".into()),
                             Err(mpsc::RecvTimeoutError::Disconnected) => Answer::Error("the shell did not answer".into()),
@@ -352,6 +354,33 @@ fn serve(stream: UnixStream, sender: &SyncSender<(Request, Reply)>, ctx: &egui::
         };
         if out.write_all(answer.line().as_bytes()).is_err() {
             return;
+        }
+    }
+}
+
+
+/// Check the originating connection while waiting, so a dropped portal future
+/// releases its own held chooser even when the user never interacts with it.
+fn wait_for_answer(answered: &Receiver<Answer>, deadline: Duration, stream: &UnixStream,
+    cancellation: &des_common::control::Cancellation, ctx: &egui::Context,
+) -> Result<Answer, mpsc::RecvTimeoutError> {
+    let until = std::time::Instant::now() + deadline;
+    loop {
+        match answered.recv_timeout(Duration::from_millis(25)) {
+            Err(mpsc::RecvTimeoutError::Timeout) => {},
+            answer => return answer,
+        }
+        let mut byte = [0u8];
+        let disconnected = match rustix::net::recv(stream, &mut byte, rustix::net::RecvFlags::PEEK | rustix::net::RecvFlags::DONTWAIT) {
+            Ok((0, _)) => true,
+            Ok(_) => false,
+            Err(rustix::io::Errno::AGAIN | rustix::io::Errno::INTR) => false,
+            Err(_) => true,
+        };
+        if disconnected || std::time::Instant::now() >= until {
+            cancellation.cancel();
+            ctx.request_repaint();
+            return Err(mpsc::RecvTimeoutError::Timeout);
         }
     }
 }
@@ -422,6 +451,29 @@ mod tests {
     use super::*;
     use des_common::ipc::AppInfo;
     use std::time::Instant;
+
+    #[test]
+    fn disconnected_held_request_cancels_only_its_own_reply() {
+        let (client, server) = UnixStream::pair().unwrap();
+        let (_sender, answered) = mpsc::sync_channel(1);
+        let cancellation = des_common::control::Cancellation::default();
+        let other = des_common::control::Cancellation::default();
+        drop(client);
+        let began = Instant::now();
+        assert!(wait_for_answer(&answered, INTERACTION_TIME, &server, &cancellation, &egui::Context::default()).is_err());
+        assert!(began.elapsed() < Duration::from_secs(1));
+        assert!(cancellation.is_cancelled());
+        assert!(!other.is_cancelled());
+    }
+
+    #[test]
+    fn expired_held_request_is_cancelled() {
+        let (_client, server) = UnixStream::pair().unwrap();
+        let (_sender, answered) = mpsc::sync_channel(1);
+        let cancellation = des_common::control::Cancellation::default();
+        assert!(wait_for_answer(&answered, Duration::ZERO, &server, &cancellation, &egui::Context::default()).is_err());
+        assert!(cancellation.is_cancelled());
+    }
 
     /// A private folder for a socket; the temporary folder's own mode follows the umask.
     fn private_dir() -> tempfile::TempDir {

@@ -226,9 +226,50 @@ fn open_document_using(program:&std::ffi::OsStr,path:&std::path::Path)->std::io:
     if status.success(){Ok(())}else{Err(std::io::Error::other(format!("viewer exited unsuccessfully ({status})")))}
 }
 
+/// Open an HTTP link through the desktop handler and return launch failures.
+/// The caller limits outstanding workers; no shell interprets the destination.
+pub fn open_url(url: String, ctx: eframe::egui::Context) -> std::sync::mpsc::Receiver<Result<(), String>> {
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let result = open_url_using(std::ffi::OsStr::new("xdg-open"), &url)
+            .map_err(|error| format!("{error}. Check that a default web browser is installed and configured."));
+        let _ = tx.send(result);
+        ctx.request_repaint();
+    });
+    rx
+}
+
+fn open_url_using(program: &std::ffi::OsStr, url: &str) -> std::io::Result<()> {
+    let destination = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"));
+    if url.len() > 16 * 1024 || url.chars().any(|c| c.is_control() || c.is_whitespace())
+        || destination.is_none_or(|rest| rest.split(['/', '?', '#']).next().is_none_or(str::is_empty)) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid HTTP/HTTPS link"));
+    }
+    let status = Command::new(program).arg(url).stdin(Stdio::null())
+        .stdout(Stdio::null()).stderr(Stdio::null()).status()?;
+    if status.success() { Ok(()) }
+    else { Err(std::io::Error::other(format!("The browser launcher failed ({status})"))) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_opener_passes_one_literal_url_and_reports_failures() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("browser");
+        std::fs::write(&program, "#!/bin/sh\nprintf '%s' \"$1\" > \"$0.args\"\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let url = "https://example.org/?q=$(touch%20no)&a=b";
+        open_url_using(program.as_os_str(), url).unwrap();
+        assert_eq!(std::fs::read_to_string(program.with_extension("args")).unwrap(), url);
+        std::fs::write(&program, "#!/bin/sh\nexit 3\n").unwrap();
+        assert!(open_url_using(program.as_os_str(), url).is_err());
+        assert!(open_url_using(program.as_os_str(), "file:///tmp/a").is_err());
+        assert!(open_url_using(program.as_os_str(), "https://example.org/\nmalformed").is_err());
+    }
 
     #[test]
     fn document_opener_preserves_path_arguments_and_reports_viewer_failure(){

@@ -196,6 +196,10 @@ impl DesComp {
     /// use, or (for the shell to cut from, or to ask what is wanted) the display as it
     /// is now.
     pub fn take_shot(&mut self, mode: ShotMode) {
+        self.take_requested_shot(mode, None);
+    }
+
+    pub fn take_requested_shot(&mut self, mode: ShotMode, request: Option<u64>) {
         if self.locked { return; }
         let screen = self.focus_screen;
         // Where the window in use lies on its display, if there is one.
@@ -247,7 +251,10 @@ impl DesComp {
         } else {
             window = None;
         }
-        self.tell(Event::shot(mode, frame.width, frame.height, window, &path.to_string_lossy()));
+        self.tell(match request {
+            Some(id) => Event::shot_request(id, mode, frame.width, frame.height, window, &path.to_string_lossy()),
+            None => Event::shot(mode, frame.width, frame.height, window, &path.to_string_lossy()),
+        });
     }
 
     /// Starts recording the display in use into `path`, or says why not.

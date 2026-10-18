@@ -74,6 +74,14 @@ impl Default for Scratchpad {
 }
 
 impl Scratchpad {
+    /// Reconnect a hidden scratchpad; showing it remains an explicit user action.
+    pub fn restore_tab(&mut self, tab: TermTab) { self.tab = Some(tab); self.close_now(); }
+    pub fn persistent_id(&self) -> Option<&str> { self.tab.as_ref().and_then(|tab| tab.persistent_id.as_deref()) }
+
+    pub fn take_links(&mut self) -> Vec<String> {
+        self.tab.as_mut().map_or_else(Vec::new, TermTab::take_links)
+    }
+
     pub fn toggle(&mut self) {
         self.open = !self.open;
     }
@@ -108,7 +116,7 @@ impl Scratchpad {
         theme: &Theme,
         look: &TermLook,
         animate: bool,
-        spawn: (&str, &Path, usize),
+        spawn: (&str, &Path, usize, bool),
         events: &[Event],
     ) -> Option<Rect> {
         let now = Instant::now();
@@ -128,8 +136,8 @@ impl Scratchpad {
             ctx.request_repaint();
         }
         if self.tab.is_none() {
-            let (shell, home, scrollback) = spawn;
-            match TermTab::spawn(shell, home, ctx.clone(), scrollback) {
+            let (shell, home, scrollback, keep) = spawn;
+            match TermTab::spawn_managed(shell, home, ctx.clone(), scrollback, keep, crate::term::SessionRole::Scratchpad) {
                 Ok(tab) => self.tab = Some(tab),
                 Err(error) => {
                     eprintln!("des-ui: no scratchpad terminal: {error}");

@@ -186,7 +186,7 @@ pub fn filter_processes(all: &[Proc], uid: u32, needle: &str) -> Vec<Proc> {
     let needle = needle.to_lowercase();
     let mut found: Vec<Proc> = all
         .iter()
-        .filter(|proc| proc.uid == uid && proc.uid != 0 && proc.pid != std::process::id())
+        .filter(|proc| proc.uid == uid && proc.uid != 0 && signalable_pid(proc.pid))
         .filter(|proc| proc.name.to_lowercase().contains(&needle) || proc.command_line.to_lowercase().contains(&needle))
         .cloned()
         .collect();
@@ -221,8 +221,16 @@ fn owner_of(pid: u32) -> Option<u32> {
     line.split_whitespace().nth(1)?.parse().ok()
 }
 
+/// Reject critical and non-positive kernel PIDs before reading ownership or signalling.
+fn signalable_pid(pid: u32) -> bool {
+    pid > 1 && pid <= i32::MAX as u32 && pid != std::process::id()
+}
+
 /// Asks the process to end (SIGTERM), provided it still belongs to this user.
 pub fn terminate(pid: u32) -> Result<(), String> {
+    if !signalable_pid(pid) {
+        return Err("This process is protected or has an invalid process id.".into());
+    }
     let me = rustix::process::geteuid().as_raw();
     match owner_of(pid) {
         Some(uid) if uid == me && uid != 0 => {}
@@ -824,7 +832,38 @@ mod tests {
         assert_eq!(process_query("ps  python"), Some("python"));
         assert_eq!(process_query("kill"), None);
         assert_eq!(process_query("skill node"), None);
-        assert!(terminate(1).is_err());
+        assert!(!signalable_pid(0));
+        assert!(!signalable_pid(1));
+        assert!(!signalable_pid(std::process::id()));
+        assert!(!signalable_pid(u32::MAX));
+        // Never signal a real system PID in a regression test.
+        let critical = vec![
+            Proc { pid: 1, uid: 1000, name: "critical".into(), command_line: "critical".into() },
+            Proc { pid: std::process::id(), uid: 1000, name: "critical".into(), command_line: "critical".into() },
+        ];
+        assert!(filter_processes(&critical, 1000, "critical").is_empty());
+    }
+
+    #[test]
+    fn termination_only_signals_a_controlled_child() {
+        let mut child = Command::new("sleep").arg("10").spawn().unwrap();
+        let result = terminate(child.id());
+        if rustix::process::geteuid().as_raw() == 0 {
+            assert!(result.is_err(), "root processes remain protected");
+            let _ = child.kill();
+        } else {
+            result.unwrap();
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if child.try_wait().unwrap().is_some() { break; }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("controlled child did not terminate");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]

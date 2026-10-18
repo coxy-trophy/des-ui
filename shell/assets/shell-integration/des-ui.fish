@@ -11,20 +11,30 @@ if status is-interactive
     set -g __des_ui_integrated 1
     set -g __des_ui_running 0
 
+    # tmux consumes OSC unless our managed backend forwards it as passthrough.
+    function __des_ui_osc
+        if test "$DES_UI_PERSISTENT_TERMINAL" = 1; and test -n "$TMUX"
+            printf '\033Ptmux;\033'
+            printf '\033]'; printf $argv; printf '\007\033\\'
+        else
+            printf '\033]'; printf $argv; printf '\007'
+        end
+    end
+
     # Before each prompt: the command that just ran is over, and the prompt follows.
     function __des_ui_precmd --on-event fish_prompt
         set -l last $status
         if test "$__des_ui_running" = 1
-            printf '\033]133;D;%s\007' $last
+            __des_ui_osc '133;D;%s' $last
             set -g __des_ui_running 0
         end
-        printf '\033]7;file://%s%s\007' "$hostname" (string escape --style=url -- "$PWD" | string replace -a '%2F' '/')
-        printf '\033]133;A\007'
+        __des_ui_osc '7;file://%s%s' "$hostname" (string escape --style=url -- "$PWD" | string replace -a '%2F' '/')
+        __des_ui_osc '133;A'
     end
 
     # Before each command line runs.
     function __des_ui_preexec --on-event fish_preexec
         set -g __des_ui_running 1
-        printf '\033]133;C\007'
+        __des_ui_osc '133;C'
     end
 end

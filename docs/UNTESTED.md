@@ -472,3 +472,22 @@ watched work on a real machine. Tick them off, or note what went wrong.
       browser opened from a link): the dock dot pulses, the palette lists it first
 - [ ] The keyboard button in the status strip shows and hides the on-screen keyboard
 - [ ] A custom accent tints the phosphor glow straight after Apply color
+
+
+## Live terminals across graphical shell restart
+
+Use an updated compositor and GUI with tmux >=3.3. Existing terminals from before
+this feature cannot be converted; save their work before the first desktop update.
+
+- [ ] In a fresh development desktop, open three terminals, record `echo $$`, change
+      directories, leave a long-running command and a background job active. Split
+      two tabs, focus the second pane, and open then hide the scratchpad.
+- [ ] Restart the graphical shell (Super+Shift+R): same shell PIDs, running jobs,
+      directories, tab order, split orientation/focus, and hidden scratchpad return.
+- [ ] Exit one terminal shell explicitly, restart again: that terminal stays closed.
+- [ ] Turn off Settings → Session → Keep terminals across shell restarts: existing
+      live tabs reconnect, new tabs say Temporary and close when the shell restarts.
+- [ ] Start another GUI against the same desktop: it cannot steal live terminals.
+- [ ] Log out: the desktop's private tmux backend ends; personal tmux servers remain.
+- [ ] Force one reconnect/enumeration failure: processes and original layout remain
+      available for another restart, with a visible recovery warning.

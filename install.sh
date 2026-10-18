@@ -8,6 +8,16 @@ if ! command -v cage >/dev/null; then
     echo "cannot drive the display. To add one: sudo apt install cage" >&2
 fi
 
+command -v python3 >/dev/null || { echo "python3 is required by the session startup watchdog" >&2; exit 1; }
+
+# Direct terminals remain available without tmux; live reconnection needs 3.3+.
+if command -v tmux >/dev/null && tmux -V | awk '{ split($2, v, "."); exit !(v[1] > 3 || (v[1] == 3 && v[2] + 0 >= 3)) }'; then
+    echo "tmux 3.3+ detected: terminal preservation across shell restarts is available."
+else
+    echo "Note: tmux 3.3+ is required to keep terminals across shell restarts." >&2
+    echo "Without it, turn off Keep terminals across shell restarts in Settings for direct terminals." >&2
+fi
+
 cargo build --release
 
 # Keep the build being replaced: the session falls back to it if the new one cannot start.
@@ -27,6 +37,7 @@ sudo install -Dm755 target/release/des-comp /usr/local/bin/des-comp
 sudo install -Dm755 target/release/des-music /usr/local/bin/des-music
 sudo install -Dm755 target/release/des-portal /usr/local/bin/des-portal
 sudo install -Dm755 session/des-ui-session /usr/local/bin/des-ui-session
+sudo install -Dm755 session/des-ui-startup /usr/local/bin/des-ui-startup
 sudo install -Dm644 session/des-ui.desktop /usr/share/wayland-sessions/des-ui.desktop
 sudo install -Dm644 session/des-ui-portals.conf /usr/share/xdg-desktop-portal/des-ui-portals.conf
 sudo install -Dm644 session/des-ui.portal /usr/share/xdg-desktop-portal/portals/des-ui.portal
@@ -55,7 +66,7 @@ if [ -e /usr/local/bin/edex-comp ]; then
 fi
 
 if [ "${XDG_CURRENT_DESKTOP:-}" = des-ui ]; then
-    echo "Installed. Super+Shift+R restarts the shell on the new build (terminal tabs close);"
+    echo "Installed. Super+Shift+R restarts the shell on the new build; managed terminals reconnect;"
     echo "a new compositor takes effect the next time you log in."
 else
     echo "Installed. Log out and pick 'DEs-UI' from the session menu on the login screen."

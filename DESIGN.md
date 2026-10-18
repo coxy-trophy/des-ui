@@ -43,3 +43,7 @@ Shared native icons: ui::Icon and paint_icon. Installed app artwork: app_icons::
 
 ## Do's and Don'ts
 Keep numeric status readings and shortcut explanations. Preserve current terminals and panels. Never remove unknown pins automatically. Do not steal focus on pointer hover or show dock over lock. No fake app logos, avatar initials, or title-based app matching.
+
+Notification preferences reuse the existing Settings → Sound & Screen switch rows and configuration owner. Processor temperature warnings have an independent persistent switch. Browser-opening errors reuse the notification center and do not change terminal selection or layout.
+
+Settings → Session distinguishes LIVE TERMINALS (automatic process reconnection) from SAVED SESSION (explicit folder/application layout snapshots). Reuse switch_row, existing text styles and notification center for recovery results. Reconnected scratchpad remains hidden and terminal output is not persisted in the layout file.

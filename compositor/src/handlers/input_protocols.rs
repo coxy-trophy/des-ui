@@ -40,6 +40,17 @@ use crate::DesComp;
 /// shell's alone: any other client could otherwise type into whatever has the keyboard.
 pub static SHELL_PID: AtomicU32 = AtomicU32::new(0);
 
+fn shell_client(client: &smithay::reexports::wayland_server::Client, shell: u32) -> bool {
+    // Visibility callbacks run under the backend lock; only cached client data is safe here.
+    shell != 0 && client.get_data::<crate::state::ClientState>()
+        .is_some_and(|state| state.peer_pid == Some(shell))
+}
+
+/// Fail closed until a compositor-owned trusted IME launch mechanism exists.
+fn input_method_allowed(_client: &smithay::reexports::wayland_server::Client) -> bool {
+    false
+}
+
 /// State the protocols keep beyond their globals.
 pub struct InputProtocols {
     pub shortcuts_inhibit: KeyboardShortcutsInhibitState,
@@ -48,14 +59,15 @@ pub struct InputProtocols {
 /// Announces the globals.
 pub fn init(dh: &DisplayHandle) -> InputProtocols {
     TextInputManagerState::new::<DesComp>(dh);
-    // Any input method may connect; it composes only for the window with the keyboard.
-    InputMethodManagerState::new::<DesComp, _>(dh, |_client| true);
+    // Input-method clients can install keyboard grabs and inspect surrounding text.
+    // No trusted IME launcher/identity exists yet, so fail closed. Keeping text-input
+    // available does not grant those privileges. In particular no IME can retain
+    // a grab or sensitive composition state across the lock screen.
+    InputMethodManagerState::new::<DesComp, _>(dh, input_method_allowed);
     PointerConstraintsState::new::<DesComp>(dh);
     RelativePointerManagerState::new::<DesComp>(dh);
-    let handle = dh.clone();
     VirtualKeyboardManagerState::new::<DesComp, _>(dh, move |client| {
-        let shell = SHELL_PID.load(Ordering::Relaxed);
-        shell != 0 && client.get_credentials(&handle).is_ok_and(|credentials| credentials.pid as u32 == shell)
+        shell_client(client, SHELL_PID.load(Ordering::Relaxed))
     });
     InputProtocols { shortcuts_inhibit: KeyboardShortcutsInhibitState::new::<DesComp>(dh) }
 }
@@ -289,6 +301,37 @@ delegate_virtual_keyboard_manager!(DesComp);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn virtual_keyboard_filter_works_while_backend_is_locked() {
+        use std::{os::unix::net::UnixStream, sync::Arc};
+        use smithay::reexports::wayland_server::Display;
+        use crate::state::ClientState;
+
+        let display = Display::<DesComp>::new().unwrap();
+        let mut handle = display.handle();
+        let (server, _peer) = UnixStream::pair().unwrap();
+        let client = handle.insert_client(server, Arc::new(ClientState {
+            peer_pid: Some(42),
+            ..Default::default()
+        })).unwrap();
+        let mut visited = false;
+        // Reproduce the lock context of a registry visibility callback. Querying
+        // client credentials through the display here would deadlock startup.
+        handle.backend_handle().with_all_clients(|_| {
+            visited = true;
+            assert!(!input_method_allowed(&client)); // Even the shell has no IME privilege.
+            assert!(shell_client(&client, 42));
+            assert!(!shell_client(&client, 43)); // A shell restart revokes the old PID.
+            assert!(!shell_client(&client, 0));
+        });
+        assert!(visited);
+
+        let (server, _peer) = UnixStream::pair().unwrap();
+        let unknown = handle.insert_client(server, Arc::new(ClientState::default())).unwrap();
+        assert!(!shell_client(&unknown, 42));
+        assert!(!input_method_allowed(&unknown));
+    }
 
     fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
         Rectangle::new((x, y).into(), (w, h).into())

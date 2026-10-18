@@ -15,6 +15,16 @@ __des_ui_integrated=1
 __des_ui_at_prompt=0
 __des_ui_running=0
 
+# Only our private tmux backend needs passthrough; ordinary terminals keep OSC.
+__des_ui_osc() {
+    if [ "${DES_UI_PERSISTENT_TERMINAL-}" = 1 ] && [ -n "${TMUX-}" ]; then
+        printf '\033Ptmux;\033'
+        printf '\033]'; printf "$@"; printf '\007\033\\'
+    else
+        printf '\033]'; printf "$@"; printf '\007'
+    fi
+}
+
 # Percent-encodes $1 for a file: URL, into __des_ui_encoded, byte by byte.
 __des_ui_url() {
     local LC_ALL=C c i hex
@@ -32,18 +42,18 @@ __des_ui_url() {
 __des_ui_precmd() {
     local last=$?
     if [ "$__des_ui_running" = 1 ]; then
-        printf '\033]133;D;%s\007' "$last"
+        __des_ui_osc '133;D;%s' "$last"
         __des_ui_running=0
     fi
     __des_ui_url "$PWD"
-    printf '\033]7;file://%s%s\007' "${HOSTNAME-}" "$__des_ui_encoded"
+    __des_ui_osc '7;file://%s%s' "${HOSTNAME-}" "$__des_ui_encoded"
     return $last
 }
 
 # Runs last at every prompt, just before bash draws it.
 __des_ui_ready() {
     __des_ui_at_prompt=1
-    printf '\033]133;A\007'
+    __des_ui_osc '133;A'
 }
 
 # Runs before each command, through the DEBUG trap; only the first command of a
@@ -55,7 +65,7 @@ __des_ui_preexec() {
     case "$BASH_COMMAND" in __des_ui_*) return 0 ;; esac
     __des_ui_at_prompt=0
     __des_ui_running=1
-    printf '\033]133;C\007'
+    __des_ui_osc '133;C'
 }
 
 if [[ "$(declare -p PROMPT_COMMAND 2>/dev/null)" == 'declare -a'* ]]; then
@@ -72,5 +82,9 @@ if [ -z "$(trap -p DEBUG)" ]; then
 fi
 # The end of the prompt, where the command is typed; invisible to readline.
 if [ -n "$PS1" ]; then
-    PS1="$PS1"'\[\033]133;B\007\]'
+    if [ "${DES_UI_PERSISTENT_TERMINAL-}" = 1 ] && [ -n "${TMUX-}" ]; then
+        PS1="$PS1"'\[\033Ptmux;\033\033]133;B\007\033\\\]'
+    else
+        PS1="$PS1"'\[\033]133;B\007\]'
+    fi
 fi

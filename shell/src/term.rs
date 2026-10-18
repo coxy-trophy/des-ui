@@ -18,6 +18,8 @@ mod links;
 mod search;
 mod blocks;
 mod integration;
+mod persistent;
+pub use persistent::{SessionRef, SessionRole, live_sessions};
 
 const OUTPUT_CHUNK_BYTES: usize = 8192;
 const OUTPUT_QUEUE_CHUNKS: usize = 32;
@@ -49,6 +51,8 @@ pub struct TermLook {
 }
 
 pub struct TermTab {
+    pub persistent_id: Option<String>,
+    pane_pid: Option<u32>,
     parser: vt100::Parser,
     blocks: blocks::Blocks,
     /// Output of one command, chosen from the gutter, as absolute lines.
@@ -67,10 +71,14 @@ pub struct TermTab {
     input_this_frame: bool,
     /// Anchor and head of the mouse selection, as (row, col) cells of the visible grid.
     selection: Option<((u16, u16), (u16, u16))>,
+    links_to_open: Vec<String>,
     pub exited: bool,
 }
 
 impl TermTab {
+    /// Requested links are dispatched by the desktop so launch failures are visible.
+    pub fn take_links(&mut self) -> Vec<String> { std::mem::take(&mut self.links_to_open) }
+
     /// Spawns `shell` as a login shell in `cwd`. `ctx` is woken whenever output arrives.
     pub fn spawn(shell: &str, cwd: &Path, ctx: egui::Context, scrollback: usize) -> anyhow::Result<TermTab> {
         Self::spawn_shell(shell, cwd, ctx, scrollback, &[])
@@ -100,6 +108,52 @@ impl TermTab {
         Self::spawn_with(cmd, ctx, scrollback)
     }
 
+    /// Opens a compositor-owned terminal when its private runtime is available.
+    pub fn spawn_managed(shell: &str, cwd: &Path, ctx: egui::Context, scrollback: usize, enabled: bool, role: SessionRole) -> anyhow::Result<Self> {
+        let mut cmd = CommandBuilder::new(shell);
+        match integration::prepare(shell) { Some(integration) => integration.apply(&mut cmd), None => cmd.arg("-l") }
+        cmd.cwd(cwd);
+        Self::spawn_managed_with(cmd, ctx, scrollback, enabled, role)
+    }
+
+    pub fn spawn_command_managed(argv: &[String], cwd: &Path, ctx: egui::Context, scrollback: usize, enabled: bool, role: SessionRole) -> anyhow::Result<Self> {
+        if !enabled { return Self::spawn_command(argv, cwd, ctx, scrollback); }
+        let (program, rest) = argv.split_first().ok_or_else(|| anyhow::anyhow!("nothing to run"))?;
+        let mut cmd = CommandBuilder::new(program); cmd.args(rest); cmd.cwd(cwd);
+        Self::spawn_managed_with(cmd, ctx, scrollback, enabled, role)
+    }
+
+    fn spawn_managed_with(mut cmd: CommandBuilder, ctx: egui::Context, scrollback: usize, enabled: bool, role: SessionRole) -> anyhow::Result<Self> {
+        if enabled {
+            if let Some(dir) = des_common::terminal::directory()? {
+                Self::terminal_env(&mut cmd);
+                let session = persistent::create(&dir, &cmd, role, scrollback)?;
+                let attached = Self::reattach(&session, ctx, scrollback);
+                if attached.is_err() { persistent::rollback(&dir, &session.id); }
+                return attached;
+            }
+        }
+        Self::spawn_with(cmd, ctx, scrollback)
+    }
+
+    pub fn reattach(session: &SessionRef, ctx: egui::Context, scrollback: usize) -> anyhow::Result<Self> {
+        let (cmd, history, size) = persistent::attach(session)?;
+        let mut tab = Self::spawn_with(cmd, ctx, scrollback)?;
+        tab.persistent_id = Some(session.id.clone());
+        tab.pane_pid = Some(session.pane_pid);
+        // History contains display bytes only; do not emit command notifications.
+        tab.resize(size.0, size.1);
+        tab.parser.process(&history);
+        Ok(tab)
+    }
+
+    fn terminal_env(cmd: &mut CommandBuilder) {
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("COLORTERM", "truecolor");
+        cmd.env("TERM_PROGRAM", "des-ui");
+        cmd.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
+    }
+
     fn spawn_with(mut cmd: CommandBuilder, ctx: egui::Context, scrollback: usize) -> anyhow::Result<TermTab> {
         let (rows, cols) = (24, 80);
         let pair = native_pty_system().openpty(PtySize {
@@ -109,10 +163,7 @@ impl TermTab {
             pixel_height: 0,
         })?;
 
-        cmd.env("TERM", "xterm-256color");
-        cmd.env("COLORTERM", "truecolor");
-        cmd.env("TERM_PROGRAM", "des-ui");
-        cmd.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
+        Self::terminal_env(&mut cmd);
         let child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);
 
@@ -139,6 +190,8 @@ impl TermTab {
         });
 
         Ok(TermTab {
+            persistent_id: None,
+            pane_pid: None,
             parser: vt100::Parser::new(rows, cols, scrollback),
             blocks: blocks::Blocks::new(scrollback),
             block_selection: None,
@@ -155,6 +208,7 @@ impl TermTab {
             wheel: wheel::WheelState::default(),
             input_this_frame: false,
             selection: None,
+            links_to_open: Vec::new(),
             exited: false,
         })
     }
@@ -235,13 +289,20 @@ impl TermTab {
 
     /// Working directory of the shell, used by the file browser and for new tabs.
     pub fn cwd(&self) -> Option<PathBuf> {
-        let pid = self.child.process_id()?;
+        let pid = self.pane_pid.or_else(|| self.child.process_id())?;
         std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
+    }
+
+    fn foreground_pid(&self) -> Option<u32> {
+        match self.pane_pid {
+            Some(pid) => persistent::foreground_pid(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?),
+            None => self.master.process_group_leader().map(|pid| pid as u32),
+        }
     }
 
     /// Name of the program currently in the foreground of this terminal.
     pub fn foreground_process(&self) -> Option<String> {
-        let pid = self.master.process_group_leader()?;
+        let pid = self.foreground_pid()?;
         let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
         Some(comm.trim().to_string())
     }
@@ -249,7 +310,7 @@ impl TermTab {
     /// The command line of what is running in the foreground, word by word; read only
     /// to see where it went, never run.
     pub fn foreground_command_line(&self) -> Option<Vec<String>> {
-        let pid = self.master.process_group_leader()?;
+        let pid = self.foreground_pid()?;
         let bytes = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
         let words: Vec<String> = bytes
             .split(|byte| *byte == 0)
@@ -561,7 +622,7 @@ impl TermTab {
                     if ui.input(|i| i.modifiers.ctrl) {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                         if response.clicked() {
-                            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                            if self.links_to_open.len() < 16 { self.links_to_open.push(url); }
                         }
                     }
                 }
@@ -1013,9 +1074,8 @@ mod tests {
                         tab.show(ui, rect, &theme, &response, &look, true);
                     });
                 });
-                let urls: Vec<_> = output.platform_output.commands.iter().filter_map(|command| {
-                    if let egui::OutputCommand::OpenUrl(url) = command { Some(url.url.as_str()) } else { None }
-                }).collect();
+                assert!(output.platform_output.commands.iter().all(|command| !matches!(command, egui::OutputCommand::OpenUrl(_))));
+                let urls = tab.take_links();
                 if ctrl && !pressed {
                     assert_eq!(urls, vec!["https://example.org"]);
                 } else { assert!(urls.is_empty()); }
@@ -1359,7 +1419,18 @@ mod tests {
         // An empty home keeps this machine's own shell files out of the check.
         let home = tempfile::tempdir().unwrap();
         let ctx = egui::Context::default();
-        let mut tab = TermTab::spawn_shell("/usr/bin/bash", home.path(), ctx, 1000, &[("HOME", home.path().as_os_str())]).unwrap();
+        // Keep generated integration files in this test's writable directory;
+        // the running desktop's runtime files may be read-only in the sandbox.
+        let integration_dir = home.path().join("integration");
+        std::fs::create_dir(&integration_dir).unwrap();
+        integration::install(&integration_dir).unwrap();
+        let mut command = CommandBuilder::new("/usr/bin/bash");
+        integration::for_shell("bash", &integration_dir).apply(&mut command);
+        command.cwd(home.path());
+        command.env("HOME", home.path());
+        command.env_remove("DES_UI_PERSISTENT_TERMINAL");
+        command.env_remove("TMUX");
+        let mut tab = TermTab::spawn_with(command, ctx, 1000).unwrap();
         let deadline = Instant::now() + Duration::from_secs(20);
         let wait = |tab: &mut TermTab, done: &dyn Fn(&TermTab) -> bool, what: &str| loop {
             tab.pump();
