@@ -1,0 +1,11 @@
+[package]
+name = "des-hands"
+version = "0.1.1"
+edition = "2024"
+license = "MIT"
+description = "Hand tracking from the webcam, for controlling the DEs-UI desktop by hand"
+
+[dependencies]
+tract-onnx = { version = "0.23", default-features = false }
+v4l = "0.14"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
