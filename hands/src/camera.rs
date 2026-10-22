@@ -1,5 +1,10 @@
 //! The webcam, through Video4Linux: 640 by 480, as Motion JPEG where the camera sends
 //! it, which most do at full speed, or else as raw YUYV.
+//!
+//! Exposure is left to the camera. In a dim room it holds each picture open longer
+//! and sends fewer of them, ten a second instead of thirty; but setting the time by
+//! hand is no help, as cameras such as the HD WebCam turn their gain off when it is
+//! set, and the picture goes black. More light is what makes it faster.
 
 use std::io;
 
@@ -50,7 +55,11 @@ pub fn run(path: &str, mut each: impl FnMut(&Picture) -> bool) -> io::Result<()>
     let mut stream = Stream::with_buffers(&device, Type::VideoCapture, 4)?;
     let mut picture = Picture { width, height, rgb: vec![0; width * height * 3] };
     loop {
-        let (data, meta) = stream.next()?;
+        let (data, meta) = match stream.next() {
+            Ok(next) => next,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
         let data = &data[..(meta.bytesused as usize).min(data.len())];
         let ready = if format.fourcc == mjpeg { from_jpeg(data, &mut picture) } else { from_yuyv(data, &mut picture) };
         // A frame that came damaged is passed over.

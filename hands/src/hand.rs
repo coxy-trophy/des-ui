@@ -10,11 +10,8 @@ pub const SIZE: usize = 224;
 /// How sure the model has to be that a hand is there, to go on following it.
 pub const PRESENT: f32 = 0.5;
 
-/// The joints, in the model's order.
+/// The wrist, first of the joints.
 pub const WRIST: usize = 0;
-pub const THUMB_TIP: usize = 4;
-pub const INDEX_BASE: usize = 5;
-pub const INDEX_TIP: usize = 8;
 
 /// A hand found in the camera picture.
 #[derive(Debug, Clone, PartialEq)]
