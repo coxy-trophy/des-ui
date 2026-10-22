@@ -161,6 +161,26 @@ struct Monitor {
     pending_since: Option<Instant>,
     /// Whether a frame has reached this monitor yet.
     lit: bool,
+    /// Not to be drawn before this: just after a refresh, the next frame waits until
+    /// shortly before the one after, so that what it shows is fresh and frames come
+    /// evenly spaced however this monitor's rate and the others' line up.
+    draw_after: Option<Instant>,
+    /// How long a frame for it has lately taken to draw.
+    draw_cost: Duration,
+    /// Since the last report: frames shown, the longest drawing, and when it began.
+    shown: u32,
+    worst: Duration,
+    counting_since: Instant,
+}
+
+/// How often each monitor's frame rate is written to the log.
+const REPORT_EVERY: Duration = Duration::from_secs(60);
+
+/// How long after a refresh a monitor's next frame waits to be drawn: as late as
+/// leaves three times what drawing has lately cost, and two milliseconds more, but
+/// never past half the interval, so that a slow frame still makes the next refresh.
+fn wait_after_refresh(refresh: Duration, draw_cost: Duration) -> Duration {
+    refresh.saturating_sub(draw_cost * 3 + Duration::from_millis(2)).min(refresh / 2)
 }
 
 pub struct UdevData {
@@ -319,6 +339,20 @@ pub fn init_udev(
                         Err(e) => tracing::warn!("page flip bookkeeping failed: {e}"),
                     }
                     monitor.pending_since = None;
+                    monitor.draw_after = Some(Instant::now() + wait_after_refresh(monitor.refresh, monitor.draw_cost));
+                    monitor.shown += 1;
+                    if monitor.counting_since.elapsed() >= REPORT_EVERY {
+                        let seconds = monitor.counting_since.elapsed().as_secs_f64();
+                        tracing::info!(
+                            output = %monitor.output.name(),
+                            fps = format!("{:.1}", monitor.shown as f64 / seconds),
+                            rate = format!("{:.1}", 1.0 / monitor.refresh.as_secs_f64()),
+                            draw_ms = format!("{:.1}", monitor.draw_cost.as_secs_f64() * 1000.0),
+                            worst_ms = format!("{:.1}", monitor.worst.as_secs_f64() * 1000.0),
+                            "frames"
+                        );
+                        (monitor.shown, monitor.worst, monitor.counting_since) = (0, Duration::ZERO, Instant::now());
+                    }
                     if !std::mem::replace(&mut monitor.lit, true) {
                         tracing::info!(output = %monitor.output.name(), "first frame on screen");
                     }
@@ -364,7 +398,14 @@ pub fn init_udev(
                 .as_ref()
                 .and_then(|udev| udev.monitors.iter().map(|monitor| monitor.refresh).min())
                 .unwrap_or(Duration::from_millis(16));
-            TimeoutAction::ToDuration(frame_time)
+            // Woken as well when a monitor's next frame is due.
+            let now = Instant::now();
+            let due = state
+                .udev
+                .as_ref()
+                .and_then(|udev| udev.monitors.iter().filter_map(|monitor| monitor.draw_after).filter(|at| *at > now).min())
+                .map(|at| at - now);
+            TimeoutAction::ToDuration(due.map_or(frame_time, |due| due.min(frame_time)))
         })?;
 
     Ok(())
@@ -400,7 +441,7 @@ fn configure_device(device: &mut input::Device, settings: &des_common::input::In
 
 /// The modes a monitor offers, without interlaced ones or repeats, largest and fastest
 /// first.
-fn offered_modes(info: &connector::Info) -> Vec<DisplayMode> {
+fn offered_modes(info: &connector::Info, in_use: Option<(u16, u16)>) -> Vec<DisplayMode> {
     let mut modes: Vec<DisplayMode> = Vec::new();
     for mode in info.modes() {
         if mode.flags().contains(ModeFlags::INTERLACE) {
@@ -416,9 +457,32 @@ fn offered_modes(info: &connector::Info) -> Vec<DisplayMode> {
             modes.push(offered);
         }
     }
+    let (width, height) = info.size().unwrap_or((0, 0));
+    let mut modes = in_shape(modes, (width, height), in_use);
     modes.sort_by_key(|mode| std::cmp::Reverse((mode.width * mode.height, mode.refresh)));
     modes.truncate(48);
     modes
+}
+
+/// Leaves out modes of another shape than the screen where one of the same height has
+/// its shape: 4096 by 2160 on a 16:9 TV, which would only be squeezed onto it, when it
+/// also offers 3840 by 2160. Other shapes with no such twin, such as 4:3, stay; so
+/// does the size in use. A screen whose size is not known keeps everything.
+fn in_shape(modes: Vec<DisplayMode>, physical: (u32, u32), in_use: Option<(u16, u16)>) -> Vec<DisplayMode> {
+    if physical.0 < 100 || physical.1 < 60 {
+        return modes;
+    }
+    let screen = physical.0 as f64 / physical.1 as f64;
+    let shaped = |mode: &DisplayMode| ((mode.width as f64 / mode.height.max(1) as f64) / screen - 1.0).abs() < 0.05;
+    let keep: Vec<bool> = modes
+        .iter()
+        .map(|mode| {
+            shaped(mode)
+                || in_use == Some((mode.width as u16, mode.height as u16))
+                || !modes.iter().any(|other| other.height == mode.height && shaped(other))
+        })
+        .collect();
+    modes.into_iter().zip(keep).filter_map(|(mode, keep)| keep.then_some(mode)).collect()
 }
 
 /// What a monitor's EDID says about how it may be driven beyond its modes.
@@ -519,6 +583,32 @@ fn default_mode(modes: &[(u16, u16, u32, bool)], physical: (u32, u32)) -> Option
         .map(|(index, _)| index)
 }
 
+/// The scale for a monitor nobody has set one for, from its resolution and its size
+/// in millimetres: one that brings it near the sharpness things are drawn for, about
+/// 110 dots an inch on a desk and 140 on a laptop, which is held closer. A screen
+/// over 40 inches is a TV, seen from across the room, and is scaled to show as much
+/// as 1080 lines; so is a monitor whose size is unknown. Nothing is drawn so large
+/// that fewer than 720 lines fit.
+fn auto_scale(size: (i32, i32), physical: (i32, i32), internal: bool) -> u32 {
+    let (width, height) = (size.0.max(1) as f64, size.1.max(1) as f64);
+    // Some monitors give only their shape here, as in 16 by 9 centimetres.
+    let known = physical.0 >= 100 && physical.1 >= 60;
+    let inches = (physical.0 as f64).hypot(physical.1 as f64) / 25.4;
+    let wanted = if !known || inches > 40.0 {
+        height / 1080.0
+    } else {
+        let dpi = width / (physical.0 as f64 / 25.4);
+        dpi / if internal { 140.0 } else { 110.0 }
+    };
+    let fits = |scale: &&u32| height * 100.0 / **scale as f64 >= 720.0;
+    Setup::SCALES
+        .iter()
+        .filter(fits)
+        .min_by_key(|scale| ((**scale as f64 / 100.0 - wanted).abs() * 1000.0) as u64)
+        .copied()
+        .unwrap_or(100)
+}
+
 /// How a saved layout sets a monitor beyond its mode.
 fn setup_of(saved: &monitors::Saved) -> Setup {
     Setup {
@@ -601,7 +691,7 @@ impl DesComp {
             }
             let name = connector_name(info);
             if off(&name) {
-                let modes = offered_modes(info);
+                let modes = offered_modes(info, None);
                 let wanted = saved.get(&monitors::gnome_name(&name));
                 let current = wanted
                     .and_then(|saved| {
@@ -711,7 +801,7 @@ impl DesComp {
             };
             tracing::info!(output = %name, mode = ?wl_mode, from_saved_layout = wanted.is_some(), "monitor connected");
             udev.monitors.push(Monitor {
-                modes: offered_modes(info),
+                modes: offered_modes(info, Some(drm_mode.size())),
                 connector: info.handle(),
                 crtc,
                 internal,
@@ -722,6 +812,11 @@ impl DesComp {
                 setup: Setup::default(),
                 pending_since: None,
                 lit: false,
+                draw_after: None,
+                draw_cost: Duration::from_millis(4),
+                shown: 0,
+                worst: Duration::ZERO,
+                counting_since: Instant::now(),
             });
         }
 
@@ -730,10 +825,18 @@ impl DesComp {
         let arranged = saved.arranged && udev.monitors.iter().all(|monitor| place(monitor).is_some());
         // Scale, turn and mirroring are this desktop's own settings, never GNOME's.
         for monitor in udev.monitors.iter_mut() {
-            monitor.setup = saved
-                .get(&monitors::gnome_name(&monitor.output.name()))
-                .filter(|saved| saved.own)
-                .map_or(Setup::default(), setup_of);
+            let own = saved.get(&monitors::gnome_name(&monitor.output.name())).filter(|saved| saved.own);
+            monitor.setup = match own {
+                Some(saved) => setup_of(saved),
+                // Positions saved in GNOME allow for things at their own size.
+                None if arranged => Setup::default(),
+                // Never set up here: things as large as suit the monitor's size.
+                None => {
+                    let size = monitor.output.current_mode().map_or((0, 0), |mode| (mode.size.w, mode.size.h));
+                    let physical = monitor.output.physical_properties().size;
+                    Setup { scale: auto_scale(size, (physical.w, physical.h), monitor.internal), ..Setup::default() }
+                }
+            };
         }
         if arranged {
             udev.monitors.sort_by_key(|monitor| {
@@ -923,6 +1026,11 @@ impl DesComp {
                 Some(_) => tracing::warn!("page flip timed out, drawing again"),
                 None => {}
             }
+            if monitor.draw_after.is_some_and(|at| Instant::now() < at) {
+                continue;
+            }
+            monitor.draw_after = None;
+            let began = Instant::now();
             let Some(geometry) = self.space.output_geometry(&monitor.output) else {
                 continue;
             };
@@ -990,7 +1098,12 @@ impl DesComp {
                 .map(|result| !result.is_empty);
             match drawn {
                 Ok(true) => match monitor.surface.queue_frame(Some(crate::handlers::presentation::feedback_for(&self.space, &monitor.output))) {
-                    Ok(()) => monitor.pending_since = Some(Instant::now()),
+                    Ok(()) => {
+                        monitor.pending_since = Some(Instant::now());
+                        let cost = began.elapsed();
+                        monitor.draw_cost = (monitor.draw_cost * 3 + cost) / 4;
+                        monitor.worst = monitor.worst.max(cost);
+                    }
                     Err(e) => tracing::error!("cannot present frame: {e}"),
                 },
                 Ok(false) => {}
@@ -1023,6 +1136,46 @@ mod tests {
         let mut lying = edid(TV);
         lying[130] = 0xff;
         sink_of(&lying);
+    }
+
+    #[test]
+    fn scales_a_new_monitor_to_suit_its_size() {
+        // A 15.6 inch 1080p laptop and a 24 inch 1080p monitor are fine as they are.
+        assert_eq!(auto_scale((1920, 1080), (344, 194), true), 100);
+        assert_eq!(auto_scale((1920, 1080), (531, 299), false), 100);
+        // A 13 inch laptop at 2560 by 1600, and 4K monitors at 27 and 32 inches.
+        assert_eq!(auto_scale((2560, 1600), (286, 179), true), 150);
+        assert_eq!(auto_scale((3840, 2160), (597, 336), false), 150);
+        assert_eq!(auto_scale((3840, 2160), (708, 398), false), 125);
+        // A 55 inch TV shows as much as 1080 lines, whether at 4K or at 1080p.
+        assert_eq!(auto_scale((3840, 2160), (1210, 680), false), 200);
+        assert_eq!(auto_scale((1920, 1080), (1210, 680), false), 100);
+        // Unknown size, or only a shape: by its lines alone.
+        assert_eq!(auto_scale((3840, 2160), (0, 0), false), 200);
+        assert_eq!(auto_scale((2560, 1440), (16, 9), false), 125);
+        // A tiny, dense panel is never scaled past 720 lines.
+        assert_eq!(auto_scale((1280, 800), (120, 75), true), 100);
+    }
+
+    #[test]
+    fn offers_modes_in_the_shape_of_the_screen() {
+        let mode = |width, height, refresh| DisplayMode { width, height, refresh };
+        let tv = vec![mode(4096, 2160, 24_000), mode(3840, 2160, 30_000), mode(1920, 1080, 120_000), mode(1024, 768, 60_000)];
+        let shaped = in_shape(tv.clone(), (1210, 680), None);
+        assert_eq!(shaped, [mode(3840, 2160, 30_000), mode(1920, 1080, 120_000), mode(1024, 768, 60_000)], "4:3 has no twin, and stays");
+        // What is in use stays offered, so the settings can show it.
+        assert_eq!(in_shape(tv.clone(), (1210, 680), Some((4096, 2160))).len(), 4);
+        assert_eq!(in_shape(tv.clone(), (16, 9), None).len(), 4, "a size that is only a shape tells nothing");
+    }
+
+    #[test]
+    fn draws_late_but_in_time() {
+        let ms = Duration::from_millis;
+        // At 30 Hz, drawing that costs 4 ms waits half the interval.
+        assert_eq!(wait_after_refresh(Duration::from_micros(33_334), ms(4)), Duration::from_micros(16_667));
+        // At 120 Hz there is little room to wait; at worst, none.
+        assert_eq!(wait_after_refresh(Duration::from_micros(8_333), ms(2)), Duration::from_micros(333));
+        assert_eq!(wait_after_refresh(ms(16), ms(10)), Duration::ZERO);
     }
 
     #[test]

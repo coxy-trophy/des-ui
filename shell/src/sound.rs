@@ -27,6 +27,88 @@ pub struct Devices {
     pub inputs: Vec<Node>,
     /// Applications playing or recording something now.
     pub streams: Vec<Node>,
+    /// Outputs a sound card has but cannot use as it is set up: the HDMI of a card
+    /// set for its own speakers, say, which can play only one or the other.
+    pub elsewhere: Vec<Elsewhere>,
+}
+
+/// An output that a sound card reaches only by changing over to another profile.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Elsewhere {
+    /// The card, as PipeWire numbers it.
+    pub device: u32,
+    /// The profile to change over to.
+    pub profile: u32,
+    pub name: String,
+}
+
+/// Reads `pw-dump` for the outputs each sound card could change over to. The profile
+/// chosen for one keeps the card's microphone if the current profile has it, and is
+/// otherwise the card's own favourite among those that reach it.
+pub fn parse_elsewhere(dump: &str) -> Vec<Elsewhere> {
+    use serde_json::Value;
+    let Ok(Value::Array(objects)) = serde_json::from_str::<Value>(dump) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for object in &objects {
+        let info = &object["info"];
+        if info["props"]["media.class"] != "Audio/Device" {
+            continue;
+        }
+        let Some(device) = object["id"].as_u64() else { continue };
+        let params = &info["params"];
+        let list = |name: &str| params[name].as_array().cloned().unwrap_or_default();
+        let Some(active) = list("Profile").first().and_then(|profile| profile["index"].as_u64()) else { continue };
+        let profiles = list("EnumProfile");
+        let profile = |index: u64| profiles.iter().find(|profile| profile["index"].as_u64() == Some(index));
+        // Whether a profile listens as well as plays.
+        let listens = |profile: &Value| profile["name"].as_str().is_some_and(|name| name.contains("input:"));
+        let keep_input = profile(active).is_some_and(listens);
+        let product = info["props"]["device.description"].as_str().unwrap_or("Sound card");
+        for route in list("EnumRoute") {
+            if route["direction"] != "Output" || route["available"] == "no" {
+                continue;
+            }
+            let reaches: Vec<u64> = route["profiles"].as_array().map(|all| all.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
+            if reaches.is_empty() || reaches.contains(&active) {
+                continue;
+            }
+            let best = reaches
+                .iter()
+                .filter_map(|index| profile(*index))
+                .filter(|profile| profile["available"] != "no")
+                .max_by_key(|profile| (listens(profile) == keep_input, profile["priority"].as_i64().unwrap_or(0)));
+            let Some(index) = best.and_then(|profile| profile["index"].as_u64()) else { continue };
+            // What is plugged in names itself, a TV say; otherwise the card and the port.
+            let info = route["info"].as_array().cloned().unwrap_or_default();
+            let plugged = info.iter().skip(1).collect::<Vec<_>>().chunks(2).find(|pair| pair[0] == "device.product.name").and_then(|pair| pair.get(1)?.as_str().map(str::to_string));
+            let port = route["description"].as_str().unwrap_or("Output");
+            let name = match plugged {
+                Some(plugged) => format!("{plugged} ({port})"),
+                None => format!("{product} {port}"),
+            };
+            if !found.iter().any(|known: &Elsewhere| known.device == device as u32 && known.name == name) {
+                found.push(Elsewhere { device: device as u32, profile: index as u32, name });
+            }
+        }
+    }
+    found
+}
+
+/// The PipeWire number of an output that belongs to sound card `device`.
+fn output_of(dump: &str, device: u32) -> Option<u32> {
+    let objects: Vec<serde_json::Value> = serde_json::from_str(dump).ok()?;
+    objects.iter().find_map(|object| {
+        let props = &object["info"]["props"];
+        let belongs = props["media.class"] == "Audio/Sink" && props["device.id"].as_u64() == Some(device as u64);
+        belongs.then(|| object["id"].as_u64()).flatten().map(|id| id as u32)
+    })
+}
+
+fn pw_dump() -> Option<String> {
+    let output = Command::new("timeout").arg("5").arg("pw-dump").stdin(std::process::Stdio::null()).output().ok()?;
+    output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Reads a `[vol: 0.64]` or `[vol: 0.40 MUTED]` mark, or `Volume: 0.40 [MUTED]`.
@@ -111,6 +193,7 @@ fn read() -> Option<Devices> {
             (stream.volume, stream.muted) = parse_level(&level);
         }
     }
+    devices.elsewhere = pw_dump().map(|dump| parse_elsewhere(&dump)).unwrap_or_default();
     Some(devices)
 }
 
@@ -139,19 +222,48 @@ impl Sound {
 
     /// Does something with `wpctl`, if anything, then reads how things stand.
     fn act(&self, steps: Vec<Vec<String>>) {
+        let something = !steps.is_empty();
+        let work = move || {
+            for step in steps {
+                let args: Vec<&str> = step.iter().map(String::as_str).collect();
+                let _ = wpctl(&args);
+            }
+        };
+        self.act_with(work, something);
+    }
+
+    /// Changes a card over to the profile that reaches an output, then plays through
+    /// that output once it appears.
+    fn change_over(&self, place: &Elsewhere) {
+        let (device, profile) = (place.device, place.profile);
+        self.act_with(
+            move || {
+                let _ = wpctl(&["set-profile", &device.to_string(), &profile.to_string()]);
+                for _ in 0..20 {
+                    if let Some(output) = pw_dump().and_then(|dump| output_of(&dump, device)) {
+                        let _ = wpctl(&["set-default", &output.to_string()]);
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(150));
+                }
+            },
+            true,
+        );
+    }
+
+    /// Runs `work` in the background, then reads how things stand. With nothing to
+    /// do, a reading already under way is enough.
+    fn act_with(&self, work: impl FnOnce() + Send + 'static, something: bool) {
         let (shared, ctx) = (self.shared.clone(), self.ctx.clone());
         {
             let mut state = shared.lock().unwrap();
-            if state.reading && steps.is_empty() {
+            if state.reading && !something {
                 return;
             }
             state.reading = true;
         }
         std::thread::spawn(move || {
-            for step in steps {
-                let args: Vec<&str> = step.iter().map(String::as_str).collect();
-                let _ = wpctl(&args);
-            }
+            work();
             let devices = read();
             let mut state = shared.lock().unwrap();
             state.devices = devices;
@@ -197,9 +309,9 @@ impl Sound {
     }
 
     /// The devices of one kind, to choose among, and the level of the one in use.
-    fn devices(&mut self, ui: &mut Ui, theme: &Theme, title: &str, none: &str, nodes: &[Node]) {
+    fn devices(&mut self, ui: &mut Ui, theme: &Theme, title: &str, none: &str, nodes: &[Node], elsewhere: &[Elsewhere]) {
         ui::section(ui, title, |_| {});
-        if nodes.is_empty() {
+        if nodes.is_empty() && elsewhere.is_empty() {
             ui::text(ui, none, ui::mono(12.0), ui::LABEL);
             ui.add_space(22.0);
             return;
@@ -208,6 +320,11 @@ impl Sound {
             let state = if node.chosen { "IN USE" } else { "USE" };
             if row(ui, theme, &node.name, state, node.chosen) && !node.chosen {
                 self.act(vec![vec!["set-default".into(), node.id.to_string()]]);
+            }
+        }
+        for place in elsewhere {
+            if row(ui, theme, &place.name, "USE", false) {
+                self.change_over(place);
             }
         }
         ui.add_space(10.0);
@@ -227,13 +344,18 @@ impl Sound {
             self.act(Vec::new());
         }
         let Some(devices) = devices else { return };
-        if devices.outputs.len() < 2 {
+        if devices.outputs.len() + devices.elsewhere.len() < 2 {
             return;
         }
         for node in devices.outputs.iter().take(4) {
             let state = if node.chosen { "IN USE" } else { "USE" };
             if row(ui, theme, &crate::panels::truncate(&node.name, 26), state, node.chosen) && !node.chosen {
                 self.act(vec![vec!["set-default".into(), node.id.to_string()]]);
+            }
+        }
+        for place in devices.elsewhere.iter().take(4usize.saturating_sub(devices.outputs.len())) {
+            if row(ui, theme, &crate::panels::truncate(&place.name, 26), "USE", false) {
+                self.change_over(place);
             }
         }
     }
@@ -254,8 +376,8 @@ impl Sound {
             ui::text(ui, text, ui::mono(12.0), ui::LABEL);
             return;
         };
-        self.devices(ui, theme, "OUTPUT", "No device to play through was found.", &devices.outputs);
-        self.devices(ui, theme, "INPUT", "No microphone was found.", &devices.inputs);
+        self.devices(ui, theme, "OUTPUT", "No device to play through was found.", &devices.outputs, &devices.elsewhere);
+        self.devices(ui, theme, "INPUT", "No microphone was found.", &devices.inputs, &[]);
 
         ui::section(ui, "APPLICATIONS", |_| {});
         if devices.streams.is_empty() {
@@ -341,6 +463,43 @@ Settings
         let streams: Vec<(u32, &str)> = devices.streams.iter().map(|stream| (stream.id, stream.name.as_str())).collect();
         assert_eq!(streams, [(69, "pw-cat"), (81, "Brave")], "applications, not their channels");
         assert_eq!(parse_status(""), Devices::default());
+    }
+
+    /// A built-in card set for its speakers, with a TV on its HDMI, trimmed from `pw-dump`.
+    const DUMP: &str = r#"[
+      {"id": 49, "type": "PipeWire:Interface:Device", "info": {
+        "props": {"media.class": "Audio/Device", "device.description": "Built-in Audio"},
+        "params": {
+          "Profile": [{"index": 1, "name": "output:analog-stereo+input:analog-stereo"}],
+          "EnumProfile": [
+            {"index": 1, "name": "output:analog-stereo+input:analog-stereo", "priority": 6565, "available": "yes"},
+            {"index": 3, "name": "output:hdmi-stereo+input:analog-stereo", "priority": 5965, "available": "yes"},
+            {"index": 4, "name": "output:hdmi-stereo", "priority": 5900, "available": "yes"},
+            {"index": 5, "name": "output:hdmi-stereo-extra1+input:analog-stereo", "priority": 5765, "available": "no"}
+          ],
+          "EnumRoute": [
+            {"index": 2, "direction": "Output", "name": "analog-output-speaker", "description": "Speakers", "available": "unknown", "profiles": [1, 2]},
+            {"index": 0, "direction": "Input", "name": "analog-input-internal-mic", "description": "Internal Microphone", "available": "unknown", "profiles": [1, 3]},
+            {"index": 4, "direction": "Output", "name": "hdmi-output-0", "description": "HDMI / DisplayPort", "available": "yes",
+             "info": [2, "port.type", "hdmi", "device.product.name", "Beyond TV"], "profiles": [4, 3]},
+            {"index": 5, "direction": "Output", "name": "hdmi-output-1", "description": "HDMI / DisplayPort 2", "available": "no", "profiles": [5]}
+          ]
+        }}},
+      {"id": 53, "info": {"props": {"media.class": "Audio/Sink", "device.id": 49}}}
+    ]"#;
+
+    #[test]
+    fn finds_outputs_a_card_has_to_change_over_to() {
+        // The TV, by the profile that keeps the microphone; nothing for the unplugged port.
+        assert_eq!(parse_elsewhere(DUMP), [Elsewhere { device: 49, profile: 3, name: "Beyond TV (HDMI / DisplayPort)".into() }]);
+        // Once changed over, the speakers are the ones elsewhere.
+        let changed = DUMP.replace(r#""Profile": [{"index": 1,"#, r#""Profile": [{"index": 3,"#);
+        let elsewhere = parse_elsewhere(&changed);
+        assert_eq!(elsewhere.len(), 1);
+        assert_eq!((elsewhere[0].profile, elsewhere[0].name.as_str()), (1, "Built-in Audio Speakers"));
+        assert_eq!(output_of(DUMP, 49), Some(53));
+        assert_eq!(output_of(DUMP, 50), None);
+        assert!(parse_elsewhere("not json").is_empty());
     }
 
     #[test]

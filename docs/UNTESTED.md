@@ -3,6 +3,11 @@
 Things that are built and pass their automatic tests, but that nobody has yet
 watched work on a real machine. Tick them off, or note what went wrong.
 
+## Sound
+
+- [ ] With a TV on HDMI, Settings → Sound and the quick settings list it by name;
+      choosing it plays through the TV, and choosing Speakers goes back
+
 ## Display options (Settings → Displays)
 
 - [ ] Scale: 125%, 150%, 175%, 200% on the laptop panel
@@ -22,6 +27,12 @@ watched work on a real machine. Tick them off, or note what went wrong.
       graphics mode); the log says "connector set for a sharper picture"
 - [ ] A TV plugged in for the first time, with nothing saved, starts at 1080p
       120 Hz or another smooth mode, not 4096×2160 at 24 Hz
+- [ ] A monitor never set up here starts at a scale that suits it: a 55" TV at 4K
+      at 200%, a 27" 4K monitor at 150%, a 1080p laptop at 100%
+- [ ] The mode list leaves out shapes the screen does not have (4096×2160 on a
+      16:9 TV) but keeps the mode in use
+- [ ] Movement on a 24 or 30 Hz display is even, and no worse on the laptop; the
+      log's once-a-minute "frames" lines show fps close to each display's rate
 
 ## Screenshots and recording
 
