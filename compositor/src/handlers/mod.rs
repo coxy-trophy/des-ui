@@ -100,7 +100,23 @@ impl DataDeviceHandler for DesComp {
     }
 }
 
-impl ClientDndGrabHandler for DesComp {}
+impl ClientDndGrabHandler for DesComp {
+    fn started(&mut self, source:Option<smithay::reexports::wayland_server::protocol::wl_data_source::WlDataSource>, icon:Option<WlSurface>, _seat:Seat<Self>) {
+        // Source-less drags are restricted to one client; touch drags have their own routing.
+        if source.is_none() || self.buttons_down==0 || self.locked || self.picking {return;}
+        let focus=self.seat.get_pointer().and_then(|p|p.current_focus());
+        let origin=focus.and_then(|mut surface| {
+            while let Some(parent)=smithay::wayland::compositor::get_parent(&surface) {surface=parent;}
+            self.window_for(&surface)
+        });
+        self.drag_icon=icon;
+        self.drag_session=Some(crate::dnd::Session::new(source,origin));
+    }
+    fn dropped(&mut self, _target:Option<WlSurface>, _validated:bool, _seat:Seat<Self>) {
+        self.drag_icon=None;
+        if let Some(session)=self.drag_session.as_mut(){session.ended=true;}
+    }
+}
 
 delegate_data_device!(DesComp);
 

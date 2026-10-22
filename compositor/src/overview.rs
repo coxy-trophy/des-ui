@@ -194,6 +194,7 @@ pub enum OverviewKey {
     Close,
     Choose,
     Move(Direction),
+    Page(bool),
     Type(char),
     Erase,
     /// Anything else: swallowed, so that nothing behind the overview hears it.
@@ -234,6 +235,7 @@ pub struct Overview {
     pub screen: usize,
     pub filter: String,
     pub selected: usize,
+    pub page: usize,
     /// The switcher's windows, in the order they were last used when it opened.
     pub order: Vec<Window>,
     pub opened: Instant,
@@ -256,6 +258,7 @@ impl Overview {
             screen,
             filter: String::new(),
             selected,
+            page: 0,
             order,
             opened: now,
             closing: None,
@@ -302,7 +305,7 @@ impl Overview {
         OverviewLayout {
             kind: self.kind,
             screen: self.screen,
-            selected: (!self.layout.thumbs.is_empty()).then_some(self.selected.min(self.layout.thumbs.len().saturating_sub(1))),
+            selected: (!self.layout.thumbs.is_empty() && (self.kind != OverviewKind::Drag || !self.filter.is_empty())).then_some(self.selected.min(self.layout.thumbs.len().saturating_sub(1))),
             filter: self.filter.clone(),
             strip: self.layout.strip.as_ref().map(local),
             workspaces: self
@@ -314,6 +317,19 @@ impl Overview {
             thumbs: self.layout.thumbs.iter().map(|(_, app, rect)| OverviewThumb { app: *app, area: local(rect) }).collect(),
         }
     }
+}
+
+/// A bounded preview grid above the bottom shelf. Nine pictures per page.
+pub fn window_shelf(size:Size<i32,Logical>,aspects:&[f64])->(Rectangle<i32,Logical>,Vec<Rectangle<i32,Logical>>) {
+    let edge=16.min((size.w/8).max(0));
+    let width=(size.w-2*edge).clamp(1,980);
+    let height=(size.h/2).clamp(1,440);
+    let bottom=(size.h-100).max(height);
+    let strip=Rectangle::new(((size.w-width)/2,bottom-height).into(),(width,height).into());
+    let pad=16.min(width/8).min(height/8);
+    let area=Rectangle::new((strip.loc.x+pad,strip.loc.y+32.min(height/4)).into(),
+        ((width-2*pad).max(1),(height-48.min(height/2)).max(1)).into());
+    (strip,pack(area,aspects))
 }
 
 fn aspect_of(window: &Window) -> f64 {
@@ -397,7 +413,7 @@ where
         [colour[0] * a, colour[1] * a, colour[2] * a, a]
     };
     match overview.kind {
-        OverviewKind::Workspaces => match shell.filter(|_| overview.screen == 0) {
+        OverviewKind::Workspaces | OverviewKind::Drag => match shell {
             // The shell draws the overview's ground, names and selection in its window.
             Some(shell) => {
                 if let Some(loc) = space.element_location(shell) {
@@ -413,10 +429,9 @@ where
                 Kind::Unspecified,
             ))),
         },
-        OverviewKind::Switcher => {
+        OverviewKind::Switcher | OverviewKind::Windows => {
             if let Some(strip) = overview.layout.strip {
                 let primary = Some(output_geo.loc);
-                let shell = shell.filter(|_| overview.screen == 0);
                 let lifted = crate::toast::elements(renderer, shell, Some(strip), primary, &overview.strip_id, output_geo.loc, scale);
                 if lifted.is_empty() {
                     elements.push(C::from(SolidColorRenderElement::new(
@@ -444,7 +459,7 @@ impl DesComp {
     /// Whether the overview covers the whole of `output`, so that nothing else of the
     /// desktop is to be drawn there.
     pub fn overview_covers(&self, display: Rectangle<i32, Logical>) -> bool {
-        self.overview.as_ref().is_some_and(|overview| overview.kind == OverviewKind::Workspaces && overview.layout.display == display)
+        self.overview.as_ref().is_some_and(|overview| matches!(overview.kind, OverviewKind::Workspaces | OverviewKind::Drag) && overview.layout.display == display)
     }
 
     fn may_open_overview(&self) -> bool {
@@ -455,7 +470,8 @@ impl DesComp {
     pub fn toggle_overview(&mut self) {
         match self.overview_open() {
             Some(OverviewKind::Workspaces) => self.close_overview(),
-            Some(OverviewKind::Switcher) => {}
+            Some(OverviewKind::Windows) => self.close_overview(),
+            Some(OverviewKind::Switcher | OverviewKind::Drag) => {}
             None => {
                 if !self.may_open_overview() {
                     return;
@@ -489,6 +505,20 @@ impl DesComp {
         let order = self.recency.sort(&candidates);
         let selected = crate::switcher::first_choice(order.len(), forward);
         self.begin_overview(Overview::new(OverviewKind::Switcher, screen, order, selected, self.motions.enabled, Instant::now()));
+    }
+
+    pub fn open_app_windows(&mut self, screen:usize, ids:&[String]) {
+        if !self.may_open_overview() || screen>=self.screens.len() || self.drag_session.is_some() { return; }
+        let order=self.recency.sort(&self.apps.iter().filter(|app| app.screen==screen && ids.contains(&crate::policy::window_app_id(&app.window)))
+            .map(|app|app.window.clone()).collect::<Vec<_>>());
+        if order.is_empty() { return; }
+        self.begin_overview(Overview::new(OverviewKind::Windows,screen,order,0,self.motions.enabled,Instant::now()));
+    }
+
+    pub fn open_drag_windows(&mut self, screen:usize) {
+        if !self.may_open_overview() || screen>=self.screens.len() { return; }
+        self.close_overview_now();
+        self.begin_overview(Overview::new(OverviewKind::Drag,screen,Vec::new(),0,self.motions.enabled,Instant::now()));
     }
 
     fn begin_overview(&mut self, overview: Overview) {
@@ -540,7 +570,7 @@ impl DesComp {
         let index_of = |window: &Window| self.apps.iter().position(|app| &app.window == window);
         let mut layout = Layout { display, ..Layout::default() };
         match overview.kind {
-            OverviewKind::Workspaces => {
+            OverviewKind::Workspaces | OverviewKind::Drag => {
                 for (workspace, cell) in cells(display.size).into_iter().enumerate() {
                     let cell = Rectangle::new(cell.loc + display.loc, cell.size);
                     layout.workspaces.push((workspace, cell, workspace == self.workspace));
@@ -550,7 +580,7 @@ impl DesComp {
                         .enumerate()
                         .filter(|(_, app)| app.screen == screen && app.workspace == workspace)
                         .filter(|(_, app)| {
-                            matches(&overview.filter, &crate::policy::window_title(&app.window), &crate::policy::window_app_id(&app.window))
+                            overview.kind==OverviewKind::Drag || matches(&overview.filter, &crate::policy::window_title(&app.window), &crate::policy::window_app_id(&app.window))
                         })
                         .map(|(index, app)| (index, &app.window))
                         .collect();
@@ -559,6 +589,17 @@ impl DesComp {
                     for ((index, window), rect) in windows.into_iter().zip(pack(area, &aspects)) {
                         layout.thumbs.push((window.clone(), index, rect));
                     }
+                }
+            }
+            OverviewKind::Windows => {
+                let windows:Vec<(usize,Window)>=overview.order.iter().filter(|window|window.alive())
+                    .filter_map(|window|Some((index_of(window)?,window.clone()))).collect();
+                let page=overview.page.min(windows.len().saturating_sub(1)/9);
+                let page_windows=&windows[(page*9).min(windows.len())..((page+1)*9).min(windows.len())];
+                let (strip,rects)=window_shelf(display.size,&page_windows.iter().map(|(_,w)|aspect_of(w)).collect::<Vec<_>>());
+                layout.strip=Some(Rectangle::new(strip.loc+display.loc,strip.size));
+                for ((index,window),rect) in page_windows.iter().zip(rects) {
+                    layout.thumbs.push((window.clone(),*index,Rectangle::new(rect.loc+display.loc,rect.size)));
                 }
             }
             OverviewKind::Switcher => {
@@ -576,11 +617,17 @@ impl DesComp {
                 }
             }
         }
-        let empty_switcher = overview.kind == OverviewKind::Switcher && layout.thumbs.is_empty();
+        layout.thumbs.truncate(des_common::ipc::OVERVIEW_THUMBS);
+        let empty_switcher = matches!(overview.kind, OverviewKind::Switcher | OverviewKind::Windows) && layout.thumbs.is_empty();
         let overview = self.overview.as_mut().unwrap();
         overview.screen = screen;
         overview.selected = overview.selected.min(layout.thumbs.len().saturating_sub(1));
         overview.layout = layout;
+        if overview.kind==OverviewKind::Windows {
+            let count=overview.order.iter().filter(|window|window.alive() && self.apps.iter().any(|app| &app.window==*window)).count();
+            overview.page=overview.page.min(count.saturating_sub(1)/9);
+            overview.filter=format!("{} / {}",overview.page+1,count.div_ceil(9).max(1));
+        }
         if overview.closing.is_none() {
             let line = OverviewLayout::encode(Some(&overview.describe()));
             if overview.told.as_ref() != Some(&line) {
@@ -615,7 +662,24 @@ impl DesComp {
             return;
         };
         match key {
-            OverviewKey::Close => self.close_overview(),
+            OverviewKey::Close => {
+                if overview.kind==OverviewKind::Windows {
+                    let screen=overview.screen;
+                    self.close_overview_now();
+                    self.dock_keyboard=true;
+                    self.dock_keyboard_screen=screen;
+                    self.arrange();
+                    self.tell(des_common::ipc::Event::dock_on(screen));
+                } else { self.close_overview(); }
+            },
+            OverviewKey::Page(forward) => {
+                if overview.kind==OverviewKind::Windows {
+                    let pages=overview.order.iter().filter(|window|window.alive()).count().div_ceil(9).max(1);
+                    overview.page=if forward {(overview.page+1).min(pages-1)}else{overview.page.saturating_sub(1)};
+                    overview.selected=0;
+                    self.refresh_overview();
+                }
+            },
             OverviewKey::Choose => {
                 if overview.layout.thumbs.is_empty() {
                     self.close_overview();
@@ -630,6 +694,7 @@ impl DesComp {
                 self.refresh_overview();
             }
             OverviewKey::Type(c) => {
+                if overview.kind!=OverviewKind::Workspaces { return; }
                 if overview.filter.len() < 64 {
                     overview.filter.push(c);
                     overview.selected = 0;
@@ -637,6 +702,7 @@ impl DesComp {
                 self.refresh_overview();
             }
             OverviewKey::Erase => {
+                if overview.kind!=OverviewKind::Workspaces { return; }
                 overview.filter.pop();
                 overview.selected = 0;
                 self.refresh_overview();
@@ -830,5 +896,25 @@ mod tests {
         tap.release(now);
         tap.press(now);
         assert!(tap.release(now + Duration::from_millis(10)));
+    }
+}
+
+
+#[cfg(test)]
+mod shelf_layout_tests {
+    use super::*;
+    #[test]
+    fn preview_grid_and_names_fit_narrow_and_wide_displays() {
+        for (w,h) in [(320,480),(800,600),(1920,1080)] {
+            let display=Rectangle::<i32,Logical>::from_size((w,h).into());
+            for n in 1..=9 {
+                let (strip,thumbs)=window_shelf((w,h).into(),&vec![16.0/9.0;n]);
+                assert!(display.contains_rect(strip),"{strip:?}");
+                for thumb in thumbs {
+                    assert!(strip.contains_rect(thumb),"{thumb:?} in {strip:?}");
+                    assert!(thumb.loc.y+thumb.size.h+LABEL<=strip.loc.y+strip.size.h);
+                }
+            }
+        }
     }
 }

@@ -1,0 +1,11 @@
+# Live glass feasibility gate — 2026-10-20
+
+Status: pending native prototype; Liquid is unavailable. Wallpaper and Frosted are shell-rendered and independently usable.
+
+Code inspection confirms that compositor/src/toast.rs::ToastElement crops a Wayland shell buffer already flattened over the shell background. It forwards drawing directly to CropRenderElement. Changing a fill alpha in the shell does not supply the compositor with a foreground separated from wallpaper. A dedicated transparent per-output shell overlay surface is the recommended prototype candidate; a committed foreground-only crop with synchronized metadata remains an alternative to evaluate. No protocol has been frozen and no compositor material metadata is sent. The only compositor change in this feature is reading the shared Reduce motion preference for existing window transitions.
+
+winit.rs and udev.rs compose overlays then invoke phosphor.rs over the composed frame. capture.rs::grab_unlocked builds a separate offscreen list (toast/dock layers and space elements) without phosphor. True live material rendering must share a source-layer/material composition helper between both output backends and capture, preserving the current phosphor exclusion. Blur belongs below its sharp overlay foreground and before final phosphor; the whole-frame phosphor shader is unsuitable as a backdrop-blur shortcut.
+
+This environment cannot establish local display sockets. `Xvfb :96 -screen 0 1280x900x24 -nolisten tcp` failed with `failed to bind listener` and `Cannot establish any listening sockets`. Existing tmux/IPC integration tests encounter the same sandbox restriction. There is no evidence here for native DRM visuals, GPU timing, direct-scanout transitions, or alpha-surface/input correctness. Enabling Liquid without that evidence would bypass task 3's explicit acceptance gate.
+
+Next native milestone: one transparent dock foreground, one padded below-layer capture, Low blur and edge mask; validate input and source damage, old/new rectangle damage, lock invalidation, capture parity, scaling/rotation and fallbacks on both backends. Record GPU model, output configuration, memory and p95 additional GPU time before deciding final descriptors and enabling Liquid. Task 4 depends on that result.

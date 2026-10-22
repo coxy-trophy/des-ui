@@ -103,11 +103,13 @@ impl Quick {
             .show(ctx, |ui| {
                 ui.set_min_size(rect.size());
                 ui.set_max_size(rect.size());
-                ui.painter().rect_filled(rect, 0.0, ui::PANEL);
-                ui.painter().rect_stroke(rect, 0.0, Stroke::new(1.0, theme.main), StrokeKind::Inside);
+                crate::material::paint(ui.ctx(), ui.painter(), rect, ui::SURFACE_RADIUS, crate::material::Role::Floating);
+                ui.painter().rect_stroke(rect, ui::SURFACE_RADIUS, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
                 let inner = rect.shrink(18.0);
                 let mut content = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(Layout::top_down(Align::Min)));
-                self.contents(&mut content, theme, readings, &mut actions);
+                egui::ScrollArea::vertical().auto_shrink([false, false]).max_height(inner.height()).show(&mut content, |ui| {
+                    self.contents(ui, theme, readings, &mut actions);
+                });
             });
         actions
     }
@@ -146,7 +148,7 @@ impl Quick {
                     actions.push(Action::Mute);
                 }
                 let width = (ui.available_width() - 46.0).max(60.0);
-                if let Some(frac) = ui::slider(ui, theme, width, volume.min(100) as f32 / 100.0) {
+                if let Some(frac) = ui::slider(ui, theme, width, volume.min(100) as f32 / 100.0, "Volume") {
                     let level = (frac * 100.0).round() as u8;
                     if level != volume {
                         self.volume = Some((level, now));
@@ -163,7 +165,7 @@ impl Quick {
                 ui.spacing_mut().item_spacing.x = 10.0;
                 ui::icon(ui, ui::Icon::Brightness, 22.0, ui::SECONDARY);
                 let width = (ui.available_width() - 46.0).max(60.0);
-                if let Some(frac) = ui::slider(ui, theme, width, brightness.min(100) as f32 / 100.0) {
+                if let Some(frac) = ui::slider(ui, theme, width, brightness.min(100) as f32 / 100.0, "Brightness") {
                     // Never all the way to black: a dark screen with no way back is a trap.
                     let level = ((frac * 100.0).round() as u8).max(5);
                     if level != brightness {

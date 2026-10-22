@@ -6,11 +6,12 @@ impl App {
         self.secondary_docks.retain(|screen,_|*screen<count);
         self.secondary_areas.retain(|screen,_|*screen<count);
         let mut actions=Vec::new();let mut areas=Vec::new();
+        let overview=self.desktop.as_ref().and_then(|d|d.overview.clone());
         for screen in 1..count {
             let dock=self.secondary_docks.entry(screen).or_default();
             let mut output=None;
             let suppress=locked || self.capture.marking();
-            let (theme,mon,pins,animate)=(&self.theme,&self.mon,&self.config.dock_pins,self.config.animate);
+            let (theme,mon,pins,animate)=(&self.theme,&self.mon,&self.config.dock_pins,self.config.animate && !self.config.appearance.reduce_motion);
             ctx.show_viewport_immediate(
                 egui::ViewportId::from_hash_of(("des-display",screen+1)),
                 ViewportBuilder::default().with_title(format!("des-ui display {}",screen+1)).with_app_id("des-ui"),
@@ -21,6 +22,7 @@ impl App {
                         else{panels::backdrop(ui,theme,mon,screen+1);}
                     });
                     output=Some(if suppress{dock.reset();dock::Output::default()}else{dock.show_on(screen,ctx,ctx.screen_rect(),state,pins,theme,animate)});
+                    if !suppress {if let Some(layout)=overview.as_ref(){crate::overview::show_on(ctx,theme,layout,state,screen);}}
                 },
             );
             if let Some(output)=output{

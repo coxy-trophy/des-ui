@@ -556,8 +556,12 @@ enum Control {
 
 fn control(ui: &mut Ui, theme: &Theme, which: Control, size: f32, lit: bool) -> Response {
     let (rect, response) = ui.allocate_exact_size(vec2(size, size), Sense::click());
-    let ink = if lit { theme.main } else if response.hovered() { ui::TEXT } else { ui::SECONDARY };
+    let label = match which { Control::Previous => "Previous track", Control::Play => "Play", Control::Pause => "Pause", Control::Next => "Next track" };
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label));
+    let response = response.on_hover_text(label);
+    let ink = if lit { ui::TEXT } else if response.hovered() { ui::TEXT } else { ui::SECONDARY };
     let painter = ui.painter();
+    if lit || response.hovered() { painter.rect_filled(rect, ui::CONTROL_RADIUS, if lit { theme.tint() } else { ui::TRACK }); }
     let c = rect.center();
     let unit = size / 6.0;
     let triangle = |tip_x: f32, back_x: f32| {
@@ -752,7 +756,7 @@ impl Music {
                 let fit = (ui.available_width() / 8.5) as usize;
                 let title = ui::text(ui, &crate::panels::truncate(&track.name, fit), ui::display_bold(14.0), ui::TEXT);
                 open = ui.interact(title.rect, ui.id().with("now-playing-title"), Sense::click()).clicked();
-                ui::text(ui, &crate::panels::truncate(&track.artists, fit + 3), ui::mono(11.0), ui::SECONDARY);
+                ui::text(ui, &crate::panels::truncate(&track.artists, fit + 3), ui::display(11.0), ui::SECONDARY);
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
                     if control(ui, theme, Control::Previous, 22.0, false).clicked() {
@@ -787,9 +791,9 @@ impl Music {
         if card.top() < within.center().y + 236.0 {
             card = Rect::from_min_size(within.right_bottom() - size, size);
         }
-        ui.painter().rect_filled(card, 0.0, ui::PANEL);
-        ui.painter().rect_stroke(card, 0.0, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
-        ui::corners(ui.painter(), card, 10.0, Stroke::new(1.5, if now.playing { theme.main } else { ui::LINE_STRONG }));
+        crate::material::paint(ui.ctx(), ui.painter(), card, ui::CONTROL_RADIUS, crate::material::Role::Panel);
+        ui.painter().rect_stroke(card, ui::CONTROL_RADIUS, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
+
         let mut inner = ui.new_child(UiBuilder::new().max_rect(card.shrink(14.0)).layout(Layout::left_to_right(Align::Center)));
         let ui = &mut inner;
         ui.spacing_mut().item_spacing.x = 16.0;
@@ -804,7 +808,7 @@ impl Music {
             };
             ui::tracked(ui, &crate::panels::truncate(&state, fit), ui::display_bold(10.0), if now.playing { theme.main } else { ui::LABEL }, 2.0);
             ui::text(ui, &crate::panels::truncate(&track.name, fit), ui::display_bold(16.0), ui::TEXT);
-            ui::text(ui, &crate::panels::truncate(&track.artists, fit + 4), ui::mono(11.0), ui::SECONDARY);
+            ui::text(ui, &crate::panels::truncate(&track.artists, fit + 4), ui::display(11.0), ui::SECONDARY);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 if control(ui, theme, Control::Previous, 26.0, false).clicked() {
@@ -856,22 +860,22 @@ impl Music {
             match link {
                 Link::Connected => self.library(ui, theme, &now),
                 Link::Starting => {
-                    ui::text(ui, "Starting the music service…", ui::mono(13.0), ui::SECONDARY);
+                    ui::text(ui, "Starting the music service…", ui::display(13.0), ui::SECONDARY);
                 }
                 Link::SigningIn => {
-                    ui::text(ui, "Spotify's page is open in your browser. Finish there and come back.", ui::mono(13.0), ui::TEXT);
+                    ui::text(ui, "Spotify's page is open in your browser. Finish there and come back.", ui::display(13.0), ui::TEXT);
                     ui.add_space(18.0);
                     if ui::button(ui, theme, "CANCEL", None, false).clicked() {
                         self.shared.lock().unwrap().cancel = true;
                     }
                 }
                 Link::Unavailable(why) => {
-                    ui::text(ui, &why, ui::mono(13.0), ui::CAUTION);
+                    ui::text(ui, &why, ui::display(13.0), ui::CAUTION);
                 }
                 Link::NotSignedIn => {
                     ui::text(ui, "Play your Spotify library here, without opening Spotify.", ui::display(18.0), ui::TEXT);
                     ui.add_space(8.0);
-                    ui::text(ui, "Signing in happens once, on Spotify's own page in your browser. It needs Spotify Premium.", ui::mono(12.0), ui::SECONDARY);
+                    ui::text(ui, "Signing in happens once, on Spotify's own page in your browser. It needs Spotify Premium.", ui::display(12.0), ui::SECONDARY);
                     ui.add_space(18.0);
                     if ui::button(ui, theme, "SIGN IN TO SPOTIFY", None, true).clicked() {
                         self.sign_in(vec!["login".to_string()]);
@@ -894,12 +898,12 @@ impl Music {
             "2  Give it any name. As its Redirect URI enter exactly:  http://127.0.0.1:8898/login",
             "3  Tick Web API, save, and copy the app's Client ID here.",
         ] {
-            ui::text(ui, line, ui::mono(12.0), if line.starts_with(char::is_numeric) { ui::TEXT } else { ui::SECONDARY });
+            ui::text(ui, line, ui::display(12.0), if line.starts_with(char::is_numeric) { ui::TEXT } else { ui::SECONDARY });
         }
         ui.add_space(14.0);
         let (field, _) = ui.allocate_exact_size(vec2(340.0, 36.0), Sense::hover());
-        ui.painter().rect_filled(field, 0.0, ui::PANEL);
-        ui.painter().rect_stroke(field, 0.0, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
+        ui.painter().rect_filled(field, ui::CONTROL_RADIUS, ui::PANEL);
+        ui.painter().rect_stroke(field, ui::CONTROL_RADIUS, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
         ui.put(
             field.shrink2(vec2(10.0, 7.0)),
             TextEdit::singleline(&mut self.client_id).frame(false).font(ui::mono(13.0)).text_color(ui::TEXT).hint_text("client ID"),
@@ -908,7 +912,7 @@ impl Music {
         let id = self.client_id.trim().to_string();
         let valid = id.len() == 32 && id.chars().all(|c| c.is_ascii_hexdigit());
         if !id.is_empty() && !valid {
-            ui::text(ui, "A client ID is 32 letters and digits.", ui::mono(11.0), ui::CAUTION);
+            ui::text(ui, "A client ID is 32 letters and digits.", ui::display(11.0), ui::CAUTION);
         }
         if ui::button(ui, theme, "CONNECT LIBRARY", None, valid).clicked() && valid {
             self.sign_in(vec!["library".to_string(), id]);
@@ -966,13 +970,13 @@ impl Music {
             ui.allocate_ui_with_layout(vec2(240.0, body_height), Layout::top_down(Align::Min), |ui| {
                 ui.spacing_mut().item_spacing.y = 4.0;
                 let (field, _) = ui.allocate_exact_size(vec2(240.0, 36.0), Sense::hover());
-                ui.painter().rect_filled(field, 0.0, ui::PANEL);
-                ui.painter().rect_stroke(field, 0.0, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
+                ui.painter().rect_filled(field, ui::CONTROL_RADIUS, ui::PANEL);
+                ui.painter().rect_stroke(field, ui::CONTROL_RADIUS, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
                 let edit = ui.put(
                     field.shrink2(vec2(10.0, 7.0)),
                     TextEdit::singleline(&mut self.query)
                         .frame(false)
-                        .font(ui::mono(13.0))
+                        .font(ui::display(13.0))
                         .text_color(ui::TEXT)
                         .hint_text("search Spotify"),
                 );
@@ -1002,10 +1006,10 @@ impl Music {
                 ui::tracked(ui, "PLAYLISTS", ui::display_bold(11.0), ui::LABEL, 3.0);
                 match playlists {
                     None => {
-                        ui::text(ui, "Loading…", ui::mono(12.0), ui::LABEL);
+                        ui::text(ui, "Loading…", ui::display(12.0), ui::LABEL);
                     }
                     Some((_, Some(why))) => {
-                        ui::text(ui, &why, ui::mono(11.0), ui::CAUTION);
+                        ui::text(ui, &why, ui::display(11.0), ui::CAUTION);
                     }
                     Some((items, None)) => {
                         ScrollArea::vertical().id_salt("playlists").auto_shrink([false, false]).show(ui, |ui| {
@@ -1060,17 +1064,17 @@ impl Music {
                 }
                 match list {
                     None => {
-                        ui::text(ui, "Loading…", ui::mono(12.0), ui::LABEL);
+                        ui::text(ui, "Loading…", ui::display(12.0), ui::LABEL);
                     }
                     Some((_, Some(why))) if why.starts_with("The queue needs") => {
-                        ui::text(ui, "The queue needs one more approval from Spotify, on its page in your browser.", ui::mono(12.0), ui::TEXT);
+                        ui::text(ui, "The queue needs one more approval from Spotify, on its page in your browser.", ui::display(12.0), ui::TEXT);
                         ui.add_space(12.0);
                         if ui::button(ui, theme, "APPROVE", None, true).clicked() {
                             self.sign_in(vec!["library".to_string()]);
                         }
                     }
                     Some((_, Some(why))) => {
-                        ui::text(ui, &why, ui::mono(12.0), ui::CAUTION);
+                        ui::text(ui, &why, ui::display(12.0), ui::CAUTION);
                     }
                     Some((items, None)) if items.is_empty() => {
                         let empty = match source {
@@ -1078,7 +1082,7 @@ impl Music {
                             Source::Devices => "No device is online. Open Spotify on one and it shows up here.",
                             _ => "Nothing here.",
                         };
-                        ui::text(ui, empty, ui::mono(12.0), ui::LABEL);
+                        ui::text(ui, empty, ui::display(12.0), ui::LABEL);
                     }
                     Some((items, None)) => {
                         let playing = now.track.as_ref().map(|track| track.uri.as_str());
@@ -1133,7 +1137,7 @@ impl Music {
                             // The rest of a long list is fetched as its end comes into view.
                             if more {
                                 let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::hover());
-                                ui.painter().text(rect.left_center() + vec2(26.0, 0.0), Align2::LEFT_CENTER, "Loading more…", ui::mono(12.0), ui::LABEL);
+                                ui.painter().text(rect.left_center() + vec2(26.0, 0.0), Align2::LEFT_CENTER, "Loading more…", ui::display(12.0), ui::LABEL);
                                 let wanted = (source.key(), items.len());
                                 if ui.is_rect_visible(rect) && self.asked_further.as_ref() != Some(&wanted) {
                                     if let Some(request) = source.further(items.len()) {
@@ -1151,7 +1155,7 @@ impl Music {
         if let Some(problem) = problem {
             ui.allocate_ui_with_layout(vec2(ui.available_width(), problem_height), Layout::left_to_right(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 12.0;
-                ui::text(ui, &crate::panels::truncate(&problem, 110), ui::mono(12.0), ui::CAUTION);
+                ui::text(ui, &crate::panels::truncate(&problem, 110), ui::display(12.0), ui::CAUTION);
                 // One more permission is asked for on Spotify's page, as for the library.
                 if problem.contains("needs one more approval") && ui::button(ui, theme, "APPROVE", None, true).clicked() {
                     self.shared.lock().unwrap().problem = None;
@@ -1167,7 +1171,7 @@ impl Music {
     /// the middle, the rest around it. A click on a line goes to it.
     fn lyrics(&mut self, ui: &mut Ui, theme: &Theme, now: &Now) {
         let Some(track) = &now.track else {
-            ui::text(ui, "Nothing is playing.", ui::mono(12.0), ui::LABEL);
+            ui::text(ui, "Nothing is playing.", ui::display(12.0), ui::LABEL);
             return;
         };
         if self.lyrics_asked.as_deref() != Some(track.uri.as_str()) {
@@ -1177,16 +1181,16 @@ impl Music {
         }
         let lyrics = self.shared.lock().unwrap().lyrics.clone().filter(|lyrics| lyrics.track == track.uri);
         let Some(lyrics) = lyrics else {
-            ui::text(ui, "Looking for the words…", ui::mono(12.0), ui::LABEL);
+            ui::text(ui, "Looking for the words…", ui::display(12.0), ui::LABEL);
             return;
         };
         if let Some(why) = &lyrics.error {
-            ui::text(ui, why, ui::mono(12.0), ui::LABEL);
+            ui::text(ui, why, ui::display(12.0), ui::LABEL);
             return;
         }
         let current = lyrics.current(now.position_ms());
         if !lyrics.synced {
-            ui::text(ui, "These words are not timed to the music.", ui::mono(11.0), ui::LABEL);
+            ui::text(ui, "These words are not timed to the music.", ui::display(11.0), ui::LABEL);
             ui.add_space(8.0);
         }
         let moved = current != self.lyrics_at;
@@ -1231,13 +1235,13 @@ impl Music {
     /// The strip along the bottom of the view: the track, the controls, the position.
     fn transport(&mut self, ui: &mut Ui, theme: &Theme, now: &Now, height: f32) {
         let (strip, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
-        ui.painter().rect_filled(strip, 0.0, ui::PANEL);
-        ui.painter().rect_stroke(strip, 0.0, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
+        crate::material::paint(ui.ctx(), ui.painter(), strip, ui::CONTROL_RADIUS, crate::material::Role::Panel);
+        ui.painter().rect_stroke(strip, ui::CONTROL_RADIUS, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
         let mut inner = ui.new_child(UiBuilder::new().max_rect(strip.shrink(14.0)).layout(Layout::left_to_right(Align::Center)));
         let ui = &mut inner;
         ui.spacing_mut().item_spacing.x = 14.0;
         let Some(track) = &now.track else {
-            ui::text(ui, "Nothing is playing. Pick a track above.", ui::mono(12.0), ui::LABEL);
+            ui::text(ui, "Nothing is playing. Pick a track above.", ui::display(12.0), ui::LABEL);
             return;
         };
         self.draw_cover(ui, 56.0, track.cover.as_deref());
@@ -1249,7 +1253,7 @@ impl Music {
             }
             let fit = (names / 8.5) as usize;
             ui::text(ui, &crate::panels::truncate(&track.name, fit), ui::display_bold(15.0), ui::TEXT);
-            ui::text(ui, &crate::panels::truncate(&track.artists, fit + 4), ui::mono(11.0), ui::SECONDARY);
+            ui::text(ui, &crate::panels::truncate(&track.artists, fit + 4), ui::display(11.0), ui::SECONDARY);
             // Playing somewhere else: say where, and offer the way to change that.
             if let Some(device) = &now.device {
                 let label = format!("ON {}", crate::panels::truncate(&device.to_uppercase(), fit.saturating_sub(4)));
@@ -1280,7 +1284,7 @@ impl Music {
         let roomy = strip.width() > 940.0;
         let bar_width = (ui.available_width() - if roomy { 610.0 } else { 380.0 }).max(60.0);
         let frac = position as f32 / track.duration_ms.max(1) as f32;
-        if let Some(to) = ui::slider(ui, theme, bar_width, frac) {
+        if let Some(to) = ui::slider(ui, theme, bar_width, frac, "Playback position") {
             // Only on release: asking for every step of a drag would stutter.
             if ui.input(|i| i.pointer.any_released()) || !ui.input(|i| i.pointer.any_down()) {
                 self.send(json!({ "cmd": "seek", "ms": (to * track.duration_ms as f32) as u32 }));
@@ -1318,8 +1322,8 @@ impl Music {
                 self.lyrics_at = None;
             }
         }
-        ui::text(ui, "VOL", ui::mono(11.0), ui::LABEL);
-        if let Some(to) = ui::slider(ui, theme, 90.0, now.volume as f32 / 100.0) {
+        ui::text(ui, "VOL", ui::display(11.0), ui::LABEL);
+        if let Some(to) = ui::slider(ui, theme, 90.0, now.volume as f32 / 100.0, "Volume") {
             let percent = (to * 100.0).round() as u8;
             if percent != now.volume {
                 self.send(json!({ "cmd": "volume", "percent": percent }));
@@ -1334,13 +1338,15 @@ const CAUTION_FREE: f32 = ui::CAUTION_ABOVE;
 /// A row in the left list. Returns true when clicked.
 fn side_row(ui: &mut Ui, theme: &Theme, name: &str, chosen: bool) -> bool {
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::SelectableLabel, ui.is_enabled(), name));
     let painter = ui.painter_at(rect);
     if chosen {
-        painter.rect_filled(rect, 0.0, theme.main);
+        painter.rect_filled(rect, ui::CONTROL_RADIUS, theme.tint());
+        painter.rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside);
     } else if response.hovered() {
-        painter.rect_filled(rect, 0.0, ui::PANEL);
+        painter.rect_filled(rect, ui::CONTROL_RADIUS, ui::TRACK);
     }
-    let (font, ink) = if chosen { (ui::display_bold(13.0), ui::GROUND) } else { (ui::display(13.0), ui::TEXT) };
+    let (font, ink) = if chosen { (ui::display_bold(13.0), ui::TEXT) } else { (ui::display(13.0), ui::TEXT) };
     painter.text(rect.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, crate::panels::truncate(name, 26), font, ink);
     response.clicked()
 }
@@ -1387,10 +1393,11 @@ fn track_row(ui: &mut Ui, theme: &Theme, item: &Item, cover: Option<&TextureHand
     }
     let painter = ui.painter_at(rect);
     if response.hovered() {
-        painter.rect_filled(rect, 0.0, ui::PANEL);
+        painter.rect_filled(rect, ui::CONTROL_RADIUS, ui::TRACK);
     }
     painter.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, ui::TRACK));
-    let ink = if playing { theme.main } else { ui::TEXT };
+    let ink = ui::TEXT;
+    if playing { painter.rect_filled(rect, ui::CONTROL_RADIUS, theme.tint()); }
     let mark = Rect::from_center_size(rect.left_center() + vec2(10.0, 0.0), vec2(6.0, 6.0));
     if playing {
         painter.rect_filled(mark, 0.0, theme.main);
@@ -1414,13 +1421,13 @@ fn track_row(ui: &mut Ui, theme: &Theme, item: &Item, cover: Option<&TextureHand
     let chars = |points: f32| ((points - 14.0).max(0.0) / 8.0) as usize;
     let with_album = width > 620.0;
     let by_width = if with_album { width * 0.26 } else { width * 0.54 - 64.0 };
-    painter.text(rect.left_center() + vec2(lead, 0.0), Align2::LEFT_CENTER, crate::panels::truncate(&item.name, chars(width * 0.46 - lead)), ui::mono(13.0), ink);
+    painter.text(rect.left_center() + vec2(lead, 0.0), Align2::LEFT_CENTER, crate::panels::truncate(&item.name, chars(width * 0.46 - lead)), ui::display(13.0), ink);
     let by = described(item);
     // A track's artist and album are ways to go to them.
     let mut went = None;
     let mut link = |ui: &mut Ui, at: f32, text: String, quiet: egui::Color32, to: Picked, id: &str| {
         let from = rect.left_center() + vec2(at, 0.0);
-        let galley = painter.layout_no_wrap(text, ui::mono(12.0), quiet);
+        let galley = painter.layout_no_wrap(text, ui::display(12.0), quiet);
         let spot = Rect::from_min_size(from - vec2(0.0, galley.size().y / 2.0), galley.size()).expand2(vec2(2.0, 6.0));
         let over = ui.interact(spot, ui.id().with(id), Sense::click());
         if over.hovered() {
@@ -1435,14 +1442,14 @@ fn track_row(ui: &mut Ui, theme: &Theme, item: &Item, cover: Option<&TextureHand
     if track && !item.artist_id.is_empty() {
         link(ui, width * 0.46, by_text, ui::SECONDARY, Picked::Artist, "artist");
     } else {
-        painter.text(rect.left_center() + vec2(width * 0.46, 0.0), Align2::LEFT_CENTER, by_text, ui::mono(12.0), ui::SECONDARY);
+        painter.text(rect.left_center() + vec2(width * 0.46, 0.0), Align2::LEFT_CENTER, by_text, ui::display(12.0), ui::SECONDARY);
     }
     if with_album {
         let album_text = crate::panels::truncate(&item.album, chars(width * 0.28 - 64.0));
         if track && !item.album_id.is_empty() {
             link(ui, width * 0.72, album_text, ui::LABEL, Picked::Album, "album");
         } else {
-            painter.text(rect.left_center() + vec2(width * 0.72, 0.0), Align2::LEFT_CENTER, album_text, ui::mono(12.0), ui::LABEL);
+            painter.text(rect.left_center() + vec2(width * 0.72, 0.0), Align2::LEFT_CENTER, album_text, ui::display(12.0), ui::LABEL);
         }
     }
     if let Some(went) = went {
@@ -1466,7 +1473,7 @@ fn track_row(ui: &mut Ui, theme: &Theme, item: &Item, cover: Option<&TextureHand
         Kind::Device => "SWITCH TO".to_string(),
         _ => "OPEN".to_string(),
     };
-    painter.text(rect.right_center() - vec2(10.0, 0.0), Align2::RIGHT_CENTER, end, ui::mono(12.0), ui::SECONDARY);
+    painter.text(rect.right_center() - vec2(10.0, 0.0), Align2::RIGHT_CENTER, end, if track { ui::mono(12.0) } else { ui::display(12.0) }, ui::SECONDARY);
     if response.clicked() { Picked::Row } else { Picked::Nothing }
 }
 

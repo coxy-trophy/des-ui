@@ -133,6 +133,7 @@ pub fn splash_elements(
             crate::splash::TopElements::Buffer(buffer) => OutputElements::Cursor(buffer),
             crate::splash::TopElements::Solid(solid) => OutputElements::Solid(solid),
             crate::splash::TopElements::Toast(toast) => OutputElements::Toast(toast),
+            crate::splash::TopElements::DragIcon(icon) => OutputElements::ClientCursor(icon),
             crate::splash::TopElements::Space(space) => OutputElements::Space(space),
             crate::splash::TopElements::Moving(moving) => OutputElements::Moving(moving),
             crate::splash::TopElements::Phosphor(frame) => OutputElements::Phosphor(frame),
@@ -834,14 +835,15 @@ impl DesComp {
                     self.cursor_status.clone()
                 };
                 elements.extend(cursor_elements(renderer, cursor, &status, position, scale));
+                elements.extend(crate::dnd::icon_elements::<OutputElements>(renderer,self.drag_icon.as_ref(),position,scale));
             }
             // The overview, or the switcher's strip, above all but the pointer. The
             // overview is everything on its display; the switcher sits over the desktop.
             let overview = self.overview.as_ref().filter(|overview| overview.layout.display == geometry);
             if let Some(overview) = overview {
-                elements.extend(crate::overview::elements::<OutputElements>(renderer, overview, &self.space, self.shell.as_ref(), &monitor.output, now));
+                elements.extend(crate::overview::elements::<OutputElements>(renderer, overview, &self.space, if overview.screen==0 {self.shell.as_ref()}else{self.backdrops.get(overview.screen-1)}, &monitor.output, now));
             }
-            if !overview.is_some_and(|overview| overview.kind == des_common::ipc::OverviewKind::Workspaces) {
+            if !overview.is_some_and(|overview| matches!(overview.kind, des_common::ipc::OverviewKind::Workspaces | des_common::ipc::OverviewKind::Drag)) {
             elements.extend(
                 crate::toast::elements(renderer, self.shell.as_ref(), toast_area, primary, &self.toast_id, geometry.loc, scale)
                     .into_iter()

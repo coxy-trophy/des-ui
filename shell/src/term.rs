@@ -441,7 +441,7 @@ impl TermTab {
     ) {
         // Keep the entire frame isolated, including events following Escape.
         let shortcut = events.iter().any(|event| matches!(event,
-            Event::Key { key: Key::F, pressed: true, modifiers, .. } if modifiers.ctrl && modifiers.shift));
+            Event::Key { key, pressed: true, modifiers, .. } if crate::shortcuts::matches_event(ctx, "terminal.find", *key, *modifiers)));
         if self.search.open || shortcut {
             if shortcut { self.search.open = true; self.search.focus = true; }
             let composing = self.search.composing || events.iter().any(|e| matches!(e, Event::Ime(_)));
@@ -499,9 +499,11 @@ impl TermTab {
                     ..
                 } => {
                     // Ctrl+Shift+Up and Down walk the prompts; they are the terminal's.
-                    if modifiers.ctrl && modifiers.shift && matches!(key, Key::ArrowUp | Key::ArrowDown) {
-                        self.jump_prompt(*key == Key::ArrowUp);
-                        continue;
+                    if crate::shortcuts::matches_event(ctx, "terminal.prompt_previous", *key, *modifiers) {
+                        self.jump_prompt(true); continue;
+                    }
+                    if crate::shortcuts::matches_event(ctx, "terminal.prompt_next", *key, *modifiers) {
+                        self.jump_prompt(false); continue;
                     }
                     if let Some(bytes) = key_bytes(*key, *modifiers, app_cursor) {
                         out.extend_from_slice(&bytes);
@@ -529,10 +531,10 @@ impl TermTab {
     ) {
         let mut rect = rect;
         if self.search.open {
-            let bar_height = if rect.width() < 420.0 { 96.0 } else if rect.width() < 700.0 { 64.0 } else { 34.0 };
+            let bar_height = (if rect.width() < 420.0 { 114.0_f32 } else if rect.width() < 700.0 { 76.0 } else { 42.0 }).min(rect.height().max(0.0));
             let bar = Rect::from_min_size(rect.min, Vec2::new(rect.width(), bar_height));
             rect.min.y = (rect.min.y + bar_height + 2.0).min(rect.max.y - 1.0);
-            ui.painter().rect_filled(bar, 0.0, crate::ui::PANEL);
+            crate::material::paint(ui.ctx(), ui.painter(), bar, crate::ui::CONTROL_RADIUS, crate::material::Role::Panel);
             ui.scope_builder(egui::UiBuilder::new().max_rect(bar.shrink(4.0)), |ui| {
                 ui.set_clip_rect(bar);
                 ui.horizontal_wrapped(|ui| {
@@ -656,7 +658,7 @@ impl TermTab {
         if shown < 1.0 {
             painter.set_opacity(shown);
         }
-        painter.rect_filled(rect, 0.0, crate::ui::GROUND);
+        crate::material::paint(ui.ctx(), &painter, rect, 0.0, crate::material::Role::Terminal);
         // Backgrounds and selections use terminal cells, not font glyph advances.
         for row in 0..rows {
             for col in 0..cols {
@@ -693,7 +695,7 @@ impl TermTab {
             }
         }
         let gutter_painter = ui.painter_at(gutter);
-        gutter_painter.rect_filled(gutter, 0.0, crate::ui::GROUND);
+        crate::material::paint(ui.ctx(), &gutter_painter, gutter, 0.0, crate::material::Role::Terminal);
         for block in self.blocks.iter() {
             let failed = block.status().is_some_and(|status| status != 0);
             if let Some(y) = visible(block.prompt) {
@@ -1236,6 +1238,24 @@ mod tests {
         assert_eq!(tab.search.current, 0);
         tab.handle_events(&[enter], false, false, &ctx);
         assert_eq!(tab.search.current, 1);
+    }
+
+    #[test]
+    fn configured_terminal_find_replaces_and_can_disable_the_default() {
+        let (mut tab, ctx, _, _) = terminal_frame_setup();
+        let mut bindings = des_common::shortcuts::Bindings::default();
+        bindings.set("terminal.find", "Ctrl+Shift+G").unwrap();
+        crate::shortcuts::publish(&ctx, &bindings);
+        let key = |key| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::CTRL | Modifiers::SHIFT };
+        tab.handle_events(&[key(Key::F)], false, false, &ctx);
+        assert!(!tab.search.open, "old default remained active");
+        tab.handle_events(&[key(Key::G)], false, false, &ctx);
+        assert!(tab.search.open);
+        tab.search.open = false;
+        bindings.set("terminal.find", "").unwrap();
+        crate::shortcuts::publish(&ctx, &bindings);
+        tab.handle_events(&[key(Key::G)], false, false, &ctx);
+        assert!(!tab.search.open, "disabled binding remained active");
     }
 
     #[test]

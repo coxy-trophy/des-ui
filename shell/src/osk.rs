@@ -145,7 +145,7 @@ impl Osk {
             return;
         }
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 0.0, ui::PANEL);
+        crate::material::paint(ui.ctx(), &painter, rect, 0.0, crate::material::Role::Panel);
         painter.hline(rect.x_range(), rect.top(), Stroke::new(1.0, ui::LINE));
         let rows = if self.layer == Layer::Letters { LETTERS } else { SYMBOLS };
         let inner = rect.shrink(MARGIN);

@@ -29,6 +29,7 @@ render_elements! {
     /// What is drawn above the windows: the splash, and the shell's toasts.
     pub TopElements<=GlesRenderer>;
     Toast=crate::toast::ToastElement,
+    DragIcon=smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement<GlesRenderer>,
     Buffer=MemoryRenderBufferRenderElement<GlesRenderer>,
     Solid=SolidColorRenderElement,
     Space=smithay::desktop::space::SpaceRenderElements<GlesRenderer, smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement<GlesRenderer>>,

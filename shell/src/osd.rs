@@ -72,8 +72,8 @@ impl Osd {
         egui::Area::new(egui::Id::new("osd")).order(Order::Tooltip).fixed_pos(rect.min).interactable(false).show(ctx, |ui| {
             ui.set_opacity(alpha);
             let painter = ui.painter();
-            painter.rect_filled(rect, 0.0, ui::PANEL);
-            painter.rect_stroke(rect, 0.0, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
+            crate::material::paint(ctx, painter, rect, ui::SURFACE_RADIUS, crate::material::Role::Floating);
+            painter.rect_stroke(rect, ui::SURFACE_RADIUS, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
             let icon = match kind {
                 Kind::Volume if level == 0 => Icon::Muted,
                 Kind::Volume => Icon::Volume,

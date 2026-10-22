@@ -6,7 +6,7 @@ Authority: the current user request and `docs/superpowers/specs/2026-10-15-deskt
 
 | Capability | Owner | Behavior |
 |---|---|---|
-| Palette | launcher.rs, palette.rs | Super+Space / Apps; typed result kinds; Up/Down, Enter, Escape; explicit Clear; bounded list |
+| Launcher / palette | launcher.rs, palette.rs, app_icons.rs | Super+Space / Apps; responsive app grid; typed result kinds; arrows, Enter, Escape; explicit Clear; bounded results |
 | File lookup | file_search.rs, launcher worker | Explicit selected folders, names only, no symlink traversal, hidden/build exclusions, stale generation rejection |
 | Settings navigation | settings.rs::destinations/open_at | One authoritative section list, including Health and Session |
 | Feedback | notify.rs::Center | Existing persistent notification history; failures identify operation and recovery |
@@ -48,3 +48,96 @@ Startup acknowledgement: session_ready.rs owns the one-shot private marker, emit
 Live terminal reconnect: common::terminal::Runtime owns a private mode0700 tmux server for one compositor lifetime; shell replacement detaches clients. The first GUI holds live_terminals::Lease so a nested/manual GUI cannot attach the same work. The default-on Keep terminals across shell restarts setting affects new terminals only. Existing managed sessions reconnect automatically even after opt-out. Private atomic mode0600 layout.json stores IDs and pane arrangement, never output, commands or credentials; missing/corrupt metadata recovers discoverable live sessions. Dead sessions are not replayed. At most the existing tab limit reconnects, and a failed/slow helper stops the startup recovery batch while leaving live work alone. Scratchpad reconnects hidden. Explicit shell exit in a tab ends its session; compositor logout closes the private backend, including the hardware fast-exit path. Logout/reboot and terminals created before this feature are outside live restoration. Existing saved desktop session snapshots continue to restore folders/layout independently.
 
 Terminal persistence visibility: tab hover states whether it is live or temporary; Settings → Session shows counts. Missing/older compositor backend raises an explicit temporary-terminal notice. Partial recovery preserves the previous layout file. The backend is a foreground compositor child with parent-death SIGKILL; clients cannot start replacement daemons.
+
+World View: globe::Explorer owns one ephemeral camera, zoom and pinned Place shared
+by panel and workspace. Drag rotates, hovered scroll zooms between 1× and 2.5×,
+and marker hover reveals location with its arc highlighted. Picking a visible
+marker or destination row focuses that place and pauses automatic rotation. HOME
+resets orientation/zoom and clears selection. RESUME clears the pin. Hovering the
+globe or expanded workspace pauses ambient movement; automatic rotation requires
+both animation and globe rotation settings. Controls provide non-drag alternatives.
+EXPAND brings the terminal workspace forward, closes sibling workflows, and focuses
+the labelled local destination search. CLEAR immediately resets search and returns
+focus to it. CLOSE/Escape return to the existing terminal; switching workflows closes
+the explorer. Lock prevents rendering/input. Selection survives disappearing links
+and is explicitly marked no longer current; IP locations remain approximate.
+Lookup-off, unavailable and no-match states give inline directions. No extra network
+requests, packet simulation, traffic attribution, saved camera state or configuration
+writes are introduced. Motion uses the existing approximately 15 Hz idle globe cadence,
+with no animation repaint loop while paused or reduced motion is selected.
+
+Terminal creation resilience: a failed managed New Tab falls back to a fresh direct
+interactive shell in the requested working directory, with a Temporary terminal
+opened notice that states it closes on shell restart. Existing sessions remain
+untouched. Explicit terminal command launches and reconnecting sessions do not
+use this fallback, so commands/work are never replayed. tmux helper metadata uses
+printable pipe separators and clients explicitly request UTF-8, avoiding locale
+sanitization of tab separators and captured history.
+
+Launcher grid: blank search shows apps; typing preserves all universal search
+providers and ranking. Tiles use installed icons with the canonical fallback,
+centered names of at most two lines and full-name/detail tooltips. Non-app search
+results retain a compact kind label and accessible kind/detail metadata. No
+executable paths, verbose provider explanations or APP badges in the browse grid.
+Grid columns adapt to width (one on narrow workspaces), virtual scrolling keeps
+rendering bounded, and keyboard selection scrolls by grid row. Left/Right edit
+the search caret until Up/Down starts grid navigation; query changes or clicking
+search return to editing. Enter opens the selection; Escape closes. Tab-focused
+tiles update selection. Existing app pin, clipboard and unit menus are retained.
+Search folders and close use shared labelled icon controls; Clear is always
+allocated, enabled for non-empty text and restores search focus. File-search
+progress/error text has reserved height to keep tiles stable.
+
+Managed terminal scrolling: the private tmux server enables mouse reporting. Root
+wheel bindings forward mouse events to mouse-aware programs or an existing copy
+mode, send Up/Down to alternate-screen programs without mouse support, and enter
+backend history at a normal prompt. The private copy-mode table scrolls one line
+per wheel tick; Escape cancels, and other keys cancel then re-inject the original
+key so typing is not swallowed. Configure this before a new pane and during
+reattachment in the existing bounded dimension-query queue. Direct PTY wheel
+routing and the globe's hovered-only zoom remain unchanged.
+
+Lifted-region delivery: Desktop retains the latest Toast/Overlay rectangles,
+including explicit clears, in coalesced state slots outside the bounded window
+action queue. The worker retries a full wire buffer and re-enqueues current state
+after a ready handshake/reconnect. Queued geometry advances only after successful
+enqueue; locked or pending-unlock state holds presentation until acknowledgement.
+Window-index actions remain bounded and are never replayed across disconnection.
+This prevents stale rectangular copies of the shell remaining above an app after
+switching away from the terminal.
+
+
+Wallpaper and surface style: common::appearance::AppearanceSettings owns a versioned single-value config entry, preserving arbitrary Unix path bytes through hex encoding. Old/malformed configurations use no wallpaper/Solid. Settings::appearance_editor owns a local draft; Apply appearance commits it once through config::save_appearance before changing active state, and save errors use the existing notification center. A post-rename directory-sync failure is reconciled against the saved config, retains its managed asset and reports a durability warning. An import completion retains its rendered blur generation so edits made in flight trigger a fresh preview before Apply. Cancel changes, closing Settings and reopening discard unapplied edits. Reset appearance resets only new appearance controls. Choosing a wallpaper selects the Frosted preset when the previous style is Solid, so its backdrop is immediately visible in preview and after Apply. This is part of the wallpaper action; the user may explicitly select Opaque afterward. Version 2 persistence preserves that explicit choice; version 1 wallpaper-plus-Solid defaults migrate to Frosted with a 62% tint, at least 18 blur and at most 35% dim. Reduce transparency continues to override surface effects.
+
+wallpaper.rs owns one background image worker, a latest request per client and bounded pending work. Local PNG/JPEG imports reject animated/invalid/oversized inputs, make a private normalized managed copy, and remove cancelled assets. Source images are never modified/deleted. Saved imported copies survive moving/deleting the source. No per-frame file reads, decodes or blur. A failed active image load gives one actionable notice and Solid fallback. Main and secondary shell viewports share cached textures but compute independent Fill/Fit geometry.
+
+material.rs owns sharp-foreground wallpaper-based frosted surfaces for panels, terminal, dock and notifications. Existing input, focus, terminal mouse/wheel handling, overlay bounds and lock ownership remain unchanged. Reduce transparency forces opaque work/control surfaces; Reduce motion combines with the existing animate switch. Live application-aware glass is unavailable in this build; existing compositor sampling/capture paths are unchanged. Native lock, output switching/scaling, screenshots and installed-session verification remain required.
+
+
+Files: files::Browser owns folder/history/filter/selection state. One bounded shared directory worker resolves paths and lists entries (10,000 entry and 500ms traversal bounds); generations reject stale results. Errors preserve the current listing. The image picker shares navigation but permits only PNG/JPEG selection. Closing or hiding Settings dismisses its picker without applying its draft. File browsing consumes keyboard input only while it owns the workspace; scratchpad, authentication and quick settings take precedence.
+
+File operations: the application owns a single background Task across browser closure. Create folder and rename use named dialogs; Move to Trash requires confirmation. Copy/Cut set an in-app single-item clipboard; Paste copies/moves into the current directory. Existing destinations are never overwritten. Copies use private staging and atomic publication, preserve symlinks without following them, and clean staging on error/cancellation. Cancellation is cooperative and cannot undo a completed atomic commit. Cross-filesystem Move/Trash returns an error preserving the source. Copy does not preserve all metadata (xattrs, times and hard-link identity).
+
+Trash uses the home XDG Trash with private metadata and original-name display; Restore requires its original parent and an unoccupied destination. Trash storage and directories containing it cannot be trashed. Trash view disables operations which would invalidate recovery metadata. No permanent deletion, multi-selection or per-volume Trash is implemented. Failed operations retain dialog input and report errors; completed operations refresh the current listing and report through existing notifications.
+
+
+Terminal wallpaper continuity: material.rs owns the whole terminal workspace, including padding/split gaps, per-pane background and gutter. All sample one screen-aligned cached backdrop. Default terminal-cell backgrounds are transparent; explicit ANSI/application backgrounds and reverse video remain opaque as required by terminal semantics. Blur affects only wallpaper. No framebuffer blur is applied to foreground text. Normal bright text uses a separate contrast floor from faint chrome labels, which retain denser control surfaces. Visual acceptance requires native screenshots, not just painter-state unit tests.
+
+
+Desktop consistency pass: shared native style uses display typography for UI copy, 8px spacing and 30px interaction height, while explicit paths/readings and terminal cells remain mono. Custom controls have disabled treatment, hover/pressed states and visible keyboard focus. Settings heading/description rows wrap and expand vertically; native field focus/persistence behavior is retained. Files keeps New folder and Paste visible and places Rename/Copy/Cut/Trash/Restore under More with existing shortcuts; picker mode never exposes mutation actions. Image/file identity remains native PathBuf and display metadata never replaces it.
+
+Shared sliders consume adjustment keys only when focused and enabled, preserve unfocused terminal/navigation input, clamp values to their range and expose semantic accessible labels. Existing application actions remain their owners: no direct mixer, brightness, seek or settings side effects are introduced in the shared painter. Authentication/login remain opaque and preserve secure-focus ownership.
+
+Files menu ownership: an open or newly activated More menu owns Arrow/Enter and operation shortcuts before the list. Opening Rename/Trash cannot also activate the selected document with the same Enter. Escape dismisses the menu before the workspace; scratchpad and Quick Settings retain precedence over hidden Files controls.
+
+
+Keyboard mapping contract: common::shortcuts::Bindings owns one versioned config value (`shortcuts = v1;id:Chord;…`), storing overrides and empty values for disabled actions. Unknown/malformed/conflicting data falls back atomically to defaults. Shell and full config parsing use the last shortcuts entry consistently. Standard copy/paste/interrupt, lock, recovery, hardware and fixed application-local controls remain protected or explicitly contextual. Desktop shortcuts require Super or the development Ctrl+Alt alias; shell/terminal shortcuts require Ctrl. Conflicts include effective Ctrl+Alt aliases. The existing split-focus/terminal-prompt Up/Down pairs are deliberate context variants; other conflicting mappings are rejected.
+
+Settings emits a proposed configuration and applies it only after atomic persistence succeeds. A post-rename directory-sync error reconciles the committed file and reports durability uncertainty. Failed writes preserve active mappings. The shell updates its cache immediately; compositor reload requests retry after disconnect/queue pressure. No shell/session restart is needed for live remapping once matching binaries are installed. Global compositor support requires the updated compositor binary, as well as the shell.
+
+The reference is modal: background raw events are held until the reference renders, preventing launcher/file-panel handlers from consuming its Escape/Arrow/Enter. It lifts the whole display above applications, preserves their workspace/process state, and closes for lock/authentication. Scratchpad focus is suspended while the reference is shown. Configure opens Settings → Shortcuts; Escape cancels reference, recording, or pending reset before closing its parent. Hidden editors never retain shortcut capture. Manual draft entry and explicit recording are separate modes; recording cannot fire shell shortcuts behind Settings.
+
+
+Window shelf: dock.rs owns grouped application selection, bounded scrolling and stable keyboard focus; compositor overview.rs owns stable window identities, nine-preview pages and actual activation. Escape returns from the chooser to its dock item. Capability negotiation selects previews or the native list fallback. Regional formatting owns the collapsed rail clock.
+
+Drag destinations: compositor dnd.rs owns session, cancellation, 450ms dwell and real-surface handoff. Client callbacks only record state; frame/input processing handles pointer operations outside grab callbacks. Lock, capture, output changes and dead sources cancel safely. Native offers retain copy/move negotiation; previews never accept a drop. Returning to the bottom edge reopens destinations. Files emits outbound drags only from its normal browser; the wallpaper picker and Trash do not. The persisted drag_overview preference disables presentation while preserving ordinary native dragging.

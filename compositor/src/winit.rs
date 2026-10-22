@@ -164,15 +164,18 @@ pub fn init_winit(
                     if let Some(splash) = state.splash.as_mut() {
                         toasts.extend(splash.elements(renderer, size.to_f64().to_logical(scale).to_i32_round(), scale));
                     }
+                    if let Some(pointer)=state.seat.get_pointer() {
+                        toasts.extend(crate::dnd::icon_elements::<crate::splash::TopElements>(renderer,state.drag_icon.as_ref(),pointer.current_location(),scale));
+                    }
                     // The overview, or the switcher's strip, as on the hardware; in a
                     // window split in two for testing, on the half it opened on.
                     let now = std::time::Instant::now();
                     let overview = state.overview.as_ref();
                     if let Some(overview) = overview {
-                        toasts.extend(crate::overview::elements::<crate::splash::TopElements>(renderer, overview, &state.space, state.shell.as_ref(), &output, now));
+                        toasts.extend(crate::overview::elements::<crate::splash::TopElements>(renderer, overview, &state.space, if overview.screen==0 {state.shell.as_ref()}else{state.backdrops.get(overview.screen-1)}, &output, now));
                     }
                     let covered = overview.is_some_and(|overview| {
-                        overview.kind == des_common::ipc::OverviewKind::Workspaces && state.space.output_geometry(&output).is_some_and(|geometry| geometry.contains_rect(overview.layout.display))
+                        matches!(overview.kind, des_common::ipc::OverviewKind::Workspaces | des_common::ipc::OverviewKind::Drag) && state.space.output_geometry(&output).is_some_and(|geometry| geometry.contains_rect(overview.layout.display))
                     });
                     if !covered {
                     toasts.extend(

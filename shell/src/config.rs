@@ -26,6 +26,8 @@ pub enum Palette {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
+    pub shortcuts: des_common::shortcuts::Bindings,
+    pub appearance: des_common::appearance::AppearanceSettings,
     pub theme: String,
     /// New managed terminals keep their processes alive across UI replacement.
     pub keep_terminal_sessions: bool,
@@ -69,6 +71,7 @@ pub struct Config {
     pub panels: Panels,
     pub side_panel_behavior: des_common::PanelBehavior,
     pub dock_pins: Vec<String>,
+    pub drag_overview: bool,
     /// Windows, workspaces and the dock move; off for reduced motion. The compositor
     /// reads the same key.
     pub animate: bool,
@@ -85,6 +88,8 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
+            shortcuts: Default::default(),
+            appearance: Default::default(),
             theme: theme::DEFAULT_NAME.to_string(),
             keep_terminal_sessions: true,
             accent: None,
@@ -110,6 +115,7 @@ impl Default for Config {
             panels: Panels::default(),
             side_panel_behavior: des_common::PanelBehavior::default(),
             dock_pins: Vec::new(),
+            drag_overview: true,
             animate: true,
             glow: 0.0,
             scanlines: false,
@@ -136,6 +142,8 @@ impl Config {
             };
             let value = value.trim();
             match key.trim() {
+                "shortcuts" => config.shortcuts = des_common::shortcuts::Bindings::parse(value).unwrap_or_default(),
+                "appearance" => config.appearance = des_common::appearance::AppearanceSettings::parse(value).unwrap_or_default(),
                 "theme" if !value.is_empty() => config.theme = value.to_string(),
                 "keep_terminal_sessions" => config.keep_terminal_sessions = value != "off",
                 "accent" => {
@@ -190,6 +198,7 @@ impl Config {
                 // The key before windows moved too; `animate` wins when both are present.
                 "dock_animation" if !parsed_animate => config.animate = value != "off",
                 "osk" => config.osk = value == "on",
+                "drag_overview" => config.drag_overview = value != "off",
                 "dock_pins" => {
                     if let Ok(pins) = serde_json::from_str::<Vec<String>>(value) {
                         let mut seen = std::collections::HashSet::new();
@@ -265,7 +274,55 @@ pub fn set(key: &str, value: Option<&str>) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
+/// Reconcile a post-rename error before the caller releases a managed image.
+/// Some filesystems reject directory fsync after the config is already replaced.
+pub fn save_appearance(settings: &des_common::appearance::AppearanceSettings) -> std::io::Result<Option<String>> {
+    let path = path().ok_or_else(|| std::io::Error::other("no home directory"))?;
+    save_appearance_at(&path, settings, |path, value| set_at(path, "appearance", Some(value)))
+}
+fn save_appearance_at(path: &std::path::Path, settings: &des_common::appearance::AppearanceSettings,
+    write: impl FnOnce(&std::path::Path, &str) -> std::io::Result<()>) -> std::io::Result<Option<String>> {
+    settings.validate().map_err(std::io::Error::other)?;
+    match write(path, &settings.encode()) {
+        Ok(()) => Ok(None),
+        Err(error) => {
+            if std::fs::read_to_string(path).is_ok_and(|text| Config::parse(&text).appearance == *settings) {
+                Ok(Some(error.to_string()))
+            } else { Err(error) }
+        }
+    }
+}
+
+pub fn save_shortcuts(bindings: &des_common::shortcuts::Bindings) -> std::io::Result<Option<String>> {
+    let path = path().ok_or_else(|| std::io::Error::other("no home directory"))?;
+    save_shortcuts_at(&path, bindings, |path, value| set_at(path, "shortcuts", Some(value)))
+}
+fn save_shortcuts_at(path: &std::path::Path, bindings: &des_common::shortcuts::Bindings,
+    write: impl FnOnce(&std::path::Path, &str) -> std::io::Result<()>) -> std::io::Result<Option<String>> {
+    match write(path, &bindings.encode()) {
+        Ok(()) => Ok(None),
+        Err(error) if std::fs::read_to_string(path).is_ok_and(|text| Config::parse(&text).shortcuts == *bindings) => Ok(Some(error.to_string())),
+        Err(error) => Err(error),
+    }
+}
+
+pub fn save_drag_overview(enabled:bool)->std::io::Result<Option<String>> {
+    let path=path().ok_or_else(||std::io::Error::other("no home directory"))?;
+    save_drag_overview_at(&path,enabled,|path,value|set_at(path,"drag_overview",Some(value)))
+}
+fn save_drag_overview_at(path:&std::path::Path,enabled:bool,write:impl FnOnce(&std::path::Path,&str)->std::io::Result<()>)->std::io::Result<Option<String>> {
+    match write(path,if enabled {"on"}else{"off"}) {
+        Ok(())=>Ok(None),
+        Err(error) if std::fs::read_to_string(path).is_ok_and(|text|Config::parse(&text).drag_overview==enabled)=>Ok(Some(error.to_string())),
+        Err(error)=>Err(error),
+    }
+}
+
 fn set_at(path: &std::path::Path, key: &str, value: Option<&str>) -> std::io::Result<()> {
+    set_at_sync(path, key, value, |dir| std::fs::File::open(dir)?.sync_all())
+}
+fn set_at_sync(path: &std::path::Path, key: &str, value: Option<&str>,
+    sync_directory: impl FnOnce(&std::path::Path) -> std::io::Result<()>) -> std::io::Result<()> {
     use std::io::{ErrorKind, Write};
     use std::os::unix::fs::OpenOptionsExt;
 
@@ -298,7 +355,7 @@ fn set_at(path: &std::path::Path, key: &str, value: Option<&str>) -> std::io::Re
     fresh.write_all(text.as_bytes())?;
     fresh.as_file().sync_all()?;
     fresh.persist(path).map_err(|error| error.error)?;
-    std::fs::File::open(dir)?.sync_all()?;
+    sync_directory(dir)?;
     Ok(())
 }
 
@@ -319,6 +376,53 @@ pub fn night_light_value((from, to, kelvin): (u8, u8, u32)) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shortcuts_post_rename_sync_failure_uses_the_committed_configuration() {
+        let temp = tempfile::tempdir().unwrap(); let path = temp.path().join("config");
+        let mut bindings = des_common::shortcuts::Bindings::default();
+        bindings.set("shell.new_tab", "Ctrl+Shift+Y").unwrap();
+        let result = save_shortcuts_at(&path, &bindings, |path, value| set_at_sync(path, "shortcuts", Some(value), |_| Err(std::io::Error::other("sync failed"))));
+        assert!(result.unwrap().is_some());
+        assert_eq!(Config::parse(&std::fs::read_to_string(&path).unwrap()).shortcuts, bindings);
+        let other = des_common::shortcuts::Bindings::default();
+        assert!(save_shortcuts_at(&path, &other, |_, _| Err(std::io::Error::other("write failed"))).is_err());
+    }
+    #[test]
+    fn appearance_post_rename_sync_failure_preserves_committed_asset_reference() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config");
+        let desired = des_common::appearance::AppearanceSettings { wallpaper: Some("/tmp/new-import.png".into()), ..Default::default() };
+        let result = save_appearance_at(&path, &desired, |path, value| set_at_sync(path, "appearance", Some(value), |_| Err(std::io::Error::other("sync failed"))));
+        assert!(result.unwrap().is_some(), "committed settings need a durability warning, not rollback/asset deletion");
+        assert_eq!(Config::parse(&std::fs::read_to_string(&path).unwrap()).appearance, desired);
+        let before = std::fs::read_to_string(&path).unwrap();
+        let other = des_common::appearance::AppearanceSettings::default();
+        assert!(save_appearance_at(&path, &other, |_, _| Err(std::io::Error::other("write failed"))).is_err());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), before);
+    }
+    #[test]
+    fn appearance_is_atomic_and_preserves_theme_accent_and_path_characters() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config");
+        set_at(&path, "accent", Some("1, 2, 3")).unwrap();
+        set_at(&path, "theme", Some("signal")).unwrap();
+        let appearance = des_common::appearance::AppearanceSettings {
+            wallpaper: Some("/tmp/a # = 雨.png".into()),
+            style: des_common::appearance::SurfaceStyle::Frosted,
+            ..Default::default()
+        };
+        set_at(&path, "appearance", Some(&appearance.encode())).unwrap();
+        let saved = Config::parse(&std::fs::read_to_string(&path).unwrap());
+        assert_eq!(saved.appearance, appearance);
+        assert_eq!(saved.accent, Some([1, 2, 3]));
+        assert_eq!(saved.theme, "signal");
+        assert_eq!(Config::parse("appearance = broken").appearance, Default::default());
+        let before = std::fs::read_to_string(&path).unwrap();
+        std::fs::create_dir(path.with_file_name("blocked")).unwrap();
+        assert!(set_at(&path.with_file_name("blocked"), "appearance", Some(&appearance.encode())).is_err());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), before);
+    }
+
     #[test]
     fn live_terminal_preservation_defaults_on_and_opt_out_persists() {
         assert!(Config::default().keep_terminal_sessions);
@@ -519,5 +623,20 @@ mod tests {
             let text = format!("panels = {}", Config::panels_value(panels));
             assert_eq!(Config::parse(&text).panels, panels, "{text}");
         }
+    }
+}
+
+
+#[cfg(test)]
+mod drag_overview_tests {
+    use super::*;
+    #[test]
+    fn preference_save_failures_retain_the_old_setting_and_reconcile_committed_writes() {
+        let dir=tempfile::tempdir().unwrap();let path=dir.path().join("config");
+        set_at(&path,"drag_overview",Some("on")).unwrap();
+        assert!(save_drag_overview_at(&path,false,|_,_|Err(std::io::Error::other("write failed"))).is_err());
+        assert!(Config::parse(&std::fs::read_to_string(&path).unwrap()).drag_overview);
+        let warning=save_drag_overview_at(&path,false,|p,v|{set_at(p,"drag_overview",Some(v))?;Err(std::io::Error::other("directory sync failed"))}).unwrap();
+        assert!(warning.is_some());assert!(!Config::parse(&std::fs::read_to_string(&path).unwrap()).drag_overview);
     }
 }

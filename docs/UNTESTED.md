@@ -491,3 +491,120 @@ this feature cannot be converted; save their work before the first desktop updat
 - [ ] Log out: the desktop's private tmux backend ends; personal tmux servers remain.
 - [ ] Force one reconnect/enumeration failure: processes and original layout remain
       available for another restart, with a visible recovery warning.
+
+
+## Interactive World View
+
+- [ ] Drag the compact globe horizontally and vertically; rotation follows the
+      pointer, stops on release, and HOME returns to the local marker.
+- [ ] Scroll over the sphere to zoom; scroll over a different panel without moving
+      the camera. Check trackpad and touch input on the actual desktop.
+- [ ] Hover/click near-side markers: names/coordinates and highlighted arcs; no
+      selection of markers behind the planet.
+- [ ] EXPAND brings the workspace forward with search focused. Type a destination,
+      clear search, select a row, and close with CLOSE/Escape. Existing terminals
+      and running commands remain available. Check switching to Settings/Launcher.
+- [ ] Test narrow workspace, split application layout, theme/accent changes and
+      long destination names; controls remain visible and results scroll.
+- [ ] Disable animation/rotation, lock/unlock, pause/resume, turn location lookup
+      off, and disconnect a selected destination. No idle animated repaint while
+      motion is disabled; disconnected selection is labelled no longer current.
+
+
+## Application launcher grid
+
+- [ ] Open Apps/Super+Space: installed icons and short app names form a grid.
+- [ ] Click an app; focus a running app; right-click and pin an app to the dock.
+- [ ] Use Left/Right and Up/Down, Enter, Escape, and Tab/Space. Scroll to a lower
+      row and verify keyboard selection remains visible.
+- [ ] Type/search/clear, edit the caret with Left/Right, then navigate results.
+      Settings, files, windows, calculator, clipboard and unit actions still work.
+- [ ] Check a narrow/split workspace, long names, missing icons and theme changes.
+      Names stay inside tiles; complete names/details appear on hover.
+
+
+## Managed terminal wheel regression
+
+- [ ] In a preserved tab, print several hundred lines and wheel up/down at the
+      prompt. Type afterwards: return to live output without losing the first key.
+- [ ] Run `less` on a large file and Vim with mouse disabled, then enabled. Wheel
+      in both directions operates the program, without entering backend history.
+- [ ] Restart the graphical shell with work saved: scrolling still works in
+      reattached tabs. Test a temporary tab as well.
+- [ ] Hover another panel/globe while scrolling: terminal stays put; hover an
+      unfocused split terminal pane: that pane receives the wheel.
+
+
+## Terminal-to-app stale patch regression
+
+- [ ] Switch repeatedly from terminal/workspace views to a browser through the
+      dock and Super+Tab. No old UI patch remains above browser content.
+- [ ] Repeat while toast/OSD/calendar rectangles expire or close, and while
+      scratchpad/quick settings hide. Only visible overlays stay above the app.
+- [ ] Interrupt/reconnect compositor IPC or fill the action queue in a development
+      session, close overlays, and confirm clears recover after readiness.
+- [ ] Lock/unlock with overlays present: no shell patch appears over the lock,
+      and the current cleared state is applied after unlocking.
+
+
+## Wallpaper and frosted surfaces (2026-10-20)
+
+- [ ] Settings → Appearance: choose PNG/JPEG, preview, Apply appearance, Cancel changes, Reset appearance
+- [ ] Source image moved/deleted after Apply; wallpaper survives shell restart
+- [ ] Fill/Fit, blur 0–40, dim and surface opacity on bright/busy/dark images
+- [ ] Solid/Frosted, Reduce transparency and Reduce motion; dense terminal ANSI, links and less/Vim wheel input
+- [ ] Switch terminal↔apps repeatedly: no stale dock/notification rectangles
+- [ ] Lock/unlock, screenshot/recording, shell restart preserving multiple terminals
+- [ ] Mixed DPI, rotated/external displays, unplug/replug; independently fitted shared image
+- [ ] Measure GPU/CPU and idle repaint behavior; no performance results are claimed
+- [ ] Live Liquid compositor gate: alpha foreground separation, source damage/capture parity and actual DRM measurements (option remains unavailable)
+
+
+## Settings and native Files (2026-10-20)
+
+- [ ] Installed desktop: Settings at narrow/wide widths; section selector/rail, all Appearance tabs, scrolling, keyboard focus and accent controls.
+- [ ] Open Files from FILES and launcher search; Back/Forward/Up, typed path Enter, local search, hidden files, long/native-byte names and document opening.
+- [ ] In a disposable folder: new folder, rename, copy/paste, cut/paste, conflict handling, cancellation during a large copy, Trash and Restore. Confirm source/destination contents.
+- [ ] Cross-filesystem move/Trash errors preserve the source; permissions and unavailable/removable mount failures remain actionable.
+- [ ] Trash original names, restore conflict, missing original parent and interoperability with other desktop Trash implementations.
+- [ ] Wallpaper picker Escape/cancel, closing Settings, switching to scratchpad/quick settings, lock/unlock and returning: no hidden keyboard capture.
+- [ ] Real desktop performance for large/slow folders and copy progress. Worker bounds do not interrupt a blocked filesystem syscall.
+
+
+## Wallpaper continuity correction
+
+- [ ] Existing v1 wallpaper + Solid configuration loads into the visible Frosted preset; explicit v2 Opaque and Reduce transparency remain opaque.
+- [ ] No bright/grey frame around the terminal. Wallpaper forms one aligned blurred backdrop through outer padding, split gaps and gutters at all supported scaling factors.
+- [ ] Bright/dark/busy wallpapers at low/default/high tint; glyphs stay crisp, selection/cursor/find highlights remain clear and terminal apps retain explicit ANSI backgrounds.
+- [ ] Compare native Settings, Files, launcher, dock and terminal for consistent depth; do not mark the visual work accepted from unit tests alone.
+
+
+## Desktop visual consistency pass
+
+- [ ] Installed desktop, bright/dark wallpaper and Opaque/Reduce transparency: compare terminal, Settings, Files, launcher, panels, music, dock, Quick Settings, calendar, notifications and OSD side by side.
+- [ ] Terminal tabs, split focus marker, find toolbar, scratchpad, less/Vim scroll/input, links and cursor/selection retain behavior; no stale glass rectangles after app switching.
+- [ ] Tab through buttons/toggles/chips/icons/sliders; focus is visible without pointer hover. Slider arrows/Shift/Home/End affect only the focused control.
+- [ ] Narrow/wide Settings fields, wrapped descriptions, Files metadata/search/More menu and image picker; no clipped controls or unrelated keyboard capture.
+- [ ] Verify screen-sized and floating materials across DPI/output changes, modal/authentication/lock transitions, reduced motion, media and screenshot previews.
+- [ ] Native screenshots and compositor CPU/GPU checks are required; static painter and interaction tests are not aesthetic acceptance.
+
+
+## Configurable shortcuts and reference
+
+- [ ] Install matching compositor and shell builds. Super+/ opens/closes the reference over terminals and applications; Ctrl+Shift+H opens it in a development shell. Search Keyboard shortcuts in the launcher.
+- [ ] Right panel has no KEYS list; reference search/clear, groups, disabled labels and Configure destination match current mappings. Inspect at320/360/wide widths and short displays.
+- [ ] Settings → Shortcuts: manual Super entry, explicit Ctrl recording, conflict/reserved-key errors, disable, reset one, confirm/cancel reset all. Backspace/arrows/paste work in the manual field.
+- [ ] Remap shell/desktop/terminal-find actions. Old keys cease acting, new keys work; mappings survive shell restart and compositor reload. Confirm Ctrl+Alt development aliases and shifted punctuation on actual XKB layouts.
+- [ ] Reference Escape/Arrow/Enter never affect an underlying launcher/file panel/terminal; scratchpad resumes afterward. Lock/authentication/capture and shortcut-inhibited applications retain priority.
+- [ ] Simulate config save failure, compositor disconnect and busy IPC queue: old mappings remain after failed writes; committed mappings are reloaded on reconnect. Native global routing and overlay acceptance remain unverified here.
+
+
+## Window shelf and drag destinations
+
+- [ ] Install matching compositor and shell; inspect running markers, counts, pins, All windows, narrow displays, large pin collections and per-display shelves.
+- [ ] Choose among multiple live windows, including more than nine: arrows, Page Up/Down, Enter, Escape back to the dock; check the older-compositor list fallback.
+- [ ] Check collapsed left clock in 12/24-hour formats, minute rollover and short displays.
+- [ ] Drag from Files and native Wayland apps; dwell over previews, drop inside the revealed app, cancel with Escape, switch displays, close the source and lock mid-drag. Confirm negotiated copy/move and payload delivery.
+- [ ] Test actual browsers exposing native tab drags, including Xwayland separately. Internal browser reorder gestures may never create a desktop drag.
+- [ ] Toggle Settings Dock drag overview; check persistence, ordinary dragging while disabled, animation-off, Reduce motion and Reduce transparency.
+- [ ] Review animation, preview labels, wallpaper continuity and compositor CPU/GPU use in the installed session. Automated tests do not establish native visual acceptance.

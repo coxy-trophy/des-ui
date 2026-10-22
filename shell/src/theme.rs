@@ -290,11 +290,6 @@ impl Theme {
         self.toward_ground(0.9)
     }
 
-    /// Secondary text on top of an accent fill.
-    pub fn muted_on_accent(&self) -> Color32 {
-        self.toward_ground(0.75)
-    }
-
     /// The colour behind the terminal's text selection.
     pub fn selection(&self) -> Color32 {
         self.toward_ground(0.7)

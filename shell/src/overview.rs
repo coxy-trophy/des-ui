@@ -35,6 +35,12 @@ pub fn fitted(painter: &egui::Painter, text: &str, font: &FontId, width: f32) ->
 
 /// The hint along the top of the overview, or what has been typed.
 pub fn heading(layout: &OverviewLayout) -> String {
+    if layout.kind==OverviewKind::Drag {
+        return "HOLD OVER A WINDOW TO OPEN IT · THEN DROP INSIDE · ESC CANCELS".into();
+    }
+    if layout.kind==OverviewKind::Windows {
+        return format!("OPEN WINDOWS · {} · PGUP/PGDN · ESC RETURNS TO DOCK",layout.filter);
+    }
     if layout.filter.is_empty() {
         "TYPE TO FIND A WINDOW · ENTER OPENS · DRAG TO ANOTHER WORKSPACE · ESC CLOSES".to_string()
     } else {
@@ -45,7 +51,11 @@ pub fn heading(layout: &OverviewLayout) -> String {
 
 /// Draws around the pictures of whatever the compositor has open, on the main display.
 pub fn show(ctx: &egui::Context, theme: &Theme, layout: &OverviewLayout, state: Option<&DesktopState>) {
-    if layout.screen != 0 {
+    show_on(ctx,theme,layout,state,0);
+}
+
+pub fn show_on(ctx:&egui::Context,theme:&Theme,layout:&OverviewLayout,state:Option<&DesktopState>,display:usize) {
+    if layout.screen != display {
         return;
     }
     let screen = ctx.screen_rect();
@@ -58,12 +68,17 @@ pub fn show(ctx: &egui::Context, theme: &Theme, layout: &OverviewLayout, state: 
             let painter = ui.painter();
             let accent = theme.main;
             match layout.kind {
-                OverviewKind::Workspaces => {
-                    painter.rect_filled(screen, CornerRadius::ZERO, ui::GROUND);
-                    painter.text(pos2(screen.left() + 48.0, screen.top() + 36.0), Align2::LEFT_CENTER, "OVERVIEW", ui::display(18.0), ui::TEXT);
+                OverviewKind::Workspaces | OverviewKind::Drag => {
+                    crate::material::paint(ctx,painter,screen,0.0,crate::material::Role::Floating);
+                    painter.text(pos2(screen.left() + 48.0, screen.top() + 36.0), Align2::LEFT_CENTER, if layout.kind==OverviewKind::Drag {"DROP INTO A WINDOW"}else{"OVERVIEW"}, ui::display(18.0), ui::TEXT);
                     let hint = heading(layout);
                     let colour = if layout.filter.is_empty() { ui::LABEL } else { accent };
-                    painter.text(pos2(screen.right() - 48.0, screen.top() + 36.0), Align2::RIGHT_CENTER, hint, ui::mono(12.0), colour);
+                    if screen.width()>1100.0 {
+                        painter.text(pos2(screen.right() - 48.0, screen.top() + 36.0), Align2::RIGHT_CENTER, fitted(painter,&hint,&ui::mono(11.0),screen.width()-330.0), ui::mono(11.0), colour);
+                    } else {
+                        painter.text(pos2(screen.left()+48.0,screen.top()+57.0),Align2::LEFT_CENTER,
+                            fitted(painter,&hint,&ui::mono(10.0),screen.width()-96.0),ui::mono(10.0),ui::SECONDARY);
+                    }
                     for workspace in &layout.workspaces {
                         let cell = rect(workspace.area);
                         let line = if workspace.current { accent } else { ui::LINE };
@@ -80,10 +95,15 @@ pub fn show(ctx: &egui::Context, theme: &Theme, layout: &OverviewLayout, state: 
                         painter.hline(cell.x_range(), cell.top() + 40.0, Stroke::new(1.0, ui::LINE));
                     }
                 }
-                OverviewKind::Switcher => {
+                OverviewKind::Switcher | OverviewKind::Windows => {
                     if let Some(strip) = layout.strip.map(rect) {
-                        painter.rect_filled(strip, CornerRadius::same(6), ui::PANEL);
-                        painter.rect_stroke(strip, CornerRadius::same(6), Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
+                        crate::material::paint(ctx,painter,strip,ui::SURFACE_RADIUS,crate::material::Role::Floating);
+                        painter.rect_stroke(strip, ui::SURFACE_RADIUS, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
+                        if layout.kind==OverviewKind::Windows {
+                            let hint=heading(layout);
+                            painter.text(strip.left_top()+vec2(16.0,16.0),Align2::LEFT_CENTER,
+                                fitted(painter,&hint,&ui::display(12.0),strip.width()-32.0),ui::display(12.0),ui::SECONDARY);
+                        }
                     }
                 }
             }
@@ -99,7 +119,15 @@ pub fn show(ctx: &egui::Context, theme: &Theme, layout: &OverviewLayout, state: 
                 }
                 let font = ui::mono(11.0);
                 let width = area.width().max(40.0);
-                let name = fitted(painter, &title_of(thumb.app), &font, width);
+                let title=title_of(thumb.app);
+                let title=if layout.kind==OverviewKind::Windows {
+                    state.and_then(|s|s.apps.get(thumb.app)).map_or(title.clone(),|app|format!("{} · W{}",title,app.workspace+1))
+                }else{title};
+                let name = fitted(painter, &title, &font, width);
+                if selected && layout.kind==OverviewKind::Drag {
+                    let progress=layout.filter.parse::<f32>().unwrap_or(0.0).clamp(0.0,100.0)/100.0;
+                    painter.hline(area.left()..=(area.left()+area.width()*progress),area.bottom()+3.0,Stroke::new(3.0,accent));
+                }
                 let at: Pos2 = pos2(area.center().x, area.bottom() + 14.0);
                 painter.text(at, Align2::CENTER_CENTER, name, font, if selected { ui::TEXT } else { ui::SECONDARY });
             }

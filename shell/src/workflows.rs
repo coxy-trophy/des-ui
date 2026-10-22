@@ -13,6 +13,8 @@ impl App {
                 if self.document_openers.len()<32{self.document_openers.push(apps::open_document(path,self.ctx.clone()));}
                 else{self.launcher.fail("Wait for existing document viewers to respond before opening another file.".into());}
             }
+            palette::Action::Shortcuts=>{self.launcher.open=false;self.toggle_shortcut_reference();}
+            palette::Action::Files=>self.open_files(files::home()),
             palette::Action::Music=>self.toggle_music(),
             palette::Action::Notifications=>self.toggle_notices(),
             palette::Action::Power=>self.toggle_power(),
@@ -47,6 +49,59 @@ impl App {
                 });
             }
         }
+    }
+    pub(super) fn start_file_operation(&mut self, operation: file_ops::Operation) {
+        if self.file_job.is_some() {
+            if let Some(browser) = &mut self.files_browser { browser.operation_result(&self.ctx, Err("Wait for the current operation to finish")); }
+            return;
+        }
+        match files::Task::start(operation, self.ctx.clone()) {
+            Ok(task) => self.file_job = Some(task),
+            Err(error) => {
+                if let Some(browser) = &mut self.files_browser { browser.operation_result(&self.ctx, Err(&error)); }
+                self.notices.post("File operation not started", &error, false);
+            },
+        }
+    }
+    pub(super) fn pump_file_operations(&mut self, ctx: &egui::Context) {
+        let result = self.file_job.as_ref().and_then(files::Task::poll);
+        if let Some(result) = result {
+            let task = self.file_job.take().unwrap();
+            match result {
+                Ok(completed) => {
+                    let source = match &task.operation {
+                        file_ops::Operation::CreateFolder { .. } => None,
+                        file_ops::Operation::Rename { source, .. } | file_ops::Operation::Copy { source, .. } |
+                        file_ops::Operation::Move { source, .. } | file_ops::Operation::Trash { source } |
+                        file_ops::Operation::Restore { source } => Some(source),
+                    };
+                    if self.file_clipboard.as_ref().is_some_and(|clip| Some(&clip.source) == source) {
+                        match task.operation {
+                            file_ops::Operation::Rename { .. } | file_ops::Operation::Restore { .. } => {
+                                if let Some(clip) = &mut self.file_clipboard { clip.source = completed.path.clone(); }
+                            },
+                            file_ops::Operation::Move { .. } | file_ops::Operation::Trash { .. } => self.file_clipboard = None,
+                            _ => {},
+                        }
+                    }
+                    if let Some(browser) = &mut self.files_browser { browser.operation_result(ctx, Ok(&completed.message)); }
+                    let detail = match &task.operation { file_ops::Operation::Trash { source } => source.display().to_string(), _ => completed.path.display().to_string() };
+                    self.notices.post(&completed.message, &detail, false);
+                },
+                Err(error) => {
+                    if let Some(browser) = &mut self.files_browser { browser.operation_result(ctx, Err(&error)); }
+                    self.notices.post("File operation failed", &error, false);
+                },
+            }
+        }
+        if self.file_job.is_some() && self.files_browser.is_some() { ctx.request_repaint_after(Duration::from_millis(100)); }
+    }
+    pub(super) fn open_files(&mut self, path: PathBuf) {
+        self.launcher.open = false; self.settings.open = false; self.files_browser = None; self.music.open = false;
+        self.notices.open = false; self.power_menu.open = false; self.world.expanded = false;
+        self.scratchpad.close_now(); self.fs.blur(); self.settings.appearance_editor.reset(&self.config.appearance);
+        self.files_browser = Some(files::Browser::new(path, files::Mode::Browse));
+        self.send(Command::Terminal);
     }
     /// Opens a terminal tab running a program with its arguments, no shell between;
     /// the tab closes with the program. With no room for a tab, only a notice.

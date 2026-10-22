@@ -7,7 +7,7 @@ use des_common::ipc::{Command, DesktopState};
 #[derive(Debug,Clone,PartialEq)]
 pub enum Action {
     Launch(AppEntry), Command(Command), Settings(&'static str), File(std::path::PathBuf),
-    Music, Notifications, Power, Lock, SaveSession, RestoreSession, FindTerminal, CopyLastOutput, Scratchpad,
+    Shortcuts, Files, Music, Notifications, Power, Lock, SaveSession, RestoreSession, FindTerminal, CopyLastOutput, Scratchpad,
     /// Run this program with these arguments in a new terminal tab; no shell between.
     RunInTerminal(Vec<String>),
     /// Put this text on the clipboard, which the palette does itself before reporting it.
@@ -70,10 +70,12 @@ pub fn results(query:&str, entries:&[AppEntry], state:Option<&DesktopState>, cat
             items.push(item(app.title.clone(),format!("{wants}{} · display {} · workspace {}",app.app_id,app.screen+1,app.workspace+1),"WINDOW",Action::Command(Command::Activate(index))));
         }
     }
+    items.push(item("Keyboard shortcuts".into(),"Help · Show current key mappings".into(),"SETTING",Action::Shortcuts));
     for (id,title) in crate::settings::destinations() {
         items.push(item(format!("Settings: {title}"),"Open settings section".into(),"SETTING",Action::Settings(id)));
     }
     let mut commands=vec![
+        ("Open Files",Action::Files),
         ("Show terminal",Action::Command(Command::Terminal)),
         ("Find in terminal",Action::FindTerminal),
         ("Scratchpad terminal",Action::Scratchpad),

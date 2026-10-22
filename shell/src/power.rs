@@ -280,8 +280,8 @@ impl Menu {
                     (false, true) => (ui::PANEL, theme.main),
                     (false, false) => (ui::GROUND, ui::LINE_STRONG),
                 };
-                painter.rect_filled(row, 0.0, fill);
-                painter.rect_stroke(row, 0.0, Stroke::new(1.0, line), StrokeKind::Inside);
+                painter.rect_filled(row, ui::CONTROL_RADIUS, fill);
+                painter.rect_stroke(row, ui::CONTROL_RADIUS, Stroke::new(1.0, line), StrokeKind::Inside);
                 let title = if armed { format!("CLICK AGAIN TO {name}") } else { name.to_string() };
                 let ink = if armed { ui::CAUTION } else { ui::TEXT };
                 painter.text(row.left_top() + vec2(18.0, 12.0), Align2::LEFT_TOP, title, ui::display_bold(14.0), ink);

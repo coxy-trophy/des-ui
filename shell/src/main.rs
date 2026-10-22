@@ -19,6 +19,8 @@ mod overview;
 mod commands;
 mod clipboard;
 mod file_search;
+mod files;
+mod file_ops;
 mod lock;
 mod music;
 mod notify;
@@ -46,9 +48,13 @@ mod region;
 mod sound;
 mod users;
 mod settings;
+mod shortcuts;
 mod session_restore;
 mod sensors;
 mod widgets;
+mod wallpaper;
+mod material;
+mod appearance_editor;
 mod sysmon;
 mod term;
 mod theme;
@@ -138,6 +144,9 @@ struct App {
     /// The animal at the foot of the left column.
     pet: pet::Pet,
     fs: FsView,
+    files_browser: Option<files::Browser>,
+    file_clipboard: Option<files::Clipboard>,
+    file_job: Option<files::Task>,
     /// The compositor connection; `None` when running as an ordinary window.
     desktop: Option<Desktop>,
     launcher: Launcher,
@@ -156,6 +165,7 @@ struct App {
     document_openers: Vec<std::sync::mpsc::Receiver<Result<(),String>>>,
     dock_area: Option<Option<(i32, i32, i32, i32)>>,
     settings: settings::Settings,
+    shortcut_reference: shortcuts::Reference,
     music: music::Music,
     notices: notify::Center,
     /// Sleep, and what holds off the lock.
@@ -174,6 +184,7 @@ struct App {
     lock_confirmed: bool,
     unlock_pending: bool,
     config: config::Config,
+    wallpaper: wallpaper::Wallpaper,
     /// The keyboard, mouse and touchpad settings, as last saved.
     input: des_common::input::InputSettings,
     /// The font that supplies prompt symbols, kept for when fonts are set up again.
@@ -181,8 +192,10 @@ struct App {
     /// Whether the saved panel choice has been sent to the compositor yet.
     panels_synced: bool,
     frame_synced: bool,
+    shortcuts_synced: bool,
     /// Places for the globe, kept current in the background.
     geo: geo::Geo,
+    world: globe::Explorer,
     /// Which panels are open when there is no compositor to say.
     local_panels: Panels,
     screenshot: Option<PathBuf>,
@@ -348,6 +361,9 @@ impl App {
             mon: SysMon::new(),
             pet: pet::Pet::new(&config.pet),
             fs: FsView::new(),
+            files_browser: None,
+            file_clipboard: None,
+            file_job: None,
             desktop,
             launcher,
             dock: dock::Dock::default(),
@@ -365,6 +381,7 @@ impl App {
             document_openers: Vec::new(),
             dock_area: None,
             settings: settings::Settings::default(),
+            shortcut_reference: Default::default(),
             music,
             notices,
             power,
@@ -377,12 +394,14 @@ impl App {
             lock_confirmed: false,
             unlock_pending: false,
             geo: geo::Geo::start(config.lookups, config.location.clone()),
+            world: globe::Explorer::default(),
             local_panels: config.panels,
             config,
-            input: des_common::input::InputSettings::load(),
+            wallpaper: Default::default(),            input: des_common::input::InputSettings::load(),
             symbols,
             panels_synced: false,
             frame_synced: false,
+            shortcuts_synced: false,
             screenshot,
             started: Instant::now(),
             screenshot_requested: false,
@@ -409,7 +428,7 @@ impl App {
         match action {
             dock::Action::Command(command) => {
                 self.launcher.open=false;
-                self.settings.open=false;
+                self.settings.open=false;self.files_browser=None;
                 self.music.open=false;
                 self.notices.open=false;
                 self.power_menu.open=false;
@@ -419,14 +438,14 @@ impl App {
             dock::Action::Unavailable(name) => self.notices.post("Application unavailable", &format!("{name} is no longer installed. Right-click its dock icon to unpin it."),false),
             dock::Action::Launch(entry) => {
                 self.launcher.open=false;
-                self.settings.open=false;
+                self.settings.open=false;self.files_browser=None;
                 self.music.open=false;
                 self.notices.open=false;
                 self.power_menu.open=false;
                 if entry.terminal {
                     self.run_in_terminal(&entry);
                     self.launcher.open=false;
-                    self.settings.open=false;
+                    self.settings.open=false;self.files_browser=None;
                     self.music.open=false;
                     self.notices.open=false;
                     self.power_menu.open=false;
@@ -467,13 +486,26 @@ impl App {
             .get(self.focus_tab())
             .and_then(|t| t.cwd())
             .unwrap_or_else(|| PathBuf::from("/"));
+        let preserve = self.config.keep_terminal_sessions && self.live_terminal_lease.is_some();
         match TermTab::spawn_managed(&self.shell, &cwd, self.ctx.clone(), self.config.scrollback,
-            self.config.keep_terminal_sessions && self.live_terminal_lease.is_some(), term::SessionRole::Tab) {
+            preserve, term::SessionRole::Tab) {
             Ok(tab) => {
                 self.tabs.push(tab);
                 self.show_tab(self.tabs.len() - 1);
             }
-            Err(e) => self.notices.post("Terminal not opened", &format!("{e}. Existing terminals are still running."), false),
+            Err(error) if preserve => {
+                // Only a fresh interactive shell may fall back. Never replay a
+                // terminal command or replace an existing managed session.
+                match TermTab::spawn(&self.shell, &cwd, self.ctx.clone(), self.config.scrollback) {
+                    Ok(tab) => {
+                        self.tabs.push(tab);
+                        self.show_tab(self.tabs.len() - 1);
+                        self.notices.post("Temporary terminal opened", &format!("Live terminal backend: {error}. This tab will close on shell restart. Existing terminals were left alone."), false);
+                    }
+                    Err(fallback) => self.notices.post("Terminal not opened", &format!("{error}. Temporary terminal also failed: {fallback}. Existing terminals are still running."), false),
+                }
+            }
+            Err(error) => self.notices.post("Terminal not opened", &format!("{error}. Existing terminals are still running."), false),
         }
     }
 
@@ -487,6 +519,8 @@ impl App {
 
     /// Brings a tab into view: in the pane it is already in, or else the pane in use.
     fn show_tab(&mut self, index: usize) {
+        self.files_browser = None;
+        self.world.expanded = false;
         if self.side == Some(index) {
             self.side_focused = true;
         } else if index == self.active {
@@ -529,8 +563,10 @@ impl App {
 
     /// Opens or closes the settings, which like the launcher take the terminal's place.
     fn toggle_settings(&mut self) {
+        self.world.expanded = false;
         if self.settings.open {
-            self.settings.open = false;
+            self.settings.appearance_editor.reset(&self.config.appearance);
+            self.settings.open = false; self.files_browser = None;
             self.music.open = false;
             self.notices.open = false;
             self.power_menu.open = false;
@@ -546,8 +582,9 @@ impl App {
 
     /// Opens or closes the music player, which also takes the terminal's place.
     fn toggle_music(&mut self) {
+        self.world.expanded = false;
         self.launcher.open = false;
-        self.settings.open = false;
+        self.settings.open = false; self.files_browser = None;
         self.notices.open = false;
         self.power_menu.open = false;
         self.music.toggle();
@@ -558,8 +595,9 @@ impl App {
 
     /// Opens or closes the list of notifications, which also takes the terminal's place.
     fn toggle_notices(&mut self) {
+        self.world.expanded = false;
         self.launcher.open = false;
-        self.settings.open = false;
+        self.settings.open = false; self.files_browser = None;
         self.music.open = false;
         self.notices.toggle();
         if self.notices.open {
@@ -575,8 +613,9 @@ impl App {
 
     /// Opens or closes the power menu, which also takes the terminal's place.
     fn toggle_power(&mut self) {
+        self.world.expanded = false;
         self.launcher.open = false;
-        self.settings.open = false;
+        self.settings.open = false; self.files_browser = None;
         self.music.open = false;
         self.notices.open = false;
         self.power_menu.toggle();
@@ -624,7 +663,7 @@ impl App {
     fn finish_lock(&mut self) {
         self.unlock_pending = false;
         self.launcher.open = false;
-        self.settings.open = false;
+        self.settings.open = false; self.files_browser = None;
         self.music.open = false;
         self.notices.open = false;
         self.power_menu.open = false;
@@ -645,6 +684,26 @@ impl App {
         }
     }
 
+    fn start_file_drag(&mut self, ctx: &egui::Context, path: &std::path::Path) {
+        let uri = control::file_uri(path);
+        if !des_common::ipc::drag_uri_ok(&uri) || uri.len() + 12 >= des_common::ipc::MAX_DRAG_LINE {
+            self.notices.post("Could not drag file", "The file path is too long to transfer safely.", false);
+            return;
+        }
+        let result = self.desktop.as_mut().filter(|desktop| desktop.connected())
+            .ok_or_else(|| std::io::Error::other("Drag files from the installed desktop session"))
+            .and_then(|desktop| desktop.send(Command::DragFiles(vec![uri])));
+        match result {
+            Ok(()) => {
+                // The compositor owns the held button now. Its server data source
+                // cannot send egui a toolkit drag-end callback, so release local state.
+                ctx.stop_dragging();
+                ctx.input_mut(|input| input.pointer = Default::default());
+            }
+            Err(error) => self.notices.post("Could not drag file", &error.to_string(), false),
+        }
+    }
+
     /// Carries out and saves what the user changed in the settings.
     fn apply(&mut self, ctx: &egui::Context, change: settings::Change) {
         use settings::Change;
@@ -654,6 +713,31 @@ impl App {
             }
         };
         match change {
+            Change::Appearance(appearance) => {
+                if let Err(error) = appearance.validate() {
+                    self.notices.post("Could not apply appearance", error, false);
+                    return;
+                }
+                match config::save_appearance(&appearance) {
+                    Ok(durability_warning) => {
+                        let previous = self.config.appearance.wallpaper.clone();
+                        if let Some(view) = self.settings.appearance_editor.cached_view(&appearance) { self.wallpaper.adopt(&appearance, view); }
+                        self.settings.appearance_editor.saved(&appearance);
+                        self.config.appearance = appearance;
+                        self.send(Command::ReloadInput);
+                        // If rename durability is uncertain, retain both assets so a
+                        // crash cannot roll the config back to an already deleted file.
+                        if durability_warning.is_none() && previous != self.config.appearance.wallpaper {
+                            if let Some(path) = previous { wallpaper::remove_managed(&path); }
+                        }
+                        if let Some(error) = durability_warning {
+                            self.notices.post("Appearance applied", &format!("The settings were saved, but the disk could not confirm durability: {error}. Check storage before restarting."), false);
+                        }
+                        ctx.request_repaint();
+                    },
+                    Err(error) => self.notices.post("Could not save appearance", &format!("{error}. Your previous appearance is still active."), false),
+                }
+            }
             Change::Theme(name) => {
                 let mut preview = self.config.clone();
                 preview.theme = name.clone();
@@ -709,6 +793,37 @@ impl App {
                 // The frame follows at once; with a compositor, on its next report.
                 self.local_panels = panels;
                 self.panels_synced = false;
+            }
+            Change::Set("shortcuts", value) => {
+                let next = match value.as_deref() {
+                    Some(value) => match des_common::shortcuts::Bindings::parse(value) {
+                        Some(next) => next,
+                        None => { self.notices.post("Could not save shortcuts", "The shortcut configuration is invalid. Your previous mappings remain active.", false); return; }
+                    },
+                    None => Default::default(),
+                };
+                match config::save_shortcuts(&next) {
+                    Ok(warning) => {
+                        self.config.shortcuts = next;
+                        shortcuts::publish(ctx, &self.config.shortcuts);
+                        // Retry after queue pressure or disconnection; the file is
+                        // already committed even if the compositor is unavailable.
+                        self.shortcuts_synced = self.desktop.as_mut().is_some_and(|desktop| desktop.send(Command::ReloadInput).is_ok());
+                        if let Some(error) = warning { self.notices.post("Shortcuts applied", &format!("Mappings are saved, but disk durability could not be confirmed: {error}"), false); }
+                    },
+                    Err(error) => self.notices.post("Could not save shortcuts", &format!("{error}. Your previous mappings remain active."), false),
+                }
+            }
+            Change::Set("drag_overview", value) => {
+                let enabled=value.as_deref()!=Some("off");
+                match config::save_drag_overview(enabled) {
+                    Ok(warning)=>{
+                        self.config.drag_overview=enabled;
+                        self.shortcuts_synced=self.desktop.as_mut().is_some_and(|desktop|desktop.send(Command::ReloadInput).is_ok());
+                        if let Some(error)=warning {self.notices.post("Dock preference saved",&format!("Disk durability could not be confirmed: {error}"),false);}
+                    }
+                    Err(error)=>self.notices.post("Could not save dock preference",&format!("{error}. Your previous preference remains active."),false),
+                }
             }
             Change::Set(key, value) => {
                 save(key, value.as_deref());
@@ -790,7 +905,8 @@ impl App {
     /// Opens or closes the launcher. It is drawn where the terminal is, so anything
     /// covering that must make way.
     fn toggle_launcher(&mut self) {
-        self.settings.open = false;
+        self.world.expanded = false;
+        self.settings.open = false; self.files_browser = None;
         self.music.open = false;
         self.notices.open = false;
         self.power_menu.open = false;
@@ -837,93 +953,75 @@ impl App {
         }
     }
 
-    /// Handles app-level shortcuts and returns the events left over for the terminal.
+    fn toggle_shortcut_reference(&mut self) {
+        if self.capture.marking() { return; }
+        if self.shortcut_reference.open { self.shortcut_reference.close(); }
+        else { self.shortcut_reference.open = true; self.quick.open = false; self.dock.reset(); }
+    }
+
+    /// Handles registry-owned shell shortcuts; focused editors and modals own input first.
     fn take_shortcuts(&mut self, ctx: &egui::Context) -> Vec<Event> {
-        // The password dialog has the keyboard; no shortcut fires behind it.
-        if self.polkit.active() {
+        let files_modal = self.files_browser.as_ref().is_some_and(files::Browser::captures_keyboard) && !self.scratchpad.visible() && !self.quick.open;
+        if self.polkit.active() || self.shortcut_reference.open || self.settings.shortcut_capture_active() || files_modal || (self.settings.open && self.settings.appearance_editor.picker_open()) {
             return Vec::new();
         }
         let mut rest = Vec::new();
         for event in ctx.input(|i| i.events.clone()) {
-            if let Event::Key {
-                key,
-                pressed: true,
-                modifiers,
-                ..
-            } = &event
-            {
-                let count = self.tabs.len();
-                if modifiers.ctrl && modifiers.shift && *key == Key::Backtick {
-                    self.scratchpad.toggle();
+            if let Event::Key { key, pressed: true, modifiers, .. } = &event {
+                if self.files_browser.is_some() && *key == Key::Escape && !self.scratchpad.visible() {
+                    self.files_browser = None;
+                    ctx.input_mut(|input| { input.consume_key(egui::Modifiers::NONE, Key::Escape); });
                     continue;
                 }
-                if modifiers.ctrl && modifiers.shift && *key == Key::K {
-                    self.toggle_osk();
+                if self.world.expanded && *key == Key::Escape && !self.scratchpad.visible() {
+                    self.world.expanded = false;
+                    ctx.input_mut(|input| { input.consume_key(egui::Modifiers::NONE, Key::Escape); });
                     continue;
                 }
-                if modifiers.ctrl && modifiers.shift && *key == Key::D {
-                    self.dock.reveal_keyboard();
-                    continue;
-                }
-                if modifiers.ctrl && modifiers.shift && *key == Key::T {
-                    self.new_tab();
-                    continue;
-                }
-                if modifiers.ctrl && modifiers.shift && *key == Key::A {
-                    self.toggle_launcher();
-                    continue;
-                }
-                if modifiers.ctrl && modifiers.shift && *key == Key::S {
-                    self.toggle_settings();
-                    continue;
-                }
-                if modifiers.ctrl && modifiers.shift && *key == Key::M {
-                    self.toggle_music();
-                    continue;
-                }
-                if modifiers.ctrl && modifiers.shift && *key == Key::N {
-                    self.toggle_notices();
-                    continue;
-                }
-                if modifiers.ctrl && modifiers.shift && *key == Key::P {
-                    self.toggle_power();
-                    continue;
-                }
-                if modifiers.ctrl && modifiers.shift && *key == Key::Q {
-                    ctx.send_viewport_cmd(ViewportCommand::Close);
-                    continue;
-                }
-                if modifiers.ctrl && modifiers.shift && matches!(key, Key::E | Key::O) {
-                    self.split_terminal(*key == Key::O);
-                    continue;
-                }
-                // With the terminal split, Ctrl+Shift and an arrow moves between panes.
-                let arrow = matches!(key, Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown);
-                if modifiers.ctrl && modifiers.shift && arrow && self.side.is_some() {
-                    self.side_focused = matches!(key, Key::ArrowRight | Key::ArrowDown);
-                    continue;
-                }
-                if modifiers.ctrl && *key == Key::Tab {
-                    // The next tab for the pane in use, passing over the other pane's.
-                    let other = if self.side_focused { Some(self.active) } else { self.side };
-                    let step = if modifiers.shift { count - 1 } else { 1 };
-                    let mut next = self.focus_tab();
-                    for _ in 0..count {
-                        next = (next + step) % count;
-                        if Some(next) != other {
-                            break;
+                // Files retains its standard New folder binding in that workspace.
+                if self.files_browser.is_some() && !self.scratchpad.visible() && !self.quick.open && modifiers.ctrl && modifiers.shift && !modifiers.alt && !modifiers.mac_cmd && *key == Key::N { continue; }
+                let action = shell_shortcut(&self.config.shortcuts, *key, *modifiers);
+                match action {
+                    Some("shell.help") => { self.toggle_shortcut_reference(); return Vec::new(); }
+                    Some("shell.scratchpad") => self.scratchpad.toggle(),
+                    Some("shell.keyboard") => self.toggle_osk(),
+                    Some("shell.dock") => self.dock.reveal_keyboard(),
+                    Some("shell.new_tab") => self.new_tab(),
+                    Some("shell.launcher") => self.toggle_launcher(),
+                    Some("shell.settings") => self.toggle_settings(),
+                    Some("shell.music") => self.toggle_music(),
+                    Some("shell.notifications") => self.toggle_notices(),
+                    Some("shell.power") => self.toggle_power(),
+                    Some("shell.quit") => { ctx.send_viewport_cmd(ViewportCommand::Close); }
+                    Some("shell.split_right") => self.split_terminal(false),
+                    Some("shell.split_down") => self.split_terminal(true),
+                    Some("shell.focus_left" | "shell.focus_up") if self.side.is_some() => self.side_focused = false,
+                    Some("shell.focus_right" | "shell.focus_down") if self.side.is_some() => self.side_focused = true,
+                    Some(id @ ("shell.next_tab" | "shell.previous_tab")) => {
+                        let count = self.tabs.len();
+                        if count > 0 {
+                            let other = if self.side_focused { Some(self.active) } else { self.side };
+                            let step = if id == "shell.previous_tab" { count - 1 } else { 1 };
+                            let mut next = self.focus_tab();
+                            for _ in 0..count { next = (next + step) % count; if Some(next) != other { break; } }
+                            if Some(next) != other { self.show_tab(next); }
                         }
                     }
-                    if Some(next) != other {
-                        self.show_tab(next);
-                    }
-                    continue;
+                    _ => { rest.push(event); continue; }
                 }
+                ctx.input_mut(|input| { input.consume_key(*modifiers, *key); });
+                continue;
             }
             rest.push(event);
         }
         rest
     }
+
+}
+
+fn shell_shortcut(bindings: &des_common::shortcuts::Bindings, key: Key, modifiers: egui::Modifiers) -> Option<&'static str> {
+    let chord = shortcuts::chord_for_event(key, modifiers)?;
+    des_common::shortcuts::DEFINITIONS.iter().find(|definition| definition.scope == des_common::shortcuts::Scope::Shell && bindings.matches(definition.id, &chord)).map(|definition| definition.id)
 }
 
 /// Where the tabs in view end up once tabs whose shells exited are removed. `alive`
@@ -953,7 +1051,7 @@ fn region<R>(
     layout: Layout,
     add: impl FnOnce(&mut Ui) -> R,
 ) -> R {
-    ui.painter().rect_filled(rect, 0.0, ui::PANEL);
+    material::paint(ui.ctx(), ui.painter(), rect, 0.0, material::Role::Panel);
     let mut child = ui.new_child(UiBuilder::new().max_rect(rect.shrink2(margin)).layout(layout));
     child.set_clip_rect(rect);
     add(&mut child)
@@ -1002,7 +1100,7 @@ fn tab(ui: &mut Ui, theme: &Theme, tab: Tab) -> Response {
     let number = tab
         .number
         .map(|n| ui::galley(ui, &n, ui::display(13.0), if tab.selected { theme.main } else { ui::LABEL }, 0.0));
-    let name = ui::galley(ui, &tab.name.to_uppercase(), name_font, ink, 1.5);
+    let name = ui::galley(ui, tab.name, name_font, ink, 0.5);
     let detail = tab.detail.map(|d| ui::galley(ui, d, ui::mono(11.0), quiet, 0.0));
     let badge_ink = if tab.selected { theme.main } else { ui::SECONDARY };
     let badge = tab.badge.map(|b| ui::galley(ui, &b, ui::mono(10.0), badge_ink, 0.0));
@@ -1022,6 +1120,11 @@ fn tab(ui: &mut Ui, theme: &Theme, tab: Tab) -> Response {
     };
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, tab.selected, &spoken));
     let painter = ui.painter();
+    let tab_surface = rect.shrink2(vec2(2.0, 5.0));
+    if tab.selected || response.hovered() || response.has_focus() {
+        painter.rect_filled(tab_surface, ui::CONTROL_RADIUS, if tab.selected { theme.tint() } else { ui::TRACK });
+    }
+    if response.has_focus() { painter.rect_stroke(tab_surface, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
     let mut x = rect.left() + 14.0;
     let mut put = |galley: std::sync::Arc<egui::Galley>, color| {
         let size = galley.size();
@@ -1045,7 +1148,7 @@ fn tab(ui: &mut Ui, theme: &Theme, tab: Tab) -> Response {
         painter.galley(frame.min + vec2(5.0, 2.0), badge, badge_ink);
     }
     if tab.selected {
-        let underline = Rect::from_min_max(pos2(rect.left(), rect.bottom() - 2.0), rect.max);
+        let underline = Rect::from_min_max(pos2(rect.left() + 14.0, rect.bottom() - 3.0), pos2(rect.right() - 14.0, rect.bottom() - 1.0));
         painter.rect_filled(underline, 0.0, theme.main);
     }
     response
@@ -1058,7 +1161,7 @@ impl App {
         let mut actions = BarActions::default();
         ui.spacing_mut().item_spacing.x = 4.0;
         let covered = state.and_then(|s| s.covering()).is_some();
-        let terminal_in_use = !covered && !self.launcher.open && !self.settings.open && !self.music.open && !self.notices.open && !self.power_menu.open;
+        let terminal_in_use = !covered && !self.launcher.open && !self.settings.open && self.files_browser.is_none() && !self.music.open && !self.notices.open && !self.power_menu.open;
 
         for i in 0..self.tabs.len() {
             let process = self.tabs[i]
@@ -1077,7 +1180,7 @@ impl App {
             if tab(ui, theme, look).on_hover_text(persistence).clicked() {
                 self.show_tab(i);
                 self.launcher.open = false;
-                self.settings.open = false;
+                self.settings.open = false; self.files_browser = None;
                 self.music.open = false;
                 self.notices.open = false;
                 self.power_menu.open = false;
@@ -1096,12 +1199,12 @@ impl App {
         }
 
         if ui::icon_button(ui, theme, Icon::Copy, 28.0, false).on_hover_text("Copy last command output").clicked() { self.copy_last_output(); }
-        if ui::icon_button(ui,theme,Icon::Search,28.0,self.tabs[self.focus_tab()].searching()).on_hover_text("Find in terminal (Ctrl+Shift+F)").clicked() { actions.find_terminal=true; actions.command=Some(Command::Terminal); }
+        if ui::icon_button(ui,theme,Icon::Search,28.0,self.tabs[self.focus_tab()].searching()).on_hover_text(shortcuts::hint(ui.ctx(), "Find in terminal", "terminal.find")).clicked() { actions.find_terminal=true; actions.command=Some(Command::Terminal); }
 
         let split_hint = if self.side.is_some() {
-            "Make the terminal whole again (Ctrl+Shift+E)"
+            shortcuts::hint(ui.ctx(), "Make the terminal whole again", "shell.split_right")
         } else {
-            "Split the terminal: Ctrl+Shift+E side by side, Ctrl+Shift+O one above the other"
+            format!("{}; {}", shortcuts::hint(ui.ctx(), "Split side by side", "shell.split_right"), shortcuts::hint(ui.ctx(), "Split above and below", "shell.split_down"))
         };
         if ui::icon_button(ui, theme, Icon::SplitPane, 28.0, self.side.is_some())
             .on_hover_text(split_hint)
@@ -1109,7 +1212,7 @@ impl App {
         {
             actions.split_terminal = true;
             self.launcher.open = false;
-            self.settings.open = false;
+            self.settings.open = false; self.files_browser = None;
             self.music.open = false;
             self.notices.open = false;
             self.power_menu.open = false;
@@ -1118,7 +1221,7 @@ impl App {
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
-            let hint = if self.launcher.open { "Close applications (Esc)" } else { "Applications (Super+Space)" };
+            let hint = if self.launcher.open { "Close applications (Esc)".into() } else { shortcuts::hint(ui.ctx(), "Applications", "desktop.launcher") };
             if ui::icon_button(ui, theme, Icon::Apps, 28.0, self.launcher.open).on_hover_text(hint).clicked() {
                 actions.toggle_launcher = true;
             }
@@ -1129,10 +1232,10 @@ impl App {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 for kind in des_common::ipc::LayoutKind::ALL.into_iter().rev() {
                     let hint = match kind {
-                        des_common::ipc::LayoutKind::Single => "One application at a time (Super+S makes a split whole)",
-                        des_common::ipc::LayoutKind::Split => "Two side by side (Super+S); drag the gap to resize, Super+Alt+Left/Right",
-                        des_common::ipc::LayoutKind::Columns => "Three columns side by side (Super+Shift+S goes round the layouts)",
-                        des_common::ipc::LayoutKind::Master => "A master and up to four stacked beside it (Super+Enter makes the window in use the master)",
+                        des_common::ipc::LayoutKind::Single => "One application at a time",
+                        des_common::ipc::LayoutKind::Split => "Two side by side; drag the gap to resize",
+                        des_common::ipc::LayoutKind::Columns => "Three columns side by side",
+                        des_common::ipc::LayoutKind::Master => "A master and up to four stacked beside it",
                     };
                     if ui::icon_button(ui, theme, Icon::of_layout(kind), 24.0, shown == kind).on_hover_text(hint).clicked() {
                         actions.command = Some(Command::Layout(kind));
@@ -1141,7 +1244,7 @@ impl App {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 if state.apps.iter().any(|app| app.workspace == state.workspace)
                     && ui::icon_button(ui, theme, Icon::Fullscreen, 28.0, false)
-                        .on_hover_text("Let the application cover the whole display (Super+F)")
+                        .on_hover_text(shortcuts::hint(ui.ctx(), "Let the application cover the whole display", "desktop.fullscreen"))
                         .clicked()
                 {
                     actions.command = Some(Command::Fullscreen);
@@ -1166,12 +1269,10 @@ impl App {
                     if count > 0 && !here {
                         painter.rect_filled(egui::Rect::from_center_size(rect.center_bottom() - vec2(0.0, 4.0), vec2(8.0, 2.0)), 0.0, theme.main);
                     }
-                    let about = match count {
-                        0 => format!("Workspace {} (Super+{}): empty", workspace + 1, workspace + 1),
-                        1 => format!("Workspace {} (Super+{}): 1 application", workspace + 1, workspace + 1),
-                        many => format!("Workspace {} (Super+{}): {many} applications", workspace + 1, workspace + 1),
-                    };
-                    let response = response.on_hover_text(format!("{about}\nShift+click sends the application in use here (Super+Shift+{})", workspace + 1));
+                    let name = shortcuts::hint(ui.ctx(), &format!("Workspace {}", workspace + 1), &format!("desktop.workspace_{}", workspace + 1));
+                    let about = match count { 0 => format!("{name}: empty"), 1 => format!("{name}: 1 application"), many => format!("{name}: {many} applications") };
+                    let send = shortcuts::hint(ui.ctx(), "Shift+click sends the application here", &format!("desktop.send_{}", workspace + 1));
+                    let response = response.on_hover_text(format!("{about}\n{send}"));
                     if response.clicked() {
                         let shift = ui.input(|i| i.modifiers.shift);
                         actions.command = Some(match state.focus.filter(|_| shift) {
@@ -1257,7 +1358,10 @@ fn set_brightness(percent: u8) {
 
 fn apply_style(ctx: &egui::Context, theme: &Theme) {
     let mut style = (*ctx.style()).clone();
-    style.override_font_id = Some(ui::mono(12.0));
+    style.override_font_id = Some(ui::display(13.0));
+    style.spacing.item_spacing = vec2(ui::SPACE, ui::SPACE);
+    style.spacing.button_padding = vec2(12.0, 6.0);
+    style.spacing.interact_size.y = ui::CONTROL_HEIGHT;
     let mut visuals = Visuals::dark();
     visuals.override_text_color = Some(ui::TEXT);
     visuals.panel_fill = ui::GROUND;
@@ -1265,9 +1369,24 @@ fn apply_style(ctx: &egui::Context, theme: &Theme) {
     visuals.extreme_bg_color = ui::GROUND;
     visuals.selection.bg_fill = theme.selection();
     visuals.selection.stroke = Stroke::new(1.0, theme.main);
-    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, ui::LINE);
+    visuals.hyperlink_color = theme.main;
+    visuals.faint_bg_color = ui::TRACK;
+    visuals.window_corner_radius = egui::CornerRadius::same(ui::SURFACE_RADIUS as u8);
+    visuals.menu_corner_radius = egui::CornerRadius::same(ui::CONTROL_RADIUS as u8);
+    for widget in [&mut visuals.widgets.noninteractive, &mut visuals.widgets.inactive,
+        &mut visuals.widgets.hovered, &mut visuals.widgets.active, &mut visuals.widgets.open] {
+        widget.corner_radius = egui::CornerRadius::same(ui::CONTROL_RADIUS as u8);
+        widget.fg_stroke = Stroke::new(1.0, ui::TEXT);
+        widget.bg_stroke = Stroke::new(1.0, ui::LINE);
+        widget.bg_fill = ui::TRACK;
+        widget.weak_bg_fill = ui::PANEL;
+        widget.expansion = 0.0;
+    }
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, ui::LINE_STRONG);
+    visuals.widgets.active.bg_stroke = Stroke::new(1.0, theme.main);
+    visuals.widgets.active.bg_fill = theme.tint();
     visuals.widgets.hovered.weak_bg_fill = ui::TRACK;
-    visuals.widgets.active.weak_bg_fill = ui::LINE;
+    visuals.widgets.active.weak_bg_fill = theme.tint();
     visuals.window_stroke = Stroke::new(1.0, ui::LINE_STRONG);
     style.visuals = visuals;
     ctx.set_style(style);
@@ -1463,6 +1582,17 @@ fn main() -> eframe::Result {
 mod tests {
     use super::{layout_in_view, remap_panes, reconcile_lock, LockStep};
     use des_common::ipc::{DesktopState, Place};
+
+    #[test]
+    fn remapped_shell_shortcuts_replace_defaults_and_match_modifiers_exactly() {
+        let mut bindings = des_common::shortcuts::Bindings::default();
+        let modifiers = eframe::egui::Modifiers::CTRL | eframe::egui::Modifiers::SHIFT;
+        assert_eq!(super::shell_shortcut(&bindings, eframe::egui::Key::T, modifiers), Some("shell.new_tab"));
+        bindings.set("shell.new_tab", "Ctrl+Shift+Y").unwrap();
+        assert_eq!(super::shell_shortcut(&bindings, eframe::egui::Key::T, modifiers), None);
+        assert_eq!(super::shell_shortcut(&bindings, eframe::egui::Key::Y, modifiers), Some("shell.new_tab"));
+        assert_eq!(super::shell_shortcut(&bindings, eframe::egui::Key::Y, modifiers | eframe::egui::Modifiers::ALT), None);
+    }
 
     #[test]
     fn the_layout_chooser_shows_what_the_compositor_says_or_a_split_seen_otherwise() {

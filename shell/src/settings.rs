@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 /// Something the user changed.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Change {
+    Appearance(des_common::appearance::AppearanceSettings),
     SaveSession,
     RestoreSession,
     OpenMusic,
@@ -97,6 +98,7 @@ enum Section {
     Network,
     Bluetooth,
     Keyboard,
+    Shortcuts,
     Pointer,
     Globe,
     Sound,
@@ -106,7 +108,7 @@ enum Section {
     Health,
 }
 
-const SECTIONS: [(Section, &str); 14] = [
+const SECTIONS: [(Section, &str); 15] = [
     (Section::Appearance, "APPEARANCE"),
     (Section::Terminal, "TERMINAL"),
     (Section::Frame, "FRAME"),
@@ -114,6 +116,7 @@ const SECTIONS: [(Section, &str); 14] = [
     (Section::Network, "NETWORK"),
     (Section::Bluetooth, "BLUETOOTH"),
     (Section::Keyboard, "KEYBOARD"),
+    (Section::Shortcuts, "SHORTCUTS"),
     (Section::Pointer, "MOUSE & TOUCHPAD"),
     (Section::Globe, "GLOBE"),
     (Section::Sound, "SOUND & SCREEN"),
@@ -128,12 +131,18 @@ pub fn destinations() -> Vec<(&'static str, &'static str)> {
     SECTIONS.iter().map(|(_, title)| (*title, *title)).collect()
 }
 
+#[derive(Clone, Copy, Default, PartialEq)]
+enum AppearanceTab { #[default] Wallpaper, Theme, Effects }
+
 pub struct Settings {
     pub open: bool,
     section: Section,
+    shortcut_editor: crate::shortcuts::Editor,
+    appearance_tab: AppearanceTab,
     /// Installed themes and their accents, read when the screen opens.
     themes: Vec<(String, Color32)>,
     accent_draft: Option<([u8; 3], [u8; 3])>,
+    pub appearance_editor: crate::appearance_editor::Editor,
     location_text: String,
     location_error: bool,
     /// A level the user just set, shown until the system reports it back.
@@ -165,8 +174,11 @@ impl Default for Settings {
         Settings {
             open: false,
             section: Section::Appearance,
+            shortcut_editor: Default::default(),
+            appearance_tab: AppearanceTab::default(),
             themes: Vec::new(),
             accent_draft: None,
+            appearance_editor: Default::default(),
             location_text: String::new(),
             location_error: false,
             volume_held: None,
@@ -254,6 +266,8 @@ impl Settings {
     }
 
     pub fn open(&mut self, config: &Config) {
+        self.shortcut_editor.cancel();
+        self.appearance_editor.reset(&config.appearance);
         self.themes = theme::installed();
         self.fonts = ui::monospace_fonts();
         self.location_text = match &config.location {
@@ -274,6 +288,10 @@ impl Settings {
         }
     }
 
+    pub fn shortcut_capture_active(&self) -> bool {
+        self.open && self.section == Section::Shortcuts && self.shortcut_editor.capturing()
+    }
+
     /// Draws the screen into `rect` and returns what was changed this frame.
     pub fn show(
         &mut self,
@@ -289,93 +307,124 @@ impl Settings {
     ) -> Vec<Change> {
         let mut changes = Vec::new();
         // Escape closes, unless it is being used to leave the text field.
-        if ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape)) {
+        if !self.shortcut_capture_active() && !self.appearance_editor.picker_open() && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape)) {
+            self.appearance_editor.reset(&config.appearance);
             self.open = false;
             return changes;
         }
 
-        let margin = (rect.width() * 0.06).clamp(16.0, 72.0);
-        let area = Rect::from_min_max(rect.min + vec2(margin, 32.0), rect.max - vec2(margin, 16.0));
+        self.page(ui, rect, theme, |settings, ui| {
+                        match settings.section {
+                            Section::Health => {
+                                settings.health.show(ui, theme, settings.desktop_connected, settings.music_status);
+                                if ui::button(ui,theme,"OPEN MUSIC",None,false).clicked(){changes.push(Change::OpenMusic);}
+                            },
+                            Section::Appearance => settings.appearance(ui, theme, config, &mut changes),
+                            Section::Terminal => settings.terminal(ui, theme, config, &mut changes),
+                            Section::Frame => settings.frame(ui, theme, config, panels, &mut changes),
+                            Section::Network => {
+                                let radio = settings.radio.get_or_insert_with(|| Radio::new(ui.ctx().clone()));
+                                radio.show_wifi(ui, theme);
+                                radio.show_links(ui, theme);
+                            }
+                            Section::Bluetooth => {
+                                let radio = settings.radio.get_or_insert_with(|| Radio::new(ui.ctx().clone()));
+                                radio.show_bluetooth(ui, theme);
+                            }
+                            Section::Shortcuts => {
+                                if let Some(bindings) = settings.shortcut_editor.show(ui, theme, &config.shortcuts) {
+                                    changes.push(Change::Set("shortcuts", Some(bindings.encode())));
+                                }
+                            }
+                            Section::Keyboard => settings.keyboard(ui, theme, config, input, &mut changes),
+                            Section::Pointer => settings.pointer(ui, theme, input, &mut changes),
+                            Section::Displays => settings.displays(ui, theme, displays, &mut changes),
+                            Section::Globe => settings.globe(ui, theme, config, geo, &mut changes),
+                            Section::Sound => settings.sound(ui, theme, config, mon, &mut changes),
+                            Section::Region => settings.region.get_or_insert_with(|| crate::region::Region::new(ui.ctx().clone())).show(ui, theme, config.twelve_hour, &mut changes),
+                            Section::Users => settings.users.get_or_insert_with(|| crate::users::Users::new(ui.ctx().clone())).show(ui, theme),
+                            Section::Session => settings.session(ui, theme, config, input, &mut changes),
+                        }
+        });
+        if !self.open { self.appearance_editor.reset(&config.appearance); }
+        if !self.open || self.section != Section::Shortcuts { self.shortcut_editor.cancel(); }
+        changes
+    }
+
+    /// One responsive page owner for every Settings section. Narrow workspaces
+    /// use a section selector; wide ones keep navigation beside the content.
+    fn page(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, draw: impl FnOnce(&mut Self, &mut Ui)) {
+        let padding = (rect.width() * 0.025).clamp(12.0, 28.0);
+        let area = rect.shrink2(vec2(padding, 16.0));
         ui.allocate_new_ui(UiBuilder::new().max_rect(area), |ui| {
             ui.horizontal(|ui| {
-                ui::tracked(ui, "SETTINGS", ui::display_bold(22.0), ui::TEXT, 3.0);
+                ui::tracked(ui, "SETTINGS", ui::display_bold(22.0), ui::TEXT, 0.6);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui::button(ui, theme, "DONE", Some("ESC"), false).clicked() {
                         self.open = false;
                     }
                 });
             });
-            ui.add_space(18.0);
-
-            ui.horizontal_top(|ui| {
-                ui.spacing_mut().item_spacing.x = 32.0;
-                // The sections, as a list down the left.
-                ui.allocate_ui_with_layout(vec2(200.0, ui.available_height()), Layout::top_down(Align::Min), |ui| {
-                    // On a short workspace the list is longer than there is room for.
-                    ScrollArea::vertical().id_salt("sections").auto_shrink([false, false]).show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    for (section, name) in SECTIONS {
-                        let (row, response) = ui.allocate_exact_size(vec2(200.0, 36.0), Sense::click());
-                        let chosen = self.section == section;
-                        let painter = ui.painter();
-                        if chosen {
-                            painter.rect_filled(row, 0.0, theme.main);
-                        } else if response.hovered() {
-                            painter.rect_filled(row, 0.0, ui::PANEL);
-                        }
-                        let (font, ink) = if chosen {
-                            (ui::display_bold(13.0), ui::GROUND)
-                        } else {
-                            (ui::display(13.0), ui::SECONDARY)
-                        };
-                        let label = ui::galley(ui, name, font, ink, 2.0);
-                        let at = row.left_center() + vec2(14.0, -label.size().y / 2.0);
-                        ui.painter().galley(at, label, ink);
-                        if response.clicked() {
-                            self.section = section;
-                            self.log_out_armed = None;
-                        }
+            ui.add_space(16.0);
+            let wide = ui.available_width() >= 720.0;
+            if wide {
+                let navigation = 176.0;
+                let content = (ui.available_width() - navigation - 24.0).max(1.0);
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = 24.0;
+                    ui.allocate_ui_with_layout(vec2(navigation, ui.available_height()), Layout::top_down(Align::Min), |ui| {
+                        ScrollArea::vertical().id_salt("settings-sections").auto_shrink([false, false]).show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 4.0;
+                            for (section, title) in SECTIONS {
+                                let label = egui::RichText::new(title).font(ui::display(12.0));
+                                if ui.add_sized(vec2(navigation, 34.0), egui::Button::new(label).selected(self.section == section)).clicked() {
+                                    self.section = section; self.log_out_armed = None;
+                                }
+                            }
+                        });
+                    });
+                    ui.allocate_ui_with_layout(vec2(content, ui.available_height()), Layout::top_down(Align::Min), |ui| self.page_content(ui, draw));
+                });
+            } else {
+                let current = SECTIONS.iter().find(|(section, _)| *section == self.section).map_or("APPEARANCE", |(_, title)| *title);
+                egui::ComboBox::from_id_salt("settings-section").width(ui.available_width()).selected_text(current).show_ui(ui, |ui| {
+                    for (section, title) in SECTIONS {
+                        if ui.selectable_value(&mut self.section, section, title).changed() { self.log_out_armed = None; }
                     }
-                    });
                 });
-
-                ui.allocate_ui_with_layout(ui.available_size(), Layout::top_down(Align::Min), |ui| {
-                    ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = 0.0;
-                        match self.section {
-                            Section::Health => {
-                                self.health.show(ui, theme, self.desktop_connected, self.music_status);
-                                if ui::button(ui,theme,"OPEN MUSIC",None,false).clicked(){changes.push(Change::OpenMusic);}
-                            },
-                            Section::Appearance => self.appearance(ui, theme, config, &mut changes),
-                            Section::Terminal => self.terminal(ui, theme, config, &mut changes),
-                            Section::Frame => self.frame(ui, theme, config, panels, &mut changes),
-                            Section::Network => {
-                                let radio = self.radio.get_or_insert_with(|| Radio::new(ui.ctx().clone()));
-                                radio.show_wifi(ui, theme);
-                                radio.show_links(ui, theme);
-                            }
-                            Section::Bluetooth => {
-                                let radio = self.radio.get_or_insert_with(|| Radio::new(ui.ctx().clone()));
-                                radio.show_bluetooth(ui, theme);
-                            }
-                            Section::Keyboard => self.keyboard(ui, theme, config, input, &mut changes),
-                            Section::Pointer => self.pointer(ui, theme, input, &mut changes),
-                            Section::Displays => self.displays(ui, theme, displays, &mut changes),
-                            Section::Globe => self.globe(ui, theme, config, geo, &mut changes),
-                            Section::Sound => self.sound(ui, theme, config, mon, &mut changes),
-                            Section::Region => self.region.get_or_insert_with(|| crate::region::Region::new(ui.ctx().clone())).show(ui, theme, config.twelve_hour, &mut changes),
-                            Section::Users => self.users.get_or_insert_with(|| crate::users::Users::new(ui.ctx().clone())).show(ui, theme),
-                            Section::Session => self.session(ui, theme, config, input, &mut changes),
-                        }
-                    });
-                });
-            });
+                ui.add_space(16.0);
+                self.page_content(ui, draw);
+            }
         });
-        changes
+    }
+    fn page_content(&mut self, ui: &mut Ui, draw: impl FnOnce(&mut Self, &mut Ui)) {
+        if self.section == Section::Appearance {
+        ui.horizontal_wrapped(|ui| {
+            for (tab, title) in [(AppearanceTab::Wallpaper, "Wallpaper"), (AppearanceTab::Theme, "Theme"), (AppearanceTab::Effects, "Effects")] {
+                ui.selectable_value(&mut self.appearance_tab, tab, title);
+            }
+        });
+        ui.add_space(16.0);
+        ui.separator();
+        ui.add_space(12.0);
+        }
+        ScrollArea::vertical().id_salt(("settings-content", self.section as u8, self.appearance_tab as u8))
+            .auto_shrink([false, false]).show(ui, |ui| {
+                ui.set_max_width(ui.available_width().min(960.0));
+                ui.spacing_mut().item_spacing = vec2(10.0, 8.0);
+                draw(self, ui);
+            });
     }
 
     fn appearance(&mut self, ui: &mut Ui, theme: &Theme, config: &Config, changes: &mut Vec<Change>) {
+        match self.appearance_tab {
+            AppearanceTab::Wallpaper => if let Some(appearance) = self.appearance_editor.show(ui, &config.appearance) { changes.push(Change::Appearance(appearance)); },
+            AppearanceTab::Theme => self.theme_appearance(ui, theme, config, changes),
+            AppearanceTab::Effects => self.effects_appearance(ui, theme, config, changes),
+        }
+    }
+
+    fn theme_appearance(&mut self, ui: &mut Ui, theme: &Theme, config: &Config, changes: &mut Vec<Change>) {
         heading(ui, "THEME", "Sets the accent colour and the terminal's colours. The greys stay.");
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
@@ -412,7 +461,9 @@ impl Settings {
         }
         ui.add_space(10.0);
         swatches(ui, theme);
-        ui.add_space(20.0);
+    }
+
+    fn effects_appearance(&mut self, ui: &mut Ui, theme: &Theme, config: &Config, changes: &mut Vec<Change>) {
         heading(ui, "PHOSPHOR", "Drawn by the compositor over everything: a glow on bright text and the accent, and the lines of a tube. Screenshots stay clean.");
         if let Some(frac) = slider_row(ui, theme, "Glow", config.glow, &format!("{:.0}%", config.glow * 100.0)) {
             let glow = (frac * 20.0).round() / 20.0;
@@ -492,7 +543,7 @@ impl Settings {
         ui.add_space(22.0);
 
         heading(ui, "CURSOR", "");
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             for (shape, name, value) in [
                 (CursorShape::Block, "BLOCK", None),
@@ -516,9 +567,9 @@ impl Settings {
             changes.push(Change::Set("copy_on_select", (!config.copy_on_select).then(|| "on".to_string())));
         }
         ui.add_space(14.0);
-        ui::text(ui, "Lines kept above the screen. Applies to tabs opened from now on.", ui::mono(12.0), ui::SECONDARY);
+        note(ui, "Lines kept above the screen. Applies to tabs opened from now on.");
         ui.add_space(8.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             for lines in SCROLLBACK_CHOICES {
                 let chosen = config.scrollback == lines;
@@ -532,7 +583,7 @@ impl Settings {
 
     fn keyboard(&mut self, ui: &mut Ui, theme: &Theme, config: &Config, input: &InputSettings, changes: &mut Vec<Change>) {
         heading(ui, "ON SCREEN", "Keys along the foot of the desktop, for a touchscreen or without a keyboard.");
-        if switch_row(ui, theme, "On-screen keyboard", "Types into the terminal and the desktop's own fields (Super+K)", config.osk) {
+        if switch_row(ui, theme, "On-screen keyboard", "Types into the terminal and desktop fields. Configure its key mapping in Shortcuts.", config.osk) {
             changes.push(Change::Set("osk", (!config.osk).then(|| "on".to_string())));
         }
         ui.add_space(24.0);
@@ -553,16 +604,12 @@ impl Settings {
             }
         });
         ui.add_space(12.0);
-        ui.horizontal(|ui| {
+        note(ui, "Another, by its XKB name and optional variant");
+        ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
-            ui::text(ui, "Another, by its XKB name and optional variant", ui::mono(12.0), ui::SECONDARY);
-            let (field, _) = ui.allocate_exact_size(vec2(200.0, 28.0), Sense::hover());
-            ui.painter().rect_filled(field, 0.0, ui::PANEL);
-            ui.painter().rect_stroke(field, 0.0, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
-            let edit = ui.put(
-                field.shrink2(vec2(8.0, 4.0)),
+            let edit = ui.add_sized(
+                vec2(200.0_f32.min(ui.available_width()), ui::CONTROL_HEIGHT),
                 TextEdit::singleline(&mut self.layout_text)
-                    .frame(false)
                     .font(ui::mono(13.0))
                     .text_color(ui::TEXT)
                     .hint_text("us dvorak"),
@@ -652,7 +699,7 @@ impl Settings {
             }
         }
         ui.add_space(16.0);
-        note(ui, "Super+[  Super+]  Super+\\ switch them at any time, without changing what is kept.");
+        note(ui, "Toggle panels from the status bar or using your configured shortcuts.");
         ui.add_space(26.0);
 
         heading(ui, "MINIMIZED SIDE PANELS", "Keep a narrow rail, or hide the side columns completely.");
@@ -669,7 +716,12 @@ impl Settings {
         });
         ui.add_space(26.0);
 
-        heading(ui, "DOCK", "Move to the bottom edge to show open and pinned apps. Super+D opens keyboard navigation.");
+        heading(ui, "DOCK", "Move to the bottom edge to show open and pinned apps. Configure dock keyboard navigation in Shortcuts.");
+        if switch_row(ui,theme,"Show windows while dragging","Hold over a window to open it, then drop inside. Applies to desktop data drags.",config.drag_overview) {
+            changes.push(Change::Set("drag_overview",Some(if config.drag_overview {"off"}else{"on"}.into())));
+        }
+        let capable=ui.ctx().data(|data|data.get_temp::<bool>(egui::Id::new("window-shelf-capable"))).unwrap_or(false);
+        if !capable {note(ui,"Live previews and drag destinations become available with the updated compositor.");}
         if switch_row(ui, theme, "Animate", "Windows, workspaces and the dock; turn off for reduced motion", config.animate) {
             changes.push(Change::Set("animate", (!config.animate).then_some("off".to_string())));
         }
@@ -747,8 +799,8 @@ impl Settings {
                 let chosen = index == self.selected_display;
                 let painter = ui.painter_at(rect);
                 painter.rect_filled(rect, 0.0, if chosen { theme.tint() } else { ui::PANEL });
-                let line = if chosen { theme.main } else if response.hovered() { ui::SECONDARY } else { ui::LINE_STRONG };
-                painter.rect_stroke(rect, 0.0, Stroke::new(if chosen { 2.0 } else { 1.0 }, line), StrokeKind::Inside);
+                let line = if chosen || response.has_focus() { theme.main } else if response.hovered() { ui::SECONDARY } else { ui::LINE_STRONG };
+                painter.rect_stroke(rect, 0.0, Stroke::new(1.0, line), StrokeKind::Inside);
                 let lit = choice.setup.usage != Usage::Off;
                 painter.text(rect.left_top() + vec2(10.0, 8.0), Align2::LEFT_TOP, &choice.name, ui::mono(12.0), if lit { ui::TEXT } else { ui::LABEL });
                 let detail = format!("{} × {}", choice.mode.width, choice.mode.height);
@@ -916,20 +968,18 @@ impl Settings {
         ui.add_space(26.0);
 
         heading(ui, "YOUR LOCATION", "Latitude, longitude and a name, such as  48.8566, 2.3522, Paris");
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
-            let (field, _) = ui.allocate_exact_size(vec2(360.0, 36.0), Sense::hover());
-            let line = if self.location_error { ui::CAUTION } else { ui::LINE_STRONG };
-            ui.painter().rect_filled(field, 0.0, ui::PANEL);
-            ui.painter().rect_stroke(field, 0.0, Stroke::new(1.0, line), StrokeKind::Inside);
-            let edit = ui.put(
-                field.shrink2(vec2(10.0, 7.0)),
+            let edit = ui.add_sized(
+                vec2(360.0_f32.min(ui.available_width()), ui::CONTROL_HEIGHT),
                 TextEdit::singleline(&mut self.location_text)
-                    .frame(false)
                     .font(ui::mono(13.0))
                     .text_color(ui::TEXT)
                     .hint_text("latitude, longitude, name"),
             );
+            if self.location_error {
+                ui.painter().rect_stroke(edit.rect, ui::CONTROL_RADIUS, Stroke::new(1.0, ui::CAUTION), StrokeKind::Inside);
+            }
             let entered = edit.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
             if ui::button(ui, theme, "SET", None, false).clicked() || entered {
                 match parse_location(&self.location_text) {
@@ -969,10 +1019,10 @@ impl Settings {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 14.0;
                 let (label, _) = ui.allocate_exact_size(vec2(110.0, 20.0), Sense::hover());
-                ui.painter().text(label.left_center(), Align2::LEFT_CENTER, name, ui::mono(13.0), ui::TEXT);
+                ui.painter().text(label.left_center(), Align2::LEFT_CENTER, name, ui::display(14.0), ui::TEXT);
                 match value {
                     Some(value) => {
-                        if let Some(frac) = ui::slider(ui, theme, 300.0, value.min(100) as f32 / 100.0) {
+                        if let Some(frac) = ui::slider(ui, theme, (ui.available_width() - 60.0).clamp(40.0, 300.0), value.min(100) as f32 / 100.0, name) {
                             let new = (frac * 100.0).round() as u8;
                             if new != value {
                                 picked = Some(new);
@@ -1054,8 +1104,8 @@ impl Settings {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 16.0;
             let (frame, _) = ui.allocate_exact_size(vec2(84.0, 84.0), Sense::hover());
-            ui.painter().rect_filled(frame, 0.0, ui::PANEL);
-            ui::corners(ui.painter(), frame, 10.0, Stroke::new(1.5, theme.main));
+            crate::material::paint(ui.ctx(), ui.painter(), frame, ui::CONTROL_RADIUS, crate::material::Role::Panel);
+            ui.painter().rect_stroke(frame, ui::CONTROL_RADIUS, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
             match &current {
                 Some(texture) => {
                     ui.painter().image(texture.id(), frame.shrink(6.0), whole, egui::Color32::WHITE);
@@ -1084,8 +1134,8 @@ impl Settings {
             for (path, texture) in &faces.shown {
                 let (tile, response) = ui.allocate_exact_size(vec2(64.0, 64.0), Sense::click());
                 ui.painter().image(texture.id(), tile, whole, egui::Color32::WHITE);
-                let line = if response.hovered() { theme.main } else { ui::LINE_STRONG };
-                ui.painter().rect_stroke(tile, 0.0, Stroke::new(if response.hovered() { 2.0 } else { 1.0 }, line), StrokeKind::Inside);
+                let line = if response.hovered() || response.has_focus() { theme.main } else { ui::LINE_STRONG };
+                ui.painter().rect_stroke(tile, ui::CONTROL_RADIUS, Stroke::new(1.0, line), StrokeKind::Inside);
                 let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
                 if response.on_hover_text(name).clicked() {
                     changes.push(Change::Avatar(Some(path.clone())));
@@ -1095,12 +1145,9 @@ impl Settings {
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
-            let (field, _) = ui.allocate_exact_size(vec2(420.0_f32.min(ui.available_width() - 80.0), 28.0), Sense::hover());
-            ui.painter().rect_filled(field, 0.0, ui::PANEL);
-            ui.painter().rect_stroke(field, 0.0, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
-            let edit = ui.put(
-                field.shrink2(vec2(8.0, 4.0)),
-                egui::TextEdit::singleline(&mut faces.path).frame(false).font(ui::mono(13.0)).text_color(ui::TEXT).hint_text("or the path to any picture"),
+            let edit = ui.add_sized(
+                vec2(420.0_f32.min((ui.available_width() - 80.0).max(1.0)), ui::CONTROL_HEIGHT),
+                egui::TextEdit::singleline(&mut faces.path).font(ui::mono(13.0)).text_color(ui::TEXT).hint_text("or the path to any picture"),
             );
             let entered = edit.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
             let ready = !faces.path.trim().is_empty();
@@ -1141,14 +1188,13 @@ impl Settings {
             ("Session log", "~/.local/state/des-ui/session.log"),
             ("Application output", "~/.local/state/des-ui/apps.log"),
         ] {
-            ui.horizontal(|ui| {
-                let (label, _) = ui.allocate_exact_size(vec2(180.0, 26.0), Sense::hover());
-                ui.painter().text(label.left_center(), Align2::LEFT_CENTER, name, ui::mono(12.0), ui::SECONDARY);
-                ui::text(ui, value, ui::mono(12.0), ui::TEXT);
+            ui.horizontal_wrapped(|ui| {
+                ui.add_sized(vec2(160.0, 24.0), egui::Label::new(egui::RichText::new(name).font(ui::display(13.0)).color(ui::SECONDARY)));
+                ui.add(egui::Label::new(egui::RichText::new(value).font(ui::mono(12.0)).color(ui::TEXT)).wrap());
             });
         }
         ui.add_space(22.0);
-        note(ui, "Super+Shift+R restarts the graphical shell. Applications and managed terminal sessions stay running.");
+        note(ui, "Restart shell is configurable in Shortcuts. Applications and managed terminal sessions stay running.");
         ui.add_space(22.0);
         autostart(ui, theme, changes);
         ui.add_space(22.0);
@@ -1161,9 +1207,9 @@ impl Settings {
         ui.add_space(8.0);
         note(ui, "Locking hides everything behind your password. Everything keeps running.");
         ui.add_space(14.0);
-        ui::text(ui, "Lock by itself when the machine is left alone for", ui::mono(12.0), ui::SECONDARY);
+        note(ui, "Lock by itself when the machine is left alone for");
         ui.add_space(8.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             for minutes in [Some(1), Some(5), Some(10), Some(30), Some(60), None] {
                 let chosen = input.lock_after == minutes;
@@ -1177,9 +1223,9 @@ impl Settings {
         ui.add_space(8.0);
         note(ui, "Not while an application is playing something to watch.");
         ui.add_space(8.0);
-        ui::text(ui, "Turn the screen off when the machine is left alone for", ui::mono(12.0), ui::SECONDARY);
+        note(ui, "Turn the screen off when the machine is left alone for");
         ui.add_space(8.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             for minutes in [Some(2), Some(5), Some(15), Some(30), None] {
                 let chosen = input.screen_off_after == minutes;
@@ -1286,15 +1332,23 @@ fn autostart(ui: &mut Ui, theme: &Theme, changes: &mut Vec<Change>) {
 
 fn slider_row(ui: &mut Ui, theme: &Theme, name: &str, frac: f32, reading: &str) -> Option<f32> {
     let mut picked = None;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 14.0;
-        let (label, _) = ui.allocate_exact_size(vec2(190.0, 20.0), Sense::hover());
-        ui.painter().text(label.left_center(), Align2::LEFT_CENTER, name, ui::mono(13.0), ui::TEXT);
-        // Narrower on a narrow workspace, so that the reading still fits beside it.
-        let width = (ui.available_width() - 90.0).clamp(100.0, 280.0);
-        picked = ui::slider(ui, theme, width, frac);
-        ui::text(ui, reading, ui::mono(12.0), ui::TEXT);
-    });
+    if ui.available_width() < 440.0 {
+        ui.horizontal_wrapped(|ui| {
+            ui::text(ui, name, ui::display(14.0), ui::TEXT);
+            ui::text(ui, reading, ui::mono(12.0), ui::SECONDARY);
+        });
+        let width = ui.available_width().clamp(40.0, 280.0);
+        picked = ui::slider(ui, theme, width, frac, name);
+    } else {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 14.0;
+            let (label, _) = ui.allocate_exact_size(vec2(160.0, 20.0), Sense::hover());
+            ui.painter().text(label.left_center(), Align2::LEFT_CENTER, name, ui::display(14.0), ui::TEXT);
+            let width = (ui.available_width() - 90.0).clamp(100.0, 280.0);
+            picked = ui::slider(ui, theme, width, frac, name);
+            ui::text(ui, reading, ui::mono(12.0), ui::TEXT);
+        });
+    }
     ui.add_space(12.0);
     picked
 }
@@ -1325,42 +1379,107 @@ fn swatches(ui: &mut Ui, theme: &Theme) {
 pub(crate) fn heading(ui: &mut Ui, title: &str, about: &str) {
     ui::section(ui, title, |_| {});
     if !about.is_empty() {
-        ui::text(ui, about, ui::mono(12.0), ui::SECONDARY);
+        ui.add(egui::Label::new(egui::RichText::new(about).font(ui::display(13.0)).color(ui::SECONDARY)).wrap());
     }
     ui.add_space(14.0);
 }
 
 pub(crate) fn note(ui: &mut Ui, text: &str) {
-    ui::text(ui, text, ui::mono(12.0), ui::LABEL);
+    ui.add(egui::Label::new(egui::RichText::new(text).font(ui::display(12.0)).color(ui::SECONDARY)).wrap());
 }
 
 /// A named switch with a line of explanation. Returns true when it was clicked.
 pub(crate) fn switch_row(ui: &mut Ui, theme: &Theme, name: &str, what: &str, on: bool) -> bool {
-    let mut clicked = false;
-    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 52.0), Sense::hover());
-    let mut inner = ui.new_child(UiBuilder::new().max_rect(row).layout(Layout::left_to_right(Align::Center)));
-    inner.allocate_ui_with_layout(vec2((row.width() - 70.0).max(40.0), 40.0), Layout::top_down(Align::Min), |ui| {
-        ui.spacing_mut().item_spacing.y = 4.0;
-        ui::text(ui, name, ui::mono(13.0), ui::TEXT);
-        ui::text(ui, what, ui::mono(11.0), ui::LABEL);
-    });
-    inner.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        let response = ui::toggle(ui, theme, on);
-        // The switch is named by its row, so a screen reader says what it turns on.
-        response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), on, name));
-        clicked = response.clicked();
-    });
+    let width = ui.available_width();
+    let text_width = (width - 70.0).max(1.0);
+    let name = ui.painter().layout(name.to_owned(), ui::display(14.0), ui::TEXT, text_width);
+    let explanation = ui.painter().layout(what.to_owned(), ui::display(12.0), ui::SECONDARY, text_width);
+    let height = (name.size().y + explanation.size().y + 16.0).max(52.0);
+    let (row, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+    let text_top = row.left_top() + vec2(0.0, 6.0);
+    ui.painter().galley(text_top, name.clone(), ui::TEXT);
+    ui.painter().galley(text_top + vec2(0.0, name.size().y + 4.0), explanation, ui::SECONDARY);
+    let toggle_area = Rect::from_min_max(egui::pos2(row.right() - 60.0, row.top()), row.right_bottom());
+    let mut inner = ui.new_child(UiBuilder::new().max_rect(toggle_area).layout(Layout::right_to_left(Align::Center)));
+    let response = ui::toggle(&mut inner, theme, on);
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), on, name.job.text.as_str()));
     ui.painter().hline(row.x_range(), row.bottom(), Stroke::new(1.0, ui::TRACK));
-    clicked
+    response.clicked()
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn settings_appearance_tabs_wrap_explanations_and_sliders_on_narrow_screens() {
+        for tab in [AppearanceTab::Wallpaper, AppearanceTab::Theme, AppearanceTab::Effects] {
+            let ctx = egui::Context::default(); crate::ui::install_fonts(&ctx, None, None);
+            let config = Config::default(); let theme = config.resolved_theme();
+            let mut settings = Settings::default(); settings.appearance_tab = tab;
+            let rect = Rect::from_min_size(egui::Pos2::ZERO, vec2(320.0, 900.0));
+            let output = ctx.run(egui::RawInput { screen_rect: Some(rect), ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| settings.page(ui, rect, &theme, |settings, ui| settings.appearance(ui, &theme, &config, &mut Vec::new())));
+            });
+            for shape in output.shapes {
+                if let egui::Shape::Text(text) = shape.shape { assert!(text.pos.x + text.galley.size().x <= 321.0, "settings text spills: {}", text.galley.job.text); }
+            }
+        }
+    }
+    #[test]
+    fn settings_page_keeps_appearance_controls_inside_narrow_and_wide_workspaces() {
+        for width in [320.0, 640.0, 1100.0] {
+            let ctx = egui::Context::default();
+            crate::ui::install_fonts(&ctx, None, None);
+            let config = Config::default();
+            let theme = config.resolved_theme();
+            let mut settings = Settings::default();
+            let rect = Rect::from_min_size(egui::Pos2::ZERO, vec2(width, 760.0));
+            let output = ctx.run(egui::RawInput { screen_rect: Some(rect), ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    settings.page(ui, rect, &theme, |settings, ui| {
+                        assert!(ui.available_width() <= width - 20.0, "content expanded beyond its viewport at {width}: {}", ui.available_width());
+                        assert!(ui.available_width() >= width.min(320.0) - 64.0, "settings navigation squeezed the controls at {width}");
+                        settings.appearance(ui, &theme, &config, &mut Vec::new());
+                    });
+                });
+            });
+            let texts: Vec<_> = output.shapes.iter().filter_map(|shape| if let egui::Shape::Text(text) = &shape.shape { Some(text) } else { None }).collect();
+            assert!(texts.iter().any(|text| text.galley.job.text == "Wallpaper"));
+            assert!(texts.iter().any(|text| text.galley.job.text == "Theme"));
+            assert!(texts.iter().any(|text| text.galley.job.text == "Effects"));
+            assert!(!texts.iter().any(|text| text.galley.job.text == "PHOSPHOR"), "effects should have their own tab");
+            for text in texts.iter().filter(|text| ["Wallpaper", "Theme", "Effects", "Choose image", "Apply appearance"].contains(&text.galley.job.text.as_str())) {
+                assert!(text.pos.x + text.galley.size().x <= width + 1.0, "control spills outside {width}: {}", text.galley.job.text);
+            }
+        }
+    }
+
     use super::*;
+
+    #[test]
+    fn switch_explanations_wrap_and_reserve_their_height() {
+        let ctx = egui::Context::default();
+        crate::ui::install_fonts(&ctx, None, None);
+        let rect = Rect::from_min_size(egui::Pos2::ZERO, vec2(280.0, 800.0));
+        let description = "Keep the wallpaper visible while using a stronger tint behind controls so every label remains easy to read.";
+        let output = ctx.run(egui::RawInput { screen_rect: Some(rect), ..Default::default() }, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                switch_row(ui, &Theme::load("signal"), "Reduce transparency", description, false);
+                note(ui, "Following setting");
+            });
+        });
+        let text = |label: &str| output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.job.text == label => Some(text), _ => None,
+        }).expect("rendered label");
+        let explanation = text(description);
+        assert!(explanation.galley.rows.len() > 1, "narrow descriptions wrap");
+        assert!(explanation.pos.x + explanation.galley.size().x <= 212.0, "description reserves switch space");
+        assert!(text("Following setting").pos.y >= explanation.pos.y + explanation.galley.size().y, "following rows must clear the complete description");
+    }
 
     #[test]
     fn a_switch_is_read_by_the_name_of_its_row() {
         let ctx = egui::Context::default();
+        crate::ui::install_fonts(&ctx, None, None);
         ctx.enable_accesskit();
         let theme = Theme::load("signal");
         let output = ctx.run(egui::RawInput::default(), |ctx| {
@@ -1384,7 +1503,7 @@ mod tests {
                 events, ..Default::default()
             }, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    settings.appearance(ui, &config.resolved_theme(), config, &mut changes);
+                    settings.theme_appearance(ui, &config.resolved_theme(), config, &mut changes);
                 });
             });
             (output, changes)
@@ -1436,7 +1555,7 @@ mod tests {
                 events, ..Default::default()
             }, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    settings.appearance(ui, &config.resolved_theme(), config, &mut changes);
+                    settings.theme_appearance(ui, &config.resolved_theme(), config, &mut changes);
                 });
             });
             (output, changes)

@@ -25,6 +25,7 @@ const BTN_LEFT: u32 = 0x110;
 /// A compositor shortcut, as opposed to a key press that belongs to the focused client.
 #[derive(Debug)]
 enum Action {
+    CancelDrag,
     Cycle,
     Close,
     /// Move the current application to the next display.
@@ -32,6 +33,7 @@ enum Action {
     Launcher,
     Dock,
     Settings,
+    Shortcuts,
     Music,
     Notifications,
     /// Super+A: the quick settings, over whatever is in view.
@@ -74,6 +76,57 @@ enum Action {
     ToggleOverview,
     /// Alt+Tab, Alt+Shift+Tab, and with ` the windows of the application in use.
     OpenSwitcher { forward: bool, same_app: bool },
+}
+
+/// Match the exact chord first; Ctrl+Alt is the nested-session alias for Super.
+fn desktop_shortcut(bindings: &des_common::shortcuts::Bindings, chord: &des_common::shortcuts::Chord) -> Option<Action> {
+    use des_common::shortcuts::{Chord, Scope, DEFINITIONS};
+    let mut candidates = vec![chord.clone()];
+    if chord.ctrl && chord.alt && !chord.super_key {
+        let mut alias = chord.clone(); alias.ctrl=false; alias.alt=false; alias.super_key=true;
+        candidates.push(alias.clone());
+        // Ctrl+Alt+Shift+arrows historically stands for Super+Alt+arrows.
+        if nudges(false, chord.ctrl, chord.alt, chord.shift) && matches!(chord.key.as_str(), "Left"|"Right") { alias.shift=false; alias.alt=true; candidates.push(alias); }
+    }
+    let lock=Chord::parse("Super+L").unwrap();
+    if candidates.contains(&lock) { return Some(Action::Lock) }
+    let id=DEFINITIONS.iter().find(|d|d.scope==Scope::Desktop && candidates.iter().any(|c|bindings.matches(d.id,c)))?.id;
+    Some(match id {
+        "desktop.cycle" => Action::Cycle,
+        "desktop.close" => Action::Close,
+        "desktop.move_display" => Action::MoveDisplay,
+        "desktop.launcher" => Action::Launcher,
+        "desktop.dock" => Action::Dock,
+        "desktop.settings" => Action::Settings,
+        "desktop.music" => Action::Music,
+        "desktop.notifications" => Action::Notifications,
+        "desktop.quick" => Action::Quick,
+        "desktop.power" => Action::Power,
+        "desktop.split" => Action::Split,
+        "desktop.cycle_layout" => Action::CycleLayout,
+        "desktop.nudge_left" => Action::NudgeRatio(false),
+        "desktop.nudge_right" => Action::NudgeRatio(true),
+        "desktop.swap_master" => Action::SwapMaster,
+        "desktop.fullscreen" => Action::Fullscreen,
+        "desktop.pin" => Action::Pin,
+        "desktop.focus_left" => Action::FocusHalf(false),
+        "desktop.focus_right" => Action::FocusHalf(true),
+        "desktop.panel_left" => Action::Panel(des_common::Panel::Left),
+        "desktop.panel_right" => Action::Panel(des_common::Panel::Right),
+        "desktop.panel_bottom" => Action::Panel(des_common::Panel::Bottom),
+        "desktop.restart_shell" => Action::RestartShell,
+        "desktop.overview" => Action::ToggleOverview,
+        "desktop.help" => Action::Shortcuts,
+        "desktop.workspace_1" => Action::Workspace(0),
+        "desktop.send_1" => Action::SendTo(0),
+        "desktop.workspace_2" => Action::Workspace(1),
+        "desktop.send_2" => Action::SendTo(1),
+        "desktop.workspace_3" => Action::Workspace(2),
+        "desktop.send_3" => Action::SendTo(2),
+        "desktop.workspace_4" => Action::Workspace(3),
+        "desktop.send_4" => Action::SendTo(3),
+        _ => return None,
+    })
 }
 
 /// Whether a shortcut takes the user somewhere the overview would hide: anything but
@@ -211,6 +264,8 @@ impl DesComp {
     /// pointing device.
     pub fn reload_input(&mut self) {
         self.input_settings = des_common::input::InputSettings::load();
+        self.shortcut_bindings = des_common::shortcuts::Bindings::load();
+        self.drag_overview_enabled=crate::dnd::overview_wanted();
         self.motions.enabled = crate::motion::wanted();
         self.phosphor.reload();
         let settings = self.input_settings.clone();
@@ -282,6 +337,7 @@ impl DesComp {
                             return FilterResult::Forward;
                         }
                         let sym = handle.modified_sym();
+                        if state.drag_session.is_some() && sym==Keysym::Escape {return FilterResult::Intercept(Action::CancelDrag);}
                         if (SWITCH_VT_1..=SWITCH_VT_12).contains(&sym.raw()) {
                             let vt = (sym.raw() - SWITCH_VT_1 + 1) as i32;
                             return FilterResult::Intercept(Action::SwitchVt(vt));
@@ -319,7 +375,8 @@ impl DesComp {
                             }
                             // The overview has every key but the shortcuts, so that
                             // locking, workspaces and the rest still work over it.
-                            if open == Some(OverviewKind::Workspaces) && !held {
+                            if matches!(open,Some(OverviewKind::Workspaces | OverviewKind::Windows | OverviewKind::Drag)) && !held {
+                                if open==Some(OverviewKind::Drag) {return FilterResult::Intercept(Action::Ignore);}
                                 use crate::overview::Direction;
                                 return FilterResult::Intercept(Action::Overview(match sym {
                                     Keysym::Escape => OverviewKey::Close,
@@ -329,6 +386,8 @@ impl DesComp {
                                     Keysym::Up => OverviewKey::Move(Direction::Up),
                                     Keysym::Down => OverviewKey::Move(Direction::Down),
                                     Keysym::BackSpace => OverviewKey::Erase,
+                                    Keysym::Page_Down => OverviewKey::Page(true),
+                                    Keysym::Page_Up => OverviewKey::Page(false),
                                     other => match other.key_char().filter(|c| !c.is_control()) {
                                         Some(c) if !modifiers.ctrl => OverviewKey::Type(c),
                                         _ => OverviewKey::Ignore,
@@ -349,62 +408,36 @@ impl DesComp {
                                 }
                             }
                         }
-                        // Locked, every other key goes to the lock screen: no shortcut
-                        // reaches what is behind it, and the session cannot be ended.
-                        if !held || locked {
-                            return FilterResult::Forward;
+                        if locked { return FilterResult::Forward; }
+                        // Recovery and lock remain available regardless of user mappings.
+                        if modifiers.ctrl && modifiers.alt && sym == Keysym::BackSpace {
+                            return FilterResult::Intercept(Action::Quit);
                         }
-                        // The digits pick a workspace; with Shift they send the application
-                        // in use there. Shift turns a digit into some other character, so
-                        // the key is read as it is without it.
-                        let digit = handle.raw_syms().first().map(|sym| sym.raw()).filter(|raw| (0x31..=0x39).contains(raw));
-                        if let Some(workspace) = digit.map(|raw| (raw - 0x31) as usize).filter(|workspace| *workspace < des_common::ipc::WORKSPACES) {
-                            return FilterResult::Intercept(if modifiers.shift { Action::SendTo(workspace) } else { Action::Workspace(workspace) });
+                        let raw = handle.raw_syms().first().copied().unwrap_or(sym);
+                        let key = match raw {
+                            Keysym::Return | Keysym::KP_Enter => "Enter".to_string(),
+                            Keysym::Escape => "Escape".to_string(),
+                            Keysym::Tab | Keysym::ISO_Left_Tab => "Tab".to_string(),
+                            Keysym::BackSpace => "Backspace".to_string(),
+                            Keysym::Home => "Home".to_string(), Keysym::End => "End".to_string(),
+                            Keysym::Insert => "Insert".to_string(), Keysym::Delete => "Delete".to_string(),
+                            Keysym::Page_Up => "PageUp".to_string(), Keysym::Page_Down => "PageDown".to_string(),
+                            Keysym::Left => "Left".to_string(), Keysym::Right => "Right".to_string(),
+                            Keysym::Up => "Up".to_string(), Keysym::Down => "Down".to_string(),
+                            Keysym::space => "Space".to_string(),
+                            other if (0xffbe..=0xffd5).contains(&other.raw()) => format!("F{}", other.raw()-0xffbe+1),
+                            other => match other.key_char() { Some(c) => c.to_string(), None => return FilterResult::Forward },
+                        };
+                        let Ok(mut chord) = des_common::shortcuts::Chord::parse(&key) else { return FilterResult::Forward };
+                        chord.ctrl = modifiers.ctrl; chord.alt = modifiers.alt;
+                        chord.shift = modifiers.shift; chord.super_key = modifiers.logo;
+                        if let Some(action) = desktop_shortcut(&state.shortcut_bindings, &chord) {
+                            return FilterResult::Intercept(action);
                         }
-                        match sym {
-                            Keysym::BackSpace if modifiers.ctrl && modifiers.alt => {
-                                FilterResult::Intercept(Action::Quit)
-                            }
-                            Keysym::Tab => FilterResult::Intercept(Action::Cycle),
-                            Keysym::d | Keysym::D => FilterResult::Intercept(Action::Dock),
-                            Keysym::space => FilterResult::Intercept(Action::Launcher),
-                            Keysym::comma => FilterResult::Intercept(Action::Settings),
-                            Keysym::m | Keysym::M => FilterResult::Intercept(Action::Music),
-                            Keysym::n | Keysym::N => FilterResult::Intercept(Action::Notifications),
-                            Keysym::a | Keysym::A => FilterResult::Intercept(Action::Quick),
-                            Keysym::Escape => FilterResult::Intercept(Action::Power),
-                            Keysym::l | Keysym::L => FilterResult::Intercept(Action::Lock),
-                            Keysym::o | Keysym::O => FilterResult::Intercept(Action::MoveDisplay),
-                            Keysym::R if modifiers.shift => FilterResult::Intercept(Action::RestartShell),
-                            Keysym::s | Keysym::S if modifiers.shift => FilterResult::Intercept(Action::CycleLayout),
-                            Keysym::s | Keysym::S => FilterResult::Intercept(Action::Split),
-                            Keysym::Return | Keysym::KP_Enter => FilterResult::Intercept(Action::SwapMaster),
-                            Keysym::f | Keysym::F => FilterResult::Intercept(Action::Fullscreen),
-                            // With Alt as well the divider moves; under Ctrl+Alt in a window,
-                            // Shift stands in for the Alt that is already held.
-                            Keysym::Left | Keysym::Right if nudges(modifiers.logo, modifiers.ctrl, modifiers.alt, modifiers.shift) => {
-                                FilterResult::Intercept(Action::NudgeRatio(sym == Keysym::Right))
-                            }
-                            Keysym::Left => FilterResult::Intercept(Action::FocusHalf(false)),
-                            Keysym::Right => FilterResult::Intercept(Action::FocusHalf(true)),
-                            Keysym::bracketleft => {
-                                FilterResult::Intercept(Action::Panel(des_common::Panel::Left))
-                            }
-                            Keysym::bracketright => {
-                                FilterResult::Intercept(Action::Panel(des_common::Panel::Right))
-                            }
-                            Keysym::backslash => {
-                                FilterResult::Intercept(Action::Panel(des_common::Panel::Bottom))
-                            }
-                            Keysym::q | Keysym::Q => FilterResult::Intercept(Action::Close),
-                            Keysym::p | Keysym::P => FilterResult::Intercept(Action::Pin),
-                            Keysym::w | Keysym::W => FilterResult::Intercept(Action::ToggleOverview),
-                            // Not a shortcut, but not a letter for the application either.
-                            other if modifiers.logo && other.key_char().is_some_and(|c| !c.is_control()) => {
-                                FilterResult::Intercept(Action::Ignore)
-                            }
-                            _ => FilterResult::Forward,
-                        }
+                        if modifiers.logo && sym.key_char().is_some_and(|c| !c.is_control()) {
+                            FilterResult::Intercept(Action::Ignore)
+                        } else { FilterResult::Forward }
+
                         };
                         match decide() {
                             // An open overview or switcher is the desktop's own, whatever
@@ -425,11 +458,15 @@ impl DesComp {
                 if self.overview_open() == Some(OverviewKind::Workspaces) && action.as_ref().is_some_and(closes_overview) {
                     self.close_overview_now();
                 }
+                if self.drag_session.is_some() && action.as_ref().is_some_and(|action|!matches!(action,Action::Ignore|Action::Media(_)|Action::CancelDrag)) {
+                    self.cancel_file_drag();
+                }
                 // A compositor shortcut lets go of the pointer, so a game cannot keep it.
                 if action.is_some() {
                     self.release_pointer_constraint();
                 }
                 match action {
+                    Some(Action::CancelDrag) => self.cancel_file_drag(),
                     Some(Action::Overview(key)) => self.overview_key(key),
                     Some(Action::Switch(key)) => self.switcher_key(key),
                     Some(Action::ToggleOverview) => self.toggle_overview(),
@@ -449,6 +486,7 @@ impl DesComp {
                     }
                     Some(Action::Launcher) => self.open_launcher(),
                     Some(Action::Settings) => self.open_settings(),
+                    Some(Action::Shortcuts) => self.tell(des_common::ipc::Event::SHORTCUTS.into()),
                     Some(Action::Music) => self.open_music(),
                     Some(Action::Notifications) => self.ask_notifications(),
                     Some(Action::Quick) => self.ask_quick(),
@@ -485,6 +523,11 @@ impl DesComp {
             InputEvent::PointerMotion { event, .. } => {
                 let pointer = self.seat.get_pointer().unwrap();
                 let from = pointer.current_location();
+                if self.drag_view_open() {
+                    let pos=self.clamp_to_screens(from,from+event.delta());
+                    self.drag_motion(pos,event.time_msec());
+                    return;
+                }
                 // Over the overview or the switcher the pointer is theirs alone.
                 if self.overview_open().is_some() {
                     let pos = self.clamp_to_screens(from, from + event.delta());
@@ -543,6 +586,7 @@ impl DesComp {
                 let output_geo = self.space.output_geometry(output).unwrap();
 
                 let pos = event.position_transformed(output_geo.size) + output_geo.loc.to_f64();
+                if self.drag_view_open() {self.drag_motion(pos,event.time_msec());return;}
                 if self.resize.is_some() {
                     self.drag_resize(pos.x);
                 }
@@ -582,6 +626,14 @@ impl DesComp {
                 if button_state == ButtonState::Pressed {
                     self.super_tap.spoil();
                 }
+                if self.drag_view_open() {
+                    let at=pointer.current_location();
+                    pointer.motion(self,None,&MotionEvent{location:at,serial,time:event.time_msec()});
+                    pointer.button(self,&ButtonEvent{button,state:button_state,serial,time:event.time_msec()});
+                    pointer.frame(self);
+                    self.tick_drag_overview();
+                    return;
+                }
                 // The overview and the switcher take their own clicks.
                 if self.overview_open().is_some() {
                     self.overview_button(pointer.current_location(), button_state == ButtonState::Pressed);
@@ -619,7 +671,12 @@ impl DesComp {
                 pointer.frame(self);
             }
             // Nothing behind the overview scrolls.
-            InputEvent::PointerAxis { .. } if self.overview_open().is_some() => {}
+            InputEvent::PointerAxis { event, .. } if self.overview_open().is_some() => {
+                if self.overview_open()==Some(OverviewKind::Windows) {
+                    let amount=event.amount_v120(Axis::Vertical).unwrap_or_else(||event.amount(Axis::Vertical).unwrap_or(0.0));
+                    if amount!=0.0 {self.overview_key(OverviewKey::Page(amount>0.0));}
+                }
+            }
             InputEvent::PointerAxis { event, .. } => {
                 let source = event.source();
 
@@ -752,5 +809,23 @@ mod tests {
         for passed in [Action::Cycle, Action::Launcher, Action::Close, Action::Workspace(1), Action::Ignore, Action::Split] {
             assert!(inhibitable(&passed), "{passed:?} goes to the application that asked");
         }
+    }
+}
+
+#[cfg(test)]
+mod shortcut_routing_tests {
+    use super::*;
+    use des_common::shortcuts::{Bindings,Chord};
+    #[test] fn remapped_and_disabled_default_never_fire() {
+        let mut b=Bindings::default();b.set("desktop.help","Super+Shift+Slash").unwrap();
+        assert!(desktop_shortcut(&b,&Chord::parse("Super+Slash").unwrap()).is_none());
+        assert!(matches!(desktop_shortcut(&b,&Chord::parse("Super+Shift+Slash").unwrap()),Some(Action::Shortcuts)));
+        b.set("desktop.help","").unwrap();assert!(desktop_shortcut(&b,&Chord::parse("Super+Shift+Slash").unwrap()).is_none());
+    }
+    #[test] fn exact_modifiers_and_nested_alias() {
+        let b=Bindings::default();assert!(desktop_shortcut(&b,&Chord::parse("Super+Ctrl+D").unwrap()).is_none());
+        assert!(matches!(desktop_shortcut(&b,&Chord::parse("Ctrl+Alt+D").unwrap()),Some(Action::Dock)));
+        assert!(matches!(desktop_shortcut(&b,&Chord::parse("Super+Shift+1").unwrap()),Some(Action::SendTo(0))));
+        assert!(matches!(desktop_shortcut(&b,&Chord::parse("Super+L").unwrap()),Some(Action::Lock)));
     }
 }

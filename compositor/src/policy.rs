@@ -116,7 +116,7 @@ fn layout_info(workspace: usize, screen: usize, mode: &ScreenMode, split_anyway:
 }
 
 fn command_allowed(locked: bool, picking:bool, command: &Command) -> bool {
-    (!locked || matches!(command, Command::Lock | Command::Unlock | Command::ReloadInput)) && (!picking || !matches!(command,Command::Dock(Some(_))|Command::DockOn(_,Some(_))|Command::Overlay(Some(_))|Command::DragFiles(_)|Command::Overview))
+    (!locked || matches!(command, Command::Lock | Command::Unlock | Command::ReloadInput)) && (!picking || !matches!(command,Command::Dock(Some(_))|Command::DockOn(_,Some(_))|Command::Overlay(Some(_))|Command::DragFiles(_)|Command::Overview|Command::AppWindows(..)))
 }
 
 #[cfg(test)]
@@ -174,6 +174,9 @@ impl DesComp {
     /// Tells the policy which displays exist, the main one first. Called by the backend
     /// at startup and whenever a display is added, removed or resized.
     pub fn set_screens(&mut self, screens: Vec<Rectangle<i32, Logical>>) {
+        if self.screens != screens && self.drag_session.is_some() {
+            self.cancel_file_drag();
+        }
         if screens.is_empty() {
             return;
         }
@@ -1379,6 +1382,7 @@ impl DesComp {
                 Command::Unpin => self.unpin(),
                 Command::DragFiles(uris) => self.start_file_drag(uris),
                 Command::Overview => self.toggle_overview(),
+                Command::AppWindows(screen,id) => self.open_app_windows(screen,&id),
                 Command::Overlay(area) => {
                     self.overlay = area.map(|(x, y, w, h)| Rectangle::new((x, y).into(), (w, h).into()));
                     // The keyboard goes to the shell while the overlay shows, and back after.

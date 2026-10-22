@@ -80,7 +80,8 @@ impl IpcServer {
                     .and_then(|()| outgoing.enqueue(self.last_displays.as_bytes()))
                     .and_then(|()| outgoing.enqueue(self.last_layouts.as_bytes()))
                     .and_then(|()| outgoing.enqueue(self.last_locked.as_bytes()))
-                    .and_then(|()| outgoing.enqueue(self.last_recording.as_bytes())).is_err() {
+                    .and_then(|()| outgoing.enqueue(self.last_recording.as_bytes()))
+                    .and_then(|()| outgoing.enqueue(b"window-shelf\n")).is_err() {
                     continue;
                 }
                 self.clients.push(Client {

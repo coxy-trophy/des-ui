@@ -54,6 +54,14 @@ pub fn time_of_day(now: &chrono::DateTime<chrono::Local>) -> String {
     clock_text(now.time(), TWELVE_HOUR.load(Ordering::Relaxed), true)
 }
 
+fn rail_clock(time:chrono::NaiveTime,twelve:bool)->(String,String,Option<String>) {
+    (time.format(if twelve {"%I"}else{"%H"}).to_string(),time.format("%M").to_string(),
+        twelve.then(||time.format("%p").to_string()))
+}
+pub fn vertical_clock(now:&chrono::DateTime<chrono::Local>)->(String,String,Option<String>) {
+    rail_clock(now.time(),TWELVE_HOUR.load(Ordering::Relaxed))
+}
+
 /// How the machine's clock is kept, as `timedatectl show` tells it.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Clock {
@@ -550,6 +558,15 @@ fn searched(ui: &mut Ui, typed: &str, found: usize, nothing: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vertical_clock_retains_leading_zero_and_period() {
+        let time=chrono::NaiveTime::from_hms_opt(13,5,59).unwrap();
+        assert_eq!(rail_clock(time,false),("13".into(),"05".into(),None));
+        assert_eq!(rail_clock(time,true),("01".into(),"05".into(),Some("PM".into())));
+        let midnight=chrono::NaiveTime::from_hms_opt(0,0,0).unwrap();
+        assert_eq!(rail_clock(midnight,true),("12".into(),"00".into(),Some("AM".into())));
+    }
 
     #[test]
     fn reads_how_the_clock_is_kept() {

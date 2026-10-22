@@ -10,8 +10,19 @@ use std::time::{Duration, Instant};
 use std::os::unix::net::UnixStream;
 use std::sync::mpsc::{self, Receiver, SyncSender, sync_channel};
 
+type Area=(i32,i32,i32,i32);
+
+/// Latest lifted rectangles are state, not one-shot window actions. In particular,
+/// a clear must never disappear because an action queue is full or reconnecting.
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+struct Presentation {
+    toast:Option<Option<Area>>,
+    overlay:Option<Option<Area>>,
+}
+
 pub struct Desktop {
     commands: SyncSender<Command>,
+    presentation:Arc<Mutex<Presentation>>,
     security: Arc<Mutex<Option<(u64, bool)>>>,
     rx: Receiver<Message>,
     pub state: DesktopState,
@@ -21,6 +32,7 @@ pub struct Desktop {
     pub dock_screen_requested: Option<usize>,
     /// Likewise for the settings shortcut.
     pub settings_requested: bool,
+    pub shortcuts_requested: bool,
     /// Likewise for the music shortcut.
     pub music_requested: bool,
     /// Likewise for the notifications shortcut.
@@ -44,6 +56,7 @@ pub struct Desktop {
     /// The overview or window switcher the compositor has open, for the shell to
     /// draw the names and the selection around its pictures.
     pub overview: Option<des_common::ipc::OverviewLayout>,
+    pub window_shelf: bool,
     heard: bool,
     /// Confirmation of the most recent security intent, consumed by the UI.
     pub security_confirmed: Option<bool>,
@@ -62,9 +75,12 @@ impl Desktop {
         let (events, rx) = sync_channel(32);
         let security = Arc::new(Mutex::new(None));
         let worker_security = security.clone();
-        std::thread::spawn(move || serve(path, requests, worker_security, events, ctx));
+        let presentation=Arc::new(Mutex::new(Presentation::default()));
+        let worker_presentation=presentation.clone();
+        std::thread::spawn(move || serve(path, requests, worker_security, worker_presentation, events, ctx));
         Desktop {
             commands,
+            presentation,
             security,
             rx,
             state: DesktopState::default(),
@@ -72,6 +88,7 @@ impl Desktop {
             dock_requested: false,
             dock_screen_requested: None,
             settings_requested: false,
+            shortcuts_requested: false,
             music_requested: false,
             notifications_requested: false,
             quick_requested: false,
@@ -83,6 +100,7 @@ impl Desktop {
             displays: Displays::default(),
             layouts: Vec::new(),
             overview: None,
+            window_shelf: false,
             heard: false,
             security_confirmed: None,
             security_generation: 0,
@@ -95,7 +113,7 @@ impl Desktop {
             let Ok(message) = self.rx.try_recv() else { break };
             let event = match message {
                 Message::Ready => { self.heard = true; continue; }
-                Message::Disconnected => { self.heard = false; self.overview = None; continue; }
+                Message::Disconnected => { self.heard = false; self.overview = None; self.window_shelf = false; continue; }
                 Message::SecurityConfirmed(generation, locked) => {
                     if generation == self.security_generation { self.security_confirmed = Some(locked); }
                     continue;
@@ -103,6 +121,7 @@ impl Desktop {
                 Message::Event(event) => event,
             };
             match event {
+                Event::WindowShelf => self.window_shelf = true,
                 Event::State(state) => {
                     self.state = state;
                 }
@@ -110,6 +129,7 @@ impl Desktop {
                 Event::Dock => self.dock_requested = true,
                 Event::DockOn(screen) => self.dock_screen_requested = Some(screen),
                 Event::Settings => self.settings_requested = true,
+                Event::Shortcuts => self.shortcuts_requested = true,
                 Event::Music => self.music_requested = true,
                 Event::Notifications => self.notifications_requested = true,
                 Event::Quick => self.quick_requested = true,
@@ -132,6 +152,14 @@ impl Desktop {
 
     pub fn send(&mut self, command: Command) -> std::io::Result<()> {
         match command {
+            Command::Toast(area) => {
+                self.presentation.lock().unwrap_or_else(|error|error.into_inner()).toast=Some(area);
+                Ok(())
+            }
+            Command::Overlay(area) => {
+                self.presentation.lock().unwrap_or_else(|error|error.into_inner()).overlay=Some(area);
+                Ok(())
+            }
             Command::Lock | Command::Unlock => {
                 // A separate slot gives security requests priority over window actions.
                 self.security_generation = self.security_generation.wrapping_add(1);
@@ -158,7 +186,7 @@ fn deliver(events: &SyncSender<Message>, ctx: &egui::Context, message: Message) 
     true
 }
 
-fn serve(path: PathBuf, requests: Receiver<Command>, security: Arc<Mutex<Option<(u64, bool)>>>, events: SyncSender<Message>, ctx: egui::Context) {
+fn serve(path: PathBuf, requests: Receiver<Command>, security: Arc<Mutex<Option<(u64, bool)>>>, presentation:Arc<Mutex<Presentation>>, events: SyncSender<Message>, ctx: egui::Context) {
     let mut socket: Option<UnixStream> = None;
     let mut retry_at = Instant::now();
     let mut link = Link::new();
@@ -174,6 +202,10 @@ fn serve(path: PathBuf, requests: Receiver<Command>, security: Arc<Mutex<Option<
                 return;
             }
         }
+        // A full wire buffer leaves the latest presentation pending for the next
+        // flush. State survives reconnect; stale window indices still do not.
+        let desired=*presentation.lock().unwrap_or_else(|error|error.into_inner());
+        let _=link.queue_presentation(desired);
         // These commands describe the current window list. Drop them while offline.
         for _ in 0..32 {
             match requests.try_recv() {
@@ -249,15 +281,17 @@ struct Link {
     queued_lock: Option<bool>,
     known_lock: Option<bool>,
     seen_state: bool,
+    presentation:Presentation,
 }
 
 impl Link {
     fn new() -> Self {
         Self { outgoing: des_common::transport::WriteBuffer::new(64 * 1024), desired_lock: None,
-            queued_lock: None, known_lock: None, seen_state: false }
+            queued_lock: None, known_lock: None, seen_state: false, presentation:Presentation::default() }
     }
     fn reset(&mut self) {
         self.outgoing.clear();
+        self.presentation=Presentation::default();
         // Retry the last lock intent, but never replay stale window indices.
         self.queued_lock = None;
         self.known_lock = None;
@@ -276,6 +310,19 @@ impl Link {
             _ => {}
         }
         self.queue_security()
+    }
+    fn queue_presentation(&mut self, desired:Presentation)->std::io::Result<()> {
+        // Geometry commands are ignored while locked; retain them until unlocked.
+        if !self.ready() || self.known_lock!=Some(false) || self.queued_lock.is_some(){return Ok(());}
+        if let Some(area)=desired.toast.filter(|_|desired.toast!=self.presentation.toast) {
+            self.outgoing.enqueue(Command::Toast(area).encode().as_bytes())?;
+            self.presentation.toast=Some(area);
+        }
+        if let Some(area)=desired.overlay.filter(|_|desired.overlay!=self.presentation.overlay) {
+            self.outgoing.enqueue(Command::Overlay(area).encode().as_bytes())?;
+            self.presentation.overlay=Some(area);
+        }
+        Ok(())
     }
     fn ready(&self) -> bool { self.seen_state && self.known_lock.is_some() }
     fn request_lock(&mut self, locked: bool) -> std::io::Result<()> {
@@ -300,11 +347,72 @@ impl Link {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn overlay_clears_are_retained_when_the_action_queue_is_full() {
+        let dir=tempfile::tempdir().unwrap();
+        let mut desktop=Desktop::connect_at(egui::Context::default(),dir.path().join("missing.sock"));
+        desktop.heard=true;
+        let (commands,_held_receiver)=sync_channel(1);
+        desktop.commands=commands;
+        desktop.send(Command::Activate(0)).unwrap();
+        desktop.send(Command::Toast(Some((10,20,360,80)))).unwrap();
+        desktop.send(Command::Toast(Some((40,50,360,80)))).unwrap();
+        assert!(desktop.send(Command::Toast(None)).is_ok(),"clearing a lifted region must survive queue backpressure");
+        assert!(desktop.send(Command::Overlay(None)).is_ok());
+        assert_eq!(*desktop.presentation.lock().unwrap(),Presentation{toast:Some(None),overlay:Some(None)});
+        desktop.heard=false;
+        desktop.send(Command::Overlay(Some((1,2,300,200)))).unwrap();
+        desktop.send(Command::Overlay(None)).unwrap();
+        assert_eq!(desktop.presentation.lock().unwrap().overlay,Some(None),"offline updates must keep the latest clear");
+        assert!(desktop.send(Command::Activate(1)).is_err(),"window actions must still be rejected offline");
+    }
+
     use super::*;
 
     fn greet(link: &mut Link, locked: bool) {
         link.receive(&Event::State(DesktopState::default())).unwrap();
         link.receive(&Event::Locked(locked)).unwrap();
+    }
+
+    #[test]
+    fn presentation_retries_backpressure_and_reconnect_with_latest_clear() {
+        let mut link=Link::new();greet(&mut link,false);
+        let shown=Presentation{toast:Some(Some((10,20,360,80))),overlay:Some(Some((30,40,500,300)))};
+        link.queue_presentation(shown).unwrap();
+        let mut bytes=Vec::new();link.outgoing.flush(&mut bytes).unwrap();
+        assert!(String::from_utf8(bytes).unwrap().contains("toast 10 20 360 80"));
+        let clear=Presentation{toast:Some(None),overlay:Some(None)};
+        link.outgoing.enqueue(&vec![b'x';64*1024]).unwrap();
+        assert!(link.queue_presentation(clear).is_err());
+        assert_eq!(link.presentation,shown,"failed enqueue must leave the clear pending");
+        link.outgoing.flush(&mut Vec::new()).unwrap();
+        link.queue_presentation(clear).unwrap();
+        let mut bytes=Vec::new();link.outgoing.flush(&mut bytes).unwrap();
+        assert_eq!(bytes,b"toast none\noverlay none\n");
+        link.reset();greet(&mut link,false);
+        link.queue_presentation(clear).unwrap();
+        let mut bytes=Vec::new();link.outgoing.flush(&mut bytes).unwrap();
+        assert_eq!(bytes,b"toast none\noverlay none\n","reconnect must restore current cleared state");
+        link.queue_presentation(clear).unwrap();
+        let mut duplicate=Vec::new();link.outgoing.flush(&mut duplicate).unwrap();
+        assert!(duplicate.is_empty());
+    }
+
+    #[test]
+    fn presentation_waits_for_handshake_and_unlock() {
+        let mut link=Link::new();
+        let desired=Presentation{toast:Some(None),overlay:Some(None)};
+        link.queue_presentation(desired).unwrap();
+        assert_eq!(link.presentation,Presentation::default());
+        greet(&mut link,true);
+        link.queue_presentation(desired).unwrap();
+        assert_eq!(link.presentation,Presentation::default());
+        link.request_lock(false).unwrap();
+        link.queue_presentation(desired).unwrap();
+        assert_eq!(link.presentation,Presentation::default(),"wait for the unlock acknowledgement");
+        link.receive(&Event::Locked(false)).unwrap();
+        link.queue_presentation(desired).unwrap();
+        assert_eq!(link.presentation,desired);
     }
 
     #[test]

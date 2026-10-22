@@ -13,33 +13,35 @@ typography:
   utility:
     fontFamily: 'JetBrains Mono'
 rounded:
+  control: '6px'
+  surface: '10px'
   dock: '12px'
 omitted:
   - section: spacing
     reason: 'Existing native egui geometry and shared UI primitives remain authoritative.'
 ---
 ## Overview
-DEs-UI is a terminal-first Linux desktop. Preserve the existing three-panel instrument layout, globe, telemetry and files. This is incremental improvement, not the previously explored glass redesign.
+DEs-UI is a modern, futuristic desktop for people who work in terminals and value visual craft. Every feature must belong to the same coherent desktop: deliberate hierarchy, restrained accent, precise spacing, usable keyboard flows and shared materials. Preserve the instrument layout, globe and telemetry while making their presentation feel integrated rather than assembled from unrelated panels. A feature is not visually accepted on build/test results alone; inspect its native rendered states before calling its UI finished.
 
 ## Colors
 Runtime palette is defined by shell/src/ui.rs. Theme accent belongs to Theme.main in shell/src/theme.rs; do not hardcode an accent in the dock or launcher. Caution remains the shared caution color. Settings → Appearance uses egui’s opaque sRGB picker for a draft accent; Apply color persists it and Reset to theme removes the override. Config::resolved_theme is the canonical adapter for preset plus custom accent; terminal ANSI colours and interface greys retain their existing owners.
 
 ## Typography
-Use ui::display for interface labels and ui::mono for readings/terminal text, installed by ui::install_fonts. Installed application icons replace letter avatars, with one generic icon fallback.
+Use ui::display for interface labels, body copy and native control text (13px baseline), and ui::mono for readings, paths and terminal text, installed by ui::install_fonts. Section labels use restrained tracking; descriptive copy wraps rather than disappearing behind ellipses. Terminal font preferences remain independent. Installed application icons replace letter avatars, with one generic icon fallback.
 
 ## Layout
-Graphical app switching lives in an autohiding bottom dock. Terminal tabs, splits and workspace controls stay at the top. Each display owns a dock; they share pins and overlay content without resizing windows. Its width grows with its icons; at screen width it wraps into another row, with no dock scrollbar. Pins use desktop IDs, grouping uses compositor app IDs or X11 class. Three panel geometry stays owned by des-common.
+Graphical app switching lives in an autohiding bottom dock. Terminal tabs, splits and workspace controls stay at the top. Each display owns a dock; they share pins and overlay content without resizing windows. Its width grows with its icons; at screen width it wraps into rows, with bounded scrolling for collections exceeding 45% of the display height. Pins use desktop IDs, grouping uses compositor app IDs or X11 class. Three panel geometry stays owned by des-common.
 
 ## Elevation & Depth
-Flat matte surfaces and fine strokes continue. The dock is lifted above app content through the compositor overlay mechanism; notifications remain a separate overlay. No glassmorphism, wallpaper or new permanent sidebar.
+Solid matte surfaces remain the default. Settings → Appearance can add a private static wallpaper and wallpaper-backed Frosted surfaces; fine strokes and sharp foreground text continue. material.rs is the shared role-based painter, wallpaper.rs owns image work, and appearance_editor.rs owns the draft. The dock is lifted above app content through the existing compositor crop mechanism; its Frosted material samples wallpaper. Live application-aware Liquid glass remains unavailable pending its compositor prototype and native acceptance. No new permanent sidebar.
 
 ## Shapes
-Existing controls keep their shapes. The dock alone uses a compact 12px rounded container and small hover/selection surfaces, derived from the same palette.
+Controls share a restrained 6px corner radius; content-sized floating surfaces use 10px and the dock 12px. Workspace boundaries, terminal cells, monitor diagrams and image artwork retain their semantic geometry. ui.rs owns SPACE (8px), CONTROL_HEIGHT (30px), CONTROL_RADIUS and SURFACE_RADIUS; main.rs::apply_style adapts these to native egui controls. No screen should invent another routine button style.
 
 ## Components
-The command palette extends the existing launcher in the workspace, with explicit APP/WINDOW/SETTING/ACTION/FILE kinds and the same matte rows. Settings owns Health and Session controls. Terminal find is a compact pane-local bar that wraps controls on narrow panes. All use shared ui.rs typefaces and palette; native egui widgets inherit apply_style. ScrollArea owns bounded result/log scrolling; no new document or browser scrollbar system is introduced. The behavioral owners and state contracts are in UX-CONTRACT.md.
+The application launcher uses an icon grid in the workspace: 48px installed icons, centered two-line names, matte square selection tiles, and responsive columns. Blank search shows applications only; typed queries retain the universal palette providers, with small result-kind labels for non-apps. Descriptions and paths stay in hover details and accessibility labels. Settings owns Health and Session controls. Terminal find is a compact pane-local bar that wraps controls on narrow panes. All use shared ui.rs typefaces and palette; native egui widgets inherit apply_style. ScrollArea owns bounded result/log scrolling; no new document or browser scrollbar system is introduced. The behavioral owners and state contracts are in UX-CONTRACT.md.
 
-Shared native icons: ui::Icon and paint_icon. Installed app artwork: app_icons::IconCache. Shared action/name tooltips and accessible button labels. Dock context menus use egui's existing menu pattern; no external/native dialogs. Short eased vertical motion; desktop reduced-motion preference suppresses animation when available.
+Shared native icons: ui::Icon and paint_icon. Installed app artwork: app_icons::IconCache. Shared action/name tooltips and accessible button labels. Dock context menus use egui's existing menu pattern; no external/native dialogs. Short eased vertical motion; the appearance Reduce motion setting and existing global animation preference suppress desktop motion. Reduce transparency makes work/control surfaces opaque while retaining wallpaper.
 
 ## Do's and Don'ts
 Keep numeric status readings and shortcut explanations. Preserve current terminals and panels. Never remove unknown pins automatically. Do not steal focus on pointer hover or show dock over lock. No fake app logos, avatar initials, or title-based app matching.
@@ -47,3 +49,49 @@ Keep numeric status readings and shortcut explanations. Preserve current termina
 Notification preferences reuse the existing Settings → Sound & Screen switch rows and configuration owner. Processor temperature warnings have an independent persistent switch. Browser-opening errors reuse the notification center and do not change terminal selection or layout.
 
 Settings → Session distinguishes LIVE TERMINALS (automatic process reconnection) from SAVED SESSION (explicit folder/application layout snapshots). Reuse switch_row, existing text styles and notification center for recovery results. Reconnected scratchpad remains hidden and terminal output is not persisted in the layout file.
+
+World View keeps the dotted land, wire sphere and accent connection arcs. The
+compact panel and expanded workspace share globe::Explorer camera/selection state.
+Use HOME, PAUSE/RESUME and EXPAND in the compact panel; the expanded view uses the
+canonical workspace replacement pattern, not a floating modal. Keep search visible
+above scrolling content; use two columns on wide workspaces and stack at narrow
+widths. Shared ui::button, native egui TextEdit/selection/ScrollArea and theme fonts
+own control behavior. Selected destination arcs and rings use existing TEXT ink.
+
+
+## Wallpaper and frosted materials
+
+AppearanceSettings in des-common is the typed persisted owner. Default is no wallpaper/Solid. Wallpaper supports static PNG/JPEG, Fill/Fit, normalized blur strength 0–40 and dim 0–80%; blur is a visual strength rather than a promised screen-pixel radius. The image worker caches 1600px source and 640px soft textures shared across outputs; no image processing runs per frame. Imported copies are normalized to at most 2560px per side. Choosing wallpaper establishes Frosted surfaces with a 62% tint by default. Terminal tint is adjustable from 35–100% and raised only as necessary for 4.5:1 normal bright terminal-text contrast against the cached image channel peaks; faint chrome-label contrast must not force the whole terminal opaque. Control surfaces keep a stronger minimum 75% tint and notifications 90%, with small-label contrast protection. Workspace padding, split gaps and terminal gutters sample the same screen-aligned blurred wallpaper, so no exposed bright picture frame surrounds a black terminal. Explicit Opaque and Reduce transparency remain available. Text, ANSI backgrounds, selections, icons and cursor stay sharp. Dock keeps its 12px radius. No new idle material motion.
+
+The appearance editor uses native egui controls and the existing Apply/Reset vocabulary. Choose image uses the shared native Files browser in image-selection mode. Folder navigation, search, hidden files and typed paths use the same controls as the Files workspace; mutation controls are absent from the picker. The editor's preview is local until Apply appearance. Cancel changes and Reset appearance affect only this group; theme/accent retain their independent controls. Liquid and its future quality options must not advertise functionality before the compositor gate passes.
+
+
+## Settings and Files
+
+Settings uses a 176px section rail on wide workspaces and a section selector below 720px. Appearance has persistent Wallpaper, Theme and Effects tabs, independent scroll positions, a preview before controls and stacked slider labels on narrow screens. Content respects the available workspace width.
+
+Files is a native workspace opened through the bottom FILES control or launcher search “Open Files”. A folder title, editable path and clearable local search establish hierarchy. Keep navigation and compact New folder/Paste/More operation controls above its bounded scrolling entries. Rows pair distinct folder/file glyphs with names and secondary metadata, hiding decorative metadata at narrow widths. Native buttons, TextEdit and Modal own focus and keyboard behavior. Long names truncate visually with full path details available. Trash shows original names while retaining the actual stored path as identity. Use shared theme typography and surfaces.
+
+
+## Visual acceptance standard
+
+The signature is a continuous atmospheric wallpaper behind precise, sharp instruments. Blur belongs to the backdrop, never glyphs, selections or icons. Material depth distinguishes work, controls and floating surfaces without introducing unrelated card styles. Keep theme accents restrained and functional; avoid decorative neon, oversized borders and dense explanatory copy. Shared material.rs and ui.rs owners apply this across terminal, Settings, Files, launcher and dock. Native review must include the entire workspace, narrow/wide layouts, bright/dark wallpaper, focused/unfocused panes, terminal applications, keyboard/hover/disabled/error states, reduced transparency and reduced motion. Performance and functional checks accompany visual review; neither replaces the other. Deferred effects must not occupy the normal interface as disabled promotional controls.
+
+
+## Shared interaction and surface ownership
+
+Native widgets inherit main.rs::apply_style. ui.rs custom buttons, chips, icons and switches use the same radius, hover tint, disabled opacity and visible accent focus outline. Selections use quiet tint with bright text, avoiding large accent-filled slabs. Shared sliders accept focused Arrow keys, Shift for larger steps and Home/End; their accessible names identify the controlled value. Terminal arrows remain untouched when the slider is unfocused.
+
+material.rs::surface owns content-sized native frames, and material.rs::paint owns fixed geometry. Tiles, calendar, Quick Settings, volume/brightness OSD, preview, scratchpad, dock/tooltips, notifications and music work surfaces share screen-aligned wallpaper materials. Launcher resting tiles leave the underlying workspace visible. Account passwords/authentication, lock/login, screenshot/photo content, explicit terminal ANSI backgrounds and small editable insets can remain opaque for their semantic purpose; their surrounding controls still follow the common geometry and typography. No changes to secure input, capture behavior or compositor overlay delivery are implied by visual migration.
+
+
+## Shortcut reference and mappings
+
+The right telemetry panel contains no keyboard cheat sheet. A searchable native modal owns the complete shortcut reference, using shared floating materials, grouped action labels and current bindings. Default entry is Super+/ in the desktop and Ctrl+Shift+H in the shell; the launcher also offers Keyboard shortcuts. Settings → Shortcuts uses the same registry, clearable search, compact binding rows, inline validation and reset/disable controls. Reset all requires a second explicit confirmation. Desktop Super combinations use explicit text entry because the Linux UI input adapter does not expose Super for recording; shell/terminal Ctrl combinations have a separate Record action. Manual editing must retain paste, Backspace and caret navigation.
+
+common/src/shortcuts.rs owns definitions, normalized chords, defaults, validation and persisted overrides. shell/src/shortcuts.rs owns the reference/editor, live UI cache and dynamic hints. Shell and compositor routing must use that registry; new actions must be added there before advertising a binding. Application-local and protected hardware/security controls are identified separately. Tooltips must read the active mapping or omit key names, never duplicate a configurable default.
+
+
+Window shelf: running markers, active underlines and counts distinguish application state. Multiple windows open compositor previews, nine per page, rather than cycling; old compositors receive a native window-list fallback. All windows opens the workspace overview. The collapsed left rail stacks upright hours and minutes using the regional clock format. Shared floating materials and reduced-motion preferences apply throughout.
+
+Drag overview: a confirmed native desktop drag opens destination previews. A 450ms hover reveals the real destination while retaining the original data offer and pointer grab; the user drops inside that application. Settings → Frame → Dock owns the persisted opt-out. Browser support depends on a browser exposing a native desktop drag; internal tab rearrangement is not guaranteed.

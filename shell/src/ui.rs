@@ -1,5 +1,5 @@
 //! The Signal interface language: its fixed colours, its two typefaces, and the small
-//! parts every panel is built from. Flat fills, one-pixel lines, square corners; the
+//! parts every panel is built from. Shared glass surfaces, fine lines, soft controls; the
 //! theme's accent marks only what is live, selected or has the keyboard.
 
 use crate::theme::Theme;
@@ -21,6 +21,12 @@ pub const LABEL: Color32 = Color32::from_rgb(0x6F, 0x84, 0x92);
 pub const SECONDARY: Color32 = Color32::from_rgb(0x8F, 0xA3, 0xB0);
 pub const TEXT: Color32 = Color32::from_rgb(0xDC, 0xE7, 0xEC);
 pub const CAUTION: Color32 = Color32::from_rgb(0xF5, 0xB8, 0x5A);
+
+/// Shared geometry for controls; terminal cells and workspace layout stay independent.
+pub const SPACE: f32 = 8.0;
+pub const CONTROL_HEIGHT: f32 = 30.0;
+pub const CONTROL_RADIUS: f32 = 6.0;
+pub const SURFACE_RADIUS: f32 = 10.0;
 
 /// Above this share of its range, a meter turns to the caution colour.
 pub const CAUTION_ABOVE: f32 = 0.75;
@@ -173,7 +179,7 @@ pub fn tracked(ui: &mut Ui, text: &str, font: FontId, color: Color32, tracking: 
 pub fn section(ui: &mut Ui, title: &str, meta: impl FnOnce(&mut Ui)) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
-        tracked(ui, title, display_bold(12.0), SECONDARY, 3.0);
+        tracked(ui, title, display_bold(13.0), SECONDARY, 0.8);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             meta(ui);
             let rest = ui.available_rect_before_wrap();
@@ -230,27 +236,20 @@ pub fn bar(ui: &mut Ui, theme: &Theme, height: f32, frac: f32, second: f32) {
 
 /// A bordered box, the container for tiles. `active` draws it in the accent.
 pub fn tile<R>(ui: &mut Ui, theme: &Theme, active: bool, add: impl FnOnce(&mut Ui) -> R) -> R {
-    let (fill, line) = if active {
-        (theme.tint(), theme.main)
-    } else {
-        (GROUND, LINE)
-    };
-    egui::Frame::new()
-        .fill(fill)
-        .stroke(Stroke::new(1.0, line))
-        .inner_margin(egui::Margin::symmetric(10, 9))
-        .show(ui, |ui| {
+    crate::material::surface(ui, egui::Frame::new()
+        .corner_radius(CONTROL_RADIUS)
+        .stroke(Stroke::new(1.0, if active { theme.main } else { LINE }))
+        .inner_margin(egui::Margin::symmetric(12, 10)), crate::material::Role::Panel, |ui| {
             ui.set_width(ui.available_width());
-            ui.spacing_mut().item_spacing.y = 3.0;
+            ui.spacing_mut().item_spacing.y = 4.0;
             add(ui)
-        })
-        .inner
+        }).inner
 }
 
 /// A tile holding one labelled value.
 pub fn value_tile(ui: &mut Ui, theme: &Theme, label: &str, value: &str) {
     tile(ui, theme, false, |ui| {
-        tracked(ui, label, display(10.0), LABEL, 2.0);
+        tracked(ui, label, display(11.0), SECONDARY, 0.7);
         text(ui, value, mono(12.0), TEXT);
     });
 }
@@ -260,7 +259,7 @@ pub fn keycap(ui: &mut Ui, key: &str) -> Response {
     let galley = galley(ui, key, mono(11.0), TEXT, 0.0);
     let (rect, response) = ui.allocate_exact_size(galley.size() + vec2(16.0, 8.0), Sense::hover());
     ui.painter()
-        .rect_stroke(rect, 0.0, Stroke::new(1.0, LINE_STRONG), StrokeKind::Inside);
+        .rect_stroke(rect, CONTROL_RADIUS, Stroke::new(1.0, LINE_STRONG), StrokeKind::Inside);
     ui.painter().galley(rect.min + vec2(8.0, 4.0), galley, TEXT);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, key));
     response
@@ -269,30 +268,43 @@ pub fn keycap(ui: &mut Ui, key: &str) -> Response {
 /// What a key does, with the key at the right.
 pub fn key_row(ui: &mut Ui, action: &str, key: &str) {
     ui.horizontal(|ui| {
-        text(ui, action, mono(12.0), SECONDARY);
+        text(ui, action, display(13.0), SECONDARY);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| keycap(ui, key));
     });
+}
+
+fn control_painter(ui: &Ui) -> egui::Painter {
+    let mut painter = ui.painter().clone();
+    if !ui.is_enabled() { painter.set_opacity(0.4); }
+    painter
+}
+fn focus_outline(painter: &egui::Painter, response: &Response, theme: &Theme) {
+    if response.has_focus() {
+        painter.rect_stroke(response.rect.shrink(1.0), CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside);
+    }
 }
 
 /// A bordered text button, filled with the accent while what it controls is engaged.
 pub fn button(ui: &mut Ui, theme: &Theme, label: &str, hint: Option<&str>, engaged: bool) -> Response {
     let name = label.to_string();
     let (ink, hint_ink) = if engaged {
-        (GROUND, theme.muted_on_accent())
+        (TEXT, SECONDARY)
     } else {
         (TEXT, LABEL)
     };
     let font = if engaged { display_bold(12.0) } else { display(12.0) };
-    let label = galley(ui, label, font, ink, 2.0);
+    let label = galley(ui, label, font, ink, 0.5);
     let hint = hint.map(|hint| galley(ui, hint, mono(10.0), hint_ink, 0.0));
     let width = 24.0 + label.size().x + hint.as_ref().map_or(0.0, |hint| hint.size().x + 10.0);
-    let (rect, response) = ui.allocate_exact_size(vec2(width, 28.0), Sense::click());
-    let painter = ui.painter();
+    let (rect, response) = ui.allocate_exact_size(vec2(width, CONTROL_HEIGHT), Sense::click());
+    let painter = control_painter(ui);
     if engaged {
-        painter.rect_filled(rect, 0.0, theme.main);
+        painter.rect_filled(rect, CONTROL_RADIUS, theme.tint());
+        painter.rect_stroke(rect, CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside);
     } else {
+        if response.hovered() { painter.rect_filled(rect, CONTROL_RADIUS, TRACK); }
         let line = if response.hovered() { SECONDARY } else { LINE_STRONG };
-        painter.rect_stroke(rect, 0.0, Stroke::new(1.0, line), StrokeKind::Inside);
+        painter.rect_stroke(rect, CONTROL_RADIUS, Stroke::new(1.0, line), StrokeKind::Inside);
     }
     let mut x = rect.left() + 12.0;
     let label_width = label.size().x;
@@ -301,6 +313,7 @@ pub fn button(ui: &mut Ui, theme: &Theme, label: &str, hint: Option<&str>, engag
     if let Some(hint) = hint {
         painter.galley(pos2(x, rect.center().y - hint.size().y / 2.0), hint, hint_ink);
     }
+    focus_outline(&painter, &response, theme);
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), engaged, &name));
     response
 }
@@ -308,41 +321,57 @@ pub fn button(ui: &mut Ui, theme: &Theme, label: &str, hint: Option<&str>, engag
 /// An on/off switch. Returns its response; a click means "flip it".
 pub fn toggle(ui: &mut Ui, theme: &Theme, on: bool) -> Response {
     let (rect, response) = ui.allocate_exact_size(vec2(40.0, 20.0), Sense::click());
-    let painter = ui.painter();
+    let painter = control_painter(ui);
     let line = if on { theme.main } else if response.hovered() { SECONDARY } else { LINE_STRONG };
-    painter.rect_filled(rect, 0.0, if on { theme.tint() } else { GROUND });
-    painter.rect_stroke(rect, 0.0, Stroke::new(1.0, line), StrokeKind::Inside);
+    painter.rect_filled(rect, 10.0, if on { theme.tint() } else { GROUND });
+    painter.rect_stroke(rect, 10.0, Stroke::new(1.0, line), StrokeKind::Inside);
     let knob = Rect::from_min_size(
         pos2(if on { rect.right() - 18.0 } else { rect.left() + 4.0 }, rect.top() + 4.0),
         vec2(14.0, 12.0),
     );
-    painter.rect_filled(knob, 0.0, if on { theme.main } else { LABEL });
+    painter.rect_filled(knob, 6.0, if on { theme.main } else { LABEL });
+    focus_outline(&painter, &response, theme);
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), on, "Switch"));
     response
 }
 
 /// A slider over 0..=1. Returns the new value while it is being dragged or clicked.
-pub fn slider(ui: &mut Ui, theme: &Theme, width: f32, value: f32) -> Option<f32> {
-    let (rect, response) = ui.allocate_exact_size(vec2(width, 20.0), Sense::click_and_drag());
+pub fn slider(ui: &mut Ui, theme: &Theme, width: f32, value: f32, name: &str) -> Option<f32> {
+    let (rect, response) = ui.allocate_exact_size(vec2(width, CONTROL_HEIGHT), Sense::click_and_drag());
     let track = Rect::from_min_max(
         pos2(rect.left() + 5.0, rect.center().y - 3.0),
         pos2(rect.right() - 5.0, rect.center().y + 3.0),
     );
-    let picked = response
+    let mut picked = response
         .interact_pointer_pos()
         .filter(|_| response.dragged() || response.clicked())
         .map(|pos| ((pos.x - track.left()) / track.width()).clamp(0.0, 1.0));
+    if response.has_focus() && ui.is_enabled() {
+        let modifiers = ui.input(|input| input.modifiers);
+        if !modifiers.alt && !modifiers.ctrl && !modifiers.command {
+            let step = if modifiers.shift { 0.1 } else { 0.01 };
+            let adjustment = ui.input_mut(|input| {
+                if input.consume_key(modifiers, egui::Key::Home) { Some(0.0) }
+                else if input.consume_key(modifiers, egui::Key::End) { Some(1.0) }
+                else if input.consume_key(modifiers, egui::Key::ArrowRight) || input.consume_key(modifiers, egui::Key::ArrowUp) { Some((value + step).clamp(0.0, 1.0)) }
+                else if input.consume_key(modifiers, egui::Key::ArrowLeft) || input.consume_key(modifiers, egui::Key::ArrowDown) { Some((value - step).clamp(0.0, 1.0)) }
+                else { None }
+            });
+            picked = adjustment.or(picked);
+        }
+    }
     let value = picked.unwrap_or(value).clamp(0.0, 1.0);
-    let painter = ui.painter();
-    painter.rect_filled(track, 0.0, TRACK);
+    let painter = control_painter(ui);
+    painter.rect_filled(track, 3.0, TRACK);
     let mut filled = track;
     filled.set_width(track.width() * value);
-    painter.rect_filled(filled, 0.0, theme.main);
+    painter.rect_filled(filled, 3.0, theme.main);
     let knob = Rect::from_center_size(pos2(filled.right(), rect.center().y), vec2(10.0, 18.0));
     let ink = if response.hovered() || response.dragged() { TEXT } else { theme.main };
-    painter.rect_filled(knob, 0.0, GROUND);
-    painter.rect_stroke(knob, 0.0, Stroke::new(1.5, ink), StrokeKind::Inside);
-    response.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), value as f64, "Level"));
+    painter.rect_filled(knob, 4.0, GROUND);
+    painter.rect_stroke(knob, 4.0, Stroke::new(1.5, ink), StrokeKind::Inside);
+    focus_outline(&painter, &response, theme);
+    response.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), value as f64, name));
     picked
 }
 
@@ -350,17 +379,19 @@ pub fn slider(ui: &mut Ui, theme: &Theme, width: f32, value: f32) -> Option<f32>
 /// `swatch` shows a colour beside the label.
 pub fn chip(ui: &mut Ui, theme: &Theme, label: &str, swatch: Option<Color32>, chosen: bool) -> Response {
     let name = label.to_string();
-    let ink = if chosen { GROUND } else { TEXT };
+    let ink = TEXT;
     let font = if chosen { display_bold(12.0) } else { display(12.0) };
-    let label = galley(ui, label, font, ink, 1.5);
+    let label = galley(ui, label, font, ink, 0.5);
     let lead = if swatch.is_some() { 20.0 } else { 0.0 };
     let (rect, response) = ui.allocate_exact_size(vec2(label.size().x + 24.0 + lead, 30.0), Sense::click());
-    let painter = ui.painter();
+    let painter = control_painter(ui);
     if chosen {
-        painter.rect_filled(rect, 0.0, theme.main);
+        painter.rect_filled(rect, CONTROL_RADIUS, theme.tint());
+        painter.rect_stroke(rect, CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside);
     } else {
+        if response.hovered() { painter.rect_filled(rect, CONTROL_RADIUS, TRACK); }
         let line = if response.hovered() { SECONDARY } else { LINE_STRONG };
-        painter.rect_stroke(rect, 0.0, Stroke::new(1.0, line), StrokeKind::Inside);
+        painter.rect_stroke(rect, CONTROL_RADIUS, Stroke::new(1.0, line), StrokeKind::Inside);
     }
     if let Some(color) = swatch {
         let square = Rect::from_center_size(pos2(rect.left() + 18.0, rect.center().y), vec2(12.0, 12.0));
@@ -368,6 +399,7 @@ pub fn chip(ui: &mut Ui, theme: &Theme, label: &str, swatch: Option<Color32>, ch
         painter.rect_stroke(square, 0.0, Stroke::new(1.0, GROUND), StrokeKind::Inside);
     }
     painter.galley(pos2(rect.left() + 12.0 + lead, rect.center().y - label.size().y / 2.0), label, ink);
+    focus_outline(&painter, &response, theme);
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::RadioButton, ui.is_enabled(), chosen, &name));
     response
 }
@@ -436,7 +468,12 @@ pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: Icon, size: f32, lit: bool)
     } else {
         SECONDARY
     };
-    paint_icon(ui.painter(), rect, icon, color, lit);
+    let painter = control_painter(ui);
+    if lit || response.hovered() || response.has_focus() {
+        painter.rect_filled(rect.shrink(1.0), CONTROL_RADIUS, if lit { theme.tint() } else { TRACK });
+    }
+    focus_outline(&painter, &response, theme);
+    paint_icon(&painter, rect, icon, color, lit);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), icon.label()));
     response
 }
@@ -753,6 +790,51 @@ pub fn waterfall(ui: &mut Ui, above: &VecDeque<f32>, below: &VecDeque<f32>, max:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn design_system_native_controls_share_type_geometry_and_focus() {
+        let ctx = egui::Context::default();
+        crate::apply_style(&ctx, &Theme::load("signal"));
+        let style = ctx.style();
+        assert_eq!(style.override_font_id, Some(display(13.0)));
+        assert_eq!(style.spacing.interact_size.y, 30.0);
+        assert!(style.visuals.widgets.hovered.corner_radius.nw >= 6);
+    }
+
+    #[test]
+    fn design_system_icon_buttons_show_keyboard_focus_without_hover() {
+        let ctx = egui::Context::default(); install_fonts(&ctx, None, None);
+        let theme = Theme::load("signal"); let mut id = egui::Id::NULL;
+        let _ = ctx.run(Default::default(), |ctx| { egui::CentralPanel::default().show(ctx, |ui| {
+            id = icon_button(ui, &theme, Icon::Search, 30.0, false).id;
+        }); });
+        ctx.memory_mut(|memory| memory.request_focus(id));
+        let output = ctx.run(Default::default(), |ctx| { egui::CentralPanel::default().show(ctx, |ui| {
+            assert!(icon_button(ui, &theme, Icon::Search, 30.0, false).has_focus());
+        }); });
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Rect(rect) if rect.stroke.color == theme.main)), "focused icon needs a visible focus outline");
+    }
+
+    #[test]
+    fn design_system_sliders_support_focused_keyboard_adjustment_only() {
+        let ctx = egui::Context::default(); install_fonts(&ctx, None, None);
+        let theme = Theme::load("signal"); let mut id = egui::Id::NULL;
+        let _ = ctx.run(Default::default(), |ctx| { egui::CentralPanel::default().show(ctx, |ui| {
+            id = ui.next_auto_id(); assert_eq!(slider(ui, &theme, 150.0, 0.5, "Test level"), None);
+        }); });
+        ctx.memory_mut(|memory| memory.request_focus(id));
+        let input = egui::RawInput { events: vec![egui::Event::Key { key: egui::Key::ArrowRight, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }], ..Default::default() };
+        let _ = ctx.run(input, |ctx| { egui::CentralPanel::default().show(ctx, |ui| {
+            assert_eq!(slider(ui, &theme, 150.0, 0.5, "Test level"), Some(0.51));
+            assert!(!ui.input(|i| i.key_pressed(egui::Key::ArrowRight)), "focused control must consume the adjustment");
+        }); });
+        ctx.memory_mut(|memory| memory.surrender_focus(id));
+        let input = egui::RawInput { events: vec![egui::Event::Key { key: egui::Key::ArrowLeft, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }], ..Default::default() };
+        let _ = ctx.run(input, |ctx| { egui::CentralPanel::default().show(ctx, |ui| {
+            assert_eq!(slider(ui, &theme, 150.0, 0.5, "Test level"), None);
+            assert!(ui.input(|i| i.key_pressed(egui::Key::ArrowLeft)), "unfocused control must leave terminal/navigation keys alone");
+        }); });
+    }
 
     #[test]
     fn new_icons_say_what_they_are() {

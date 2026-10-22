@@ -178,6 +178,7 @@ pub struct DesComp {
     /// the saved ones.
     /// The keyboard, mouse and touchpad settings in force.
     pub input_settings: des_common::input::InputSettings,
+    pub shortcut_bindings: des_common::shortcuts::Bindings,
     pub side_panel_behavior: des_common::PanelBehavior,
     /// The keyboard layout and variant last given to the keymap compiler.
     pub keymap_applied: Option<(String, String)>,
@@ -202,6 +203,9 @@ pub struct DesComp {
     pub buttons_down: u32,
     /// The files being dragged out of the shell, while a drag lasts.
     pub dragged_files: Option<Vec<String>>,
+    pub drag_icon: Option<WlSurface>,
+    pub drag_session: Option<crate::dnd::Session>,
+    pub drag_overview_enabled: bool,
     /// The overview or the window switcher, while open or closing.
     pub overview: Option<crate::overview::Overview>,
     /// Application windows, most recently given the keyboard first.
@@ -339,6 +343,7 @@ impl DesComp {
             ipc: None,
             fatal: None,
             input_settings: des_common::input::InputSettings::default(),
+            shortcut_bindings: des_common::shortcuts::Bindings::load(),
             side_panel_behavior: des_common::PanelBehavior::load(),
             keymap_applied: None,
             locked: false,
@@ -352,6 +357,9 @@ impl DesComp {
             layer_reservations: Vec::new(),
             buttons_down: 0,
             dragged_files: None,
+            drag_icon: None,
+            drag_session: None,
+            drag_overview_enabled: crate::dnd::overview_wanted(),
             overview: None,
             recency: Default::default(),
             super_tap: Default::default(),
@@ -449,6 +457,7 @@ impl DesComp {
     /// Work due before drawing a frame. Returns false once the session is over.
     pub fn before_frame(&mut self) -> bool {
         self.motions.tick(Instant::now());
+        self.tick_drag_overview();
         self.refresh_overview();
         self.prefer_scales();
         if self.splash.as_ref().is_some_and(|splash| splash.done()) {
@@ -585,8 +594,11 @@ impl DesComp {
         // Applications out of view are kept ticking slowly: enough that none waits
         // forever for a chance to draw, without having them all render at full rate.
         for app in self.apps.iter().filter(|app| app.place == Place::Hidden) {
-            app.window
-                .send_frame(&output, elapsed, Some(Duration::from_secs(1)), |_, _| None);
+            let preview=self.overview.as_ref().is_some_and(|overview|overview.layout.thumbs.iter().any(|(window,_,_)|window==&app.window));
+            app.window.send_frame(&output,elapsed,Some(if preview {Duration::ZERO}else{Duration::from_secs(1)}),|_,_|preview.then(||output.clone()));
+        }
+        if let Some(icon)=self.drag_icon.as_ref() {
+            smithay::desktop::utils::send_frames_surface_tree(icon,&output,elapsed,Some(Duration::ZERO),|_,_|Some(output.clone()));
         }
         self.space.refresh();
         self.popups.cleanup();

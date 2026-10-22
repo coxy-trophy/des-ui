@@ -36,19 +36,24 @@ impl eframe::App for App {
             self.notices.post(&alert.title, &alert.body, alert.urgent);
         }
         self.pump_documents();
+        self.pump_file_operations(ctx);
         if let Some(desktop) = &mut self.desktop {
             desktop.pump();
         }
         self.answer_control();
         self.clipboard.poll(self.launcher.open);
+        let mut shortcut_requested = false;
         if let Some(desktop) = &mut self.desktop {
+            shortcut_requested = std::mem::take(&mut desktop.shortcuts_requested);
+            if desktop.launcher_requested || desktop.settings_requested || desktop.music_requested || desktop.notifications_requested || desktop.quick_requested || desktop.power_requested { self.shortcut_reference.close(); }
             if !desktop.connected() { self.dock_area = None; self.overlay_area = None; self.secondary_areas.clear(); }
             if let Some(screen)=desktop.dock_screen_requested.take(){
                 if screen==0{self.dock.reveal_keyboard();}else if screen<desktop.state.screens{self.secondary_docks.entry(screen).or_default().reveal_keyboard();}
             }
             if std::mem::take(&mut desktop.dock_requested) { self.dock.reveal_keyboard(); }
             if std::mem::take(&mut desktop.launcher_requested) && !self.launcher.open {
-                self.settings.open = false;
+                self.world.expanded = false;
+                self.settings.open = false; self.files_browser = None;
                 self.music.open = false;
                 self.notices.open = false;
                 self.power_menu.open = false;
@@ -63,14 +68,14 @@ impl eframe::App for App {
             }
             if std::mem::take(&mut desktop.music_requested) && !self.music.open {
                 self.launcher.open = false;
-                self.settings.open = false;
+                self.settings.open = false; self.files_browser = None;
                 self.notices.open = false;
                 self.power_menu.open = false;
                 self.music.open = true;
             }
             if std::mem::take(&mut desktop.power_requested) {
                 self.launcher.open = false;
-                self.settings.open = false;
+                self.settings.open = false; self.files_browser = None;
                 self.music.open = false;
                 self.notices.open = false;
                 self.power_menu.open = true;
@@ -80,13 +85,16 @@ impl eframe::App for App {
             }
             if std::mem::take(&mut desktop.notifications_requested) && !self.notices.open {
                 self.launcher.open = false;
-                self.settings.open = false;
+                self.settings.open = false; self.files_browser = None;
                 self.music.open = false;
                 self.notices.open = true;
             }
             // Bring the frame in line with the saved choice of panels: once at the
             // start, and again whenever that choice is changed in the settings.
-            if !desktop.connected() { self.frame_synced = false; }
+            if !desktop.connected() { self.frame_synced = false; self.shortcuts_synced = false; }
+            if !self.shortcuts_synced && desktop.connected() {
+                self.shortcuts_synced = desktop.send(Command::ReloadInput).is_ok();
+            }
             if !self.frame_synced && desktop.connected() {
                 self.frame_synced = desktop.send(Command::ReloadFrame).is_ok();
             }
@@ -106,6 +114,7 @@ impl eframe::App for App {
                 self.panels_synced = true;
             }
         }
+        if shortcut_requested && !self.polkit.active() { self.toggle_shortcut_reference(); }
         for tab in &mut self.tabs {
             tab.pump();
         }
@@ -193,6 +202,8 @@ impl eframe::App for App {
             power::Act::Suspend.run();
         }
         if self.lock.locked {
+            self.shortcut_reference.close();
+            self.settings.appearance_editor.sync_visibility(false);
             let state=self.desktop.as_ref().map(|d|d.state.clone());
             self.secondary_views(ctx,state.as_ref(),true);
             self.dock.reset();
@@ -229,21 +240,31 @@ impl eframe::App for App {
             if self.desktop.as_ref().is_some_and(|desktop| desktop.connected()) { self.readiness.notify(); }
             return;
         }
-        let stage = self.powerup.publish(ctx, self.config.animate, false);
+        if let Some(error) = self.wallpaper.update(ctx, &self.config.appearance) {
+            self.notices.post("Wallpaper unavailable", &format!("{error}. Choose another image in Settings → Appearance."), false);
+        }
+        self.wallpaper.publish(ctx, &self.config.appearance);
+        shortcuts::publish(ctx, &self.config.shortcuts);
+        let animate = self.config.animate && !self.config.appearance.reduce_motion;
+        let stage = self.powerup.publish(ctx, animate, false);
         self.pump_restore();
+        self.settings.appearance_editor.sync_visibility(self.settings.open && !self.polkit.active());
+        if let Some(path) = files::take_request(ctx) { self.open_files(path); }
+        if self.polkit.active() { self.shortcut_reference.close(); }
         let events = self.take_shortcuts(ctx);
+        let reference_input = shortcuts::take_modal_input(ctx, self.shortcut_reference.open);
+        if self.launcher.open || self.settings.open || self.music.open || self.notices.open || self.power_menu.open {
+            self.world.expanded = false;
+            self.files_browser = None;
+        }
         let theme = self.theme.clone();
         let screen = ctx.screen_rect();
         let state = self.desktop.as_ref().map(|desktop| desktop.state.clone());
         // The compositor decides which panels are open; alone, the shell does.
         let open = state.as_ref().map_or(self.local_panels, |state| state.panels);
         let places = self.geo.snapshot();
-        // Still, the globe faces this machine's side of the world.
-        let rotation = if self.config.globe_rotation {
-            self.started.elapsed().as_secs_f32() * globe::SPEED
-        } else {
-            places.home.as_ref().map_or(20.0, |home| -home.lon)
-        };
+        let rotating = self.config.globe_rotation && animate;
+        self.world.tick(self.started.elapsed().as_secs_f64(), rotating, places.home.as_ref());
         let overlay = if self.launcher.open {
             Some("LAUNCHER")
         } else if self.settings.open {
@@ -254,6 +275,10 @@ impl eframe::App for App {
             Some("NOTIFICATIONS")
         } else if self.power_menu.open {
             Some("POWER")
+        } else if self.files_browser.is_some() {
+            Some("FILES")
+        } else if self.world.expanded {
+            Some("WORLD VIEW")
         } else {
             None
         };
@@ -273,10 +298,11 @@ impl eframe::App for App {
         let workspace = Rect::from_min_max(workspace.min, pos2(workspace.max.x, (workspace.max.y - osk_height).max(workspace.min.y)));
         let dock_keys = self.dock.reserve_keyboard(ctx);
         // While the scratchpad is down it has the keyboard, not the panes.
-        let scratch_keys = self.scratchpad.visible() || self.polkit.active() || self.fs.has_keyboard() || self.quick.open;
+        let scratch_keys = self.shortcut_reference.open || self.scratchpad.visible() || self.polkit.active() || self.fs.has_keyboard() || self.quick.open;
         CentralPanel::default()
             .frame(Frame::new().fill(ui::GROUND))
             .show(ctx, |ui| {
+                material::paint(ctx, ui.painter(), screen, 0.0, material::Role::Background);
                 let status = Rect::from_min_max(pos2(screen.left(), status_top), screen.max);
                 if osk_height > 0.0 {
                     self.osk.show(ui, &theme, Rect::from_min_max(pos2(screen.left(), keys_top), pos2(screen.right(), status_top)));
@@ -325,10 +351,20 @@ impl eframe::App for App {
                     let rect = Rect::from_min_max(pos2(workspace.right(), screen.top()), pos2(screen.right(), keys_top));
                     region(ui, rect, column, Layout::top_down(Align::Min), |ui| {
                         let music = &mut self.music;
+                        let world_was_open = self.world.expanded;
                         let mut wanted = false;
-                        panels::right(ui, &theme, &self.mon, state.as_ref(), rotation, &places, &self.widgets, |ui| {
+                        panels::right(ui, &theme, &self.mon, state.as_ref(), &mut self.world, rotating, &places, &self.widgets, |ui| {
                             wanted = music.panel(ui, &theme);
                         });
+                        if !world_was_open && self.world.expanded {
+                            self.files_browser = None;
+                            self.settings.open = false; self.files_browser = None;
+                            self.launcher.open = false;
+                            self.music.open = false;
+                            self.notices.open = false;
+                            self.power_menu.open = false;
+                            self.send(Command::Terminal);
+                        }
                         wanted
                     })
                     .then(|| self.toggle_music());
@@ -364,7 +400,7 @@ impl eframe::App for App {
                     self.top_bar(ui, &theme, state.as_ref())
                 });
                 if actions.find_terminal {
-                    self.launcher.open=false;self.settings.open=false;self.music.open=false;self.notices.open=false;self.power_menu.open=false;
+                    self.launcher.open=false;self.settings.open=false;self.files_browser=None;self.music.open=false;self.notices.open=false;self.power_menu.open=false;
                     let i=self.focus_tab();self.tabs[i].open_search();
                 }
                 if actions.open_tab {
@@ -397,6 +433,29 @@ impl eframe::App for App {
                     });
                     for change in changes {
                         self.apply(ctx, change);
+                    }
+                    return;
+                }
+                if self.files_browser.is_some() {
+                    let action = region(ui, mine, vec2(20.0, 16.0), Layout::top_down(Align::Min), |ui| {
+                        ui::tracked(ui, "FILES", ui::display_bold(20.0), ui::TEXT, 2.0);
+                        ui.add_space(12.0);
+                        let progress = self.file_job.as_ref().map(|task| task.progress.load(std::sync::atomic::Ordering::Relaxed));
+                        let browser = self.files_browser.as_mut().unwrap();
+                        browser.configure_operations(self.file_clipboard.clone(), progress);
+                        browser.show_with_keyboard(ui, !scratch_keys && !self.dock.captures_keyboard())
+                    });
+                    match action {
+                        Some(files::Event::Close) => self.files_browser = None,
+                        Some(files::Event::Clipboard(clipboard)) => self.file_clipboard = Some(clipboard),
+                        Some(files::Event::Drag(path)) => self.start_file_drag(ctx, &path),
+                        Some(files::Event::Operate(operation)) => self.start_file_operation(operation),
+                        Some(files::Event::CancelOperation) => { if let Some(task) = &self.file_job { task.cancel(); } },
+                        Some(files::Event::Open(path)) => {
+                            if self.document_openers.len() < 32 { self.document_openers.push(apps::open_document(path, ctx.clone())); }
+                            else { self.notices.post("File not opened", "Wait for existing document viewers to respond.", false); }
+                        },
+                        _ => {},
                     }
                     return;
                 }
@@ -441,6 +500,16 @@ impl eframe::App for App {
                     return;
                 }
 
+                if self.world.expanded {
+                    region(ui, mine, vec2(24.0, 18.0), Layout::top_down(Align::Min), |ui| {
+                        self.world.workspace(ui, &theme, &places, rotating, self.config.lookups);
+                    });
+                    return;
+                }
+
+                // One continuous wallpaper sample covers the workspace padding and
+                // split gaps as well as the terminal cells. No bright picture frame.
+                material::paint(ctx, ui.painter(), mine, 0.0, material::Role::Terminal);
                 // One pane, or two with a gap and a rule between them.
                 let panes: Vec<(usize, Rect)> = match self.side {
                     None => vec![(self.active, inner)],
@@ -517,8 +586,8 @@ impl eframe::App for App {
 
         let look = self.config.term_look();
         let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
-        let scratch = self.scratchpad.show(ctx, workspace, screen, &theme, &look, self.config.animate,
-            (&self.shell, &home, self.config.scrollback, self.config.keep_terminal_sessions && self.live_terminal_lease.is_some()), &events);
+        let scratch = if self.shortcut_reference.open { None } else { self.scratchpad.show(ctx, workspace, screen, &theme, &look, animate,
+            (&self.shell, &home, self.config.scrollback, self.config.keep_terminal_sessions && self.live_terminal_lease.is_some()), &events) };
         // The quick settings, when open, take the lifted area: they are the one in use.
         let readings = quick::Readings {
             volume: self.mon.volume(),
@@ -532,10 +601,7 @@ impl eframe::App for App {
             self.quick_action(ctx, action);
         }
         let quick_area = self.quick.open.then(|| quick::area(screen, keys_top));
-        let overlay_area = quick_area.or(scratch).map(scratchpad::area);
-        if scratchpad::changed(&mut self.overlay_area, overlay_area) {
-            self.send(Command::Overlay(overlay_area));
-        }
+
 
         // The one-pixel lines between the frame's regions, drawn over all of them.
         let lines = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("frame-lines")));
@@ -543,12 +609,13 @@ impl eframe::App for App {
         powerup::frame_lines(&lines, screen, workspace, keys_top, open,
             self.config.side_panel_behavior == des_common::PanelBehavior::Collapse, line, &stage);
 
+        ctx.data_mut(|data| data.insert_temp(egui::Id::new("window-shelf-capable"), self.desktop.as_ref().is_some_and(|d| d.connected() && d.window_shelf)));
         ctx.input_mut(|input| input.events.extend(dock_keys));
         let dock = if self.capture.marking() {
             self.dock.reset();
             dock::Output::default()
         } else {
-            self.dock.show(ctx, screen, state.as_ref(), &self.config.dock_pins, &theme, self.config.animate)
+            self.dock.show(ctx, screen, state.as_ref(), &self.config.dock_pins, &theme, animate)
         };
         let dock_area = dock.overlay.map(|rect| (
             rect.left().floor() as i32, rect.top().floor() as i32,
@@ -569,7 +636,7 @@ impl eframe::App for App {
         // told where, so that it shows them above whatever application is open.
         // The volume or brightness meter hangs first; the toasts follow below it.
         let corner = workspace.right_top() + vec2(-16.0, 12.0);
-        let meter = self.osd.show(ctx, &theme, corner, self.config.animate);
+        let meter = self.osd.show(ctx, &theme, corner, animate);
         let toasts_at = meter.map_or(corner, |meter| corner + vec2(0.0, meter.height() + 8.0));
         let (mut covered, chosen) = self.notices.toasts(ctx, &theme, toasts_at);
         if let Some(meter) = meter {
@@ -625,16 +692,24 @@ impl eframe::App for App {
         // A file dragged out of the panel: the compositor carries it to whatever is
         // under the pointer when the button is let go.
         if let Some(path) = self.fs.take_drag() {
-            let uri = control::file_uri(&path);
-            if des_common::ipc::drag_uri_ok(&uri) && uri.len() + 12 < des_common::ipc::MAX_DRAG_LINE {
-                self.send(Command::DragFiles(vec![uri]));
-            }
+            self.start_file_drag(ctx, &path);
         }
+        if self.polkit.active() { self.shortcut_reference.close(); }
+        ctx.input_mut(|input| input.events.extend(reference_input));
+        if self.shortcut_reference.show(ctx, &theme, &self.config.shortcuts) {
+            self.files_browser = None; self.launcher.open = false; self.music.open = false; self.notices.open = false; self.power_menu.open = false;
+            self.settings.open_at(&self.config, "shortcuts");
+            self.send(Command::Terminal);
+        }
+        // A reference modal owns the entire display, including pointer input,
+        // while applications beneath it retain their workspace/process state.
+        let overlay_area = if self.shortcut_reference.open { Some(screen) } else { quick_area.or(scratch) }.map(scratchpad::area);
+        if scratchpad::changed(&mut self.overlay_area, overlay_area) { self.send(Command::Overlay(overlay_area)); }
         // Last, so that it is above everything else.
         self.polkit.show(ctx, &theme, false);
 
         // The globe turns continuously; without it, the clock sets the pace.
-        let pace = if open.right && self.config.globe_rotation { 66 } else { 500 };
+        let pace = if (open.right || self.world.expanded) && self.world.animating(rotating) { 66 } else { 500 };
         ctx.request_repaint_after(Duration::from_millis(pace));
         self.checkpoint_live_terminals();
         if self.desktop.as_ref().is_some_and(|desktop| desktop.connected()) { self.readiness.notify(); }

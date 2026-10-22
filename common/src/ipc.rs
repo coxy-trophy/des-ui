@@ -641,6 +641,10 @@ pub enum Recording {
 pub enum OverviewKind {
     /// Every workspace of a display side by side, each with its windows.
     Workspaces,
+    /// An explicit app window chooser; independent of Alt being held.
+    Windows,
+    /// Destination previews while the original data drag remains active.
+    Drag,
     /// The windows of a display in the order they were last used, while Alt is held.
     Switcher,
 }
@@ -702,6 +706,8 @@ impl OverviewLayout {
         let kind = match layout.kind {
             OverviewKind::Workspaces => "w",
             OverviewKind::Switcher => "s",
+            OverviewKind::Windows => "p",
+            OverviewKind::Drag => "d",
         };
         let selected = layout.selected.map_or("-".to_string(), |selected| selected.to_string());
         let mut filter: String = layout.filter.chars().filter(|c| !c.is_control()).collect();
@@ -735,6 +741,8 @@ impl OverviewLayout {
         let kind = match words.next()? {
             "w" => OverviewKind::Workspaces,
             "s" => OverviewKind::Switcher,
+            "p" => OverviewKind::Windows,
+            "d" => OverviewKind::Drag,
             _ => return None,
         };
         let screen = words.next()?.parse::<usize>().ok().filter(|screen| *screen < 32)?;
@@ -797,6 +805,8 @@ impl OverviewLayout {
 /// A message from the compositor to the shell.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
+    /// The compositor supports live dock previews and drag destinations.
+    WindowShelf,
     State(DesktopState),
     /// The dock keyboard shortcut was pressed.
     Dock,
@@ -805,6 +815,8 @@ pub enum Event {
     Launcher,
     /// The settings shortcut was pressed.
     Settings,
+    /// Open the full keyboard shortcut reference.
+    Shortcuts,
     /// The music shortcut was pressed.
     Music,
     /// The notifications shortcut was pressed.
@@ -837,6 +849,10 @@ impl Event {
 
     pub const LAUNCHER: &str = "launcher\n";
     pub const SETTINGS: &str = "settings\n";
+    /// ```
+    /// assert_eq!(des_common::ipc::Event::decode(des_common::ipc::Event::SHORTCUTS), Some(des_common::ipc::Event::Shortcuts));
+    /// ```
+    pub const SHORTCUTS: &str = "shortcuts\n";
     pub const MUSIC: &str = "music\n";
     pub const NOTIFICATIONS: &str = "notifications\n";
     pub const QUICK: &str = "quick\n";
@@ -865,9 +881,11 @@ impl Event {
         if let Some(screen)=line.trim_end().strip_prefix("dock-screen ") { return screen.parse::<usize>().ok().filter(|s|*s<32).map(Event::DockOn); }
 
         match line.trim_end_matches('\n') {
+            "window-shelf" => return Some(Event::WindowShelf),
             "dock" => return Some(Event::Dock),
             "launcher" => return Some(Event::Launcher),
             "settings" => return Some(Event::Settings),
+            "shortcuts" => return Some(Event::Shortcuts),
             "music" => return Some(Event::Music),
             "notifications" => return Some(Event::Notifications),
             "quick" => return Some(Event::Quick),
@@ -991,6 +1009,8 @@ pub enum Command {
     LayoutAt(LayoutInfo),
     /// Open the overview on the display under the pointer, or close it.
     Overview,
+    /// Show this application ID on a display; identity is never a stale window index.
+    AppWindows(usize, Vec<String>),
 }
 
 /// At most this many files go in one drag.
@@ -1042,6 +1062,7 @@ impl Command {
             Command::Pin(index) => format!("pin {index}\n"),
             Command::Unpin => "unpin\n".to_string(),
             Command::Overview => "overview\n".to_string(),
+            Command::AppWindows(screen, ids) => format!("app-windows {screen} {}\n", ids.iter().map(|id|if id.is_empty(){"-".into()}else{id.bytes().map(|b|format!("{b:02x}")).collect::<String>()}).collect::<Vec<_>>().join(":")),
             Command::Overlay(None) => "overlay none\n".to_string(),
             Command::Overlay(Some((x, y, w, h))) => format!("overlay {x} {y} {w} {h}\n"),
             Command::DragFiles(uris) => format!("drag-files {}\n", uris.join("\t")),
@@ -1059,6 +1080,26 @@ impl Command {
     }
 
     pub fn decode(line: &str) -> Option<Command> {
+        if let Some(rest) = line.strip_prefix("app-windows ") {
+            let mut words = rest.split_whitespace();
+            let screen = words.next()?.parse::<usize>().ok().filter(|n| *n < 32)?;
+            let encoded = words.next()?;
+            if words.next().is_some() || encoded.len()>3072 {return None;}
+            let mut ids=Vec::new();
+            for hex in encoded.split(':') {
+                if hex.is_empty() || hex.len()>1024 || ids.len()>=128 {return None;}
+                let id=if hex=="-" {String::new()} else {
+                    if hex.len()%2!=0{return None;}
+                    let bytes:Option<Vec<u8>>=(0..hex.len()).step_by(2).map(|n|u8::from_str_radix(hex.get(n..n+2)?,16).ok()).collect();
+                    let id=String::from_utf8(bytes?).ok()?;
+                    if id.chars().any(char::is_control){return None;}
+                    id
+                };
+                if !ids.contains(&id){ids.push(id);}
+            }
+            return Some(Command::AppWindows(screen,ids));
+        }
+
         if let Some(rest)=line.trim_end().strip_prefix("dock-screen ") {
             let (screen,area)=rest.split_once(' ')?;let screen=screen.parse::<usize>().ok().filter(|s|*s<32)?;
             return match Command::decode(&format!("dock {area}"))? {Command::Dock(area)=>Some(Command::DockOn(screen,area)),_=>None};
@@ -1567,5 +1608,29 @@ mod tests {
         }
         assert_eq!(LayoutKind::Master.next(), LayoutKind::Single);
         assert_eq!(LayoutKind::Single.next(), LayoutKind::Split);
+    }
+}
+
+
+#[cfg(test)]
+mod window_shelf_tests {
+    use super::*;
+    #[test]
+    fn chooser_requests_preserve_group_identity_and_reject_untrusted_input() {
+        let request=Command::AppWindows(1,vec!["org.browser.Browser".into(),"browser-beta".into(),"アプリ".into()]);
+        assert_eq!(Command::decode(request.encode().trim_end()),Some(request));
+        assert_eq!(Command::decode("app-windows 0 -"),Some(Command::AppWindows(0,vec![String::new()])));
+        for bad in ["app-windows 32 61","app-windows 0 zz","app-windows 0 0","app-windows 0 0a","app-windows 0 ff","app-windows 0 61 extra","app-windows 0 :61"] {
+            assert_eq!(Command::decode(bad),None,"{bad}");
+        }
+        assert_eq!(Command::decode(&format!("app-windows 0 {}","61".repeat(513))),None);
+        assert_eq!(Event::decode("window-shelf\n"),Some(Event::WindowShelf));
+    }
+    #[test]
+    fn new_preview_modes_keep_bounded_layout_roundtrips() {
+        for kind in [OverviewKind::Windows,OverviewKind::Drag] {
+            let layout=OverviewLayout{kind,screen:0,selected:Some(0),filter:"50".into(),strip:Some((16,250,600,240)),workspaces:vec![],thumbs:vec![OverviewThumb{app:3,area:(32,290,260,150)}]};
+            assert_eq!(Event::decode(&OverviewLayout::encode(Some(&layout))),Some(Event::Overview(Some(layout))));
+        }
     }
 }

@@ -148,9 +148,14 @@ pub fn allowed(enabled: bool, locked: bool, picking: bool) -> bool {
     enabled && !locked && !picking
 }
 
-/// The `animate` key of the configuration file: `on` unless it says `off`.
+/// The global animation preference, also gated by appearance Reduce motion.
 pub fn parse_animate(text: &str) -> bool {
-    text.lines()
+    let reduced = text.lines()
+        .filter_map(|line| line.split('#').next().unwrap_or("").split_once('='))
+        .filter(|(key, _)| key.trim() == "appearance")
+        .map(|(_, value)| des_common::appearance::AppearanceSettings::parse(value.trim()).unwrap_or_default().reduce_motion)
+        .last().unwrap_or(false);
+    !reduced && text.lines()
         .filter_map(|line| line.split('#').next().unwrap_or("").split_once('='))
         .filter(|(key, _)| key.trim() == "animate")
         .map(|(_, value)| value.trim() != "off")
@@ -432,6 +437,15 @@ mod tests {
         assert!(!allowed(true, true, false));
         assert!(!allowed(true, false, true));
         assert!(!allowed(false, false, false));
+    }
+
+    #[test]
+    fn appearance_reduced_motion_also_stops_window_transitions() {
+        let mut appearance = des_common::appearance::AppearanceSettings::default();
+        appearance.reduce_motion = true;
+        assert!(!parse_animate(&format!("animate = on\nappearance = {}\n", appearance.encode())));
+        appearance.reduce_motion = false;
+        assert!(parse_animate(&format!("animate = on\nappearance = {}\n", appearance.encode())));
     }
 
     #[test]

@@ -627,7 +627,7 @@ impl Agenda {
         let on_day = expand(&events, day_from, day_from + Duration::days(1));
 
         let area = Area::new(Id::new("agenda")).order(Order::Foreground).fixed_pos(self.anchor).show(ctx, |ui| {
-            egui::Frame::new().fill(ui::PANEL).stroke(Stroke::new(1.0, ui::LINE_STRONG)).inner_margin(14.0).show(ui, |ui| {
+            crate::material::surface(ui, egui::Frame::new().corner_radius(ui::SURFACE_RADIUS).stroke(Stroke::new(1.0, ui::LINE_STRONG)).inner_margin(14.0), crate::material::Role::Floating, |ui| {
                 let cell = vec2(34.0, 26.0);
                 ui.set_width(cell.x * 7.0);
                 ui.spacing_mut().item_spacing = vec2(0.0, 6.0);

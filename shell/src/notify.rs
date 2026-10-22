@@ -657,7 +657,8 @@ impl Center {
     fn toast(&self, ui: &mut Ui, theme: &Theme, notice: &Notice) -> Deed {
         let accent = if notice.urgent { ui::CAUTION } else { theme.main };
         let mut deed = Deed::Nothing;
-        let frame = egui::Frame::new().fill(ui::PANEL).stroke(Stroke::new(1.0, ui::LINE_STRONG)).inner_margin(14.0);
+        let background = ui.painter().add(egui::Shape::Noop);
+        let frame = egui::Frame::new().corner_radius(ui::SURFACE_RADIUS).fill(egui::Color32::TRANSPARENT).stroke(Stroke::new(1.0, ui::LINE_STRONG)).inner_margin(14.0);
         let shown = frame.show(ui, |ui| {
             ui.set_width(TOAST_WIDTH - 28.0);
             ui.spacing_mut().item_spacing.y = 5.0;
@@ -701,6 +702,7 @@ impl Center {
             }
         });
         let rect = shown.response.rect;
+        ui.painter().set(background, egui::Shape::Vec(crate::material::shapes(ui.ctx(), rect, ui::SURFACE_RADIUS, crate::material::Role::Notification)));
         ui::corners(ui.painter(), rect, 8.0, Stroke::new(1.5, accent));
         // A line along the bottom, running out with the toast's time.
         if let (Some(at), Some(stay)) = (self.notices.iter().find(|n| n.id == notice.id).and_then(|n| n.shown), notice.stay) {

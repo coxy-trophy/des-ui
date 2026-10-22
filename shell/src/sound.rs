@@ -174,13 +174,13 @@ impl Sound {
     /// A slider for a node's level, with a way to silence it.
     fn level_row(&mut self, ui: &mut Ui, theme: &Theme, node: &Node, name: &str) {
         let level = self.level(node);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 14.0;
             // The slider takes what the name, the reading and the mute leave it.
             let wide = (ui.available_width() - 330.0).clamp(110.0, 260.0);
             let (label, _) = ui.allocate_exact_size(vec2(130.0, 24.0), Sense::hover());
-            ui.painter().text(label.left_center(), Align2::LEFT_CENTER, crate::panels::truncate(name, 15), ui::mono(13.0), if node.muted { ui::LABEL } else { ui::TEXT });
-            if let Some(frac) = ui::slider(ui, theme, wide, level.min(100) as f32 / 100.0) {
+            ui.painter().text(label.left_center(), Align2::LEFT_CENTER, crate::panels::truncate(name, 15), ui::display(13.0), if node.muted { ui::LABEL } else { ui::TEXT });
+            if let Some(frac) = ui::slider(ui, theme, wide, level.min(100) as f32 / 100.0, name) {
                 let new = (frac * 100.0).round() as u8;
                 if new != level {
                     self.held = Some((node.id, new, Instant::now()));
@@ -274,10 +274,10 @@ fn row(ui: &mut Ui, theme: &Theme, name: &str, state: &str, live: bool) -> bool 
     let painter = ui.painter_at(rect);
     if live {
         painter.rect_filled(rect, 0.0, theme.tint());
-        painter.rect_stroke(rect, 0.0, Stroke::new(1.0, theme.main), StrokeKind::Inside);
+        painter.rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside);
     } else {
         if response.hovered() {
-            painter.rect_filled(rect, 0.0, ui::PANEL);
+            painter.rect_filled(rect, ui::CONTROL_RADIUS, ui::PANEL);
         }
         painter.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, ui::TRACK));
     }

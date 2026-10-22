@@ -123,15 +123,16 @@ pub struct Dock {
     menu_open: bool,
     selection: usize,
     coverage: Option<Rect>,
+    fallback: Option<(usize, Vec<String>)>,
 }
 impl Default for Dock {
     fn default() -> Self {
-        Self { entries:Vec::new(), scan:None, scanned:None, icons:IconCache::new(), motion:Motion::default(), menu_open:false, selection:0, coverage:None }
+        Self { entries:Vec::new(), scan:None, scanned:None, icons:IconCache::new(), motion:Motion::default(), menu_open:false, selection:0, coverage:None, fallback:None }
     }
 }
 impl Dock {
-    pub fn reveal_keyboard(&mut self) { self.motion.keyboard=true; self.motion.dismissed=false; self.motion.closing_keyboard=false; self.selection=0; }
-    pub fn captures_keyboard(&self) -> bool { self.motion.keyboard || self.motion.closing_keyboard || self.menu_open }
+    pub fn reveal_keyboard(&mut self) { self.motion.keyboard=true; self.motion.dismissed=false; self.motion.closing_keyboard=false; }
+    pub fn captures_keyboard(&self) -> bool { self.motion.keyboard || self.motion.closing_keyboard || self.menu_open || self.fallback.is_some() }
     /// Underlying shell screens render first, but must not consume dock/menu keys.
     pub fn reserve_keyboard(&self, ctx:&egui::Context) -> Vec<egui::Event> {
         if !self.captures_keyboard() { return Vec::new(); }
@@ -145,7 +146,7 @@ impl Dock {
             keys
         })
     }
-    pub fn reset(&mut self) { self.motion=Motion::default(); self.menu_open=false; self.coverage=None; }
+    pub fn reset(&mut self) { self.motion=Motion::default(); self.menu_open=false; self.coverage=None; self.fallback=None; }
     fn refresh(&mut self, ctx:&egui::Context) {
         if let Some(scan) = &self.scan {
             match scan.try_recv() {
@@ -175,9 +176,9 @@ impl Dock {
         let trigger=Rect::from_min_size(screen.min+vec2(trigger.x,trigger.y),vec2(trigger.width,trigger.height));
         let edge=pointer.is_some_and(|point| trigger.contains(point));
         let inside=pointer.is_some_and(|point| self.coverage.is_some_and(|area| area.contains(point)));
-        self.motion.update(now,edge,inside,self.menu_open,!animate);
+        self.motion.update(now,edge,inside,self.menu_open || self.fallback.is_some(),!animate);
         let mut output=Output::default();
-        if self.motion.keyboard && !self.menu_open && ctx.input(|i| i.pointer.any_pressed()) && !inside && !edge {
+        if self.motion.keyboard && !self.menu_open && self.fallback.is_none() && ctx.input(|i| i.pointer.any_pressed()) && !inside && !edge {
             self.motion.dismiss();
         }
         if self.motion.progress <= 0.0 {
@@ -187,22 +188,26 @@ impl Dock {
             if self.motion.keyboard { output.overlay=Some(trigger); }
             return output;
         }
-        let count=all.len()+2; // terminal and launcher remain available even with no graphical apps.
-        if self.motion.keyboard {
-            let (left,right,enter,escape)=ctx.input_mut(|i| (
+        let count=all.len()+3; // terminal and launcher remain available even with no graphical apps.
+        let columns=(((screen.width()-24.0-PAD*2.0-16.0)/SLOT).floor() as usize).max(1).min(count);
+        if self.motion.keyboard && self.fallback.is_none() {
+            let (left,right,up,down,enter,escape)=ctx.input_mut(|i| (
                 i.consume_key(Modifiers::NONE,Key::ArrowLeft),i.consume_key(Modifiers::NONE,Key::ArrowRight),
+                i.consume_key(Modifiers::NONE,Key::ArrowUp),i.consume_key(Modifiers::NONE,Key::ArrowDown),
                 i.consume_key(Modifiers::NONE,Key::Enter),i.consume_key(Modifiers::NONE,Key::Escape),
             ));
             if left { self.selection=(self.selection+count-1)%count; }
             if right { self.selection=(self.selection+1)%count; }
+            if up { self.selection=self.selection.saturating_sub(columns); }
+            if down { self.selection=(self.selection+columns).min(count-1); }
             if escape { self.motion.dismiss(); }
-            if enter { output.action=Some(self.activate(self.selection,&all,state)); self.motion.dismiss(); }
+            if enter { output.action=Some(self.activate(display,self.selection,&all,state)); self.motion.dismiss(); }
         }
         self.selection=self.selection.min(count-1);
-        let columns=(((screen.width()-24.0-PAD*2.0)/SLOT).floor() as usize).max(1).min(count);
         let rows=count.div_ceil(columns);
-        let width=columns as f32*SLOT+PAD*2.0;
-        let height=HEIGHT+(rows-1) as f32*SLOT;
+        let natural_height=HEIGHT+(rows-1) as f32*SLOT;
+        let height=natural_height.min((screen.height()*0.45).max(HEIGHT));
+        let width=columns as f32*SLOT+PAD*2.0+if natural_height>height {16.0}else{0.0};
         let bottom=screen.bottom()-if display==0{des_common::STATUS_HEIGHT}else{0.0}-10.0;
         let eased=1.0-(1.0-self.motion.progress).powi(3);
         let y=(screen.bottom()+4.0)*(1.0-eased)+(bottom-height)*eased;
@@ -213,6 +218,7 @@ impl Dock {
         let selection=self.selection;
         let keyboard=self.motion.keyboard;
         let mut hovered=None;
+        let mut clicked_selection=None;
         let mut popup_area:Option<Rect>=None;
         let mut menu_open=false;
         egui::Area::new(egui::Id::new(("app-dock",display)))
@@ -221,33 +227,50 @@ impl Dock {
                 ui.set_min_size(vec2(width,height));
                 ui.set_max_size(vec2(width,height));
                 ui.set_clip_rect(body.intersect(screen));
-                ui.painter().rect_filled(body,12.0,ui::PANEL);
+                crate::material::paint(ui.ctx(),ui.painter(),body,12.0,crate::material::Role::Floating);
                 ui.painter().rect_stroke(body,12.0,Stroke::new(1.0,ui::LINE_STRONG),StrokeKind::Inside);
+                egui::ScrollArea::vertical().id_salt(("dock-windows",display)).max_height(height).animated(animate).auto_shrink([false,false]).show(ui,|ui| {
+                let (content,_)=ui.allocate_exact_size(vec2(width-if natural_height>height {16.0}else{0.0},natural_height),Sense::hover());
                 for n in 0..count {
                     let item=n.checked_sub(1).and_then(|i| all.get(i));
                     let terminal=n==0;
                     let launcher=n==count-1;
-                    let label=if terminal { "Terminal" } else if launcher { "Applications" } else { &item.unwrap().label };
+                    let overview=n==count-2;
+                    let label=if terminal { "Terminal" } else if launcher { "Applications" } else if overview { "All windows" } else { &item.unwrap().label };
                     let rect=Rect::from_min_size(
-                        body.min+vec2(PAD+(n%columns) as f32*SLOT,PAD+(n/columns) as f32*SLOT),
+                        content.min+vec2(PAD+(n%columns) as f32*SLOT,PAD+(n/columns) as f32*SLOT),
                         vec2(SLOT,SLOT),
                     );
-                    let response=ui.interact(rect,ui.id().with(("dock-item",n)),Sense::click());
+                    // A quiet separator marks the first unpinned running application.
+                    if item.is_some_and(|item| !pins.iter().any(|pin| item.id.as_ref()==Some(pin))) &&
+                        (n==1 || all.get(n-2).is_some_and(|previous| pins.iter().any(|pin| previous.id.as_ref()==Some(pin)))) {
+                        ui.painter().vline(rect.left(), (rect.top()+12.0)..=(rect.bottom()-12.0), Stroke::new(1.0,ui::LINE_STRONG));
+                    }
+                    if keyboard && n==selection {ui.scroll_to_rect(rect,Some(egui::Align::Center));}
+                    let response=ui.interact(rect,egui::Id::new(("app-dock",display)).with(("dock-item",n)),Sense::click());
                     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button,ui.is_enabled(),label));
                     let active=if terminal { state.focus.is_none() } else { item.is_some_and(|item| state.focus.is_some_and(|focus| item.windows.contains(&focus))) };
                     if response.hovered() || response.has_focus() || (keyboard && n==selection) {
                         ui.painter().rect_filled(rect.shrink2(vec2(3.0,2.0)),7.0,theme.tint());
                     }
+                    if response.has_focus() || (keyboard && n==selection) {
+                        ui.painter().rect_stroke(rect.shrink2(vec2(3.0,2.0)),ui::CONTROL_RADIUS,Stroke::new(1.0,theme.main),StrokeKind::Inside);
+                    }
                     if response.hovered() { hovered=Some(n); }
                     let icon_rect=Rect::from_center_size(rect.center()-vec2(0.0,3.0),vec2(34.0,34.0));
                     if terminal {
                         icons.paint(ui,icon_rect,Some("utilities-terminal"));
+                    } else if overview {
+                        ui::paint_icon(ui.painter(),icon_rect,Icon::LayoutColumns,ui::TEXT,false);
                     } else if launcher {
                         ui::paint_icon(ui.painter(),icon_rect,Icon::Apps,ui::TEXT,false);
                     } else {
                         icons.paint(ui,icon_rect,item.and_then(|item| item.entry).and_then(|i| entries[i].icon.as_deref()));
                     }
                     let running=terminal || item.is_some_and(|item| !item.windows.is_empty());
+                    if active {
+                        ui.painter().hline((rect.center().x-9.0)..=(rect.center().x+9.0),rect.bottom()-2.0,Stroke::new(2.0,theme.main));
+                    }
                     if running { ui.painter().circle_filled(rect.center_bottom()-vec2(0.0,3.0),if active { 2.5 } else { 1.7 },if active { theme.main } else { ui::SECONDARY }); }
                     // A window that asked for attention: an accent dot at the corner, breathing.
                     if item.is_some_and(|item| item.windows.iter().any(|&w| state.apps.get(w).is_some_and(|app| app.urgent))) {
@@ -263,6 +286,7 @@ impl Dock {
                     }
                     if response.clicked() { hovered=Some(n); }
                     let clicked=response.clicked();
+                    if clicked { clicked_selection=Some(n); }
                     if let Some(item)=item {
                         if let Some(menu)=response.context_menu(|ui| {
                             ui.set_min_width(170.0);
@@ -299,29 +323,57 @@ impl Dock {
                         }) { menu_open=true; popup_area=Some(popup_area.map_or(menu.response.rect,|area| area.union(menu.response.rect))); }
                     }
                     if clicked && output.action.is_none() {
-                        output.action=Some(if terminal { Action::Command(Command::Terminal) } else if launcher { Action::Launcher } else {
-                            let item=item.unwrap();
-                            if let Some(&index)=item.windows.first() {
-                                let next=state.focus.and_then(|focus| item.windows.iter().position(|&index| index==focus)).map_or(0,|index| (index+1)%item.windows.len());
-                                Action::Command(Command::Activate(item.windows.get(next).copied().unwrap_or(index)))
-                            } else if let Some(entry)=item.entry { Action::Launch(entries[entry].clone()) }
-                            else { Action::Unavailable(item.label.clone()) }
+                        output.action=Some(if terminal { Action::Command(Command::Terminal) } else if launcher { Action::Launcher }
+                            else if overview { Action::Command(Command::Overview) } else {
+                            activation(display,item.unwrap(),entries,state)
                         });
                     }
                 }
+                });
             });
+        if let Some(selection)=clicked_selection { self.selection=selection; }
         self.menu_open=menu_open;
         // Include the bottom corridor: crossing from the edge must never hand input back to the app.
         let mut area=Rect::from_min_max(body.min,pos2(body.right(),screen.bottom())).intersect(screen);
         if let Some(menu)=popup_area { area=area.union(menu).intersect(screen); }
         if let Some(n)=hovered.or_else(|| keyboard.then_some(selection)) {
-            let label=if n==0 { "Terminal · Super+D opens the dock".to_string() } else if n==count-1 { "Applications".to_string() } else { crate::panels::truncate(&all[n-1].label,48) };
+            let label=if n==0 { crate::shortcuts::hint(ctx, "Terminal · Open dock", "desktop.dock") } else if n==count-1 { "Applications".to_string() } else if n==count-2 { "All windows".to_string() } else { crate::panels::truncate(&all[n-1].label,48) };
             let tip_width=(label.chars().count() as f32*7.0+16.0).min(screen.width()-8.0);
             let tip_pos=pos2((body.center().x-tip_width/2.0).clamp(screen.left()+4.0,screen.right()-tip_width-4.0),body.top()-26.0);
             let tip=egui::Area::new(egui::Id::new(("dock-label",display))).order(Order::Tooltip).fixed_pos(tip_pos).interactable(false).show(ctx,|ui| {
-                egui::Frame::new().fill(ui::PANEL).stroke(Stroke::new(1.0,ui::LINE)).inner_margin(egui::Margin::symmetric(8,4)).corner_radius(4.0).show(ui,|ui| { ui::text(ui,&label,ui::display(12.0),ui::TEXT); });
+                crate::material::surface(ui, egui::Frame::new().stroke(Stroke::new(1.0,ui::LINE)).inner_margin(egui::Margin::symmetric(8,4)).corner_radius(ui::CONTROL_RADIUS), crate::material::Role::Floating, |ui| { ui::text(ui,&label,ui::display(12.0),ui::TEXT); });
             });
             area=area.union(tip.response.rect).intersect(screen);
+        }
+        if let Some(Action::Command(Command::AppWindows(display,id))) = output.action.as_ref() {
+            let capable=ctx.data(|data| data.get_temp::<bool>(egui::Id::new("window-shelf-capable"))).unwrap_or(false);
+            if !capable {
+                self.fallback=Some((*display,id.clone())); output.action=None;
+                self.motion.dismissed=false; self.motion.open=true; self.motion.keyboard=false; self.motion.closing_keyboard=false;
+            }
+        }
+        if let Some((display,id)) = self.fallback.clone() {
+            let modal=egui::Modal::new(egui::Id::new(("dock-window-list",display))).frame(egui::Frame::NONE).show(ctx,|ui| {
+                crate::material::surface(ui,egui::Frame::new().inner_margin(16).corner_radius(ui::SURFACE_RADIUS)
+                    .stroke(Stroke::new(1.0,ui::LINE)),crate::material::Role::Floating,|ui| {
+                ui.set_max_width((screen.width()-48.0).clamp(180.0,520.0));
+                ui.heading("Open windows");
+                ui.label("Live previews need the updated compositor. Select a window below.");
+                egui::ScrollArea::vertical().max_height((screen.height()-180.0).max(80.0)).show(ui,|ui| {
+                    let mut found=false;
+                    for (index,app) in state.apps.iter().enumerate().filter(|(_,app)| app.screen==display && id.contains(&app.app_id)) {
+                        found=true;
+                        if ui.button(format!("{} · workspace {}",app.title,app.workspace+1)).clicked() {
+                            output.action=Some(Action::Command(Command::Activate(index)));
+                        }
+                    }
+                    if !found { ui.label("No windows remain open."); }
+                });
+                ui.button("Close").clicked()
+                }).inner
+            });
+            area=screen;
+            if modal.inner || modal.should_close() || output.action.is_some() { self.fallback=None; }
         }
         self.coverage=Some(area);
         output.overlay=Some(area);
@@ -329,17 +381,27 @@ impl Dock {
         if self.motion.progress<1.0 || !inside || self.motion.keyboard || self.motion.closing_keyboard || self.menu_open { ctx.request_repaint_after(Duration::from_millis(16)); }
         output
     }
-    fn activate(&self,index:usize,all:&[Item],state:&DesktopState) -> Action {
+    fn activate(&self,display:usize,index:usize,all:&[Item],state:&DesktopState) -> Action {
         if index==0 { return Action::Command(Command::Terminal); }
-        if index>all.len() { return Action::Launcher; }
-        let item=&all[index-1];
-        if let Some(&window)=item.windows.first() {
-            let next=state.focus.and_then(|focus| item.windows.iter().position(|&n| n==focus)).map_or(0,|n| (n+1)%item.windows.len());
-            Action::Command(Command::Activate(item.windows.get(next).copied().unwrap_or(window)))
-        } else if let Some(entry)=item.entry { Action::Launch(self.entries[entry].clone()) }
-        else { Action::Unavailable(item.label.clone()) }
+        if index==all.len()+1 { return Action::Command(Command::Overview); }
+        if index>all.len()+1 { return Action::Launcher; }
+        activation(display,&all[index-1],&self.entries,state)
     }
 }
+fn activation(display:usize,item:&Item,entries:&[AppEntry],state:&DesktopState)->Action {
+    match item.windows.as_slice() {
+        [] => item.entry.map_or_else(|| Action::Unavailable(item.label.clone()), |entry| Action::Launch(entries[entry].clone())),
+        [window] => Action::Command(Command::Activate(*window)),
+        [_,..] => {
+            let mut ids=Vec::new();
+            for index in &item.windows {if let Some(app)=state.apps.get(*index) {if !ids.contains(&app.app_id){ids.push(app.app_id.clone());}}}
+            let command=Command::AppWindows(display,ids);
+            if command.encode().len()>3500 {Action::Unavailable("This application reports too many distinct identities to preview safely".into())}
+            else {Action::Command(command)}
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,7 +451,7 @@ mod tests {
             let area=ctx.memory(|memory| memory.area_rect(egui::Id::new(("app-dock",0usize)))).unwrap();
             assert!(screen.contains_rect(area));
             assert!((area.center().x-screen.center().x).abs()<1.0);
-            for n in 0..pins_count+2 {
+            for n in 0..pins_count+3 {
                 let button=ctx.read_response(egui::Id::new(("app-dock",0usize)).with(("dock-item",n))).unwrap();
                 assert!(area.contains_rect(button.rect),"item {n} must fit in dock, {area:?}, {:?}",button.rect);
             }
@@ -541,5 +603,38 @@ mod tests {
         assert_eq!(motion.progress,1.0);
         motion.update(1.8,false,false,false,false);
         assert_eq!(motion.progress,0.0);
+    }
+}
+
+
+#[cfg(test)]
+mod shelf_behavior_tests {
+    use super::*;
+    use des_common::ipc::{AppInfo,Place};
+    #[test]
+    fn clicking_a_group_opens_a_chooser_instead_of_advancing_the_focused_window() {
+        let app=|id:&str,title:&str,workspace|AppInfo{app_id:id.into(),title:title.into(),workspace,screen:0,place:Place::Main,pinned:false,urgent:false};
+        let state=DesktopState{apps:vec![app("browser","First",0),app("browser-beta","Second",3)],focus:Some(0),..Default::default()};
+        let group=Item{id:None,label:"Browser".into(),entry:None,windows:vec![0,1]};
+        assert!(matches!(activation(0,&group,&[],&state),Action::Command(Command::AppWindows(0,ids)) if ids==["browser","browser-beta"]));
+        let single=Item{windows:vec![1],..group};
+        assert!(matches!(activation(0,&single,&[],&state),Action::Command(Command::Activate(1))));
+    }
+    #[test]
+    fn a_large_dock_stays_on_screen_and_keyboard_can_reach_the_last_item() {
+        let ctx=egui::Context::default();ui::install_fonts(&ctx,None,None);
+        let screen=Rect::from_min_size(pos2(0.0,0.0),vec2(320.0,480.0));
+        let mut dock=Dock::default();dock.scanned=Some(Instant::now());dock.reveal_keyboard();
+        let pins=(0..128).map(|n|format!("app-{n}.desktop")).collect::<Vec<_>>();
+        dock.selection=pins.len()+2;
+        for frame in 0..5 {
+            let input=egui::RawInput{screen_rect:Some(screen),time:Some(frame as f64*0.1),..Default::default()};
+            let _=ctx.run(input,|ctx|{dock.show(ctx,screen,None,&pins,&Theme::load("signal"),false);});
+        }
+        let id=egui::Id::new(("app-dock",0usize));
+        let area=ctx.memory(|memory|memory.area_rect(id)).unwrap();
+        assert!(screen.contains_rect(area),"{area:?}");
+        let last=ctx.read_response(id.with(("dock-item",pins.len()+2))).unwrap();
+        assert!(area.intersects(last.rect),"last dock entry must scroll into view: {:?} in {area:?}",last.rect);
     }
 }

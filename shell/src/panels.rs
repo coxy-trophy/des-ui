@@ -297,14 +297,15 @@ fn display_tiles(ui: &mut Ui, theme: &Theme, desktop: &DesktopState) {
     }
 }
 
-/// The right column. `rotation` turns the globe; `desktop` is absent when the shell
+/// The right column. `desktop` is absent when the shell
 /// runs as an ordinary window.
 pub fn right(
     ui: &mut Ui,
     theme: &Theme,
     mon: &SysMon,
     desktop: Option<&DesktopState>,
-    rotation: f32,
+    world: &mut globe::Explorer,
+    rotating: bool,
     geo: &Snapshot,
     widgets: &crate::widgets::Widgets,
     playing: impl FnOnce(&mut Ui),
@@ -372,7 +373,7 @@ pub fn right(
         }
     });
     crate::widgets::show(ui, theme, widgets, des_common::Panel::Right);
-    globe::show(ui, theme, (ui.available_width() * 0.82).min(224.0), rotation, geo);
+    world.panel(ui, theme, (ui.available_width() * 0.82).min(224.0), geo, rotating);
     if let Some(home) = &geo.home {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
@@ -441,31 +442,7 @@ pub fn right(
         }
     }
 
-    ui.add_space(SECTION_GAP);
-    ui::section(ui, "KEYS", |ui| ui::meta(ui, "HOLD SUPER", ui::LABEL));
-    for (action, key) in [
-        ("Launcher", "SPACE"),
-        ("Settings", ","),
-        ("Music", "M"),
-        ("Notifications", "N"),
-        ("Power", "ESC"),
-        ("Lock", "L"),
-        ("Next application", "TAB"),
-        ("Workspace", "1 – 4"),
-        ("Send to workspace", "SHIFT 1 – 4"),
-        ("Split the workspace", "S"),
-        ("Full screen", "F"),
-        ("Other display", "O"),
-        ("Close application", "Q"),
-        ("Panels", "[  ]  \\"),
-        ("Restart shell", "SHIFT R"),
-    ] {
-        // Only as many as fit: the list is a reminder, not a reference.
-        if ui.available_height() < 26.0 {
-            break;
-        }
-        ui::key_row(ui, action, key);
-    }
+
 }
 
 /// The strip along the bottom edge: what has the keyboard, the panel switches, and
@@ -496,10 +473,11 @@ pub fn status(
     let way_in = |ui: &mut Ui, name: &str, icon: Icon, hint: &str| {
         ui::icon_button(ui, theme, icon, 24.0, overlay == Some(name)).on_hover_text(hint).clicked()
     };
-    let settings_clicked = way_in(ui, "SETTINGS", Icon::Settings, "Settings (Super+,)");
-    let music_clicked = way_in(ui, "MUSIC", Icon::Music, "Music (Super+M)");
-    let power_clicked = way_in(ui, "POWER", Icon::Power, "Sleep, restart, shut down (Super+Escape, or the power key)");
-    let notices_clicked = way_in(ui, "NOTIFICATIONS", Icon::Notifications, "Notifications (Super+N)");
+    let shortcut_context = ui.ctx().clone();
+    let settings_clicked = way_in(ui, "SETTINGS", Icon::Settings, &crate::shortcuts::hint(&shortcut_context, "Settings", "desktop.settings"));
+    let music_clicked = way_in(ui, "MUSIC", Icon::Music, &crate::shortcuts::hint(&shortcut_context, "Music", "desktop.music"));
+    let power_clicked = way_in(ui, "POWER", Icon::Power, &crate::shortcuts::hint(&shortcut_context, "Sleep, restart, shut down", "desktop.power"));
+    let notices_clicked = way_in(ui, "NOTIFICATIONS", Icon::Notifications, &crate::shortcuts::hint(&shortcut_context, "Notifications", "desktop.notifications"));
     if notices > 0 {
         // Keep the unread count next to the bell.
         ui.add_space(-14.0);
@@ -517,7 +495,7 @@ pub fn status(
     let (mut keyboard_clicked, mut quick_clicked) = (false, false);
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         quick_clicked = ui::icon_button(ui, theme, Icon::Quick, 22.0, quick_open)
-            .on_hover_text("Quick settings: Wi-Fi, Bluetooth, sound, brightness (Super+A)")
+            .on_hover_text(crate::shortcuts::hint(ui.ctx(), "Quick settings: Wi-Fi, Bluetooth, sound, brightness", "desktop.quick"))
             .clicked();
         if let Some(running) = recording {
             // The one thing here that is happening to the user, so it is the one in colour.
@@ -561,7 +539,7 @@ pub fn status(
             quick_clicked = true;
         }
         keyboard_clicked = ui::icon_button(ui, theme, Icon::Keyboard, 22.0, keyboard_open)
-            .on_hover_text("On-screen keyboard (Ctrl+Shift+K)")
+            .on_hover_text(crate::shortcuts::hint(ui.ctx(), "On-screen keyboard", "shell.keyboard"))
             .clicked();
         ui.spacing_mut().item_spacing.x = 4.0;
         for (icon, panel, open) in [
@@ -605,7 +583,7 @@ pub struct StatusClicks {
 /// What a further display shows while no application is on it.
 pub fn backdrop(ui: &mut Ui, theme: &Theme, mon: &SysMon, number: usize) {
     let rect = ui.max_rect();
-    ui.painter().rect_filled(rect, 0.0, ui::GROUND);
+    crate::material::paint(ui.ctx(), ui.painter(), rect, 0.0, crate::material::Role::Background);
     ui::corners(ui.painter(), rect.shrink(24.0), 28.0, Stroke::new(2.0, ui::LINE_STRONG));
 
     let inner = rect.shrink2(vec2(72.0, 48.0));
@@ -679,9 +657,9 @@ pub fn backdrop(ui: &mut Ui, theme: &Theme, mon: &SysMon, number: usize) {
             pos2(inner.left() + i as f32 * (width + gap), inner.bottom() - 58.0),
             vec2(width, 58.0),
         );
-        painter.rect_filled(tile, 0.0, ui::PANEL);
-        painter.rect_stroke(tile, 0.0, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
-        let name = ui::galley(ui, label, ui::display_bold(12.0), ui::SECONDARY, 3.0);
+        crate::material::paint(ui.ctx(), &painter, tile, ui::CONTROL_RADIUS, crate::material::Role::Panel);
+        painter.rect_stroke(tile, ui::CONTROL_RADIUS, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
+        let name = ui::galley(ui, label, ui::display_bold(12.0), ui::SECONDARY, 0.8);
         painter.galley(tile.left_top() + vec2(16.0, 13.0), name, ui::SECONDARY);
         if width >= 200.0 {
             painter.text(tile.right_top() + vec2(-16.0, 13.0), Align2::RIGHT_TOP, reading, ui::mono(12.0), ui::TEXT);
@@ -861,7 +839,9 @@ impl FsView {
         let count = self.entries.len();
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
-            ui::tracked(ui, "FILES", ui::display_bold(12.0), ui::SECONDARY, 3.0);
+            if ui::button(ui, theme, "FILES", None, false).on_hover_text("Open native Files browser").clicked() {
+                crate::files::request(ui.ctx(), if self.path.is_absolute() { self.path.clone() } else { crate::files::home() });
+            }
             // The path, with everything but the current folder played down.
             let home = std::env::var_os("HOME").map(PathBuf::from);
             let shown = match home.as_ref().and_then(|home| self.path.strip_prefix(home).ok()) {
@@ -941,8 +921,8 @@ impl FsView {
                     } else {
                         ui::LINE
                     };
-                    painter.rect_filled(rect, 0.0, ui::GROUND);
-                    painter.rect_stroke(rect, 0.0, Stroke::new(1.0, line), StrokeKind::Inside);
+                    crate::material::paint(ui.ctx(), &painter, rect, ui::CONTROL_RADIUS, crate::material::Role::Panel);
+                    painter.rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, line), StrokeKind::Inside);
                     let icon = pos2(rect.left() + 20.0, rect.center().y);
                     if *is_dir {
                         let color = if name == ".." { ui::SECONDARY } else { theme.main };
@@ -1085,13 +1065,14 @@ mod tests {
 /// A minimized side column stays clickable; its tooltip also names the global shortcut.
 pub fn collapsed_rail(ui: &mut Ui, theme: &Theme, panel: Panel) -> bool {
     let rect = ui.max_rect();
-    let (symbol, hint) = match panel {
-        Panel::Left => (Icon::PanelLeft, "Expand left panel (Super+[)"),
-        Panel::Right => (Icon::PanelRight, "Expand right panel (Super+])"),
+    let (symbol, label, id) = match panel {
+        Panel::Left => (Icon::PanelLeft, "Expand left panel", "desktop.panel_left"),
+        Panel::Right => (Icon::PanelRight, "Expand right panel", "desktop.panel_right"),
         Panel::Bottom => return false,
     };
+    let hint = crate::shortcuts::hint(ui.ctx(), label, id);
     let response = ui.interact(rect, ui.id().with("expand-panel"), Sense::click());
-    response.widget_info(|| eframe::egui::WidgetInfo::labeled(eframe::egui::WidgetType::Button, ui.is_enabled(), hint));
+    response.widget_info(|| eframe::egui::WidgetInfo::labeled(eframe::egui::WidgetType::Button, ui.is_enabled(), hint.as_str()));
     let highlighted = response.hovered() || response.has_focus();
     if highlighted { ui.painter().rect_filled(rect, 0.0, theme.tint()); }
     let icon_rect = Rect::from_center_size(pos2(rect.center().x, rect.top() + 22.0), vec2(24.0, 24.0));
@@ -1100,6 +1081,22 @@ pub fn collapsed_rail(ui: &mut Ui, theme: &Theme, panel: Panel) -> bool {
     let d = if panel == Panel::Left { 1.0 } else { -1.0 };
     let c = pos2(rect.center().x, rect.top() + 48.0);
     ui.painter().line(vec![c + vec2(-2.0*d,-3.0), c + vec2(2.0*d,0.0), c + vec2(-2.0*d,3.0)], Stroke::new(1.2, ui::LABEL));
+    if panel == Panel::Left && rect.height() >= 146.0 {
+        let now = chrono::Local::now();
+        let (hours,minutes,half)=crate::region::vertical_clock(&now);
+        let font = ui::display((rect.width() * 0.57).clamp(12.0, 20.0));
+        let x = rect.center().x;
+        ui.painter().text(pos2(x, rect.top() + 82.0), Align2::CENTER_CENTER,
+            format!("{hours:0>2}"), font.clone(), ui::TEXT);
+        ui.painter().text(pos2(x, rect.top() + 106.0), Align2::CENTER_CENTER,
+            minutes, font, theme.main);
+        if let Some(half) = half {
+            ui.painter().text(pos2(x, rect.top() + 126.0), Align2::CENTER_CENTER,
+                half, ui::mono(9.0), ui::SECONDARY);
+        }
+        use chrono::Timelike;
+        ui.ctx().request_repaint_after(Duration::from_secs((60 - now.second()) as u64));
+    }
     let clicked = response.clicked();
     response.on_hover_text(hint);
     clicked
@@ -1114,6 +1111,7 @@ mod rail_interaction_tests {
     fn either_minimized_column_can_be_reopened_by_clicking_its_rail() {
         for panel in [Panel::Left, Panel::Right] {
             let ctx = egui::Context::default();
+            ui::install_fonts(&ctx,None,None);
             let theme = Theme::load("signal");
             let point = pos2(18.0, 200.0);
             for phase in 0..3 {

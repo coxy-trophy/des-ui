@@ -308,8 +308,8 @@ impl QuickLook {
             ui.set_min_size(rect.size());
             ui.set_max_size(rect.size());
             let painter = ui.painter();
-            painter.rect_filled(rect, 0.0, ui::PANEL);
-            painter.rect_stroke(rect, 0.0, Stroke::new(1.0, theme.main), StrokeKind::Inside);
+            crate::material::paint(ctx, painter, rect, ui::SURFACE_RADIUS, crate::material::Role::Floating);
+            painter.rect_stroke(rect, ui::SURFACE_RADIUS, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
             let header = Rect::from_min_size(rect.min, vec2(rect.width(), 40.0));
             painter.text(header.left_center() + vec2(16.0, 0.0), Align2::LEFT_CENTER, &name, ui::display(15.0), ui::TEXT);
             let (n, of) = self.place;
