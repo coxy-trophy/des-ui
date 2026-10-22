@@ -33,7 +33,7 @@ const CURLED: f32 = 1.25;
 /// folded fingers are not always folded as far as `CURLED`, but are always shorter.
 const SHORTER: f32 = 0.3;
 /// How long a pinch held still, in seconds, is a click of the right button.
-const LONG_PINCH: f64 = 0.6;
+const LONG_PINCH: f64 = 0.5;
 /// How far the pointer goes, in screens, for the hand going across the camera's
 /// whole view slowly; and how much more for each view a second faster, up to a most.
 const GAIN: f32 = 1.8;
@@ -43,8 +43,9 @@ const MOST_GAIN: f32 = 6.0;
 /// followed well.
 const EDGE: f32 = 0.06;
 /// After a button is pressed, the pointer holds still until the hand has plainly
-/// moved, as a fraction of the screen, so that a click lands where it was aimed.
-const CLICK_SLOP: f32 = 0.02;
+/// moved, as a fraction of the screen, so that a click lands where it was aimed: a
+/// hand held still still drifts by a few pixels a second.
+const CLICK_SLOP: f32 = 0.035;
 /// After a button is let go, the pointer holds still this long, in seconds, while
 /// the fingers part.
 const RELEASE_HOLD: f64 = 0.12;
