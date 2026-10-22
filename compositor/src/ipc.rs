@@ -267,7 +267,7 @@ mod tests {
             if line.starts_with("state ") {
                 break;
             }
-            assert!(line == "locked 0\n" || line == "recording off\n" || line == "layouts\n", "{line}");
+            assert!(line == "locked 0\n" || line == "recording off\n" || line == "layouts\n" || line == "window-shelf\n", "{line}");
         }
         assert_eq!(DesktopState::decode(&line), Some(state));
 
