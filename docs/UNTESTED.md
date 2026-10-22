@@ -17,6 +17,11 @@ watched work on a real machine. Tick them off, or note what went wrong.
 - [ ] The pointer, toasts and the screenshot chooser sit in the right place on a
       scaled or turned display
 - [ ] A monitor turned off: whether its backlight goes dark too
+- [ ] A TV on HDMI: deep blacks and no washed-out grey (full-range colour), the
+      whole picture visible with no edges cut off, and crisp text (its PC or
+      graphics mode); the log says "connector set for a sharper picture"
+- [ ] A TV plugged in for the first time, with nothing saved, starts at 1080p
+      120 Hz or another smooth mode, not 4096×2160 at 24 Hz
 
 ## Screenshots and recording
 

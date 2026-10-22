@@ -46,7 +46,7 @@ use smithay::{
             EventLoop,
             timer::{TimeoutAction, Timer},
         },
-        drm::control::{Device as ControlDevice, ModeFlags, ModeTypeFlags, connector, crtc},
+        drm::control::{self, Device as ControlDevice, ModeFlags, ModeTypeFlags, connector, crtc, property},
         input::{self, Libinput},
         rustix::fs::OFlags,
         wayland_server::backend::GlobalId,
@@ -421,6 +421,104 @@ fn offered_modes(info: &connector::Info) -> Vec<DisplayMode> {
     modes
 }
 
+/// What a monitor's EDID says about how it may be driven beyond its modes.
+#[derive(Debug, Default, PartialEq)]
+struct Sink {
+    /// It can be told whether colour comes in the full range or the TV range, 16 to 235.
+    full_range: bool,
+    /// It has a mode for computer graphics, which on a TV turns off overscan and sharpening.
+    graphics: bool,
+}
+
+/// Reads the CTA extension blocks of an EDID, where a TV says what it supports.
+fn sink_of(edid: &[u8]) -> Sink {
+    let mut sink = Sink::default();
+    for block in edid.chunks_exact(128).skip(1).filter(|block| block[0] == 0x02) {
+        let end = (block[2] as usize).clamp(4, 127);
+        let mut at = 4;
+        while at < end {
+            let (tag, length) = (block[at] >> 5, (block[at] & 0x1f) as usize);
+            let Some(data) = block.get(at + 1..at + 1 + length) else {
+                break;
+            };
+            match (tag, data) {
+                // Video capability: whether the RGB range can be chosen.
+                (7, [0, flags, ..]) => sink.full_range = flags & 0x40 != 0,
+                // HDMI 1.4: the content types it understands, graphics the lowest bit.
+                (3, [0x03, 0x0c, 0x00, _, _, _, _, content, ..]) => sink.graphics = content & 0x01 != 0,
+                _ => {}
+            }
+            at += 1 + length;
+        }
+    }
+    sink
+}
+
+/// Sets up a monitor's connector for the sharpest picture its EDID allows: full-range
+/// colour where the monitor can be told about it, which the driver would otherwise
+/// squeeze into the TV range for TV resolutions, and on a TV the mode for computer
+/// graphics instead of the one for film.
+fn tune_connector(drm: &impl ControlDevice, connector: connector::Handle, name: &str) {
+    let Ok(properties) = drm.get_properties(connector) else {
+        return;
+    };
+    let properties: Vec<(property::Info, property::RawValue)> = properties
+        .iter()
+        .filter_map(|(handle, value)| Some((drm.get_property(*handle).ok()?, *value)))
+        .collect();
+    let edid = properties
+        .iter()
+        .find(|(info, _)| info.name().to_bytes() == b"EDID")
+        .and_then(|(_, blob)| drm.get_property_blob(*blob).ok())
+        .unwrap_or_default();
+    let sink = sink_of(&edid);
+    let wanted = [("Broadcast RGB", "Full", sink.full_range), ("content type", "Graphics", sink.graphics)];
+    for (property, choice, _) in wanted.into_iter().filter(|(_, _, supported)| *supported) {
+        let Some((info, _)) = properties.iter().find(|(info, _)| info.name().to_bytes() == property.as_bytes()) else {
+            continue;
+        };
+        let property::ValueType::Enum(choices) = info.value_type() else {
+            continue;
+        };
+        let (_, choices) = choices.values();
+        let Some(value) = choices.iter().find(|value| value.name().to_bytes() == choice.as_bytes()) else {
+            continue;
+        };
+        match drm.set_property(connector, info.handle(), value.value()) {
+            Ok(()) => tracing::info!(output = %name, property, choice, "connector set for a sharper picture"),
+            Err(e) => tracing::warn!(output = %name, property, "cannot set: {e}"),
+        }
+    }
+}
+
+/// The mode to start a monitor in when nothing is saved for it, given each mode's
+/// width, height, refresh in millihertz and whether the monitor prefers it: the one
+/// it prefers or, when its driver leaves that out because the cable or port cannot
+/// carry it, the largest mode in the shape of the screen that is smooth enough to
+/// work at, at least 50 Hz.
+fn default_mode(modes: &[(u16, u16, u32, bool)], physical: (u32, u32)) -> Option<usize> {
+    if let Some(preferred) = modes.iter().position(|mode| mode.3) {
+        return Some(preferred);
+    }
+    let shaped = |mode: &(u16, u16, u32, bool)| {
+        let (width, height) = physical;
+        width == 0 || height == 0 || {
+            let screen = width as f64 / height as f64;
+            ((mode.0 as f64 / mode.1.max(1) as f64) / screen - 1.0).abs() < 0.05
+        }
+    };
+    let smooth = |mode: &(u16, u16, u32, bool)| mode.2 >= 49_000;
+    let fits = |mode: &(u16, u16, u32, bool)| (shaped(mode), smooth(mode));
+    // Shape and smoothness, where any mode has them, before size and speed.
+    let best = modes.iter().map(fits).max()?;
+    modes
+        .iter()
+        .enumerate()
+        .filter(|(_, mode)| fits(mode) == best)
+        .max_by_key(|(_, mode)| (mode.0 as u32 * mode.1 as u32, mode.2))
+        .map(|(index, _)| index)
+}
+
 /// How a saved layout sets a monitor beyond its mode.
 fn setup_of(saved: &monitors::Saved) -> Setup {
     Setup {
@@ -550,13 +648,27 @@ impl DesComp {
                         .min_by_key(|mode| (WlMode::from(**mode).refresh as f64 - saved.rate * 1000.0).abs() as u64)
                 })
                 .or_else(|| {
-                    info.modes()
+                    let modes: Vec<&control::Mode> =
+                        info.modes().iter().filter(|mode| !mode.flags().contains(ModeFlags::INTERLACE)).collect();
+                    let described: Vec<(u16, u16, u32, bool)> = modes
                         .iter()
-                        .find(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED))
+                        .map(|mode| {
+                            let (width, height) = mode.size();
+                            (width, height, WlMode::from(**mode).refresh as u32, mode.mode_type().contains(ModeTypeFlags::PREFERRED))
+                        })
+                        .collect();
+                    default_mode(&described, info.size().unwrap_or((0, 0))).map(|index| modes[index])
                 })
                 .copied()
                 .unwrap_or(info.modes()[0]);
             let wl_mode = WlMode::from(drm_mode);
+            let internal = matches!(
+                info.interface(),
+                connector::Interface::EmbeddedDisplayPort | connector::Interface::LVDS | connector::Interface::DSI
+            );
+            if !internal {
+                tune_connector(udev.manager.device(), info.handle(), &name);
+            }
 
             // Only the primary and cursor planes are used: every frame is composited by
             // the renderer, which keeps this backend simple.
@@ -602,12 +714,7 @@ impl DesComp {
                 modes: offered_modes(info),
                 connector: info.handle(),
                 crtc,
-                internal: matches!(
-                    info.interface(),
-                    connector::Interface::EmbeddedDisplayPort
-                        | connector::Interface::LVDS
-                        | connector::Interface::DSI
-                ),
+                internal,
                 surface,
                 global: output.create_global::<DesComp>(&self.display_handle),
                 output,
@@ -890,5 +997,47 @@ impl DesComp {
                 Err(e) => tracing::error!("cannot draw frame: {e}"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The CTA extension of a 4K TV's EDID, as read from the TV itself.
+    const TV: &str = "020362f052616066653f5f5e5d1f2220051404130312102f09070715075057070067040035072883010000e200cb6e030c001000b844210080010203046ad85dc40178886f023090e305e301e20f0fe3060f01e5018b849001681a00000101309000000000000000000000000000000000000000000000000000000000000054";
+
+    fn edid(extension: &str) -> Vec<u8> {
+        let mut bytes = vec![0; 128];
+        bytes.extend((0..extension.len()).step_by(2).map(|at| u8::from_str_radix(&extension[at..at + 2], 16).unwrap()));
+        bytes
+    }
+
+    #[test]
+    fn reads_what_a_tv_supports() {
+        assert_eq!(sink_of(&edid(TV)), Sink { full_range: true, graphics: true });
+        // A monitor without an extension says nothing, and is left as the driver sets it.
+        assert_eq!(sink_of(&[0; 128]), Sink::default());
+        // Nor does a truncated or nonsensical block upset anything.
+        assert_eq!(sink_of(&edid(&TV[..40])), Sink::default());
+        let mut lying = edid(TV);
+        lying[130] = 0xff;
+        sink_of(&lying);
+    }
+
+    #[test]
+    fn starts_a_monitor_in_a_mode_it_can_work_at() {
+        // The TV wants 4K at 60, which this port cannot carry, so the driver lists
+        // nothing as preferred: 1080p at 120 beats 4K at 30 and the wider 4096 at 24.
+        let tv = [(4096, 2160, 24_000, false), (3840, 2160, 30_000, false), (1920, 1080, 120_000, false), (1920, 1080, 60_000, false), (1280, 720, 60_000, false)];
+        assert_eq!(default_mode(&tv, (1210, 680)), Some(2));
+        // What the monitor prefers wins.
+        let mut preferred = tv;
+        preferred[1].3 = true;
+        assert_eq!(default_mode(&preferred, (1210, 680)), Some(1));
+        // Without a size, shape cannot count; with nothing smooth, the largest will do.
+        assert_eq!(default_mode(&tv, (0, 0)), Some(2));
+        assert_eq!(default_mode(&[(3840, 2160, 30_000, false), (1920, 1080, 30_000, false)], (600, 340)), Some(0));
+        assert_eq!(default_mode(&[], (0, 0)), None);
     }
 }
