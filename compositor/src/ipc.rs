@@ -34,6 +34,8 @@ pub struct IpcServer {
     /// Likewise for whether the screen is locked.
     last_locked: String,
     last_recording: String,
+    /// Likewise for hand control.
+    last_hands: String,
 }
 
 impl IpcServer {
@@ -50,6 +52,7 @@ impl IpcServer {
             last_layouts: des_common::ipc::LayoutInfo::encode_all(&[]),
             last_locked: des_common::ipc::Event::locked(false),
             last_recording: des_common::ipc::Event::recording("off"),
+            last_hands: des_common::ipc::Event::hands(des_common::ipc::Hands::Off),
         })
     }
 
@@ -81,6 +84,7 @@ impl IpcServer {
                     .and_then(|()| outgoing.enqueue(self.last_layouts.as_bytes()))
                     .and_then(|()| outgoing.enqueue(self.last_locked.as_bytes()))
                     .and_then(|()| outgoing.enqueue(self.last_recording.as_bytes()))
+                    .and_then(|()| outgoing.enqueue(self.last_hands.as_bytes()))
                     .and_then(|()| outgoing.enqueue(b"window-shelf\n")).is_err() {
                     continue;
                 }
@@ -140,6 +144,7 @@ impl IpcServer {
     /// Sends one protocol line to every client.
     pub fn send(&mut self, line: &str) {
         if line.starts_with("recording ") { self.last_recording = line.to_string(); }
+        if line.starts_with("hands ") { self.last_hands = line.to_string(); }
         self.clients.retain_mut(|client| {
             client.outgoing.enqueue(line.as_bytes()).is_ok()
                 && client.outgoing.flush(&mut client.stream).is_ok()
@@ -267,7 +272,7 @@ mod tests {
             if line.starts_with("state ") {
                 break;
             }
-            assert!(line == "locked 0\n" || line == "recording off\n" || line == "layouts\n" || line == "window-shelf\n", "{line}");
+            assert!(line == "locked 0\n" || line == "recording off\n" || line == "hands off\n" || line == "layouts\n" || line == "window-shelf\n", "{line}");
         }
         assert_eq!(DesktopState::decode(&line), Some(state));
 

@@ -45,6 +45,8 @@ pub struct Desktop {
     pub shots: Vec<crate::capture::Shot>,
     /// What the compositor has said about the recording since last looked at.
     pub recording_news: Vec<des_common::ipc::Recording>,
+    /// How hand control stands, as the compositor last said.
+    pub hands: des_common::ipc::Hands,
     /// Set when the compositor's lock shortcut was pressed.
     pub lock_requested: bool,
     /// Whether the compositor has the screen locked.
@@ -95,6 +97,7 @@ impl Desktop {
             power_requested: false,
             shots: Vec::new(),
             recording_news: Vec::new(),
+            hands: des_common::ipc::Hands::Off,
             lock_requested: false,
             locked: false,
             displays: Displays::default(),
@@ -136,6 +139,7 @@ impl Desktop {
                 Event::Power => self.power_requested = true,
                 Event::Shot { request, mode, width, height, window, path } => self.shots.push(crate::capture::Shot { request, mode, width, height, window, path }),
                 Event::Recording(state) => self.recording_news.push(state),
+                Event::Hands(state) => self.hands = state,
                 Event::Displays(displays) => self.displays = displays,
                 Event::Layouts(layouts) => self.layouts = layouts,
                 Event::LockRequested => self.lock_requested = true,

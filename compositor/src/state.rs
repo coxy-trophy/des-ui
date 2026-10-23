@@ -218,6 +218,11 @@ pub struct DesComp {
     pub switcher_released: bool,
     /// A touchpad swipe the desktop took, while the fingers are down.
     pub swipe: Option<crate::gestures::Swipe>,
+    /// Hand control, while des-hands runs; how it stands, as the shell was told; and
+    /// whether the settings last asked for it, to act only when they change.
+    pub hands: Option<crate::hands::Running>,
+    pub hands_state: des_common::ipc::Hands,
+    pub hands_setting: Option<bool>,
 }
 
 /// A length of time in milliseconds that a test may set through the environment.
@@ -366,6 +371,9 @@ impl DesComp {
             overview_wanted: false,
             switcher_released: false,
             swipe: None,
+            hands: None,
+            hands_state: des_common::ipc::Hands::Off,
+            hands_setting: None,
         }
     }
 
@@ -457,6 +465,7 @@ impl DesComp {
     /// Work due before drawing a frame. Returns false once the session is over.
     pub fn before_frame(&mut self) -> bool {
         self.motions.tick(Instant::now());
+        self.glide_hands();
         self.tick_drag_overview();
         self.refresh_overview();
         self.prefer_scales();

@@ -3,6 +3,8 @@
 //! would be. Nothing is controlled by it yet.
 //!
 //!   des-hands [--camera /dev/video0] [--seconds N] [--record file]
+//!   des-hands --serve [--speed S]     for the compositor: what the hand does, one
+//!                                     line each on standard output
 //!   des-hands --replay file           the gestures in a recording
 //!   des-hands --learn file            asks for each gesture in turn, records them
 //!                                     marked, and says how well each was seen
@@ -154,6 +156,53 @@ fn live(tracker: &mut Tracker, path: &str, seconds: Option<u64>, mut record: Opt
     })
 }
 
+/// What a gesture is, told to the compositor.
+fn message(event: gestures::Event, speed: f32) -> des_common::hands::Message {
+    use des_common::hands::{Button, Message, Side};
+    let button = |which: gestures::Button| if which == gestures::Button::Left { Button::Left } else { Button::Right };
+    match event {
+        gestures::Event::Motion { dx, dy } => Message::Motion { dx: dx * speed, dy: dy * speed },
+        gestures::Event::Press(which) => Message::Press(button(which)),
+        gestures::Event::Release(which) => Message::Release(button(which)),
+        gestures::Event::Scroll(by) => Message::Scroll(by),
+        gestures::Event::Sweep(side) => Message::Sweep(if side == gestures::Side::Left { Side::Left } else { Side::Right }),
+        gestures::Event::Rest => Message::Rest,
+        gestures::Event::Wake => Message::Wake,
+        gestures::Event::Gone => Message::Gone,
+    }
+}
+
+/// Follows the hand for the compositor, writing what it does to standard output;
+/// `speed`, from -1 to 1, makes the pointer go from half as far to twice as far.
+/// Stops when nobody is reading any more, or the compositor that started it is gone:
+/// the camera is never left on behind its back.
+fn serve(tracker: &mut Tracker, path: &str, speed: f32) -> std::io::Result<()> {
+    use std::io::Write;
+    let parent = std::os::unix::process::parent_id();
+    let factor = 2f32.powf(speed.clamp(-1.0, 1.0));
+    let started = Instant::now();
+    let mut gestures = Gestures::default();
+    let mut seen = false;
+    let mut out = std::io::stdout().lock();
+    let mut broken = false;
+    camera::run(path, |picture| {
+        let time = started.elapsed().as_secs_f64();
+        let hand = tracker.track(picture);
+        let mut lines = String::new();
+        if hand.is_some() && !std::mem::replace(&mut seen, true) {
+            lines.push_str(&des_common::hands::Message::Seen.encode());
+        }
+        for event in gestures.update(hand.as_ref(), picture.width as f32, picture.height as f32, time) {
+            if event == gestures::Event::Gone {
+                seen = false;
+            }
+            lines.push_str(&message(event, factor).encode());
+        }
+        broken = !lines.is_empty() && out.write_all(lines.as_bytes()).and_then(|()| out.flush()).is_err();
+        !broken && std::os::unix::process::parent_id() == parent
+    })
+}
+
 /// The gestures `--learn` asks for, each by its name in the recording and what to do.
 const LESSONS: [(&str, &str); 6] = [
     ("open", "Open hand, palm to the camera, fingers apart: move it slowly about"),
@@ -300,6 +349,9 @@ fn main() {
         let palm = tracker.models.palm(&vec![0.0; palm::SIZE * palm::SIZE * 3]).map_err(|e| e.to_string());
         let hand = tracker.models.hand(&vec![0.0; hand::SIZE * hand::SIZE * 3]).map_err(|e| e.to_string());
         palm.and_then(|palm| hand.map(|hand| println!("palm: {}\nhand: {}", palm.describe(), hand.describe())))
+    } else if args.iter().any(|arg| arg == "--serve") {
+        let speed = value("--speed").and_then(|speed| speed.parse().ok()).unwrap_or(0.0);
+        serve(&mut tracker, &value("--camera").unwrap_or("/dev/video0".into()), speed).map_err(|e| e.to_string())
     } else if let Some(path) = value("--learn") {
         learn(&mut tracker, &value("--camera").unwrap_or("/dev/video0".into()), &path)
     } else if let Some(path) = value("--picture") {

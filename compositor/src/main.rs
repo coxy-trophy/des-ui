@@ -20,6 +20,7 @@ mod motion;
 mod overview;
 mod switcher;
 mod gestures;
+mod hands;
 mod phosphor;
 mod udev;
 mod winit;
@@ -213,6 +214,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     event_loop.run(None, &mut data, move |_| {})?;
 
+    // Nor the camera on.
+    data.stop_hands();
     // Do not leave the shell running without a compositor.
     if let Some(mut child) = data.shell_child.take() {
         let _ = child.kill();

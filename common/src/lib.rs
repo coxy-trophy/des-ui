@@ -5,6 +5,7 @@
 //! All geometry is in logical pixels.
 
 pub mod input;
+pub mod hands;
 pub mod shortcuts;
 pub mod appearance;
 pub mod ipc;

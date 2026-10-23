@@ -685,6 +685,21 @@ impl Settings {
         }
         ui.add_space(12.0);
         speed(ui, "mouse_speed", input.mouse_speed, changes);
+        ui.add_space(22.0);
+
+        heading(ui, "HAND CONTROL", "Move the pointer with your hand in front of the webcam.");
+        if switch_row(ui, theme, "Hand control", "On from the start of each session; Super+H turns it on or off for the while", input.hand_control) {
+            changes.push(Change::Set("hand_control", on_off(!input.hand_control)));
+        }
+        ui.add_space(12.0);
+        speed(ui, "hand_speed", input.hand_speed, changes);
+        ui.add_space(8.0);
+        note(ui, "Open hand: moves the pointer. Pinch thumb and index: click; keep pinching and move to drag; \
+                  hold the pinch still to right-click. Index and middle up: scroll, or sweep sideways for the next workspace. \
+                  A fist lifts the hand, to start again elsewhere.");
+        ui.add_space(4.0);
+        note(ui, "Hold your hand up where the camera sees your wrist. The camera is on only while the status bar says so; \
+                  nothing it sees leaves this computer.");
     }
 
     fn frame(&mut self, ui: &mut Ui, theme: &Theme, config: &Config, panels: Panels, changes: &mut Vec<Change>) {

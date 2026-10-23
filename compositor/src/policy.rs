@@ -1341,6 +1341,7 @@ impl DesComp {
                 Command::KeepDisplays => self.keep_displays(),
                 Command::RevertDisplays => self.revert_displays(),
                 Command::ReloadInput => self.reload_input(),
+                Command::ToggleHands => self.toggle_hands(),
                 Command::ReloadFrame => {
                     self.side_panel_behavior = des_common::PanelBehavior::load();
                     self.arrange();

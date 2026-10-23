@@ -6,6 +6,7 @@ license = "MIT"
 description = "Hand tracking from the webcam, for controlling the DEs-UI desktop by hand"
 
 [dependencies]
+des-common = { path = "../common" }
 tract-onnx = { version = "0.23", default-features = false }
 v4l = "0.14"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }

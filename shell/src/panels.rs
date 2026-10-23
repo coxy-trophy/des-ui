@@ -458,6 +458,7 @@ pub fn status(
     overlay: Option<&str>,
     notices: usize,
     recording: Option<std::time::Duration>,
+    hands: des_common::ipc::Hands,
     tray: Option<&crate::tray::Tray>,
     keyboard_open: bool,
     quick_open: bool,
@@ -492,6 +493,7 @@ pub fn status(
     ui::text(ui, &format!("{holder} HAS THE KEYBOARD"), ui::mono(11.0), ui::SECONDARY);
 
     let mut stop_clicked = false;
+    let mut hands_clicked = false;
     let (mut keyboard_clicked, mut quick_clicked) = (false, false);
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         quick_clicked = ui::icon_button(ui, theme, Icon::Quick, 22.0, quick_open)
@@ -505,6 +507,20 @@ pub fn status(
             ui.painter().rect_stroke(rect, 0.0, Stroke::new(1.0, ui::CAUTION), StrokeKind::Inside);
             ui.painter().galley(rect.center() - label.size() / 2.0, label, ui::CAUTION);
             stop_clicked = response.on_hover_text("End the recording").clicked();
+        }
+        // While hand control is on, the camera is: said plainly, and one click from off.
+        let (label, ink, hint) = match hands {
+            des_common::ipc::Hands::Off => ("", ui::LABEL, ""),
+            des_common::ipc::Hands::Watching => ("CAMERA ON", ui::SECONDARY, "The camera is on for hand control, waiting for a hand. Click to turn it off."),
+            des_common::ipc::Hands::Following => ("CAMERA ON  HAND", theme.main, "The camera is on, and your hand moves the pointer. Click to turn it off."),
+            des_common::ipc::Hands::Failed => ("HAND CONTROL STOPPED", ui::CAUTION, "Hand control could not go on: is the camera there, and free? Click to try again."),
+        };
+        if !label.is_empty() {
+            let label = ui::galley(ui, label, ui::mono(11.0), ink, 0.0);
+            let (rect, response) = ui.allocate_exact_size(label.size() + vec2(14.0, 8.0), Sense::click());
+            ui.painter().rect_stroke(rect, 0.0, Stroke::new(1.0, ink), StrokeKind::Inside);
+            ui.painter().galley(rect.center() - label.size() / 2.0, label, ink);
+            hands_clicked = response.on_hover_text(crate::shortcuts::hint(ui.ctx(), hint, "desktop.hands")).clicked();
         }
         // The readings themselves open the quick settings, as on other desktops.
         let readings_start = ui.cursor().right();
@@ -565,7 +581,7 @@ pub fn status(
             crate::tray::show(ui, theme, tray);
         }
     });
-    StatusClicks { toggled, settings: settings_clicked, music: music_clicked, notices: notices_clicked, power: power_clicked, stop: stop_clicked, keyboard: keyboard_clicked, quick: quick_clicked }
+    StatusClicks { toggled, settings: settings_clicked, music: music_clicked, notices: notices_clicked, power: power_clicked, stop: stop_clicked, hands: hands_clicked, keyboard: keyboard_clicked, quick: quick_clicked }
 }
 
 /// What was clicked in the status strip this frame.
@@ -576,6 +592,8 @@ pub struct StatusClicks {
     pub notices: bool,
     pub power: bool,
     pub stop: bool,
+    /// The hand control indicator.
+    pub hands: bool,
     pub keyboard: bool,
     pub quick: bool,
 }

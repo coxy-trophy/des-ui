@@ -62,6 +62,8 @@ enum Action {
     FocusHalf(bool),
     Panel(des_common::Panel),
     RestartShell,
+    /// Super+H: hand control on or off.
+    ToggleHands,
     /// A volume or brightness key.
     Media(Media),
     /// Switch to another virtual terminal (Ctrl+Alt+F1..F12).
@@ -115,6 +117,7 @@ fn desktop_shortcut(bindings: &des_common::shortcuts::Bindings, chord: &des_comm
         "desktop.panel_right" => Action::Panel(des_common::Panel::Right),
         "desktop.panel_bottom" => Action::Panel(des_common::Panel::Bottom),
         "desktop.restart_shell" => Action::RestartShell,
+        "desktop.hands" => Action::ToggleHands,
         "desktop.overview" => Action::ToggleOverview,
         "desktop.help" => Action::Shortcuts,
         "desktop.workspace_1" => Action::Workspace(0),
@@ -290,14 +293,142 @@ impl DesComp {
             }
         }
         self.configure_devices();
+        self.apply_hand_settings();
     }
 
-    pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
+    /// The pointer moved by `delta`, from a mouse, a touchpad or a hand; `utime` is
+    /// when, in microseconds, and `time` in milliseconds.
+    pub fn pointer_moved(&mut self, delta: smithay::utils::Point<f64, smithay::utils::Logical>, delta_unaccel: smithay::utils::Point<f64, smithay::utils::Logical>, utime: u64, time: u32) {
+        let pointer = self.seat.get_pointer().unwrap();
+        let from = pointer.current_location();
+        if self.drag_view_open() {
+            let pos=self.clamp_to_screens(from,from+delta);
+            self.drag_motion(pos,time);
+            return;
+        }
+        // Over the overview or the switcher the pointer is theirs alone.
+        if self.overview_open().is_some() {
+            let pos = self.clamp_to_screens(from, from + delta);
+            pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
+            pointer.frame(self);
+            self.overview_pointer(pos);
+            return;
+        }
+        // Raw movement first, for games and 3D views, wherever the pointer is held.
+        let under_from = self.surface_under(from);
+        pointer.relative_motion(
+            self,
+            under_from,
+            &RelativeMotionEvent {
+                delta,
+                delta_unaccel,
+                utime,
+            },
+        );
+        let pos = match self.pointer_hold() {
+            // Held in place: the pointer stays where the application put it.
+            crate::handlers::input_protocols::Hold::Locked => {
+                pointer.frame(self);
+                return;
+            }
+            crate::handlers::input_protocols::Hold::Confined => {
+                let to = self.clamp_to_screens(from, from + delta);
+                if self.confined_allows(to) { to } else { from }
+            }
+            crate::handlers::input_protocols::Hold::Free => self.clamp_to_screens(from, from + delta),
+        };
+
+        // A divider in hand follows the pointer; over one, the pointer says so.
+        if self.resize.is_some() {
+            self.drag_resize(pos.x);
+        }
+        self.resize_hover = self.resize.is_some() || self.divider_under(pos).is_some();
+
+        let serial = SERIAL_COUNTER.next_serial();
+        let under = self.surface_under(pos);
+        pointer.motion(
+            self,
+            under,
+            &MotionEvent {
+                location: pos,
+                serial,
+                time,
+            },
+        );
+        pointer.frame(self);
+        self.activate_pointer_constraint();
+    }
+
+    /// A pointer button went down or up, on a mouse, a touchpad or by hand.
+    pub fn pointer_button(&mut self, button: u32, button_state: ButtonState, time: u32) {
+        let pointer = self.seat.get_pointer().unwrap();
+        let serial = SERIAL_COUNTER.next_serial();
+
+        // A drag out of the shell may only begin while a button is held.
+        self.buttons_down = match button_state {
+            ButtonState::Pressed => self.buttons_down.saturating_add(1),
+            ButtonState::Released => self.buttons_down.saturating_sub(1),
+        };
+
+        if button_state == ButtonState::Pressed {
+            self.super_tap.spoil();
+        }
+        if self.drag_view_open() {
+            let at=pointer.current_location();
+            pointer.motion(self,None,&MotionEvent{location:at,serial,time});
+            pointer.button(self,&ButtonEvent{button,state:button_state,serial,time});
+            pointer.frame(self);
+            self.tick_drag_overview();
+            return;
+        }
+        // The overview and the switcher take their own clicks.
+        if self.overview_open().is_some() {
+            self.overview_button(pointer.current_location(), button_state == ButtonState::Pressed);
+            return;
+        }
+
+        // Click to focus: the keyboard follows the display that was clicked.
+        // Shell overlays own their clicks; only their explicit commands change focus.
+        let on_overlay = self.shell_overlay_contains(pointer.current_location());
+        // The left button on a divider between windows drags it; neither the
+        // press nor its release reaches the windows either side.
+        if button == BTN_LEFT {
+            if ButtonState::Pressed == button_state && !pointer.is_grabbed() && !on_overlay && self.start_resize(pointer.current_location()) {
+                return;
+            }
+            if ButtonState::Released == button_state && self.resize.is_some() {
+                self.end_resize();
+                self.resize_hover = self.divider_under(pointer.current_location()).is_some();
+                return;
+            }
+        }
+        if ButtonState::Pressed == button_state && !pointer.is_grabbed() && !on_overlay {
+            self.focus_at(pointer.current_location());
+        };
+
+        pointer.button(
+            self,
+            &ButtonEvent {
+                button,
+                state: button_state,
+                serial,
+                time,
+            },
+        );
+        pointer.frame(self);
+    }
+
+    /// Something was done by hand: the screens wake, and locking for idleness waits.
+    pub fn input_activity(&mut self) {
         self.last_input = std::time::Instant::now();
         self.idle_lock_asked = false;
         if self.screens_off {
             self.blank(false);
         }
+    }
+
+    pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
+        self.input_activity();
         match event {
             InputEvent::Keyboard { event, .. } => {
                 let serial = SERIAL_COUNTER.next_serial();
@@ -499,6 +630,7 @@ impl DesComp {
                     Some(Action::Lock) => self.request_lock(),
                     Some(Action::Ignore) => {}
                     Some(Action::RestartShell) => self.restart_shell(),
+                    Some(Action::ToggleHands) => self.toggle_hands(),
                     Some(Action::Split) => self.toggle_split(),
                     Some(Action::CycleLayout) => self.cycle_layout(),
                     Some(Action::NudgeRatio(right)) => self.nudge_ratio(right),
@@ -521,64 +653,7 @@ impl DesComp {
             }
             // Mice and touchpads report movement; the pointer position is ours to keep.
             InputEvent::PointerMotion { event, .. } => {
-                let pointer = self.seat.get_pointer().unwrap();
-                let from = pointer.current_location();
-                if self.drag_view_open() {
-                    let pos=self.clamp_to_screens(from,from+event.delta());
-                    self.drag_motion(pos,event.time_msec());
-                    return;
-                }
-                // Over the overview or the switcher the pointer is theirs alone.
-                if self.overview_open().is_some() {
-                    let pos = self.clamp_to_screens(from, from + event.delta());
-                    pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time: event.time_msec() });
-                    pointer.frame(self);
-                    self.overview_pointer(pos);
-                    return;
-                }
-                // Raw movement first, for games and 3D views, wherever the pointer is held.
-                let under_from = self.surface_under(from);
-                pointer.relative_motion(
-                    self,
-                    under_from,
-                    &RelativeMotionEvent {
-                        delta: event.delta(),
-                        delta_unaccel: event.delta_unaccel(),
-                        utime: event.time(),
-                    },
-                );
-                let pos = match self.pointer_hold() {
-                    // Held in place: the pointer stays where the application put it.
-                    crate::handlers::input_protocols::Hold::Locked => {
-                        pointer.frame(self);
-                        return;
-                    }
-                    crate::handlers::input_protocols::Hold::Confined => {
-                        let to = self.clamp_to_screens(from, from + event.delta());
-                        if self.confined_allows(to) { to } else { from }
-                    }
-                    crate::handlers::input_protocols::Hold::Free => self.clamp_to_screens(from, from + event.delta()),
-                };
-
-                // A divider in hand follows the pointer; over one, the pointer says so.
-                if self.resize.is_some() {
-                    self.drag_resize(pos.x);
-                }
-                self.resize_hover = self.resize.is_some() || self.divider_under(pos).is_some();
-
-                let serial = SERIAL_COUNTER.next_serial();
-                let under = self.surface_under(pos);
-                pointer.motion(
-                    self,
-                    under,
-                    &MotionEvent {
-                        location: pos,
-                        serial,
-                        time: event.time_msec(),
-                    },
-                );
-                pointer.frame(self);
-                self.activate_pointer_constraint();
+                self.pointer_moved(event.delta(), event.delta_unaccel(), event.time(), event.time_msec());
             }
             InputEvent::PointerMotionAbsolute { event, .. } => {
                 let output = self.space.outputs().next().unwrap();
@@ -611,64 +686,7 @@ impl DesComp {
                 pointer.frame(self);
             }
             InputEvent::PointerButton { event, .. } => {
-                let pointer = self.seat.get_pointer().unwrap();
-                let serial = SERIAL_COUNTER.next_serial();
-
-                let button = event.button_code();
-
-                let button_state = event.state();
-                // A drag out of the shell may only begin while a button is held.
-                self.buttons_down = match button_state {
-                    ButtonState::Pressed => self.buttons_down.saturating_add(1),
-                    ButtonState::Released => self.buttons_down.saturating_sub(1),
-                };
-
-                if button_state == ButtonState::Pressed {
-                    self.super_tap.spoil();
-                }
-                if self.drag_view_open() {
-                    let at=pointer.current_location();
-                    pointer.motion(self,None,&MotionEvent{location:at,serial,time:event.time_msec()});
-                    pointer.button(self,&ButtonEvent{button,state:button_state,serial,time:event.time_msec()});
-                    pointer.frame(self);
-                    self.tick_drag_overview();
-                    return;
-                }
-                // The overview and the switcher take their own clicks.
-                if self.overview_open().is_some() {
-                    self.overview_button(pointer.current_location(), button_state == ButtonState::Pressed);
-                    return;
-                }
-
-                // Click to focus: the keyboard follows the display that was clicked.
-                // Shell overlays own their clicks; only their explicit commands change focus.
-                let on_overlay = self.shell_overlay_contains(pointer.current_location());
-                // The left button on a divider between windows drags it; neither the
-                // press nor its release reaches the windows either side.
-                if button == BTN_LEFT {
-                    if ButtonState::Pressed == button_state && !pointer.is_grabbed() && !on_overlay && self.start_resize(pointer.current_location()) {
-                        return;
-                    }
-                    if ButtonState::Released == button_state && self.resize.is_some() {
-                        self.end_resize();
-                        self.resize_hover = self.divider_under(pointer.current_location()).is_some();
-                        return;
-                    }
-                }
-                if ButtonState::Pressed == button_state && !pointer.is_grabbed() && !on_overlay {
-                    self.focus_at(pointer.current_location());
-                };
-
-                pointer.button(
-                    self,
-                    &ButtonEvent {
-                        button,
-                        state: button_state,
-                        serial,
-                        time: event.time_msec(),
-                    },
-                );
-                pointer.frame(self);
+                self.pointer_button(event.button_code(), event.state(), event.time_msec());
             }
             // Nothing behind the overview scrolls.
             InputEvent::PointerAxis { event, .. } if self.overview_open().is_some() => {

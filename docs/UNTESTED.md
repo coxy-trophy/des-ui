@@ -3,6 +3,22 @@
 Things that are built and pass their automatic tests, but that nobody has yet
 watched work on a real machine. Tick them off, or note what went wrong.
 
+## Hand control (Settings → Mouse & touchpad → Hand control, Super+H)
+
+- [ ] Super+H turns it on: the status bar says CAMERA ON, and CAMERA ON  HAND once a
+      hand is seen; Super+H or a click on it turns it off, and the camera light goes out
+- [ ] An open hand moves the pointer smoothly, gliding between camera frames, on
+      each display; a fist lifts the hand without moving the pointer
+- [ ] A quick pinch clicks where the pointer was; pinch and move drags a window or
+      selects text; a pinch held still opens a context menu
+- [ ] Two fingers up scroll a page, the way the touchpad's natural scrolling goes;
+      a quick sideways sweep changes workspace
+- [ ] The setting turns it on at the start of the next session; the speed slider
+      changes how far the pointer goes
+- [ ] Without a camera, or with the camera in use elsewhere, the status bar says
+      HAND CONTROL STOPPED and clicking it tries again
+- [ ] Logging out, or the session ending, turns the camera off
+
 ## Sound
 
 - [ ] With a TV on HDMI, Settings → Sound and the quick settings list it by name;

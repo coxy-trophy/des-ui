@@ -1,4 +1,4 @@
-//! Settings for keyboards, mice and touchpads. The shell's settings screen writes them
+//! Settings for keyboards, mice, touchpads and hand control. The shell's settings screen writes them
 //! to the configuration file; the compositor, which owns the devices, reads them there.
 
 use std::path::PathBuf;
@@ -35,6 +35,11 @@ pub struct InputSettings {
     pub lock_after: Option<u32>,
     /// Minutes without input after which the screens are turned off; `None` for never.
     pub screen_off_after: Option<u32>,
+    /// The pointer is moved by a hand in front of the webcam, from the start of the
+    /// session; Super+H turns it on or off for the while.
+    pub hand_control: bool,
+    /// How far the pointer goes for the hand's movement, from -1 to 1.
+    pub hand_speed: f32,
 }
 
 impl Default for InputSettings {
@@ -53,6 +58,8 @@ impl Default for InputSettings {
             repeat_rate: 30,
             lock_after: Some(10),
             screen_off_after: None,
+            hand_control: false,
+            hand_speed: 0.0,
         }
     }
 }
@@ -92,6 +99,8 @@ impl InputSettings {
                 "mouse_natural_scroll" => settings.mouse_natural_scroll = switch(settings.mouse_natural_scroll),
                 "mouse_speed" => settings.mouse_speed = speed(settings.mouse_speed),
                 "mouse_left_handed" => settings.mouse_left_handed = switch(settings.mouse_left_handed),
+                "hand_control" => settings.hand_control = switch(settings.hand_control),
+                "hand_speed" => settings.hand_speed = speed(settings.hand_speed),
                 "keyboard_layout" => settings.keyboard_layout = name(&settings.keyboard_layout),
                 "keyboard_variant" => settings.keyboard_variant = name(&settings.keyboard_variant),
                 "keyboard_repeat_delay" => {
@@ -152,7 +161,7 @@ mod tests {
             "touchpad_natural_scroll = off\ntouchpad_tap = off\ntouchpad_while_typing_off = off\n\
              touchpad_speed = 0.4\nmouse_natural_scroll = on\nmouse_speed = -0.5\nmouse_left_handed = on\n\
              keyboard_layout = de\nkeyboard_variant = nodeadkeys\nkeyboard_repeat_delay = 400\n\
-             keyboard_repeat_rate = 40 # fast\ntheme = matrix\n",
+             keyboard_repeat_rate = 40 # fast\ntheme = matrix\nhand_control = on\nhand_speed = 0.3\n",
         );
         assert!(!settings.touchpad_natural_scroll && !settings.touchpad_tap && !settings.touchpad_while_typing_off);
         assert_eq!(settings.touchpad_speed, 0.4);
@@ -160,6 +169,9 @@ mod tests {
         assert_eq!(settings.mouse_speed, -0.5);
         assert_eq!((settings.keyboard_layout.as_str(), settings.keyboard_variant.as_str()), ("de", "nodeadkeys"));
         assert_eq!((settings.repeat_delay, settings.repeat_rate), (400, 40));
+        assert!(settings.hand_control);
+        assert_eq!(settings.hand_speed, 0.3);
+        assert!(!InputSettings::default().hand_control, "the camera is never on unasked");
     }
 
     #[test]

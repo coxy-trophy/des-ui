@@ -855,7 +855,7 @@ impl App {
                     apply_style(ctx, &self.theme);
                 }
                 // The compositor owns the devices these are about.
-                if ["keyboard_", "mouse_", "touchpad_", "lock_after", "screen_off_after"].iter().any(|prefix| key.starts_with(prefix)) {
+                if ["keyboard_", "mouse_", "touchpad_", "hand_", "lock_after", "screen_off_after"].iter().any(|prefix| key.starts_with(prefix)) {
                     self.send(Command::ReloadInput);
                 }
             }

@@ -308,7 +308,7 @@ impl eframe::App for App {
                     self.osk.show(ui, &theme, Rect::from_min_max(pos2(screen.left(), keys_top), pos2(screen.right(), status_top)));
                 }
                 let clicks = region(ui, status, vec2(24.0, 0.0), Layout::left_to_right(Align::Center), |ui| {
-                    panels::status(ui, &theme, &self.mon, state.as_ref(), open, overlay, self.notices.count(), self.capture.recording.map(|since| since.elapsed()), Some(&self.tray), self.osk.open, self.quick.open)
+                    panels::status(ui, &theme, &self.mon, state.as_ref(), open, overlay, self.notices.count(), self.capture.recording.map(|since| since.elapsed()), self.desktop.as_ref().map_or(des_common::ipc::Hands::Off, |desktop| desktop.hands), Some(&self.tray), self.osk.open, self.quick.open)
                 });
                 let (toggled, settings_clicked, music_clicked, notices_clicked, power_clicked, stop_clicked) =
                     (clicks.toggled, clicks.settings, clicks.music, clicks.notices, clicks.power, clicks.stop);
@@ -320,6 +320,9 @@ impl eframe::App for App {
                 }
                 if stop_clicked {
                     self.toggle_recording();
+                }
+                if clicks.hands {
+                    command = Some(Command::ToggleHands);
                 }
                 if power_clicked {
                     self.toggle_power();

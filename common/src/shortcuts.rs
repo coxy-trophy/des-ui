@@ -28,6 +28,7 @@ pub const DEFINITIONS: &[Definition] = &[
     Definition { id: "desktop.panel_right", label: "Toggle right panel", group: "Panels", scope: Scope::Desktop, default: "Super+BracketRight" },
     Definition { id: "desktop.panel_bottom", label: "Toggle bottom panel", group: "Panels", scope: Scope::Desktop, default: "Super+Backslash" },
     Definition { id: "desktop.restart_shell", label: "Restart shell", group: "Desktop", scope: Scope::Desktop, default: "Super+Shift+R" },
+    Definition { id: "desktop.hands", label: "Hand control on or off", group: "Desktop", scope: Scope::Desktop, default: "Super+H" },
     Definition { id: "desktop.overview", label: "Workspace overview", group: "Workspaces", scope: Scope::Desktop, default: "Super+W" },
     Definition { id: "desktop.help", label: "Shortcut reference", group: "Desktop", scope: Scope::Desktop, default: "Super+Slash" },
     Definition { id: "desktop.workspace_1", label: "Workspace 1", group: "Workspaces", scope: Scope::Desktop, default: "Super+1" },

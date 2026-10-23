@@ -636,6 +636,28 @@ pub enum Recording {
     Failed,
 }
 
+/// How hand control stands: off; on, with no hand in view or resting; following a
+/// hand; or stopped because it could not go on, as when there is no camera.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum Hands {
+    #[default]
+    Off,
+    Watching,
+    Following,
+    Failed,
+}
+
+impl Hands {
+    pub fn word(self) -> &'static str {
+        match self {
+            Hands::Off => "off",
+            Hands::Watching => "watching",
+            Hands::Following => "following",
+            Hands::Failed => "failed",
+        }
+    }
+}
+
 /// Which of the two pictures of the windows is open.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum OverviewKind {
@@ -831,6 +853,7 @@ pub enum Event {
     /// cut that out.
     Shot { request: Option<u64>, mode: ShotMode, width: u32, height: u32, window: Option<(u32, u32, u32, u32)>, path: String },
     Recording(Recording),
+    Hands(Hands),
     /// The lock shortcut was pressed.
     LockRequested,
     /// The screen is now locked, or no longer.
@@ -871,6 +894,10 @@ impl Event {
     pub fn recording(state: &str) -> String {
         format!("recording {state}\n")
     }
+
+    pub fn hands(state: Hands) -> String {
+        format!("hands {}\n", state.word())
+    }
     pub const LOCK_REQUESTED: &str = "lock\n";
 
     pub fn locked(locked: bool) -> String {
@@ -893,6 +920,10 @@ impl Event {
             "recording on" => return Some(Event::Recording(Recording::On)),
             "recording off" => return Some(Event::Recording(Recording::Off)),
             "recording failed" => return Some(Event::Recording(Recording::Failed)),
+            "hands off" => return Some(Event::Hands(Hands::Off)),
+            "hands watching" => return Some(Event::Hands(Hands::Watching)),
+            "hands following" => return Some(Event::Hands(Hands::Following)),
+            "hands failed" => return Some(Event::Hands(Hands::Failed)),
             "lock" => return Some(Event::LockRequested),
             "locked 0" => return Some(Event::Locked(false)),
             "locked 1" => return Some(Event::Locked(true)),
@@ -966,6 +997,8 @@ pub enum Command {
     RevertDisplays,
     /// The keyboard, mouse or touchpad settings were changed: read them again.
     ReloadInput,
+    /// Turn hand control on, or off, for now.
+    ToggleHands,
     /// Re-read the side panel behavior and rearrange application windows.
     ReloadFrame,
     /// Hide everything but the shell, which is showing the lock screen.
@@ -1041,6 +1074,7 @@ impl Command {
             Command::KeepDisplays => "displays-keep\n".to_string(),
             Command::RevertDisplays => "displays-revert\n".to_string(),
             Command::ReloadInput => "reload-input\n".to_string(),
+            Command::ToggleHands => "hands-toggle\n".to_string(),
             Command::ReloadFrame => "reload-frame\n".to_string(),
             Command::Lock => "lock\n".to_string(),
             Command::Unlock => "unlock\n".to_string(),
@@ -1199,6 +1233,7 @@ impl Command {
             ("displays-keep", None) => Command::KeepDisplays,
             ("displays-revert", None) => Command::RevertDisplays,
             ("reload-input", None) => Command::ReloadInput,
+            ("hands-toggle", None) => Command::ToggleHands,
             ("reload-frame", None) => Command::ReloadFrame,
             ("lock", None) => Command::Lock,
             ("unlock", None) => Command::Unlock,
@@ -1511,6 +1546,9 @@ mod tests {
         assert_eq!(Event::decode(Event::QUICK), Some(Event::Quick));
         assert_eq!(Event::decode(Event::POWER), Some(Event::Power));
         assert_eq!(Event::decode(&Event::recording("failed")), Some(Event::Recording(Recording::Failed)));
+        for state in [Hands::Off, Hands::Watching, Hands::Following, Hands::Failed] {
+            assert_eq!(Event::decode(&Event::hands(state)), Some(Event::Hands(state)));
+        }
         assert_eq!(
             Event::decode(&Event::shot(ShotMode::Region, 1920, 1080, None, "/run/user/1000/a shot.rgba")),
             Some(Event::Shot { request: None, mode: ShotMode::Region, width: 1920, height: 1080, window: None, path: "/run/user/1000/a shot.rgba".into() })
@@ -1545,6 +1583,7 @@ mod tests {
             Command::KeepDisplays,
             Command::RevertDisplays,
             Command::ReloadInput,
+            Command::ToggleHands,
             Command::ReloadFrame,
             Command::Lock,
             Command::Unlock,

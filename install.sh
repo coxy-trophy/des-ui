@@ -36,6 +36,7 @@ sudo install -Dm755 target/release/des-ui-ctl /usr/local/bin/des-ui-ctl
 sudo install -Dm755 target/release/des-comp /usr/local/bin/des-comp
 sudo install -Dm755 target/release/des-music /usr/local/bin/des-music
 sudo install -Dm755 target/release/des-portal /usr/local/bin/des-portal
+sudo install -Dm755 target/release/des-hands /usr/local/bin/des-hands
 sudo install -Dm755 session/des-ui-session /usr/local/bin/des-ui-session
 sudo install -Dm755 session/des-ui-startup /usr/local/bin/des-ui-startup
 sudo install -Dm644 session/des-ui.desktop /usr/share/wayland-sessions/des-ui.desktop
