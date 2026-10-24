@@ -129,6 +129,8 @@ impl DesComp {
         let primary = self.screens.first().map(|screen| screen.loc);
         let at = self.seat.get_pointer().map(|pointer| pointer.current_location());
         let scale = output.current_scale().fractional_scale();
+        let cursor_status = crate::udev::effective_cursor_status(&self.cursor_status, self.resize_hover);
+        let cursor_animate = crate::motion::allowed(self.motions.enabled, self.locked, self.picking);
 
         // The renderer belongs to whichever backend is running; it is taken out for
         // the moment so that the rest of the state can be read beside it.
@@ -141,11 +143,17 @@ impl DesComp {
                 (Some(udev), _) => {
                     if let Some(at) = at.filter(|at| pointer && rect.to_f64().contains(*at)) {
                         let position = at - rect.loc.to_f64();
-                        elements.extend(crate::udev::cursor_elements(&mut udev.renderer, &udev.cursor, &self.cursor_status, position, scale));
+                        elements.extend(crate::udev::cursor_elements(&mut udev.renderer, &mut self.cursors, &cursor_status, position, scale, cursor_animate, std::time::Instant::now()));
                     }
                     &mut udev.renderer
                 }
-                (None, Some(backend)) => backend.renderer(),
+                (None, Some(backend)) => {
+                    let renderer = backend.renderer();
+                    if let Some(at) = at.filter(|at| pointer && rect.to_f64().contains(*at)) {
+                        elements.extend(crate::udev::cursor_elements(renderer, &mut self.cursors, &cursor_status, at - rect.loc.to_f64(), scale, cursor_animate, std::time::Instant::now()));
+                    }
+                    renderer
+                },
                 (None, None) => return Err("nothing is drawing yet".to_string()),
             };
             // While the splash is up it is all there is to see.
@@ -200,6 +208,8 @@ impl DesComp {
     }
 
     pub fn take_requested_shot(&mut self, mode: ShotMode, request: Option<u64>) {
+        self.cursors.set_speaking(false, std::time::Instant::now());
+        self.companion_bubble = None;
         if self.locked { return; }
         let screen = self.focus_screen;
         // Where the window in use lies on its display, if there is one.

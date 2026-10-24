@@ -9,6 +9,17 @@
 # Logs: ~/.local/state/des-ui/session.log (and session-fallback.log); what launched
 # applications print goes to apps.log next to them.
 export XDG_CURRENT_DESKTOP=des-ui
+export XCURSOR_THEME="${XCURSOR_THEME:-DEs-UI}"
+export XCURSOR_SIZE="${XCURSOR_SIZE:-24}"
+# libXcursor's compiled search path may omit /usr/local/share/icons.
+export XCURSOR_PATH="${XCURSOR_PATH:-$HOME/.icons:/usr/local/share/icons:/usr/share/icons:/usr/share/pixmaps}"
+if [ "$XCURSOR_THEME" = DEs-UI ]; then
+    case "${XDG_CACHE_HOME:-}" in
+        /*) cursor_cache_root=$XDG_CACHE_HOME ;;
+        *) cursor_cache_root=$HOME/.cache ;;
+    esac
+    export XCURSOR_PATH="$cursor_cache_root/des-ui/cursor-theme:$XCURSOR_PATH"
+fi
 # The programs are installed next to this script: /usr/local/bin when built here with
 # install.sh, /usr/bin when installed as a package.
 bin=$(dirname "$(readlink -f "$0")")
@@ -47,7 +58,7 @@ leave() {
     # The portal backend is started by D-Bus when an application first asks; it too
     # ends with the session.
     pkill -u "$(id -u)" -x des-portal 2>/dev/null
-    systemctl --user unset-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE 2>/dev/null
+    systemctl --user unset-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XCURSOR_THEME XCURSOR_SIZE XCURSOR_PATH 2>/dev/null
     exit "$1"
 }
 stop_portal

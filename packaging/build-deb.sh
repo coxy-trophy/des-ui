@@ -66,6 +66,7 @@ root="$out/des-ui"
 install -Dm755 target/release/des-ui "$root/usr/bin/des-ui"
 install -Dm755 target/release/des-ui-ctl "$root/usr/bin/des-ui-ctl"
 install -Dm755 target/release/des-comp "$root/usr/bin/des-comp"
+install -Dm755 target/release/des-hands "$root/usr/bin/des-hands"
 install -Dm755 target/release/des-portal "$root/usr/bin/des-portal"
 install -Dm755 session/des-ui-session "$root/usr/bin/des-ui-session"
 install -Dm755 session/des-ui-startup "$root/usr/bin/des-ui-startup"
@@ -75,8 +76,11 @@ install -Dm644 session/des-ui-portals.conf "$root/usr/share/xdg-desktop-portal/d
 install -Dm644 session/des-ui.portal "$root/usr/share/xdg-desktop-portal/portals/des-ui.portal"
 install -Dm644 session/org.freedesktop.impl.portal.desktop.des-ui.service "$root/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.des-ui.service"
 sed -i 's|/usr/local/bin/|/usr/bin/|' "$root/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.des-ui.service"
+install -d "$root/usr/share/des-ui/companion"
+install -m644 companion/service.py companion/voice.py companion/credentials.py "$root/usr/share/des-ui/companion/"
 install -d "$root/usr/share/des-ui/themes"
 install -m644 themes/*.json "$root/usr/share/des-ui/themes/"
+target/release/des-comp --write-cursor-theme "$root/usr/share/icons/DEs-UI"
 install -Dm644 README.md "$root/usr/share/doc/des-ui/README.md"
 # Pictures for the lock and login screens: each user can add their own, none can
 # remove another's.
@@ -85,7 +89,7 @@ install -d -m 1777 "$root/var/lib/des-ui/avatars"
 # Wayland and the graphics libraries are loaded while running, so nothing finds them
 # by looking at the programs: they are named here.
 pack des-ui \
-    "$(linked target/release/des-ui target/release/des-ui-ctl target/release/des-comp target/release/des-portal), python3, tmux (>= 3.3), libegl1, libwayland-client0, libwayland-cursor0, libwayland-egl1, fontconfig" \
+    "$(linked target/release/des-ui target/release/des-ui-ctl target/release/des-comp target/release/des-portal target/release/des-hands), python3, python3-gi, gir1.2-secret-1, gnome-keyring, dbus-user-session, python3-websocket, pipewire-bin, tmux (>= 3.3), libegl1, libwayland-client0, libwayland-cursor0, libwayland-egl1, fontconfig" \
     "libgl1-mesa-dri, xwayland, cage, xdg-desktop-portal-gtk, wireplumber, pipewire-bin, network-manager, bluez, iproute2, sudo, curl, wl-clipboard, sound-theme-freedesktop, des-ui-music" \
     "ffmpeg, des-ui-greeter, des-ui-plymouth" \
     "sci-fi terminal desktop" <<'TEXT'

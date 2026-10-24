@@ -93,7 +93,7 @@ while True:
         self.assertTrue(all(not Path(p).parent.exists() for p in paths))
 
 class LauncherTests(unittest.TestCase):
-    def attempt(self, compositor, previous=None):
+    def attempt(self, compositor, previous=None, cursor_env=None):
         import shutil
         import subprocess
         with tempfile.TemporaryDirectory() as directory:
@@ -119,12 +119,36 @@ class LauncherTests(unittest.TestCase):
             env = dict(os.environ, HOME=directory, PATH=str(bin_dir) + ':/usr/bin:/bin',
                        XDG_STATE_HOME=str(root / 'state'), XDG_CONFIG_HOME=str(root / 'config'),
                        XDG_CACHE_HOME=str(root / 'cache'))
+            for name in ('XCURSOR_THEME', 'XCURSOR_SIZE', 'XCURSOR_PATH'):
+                env.pop(name, None)
+            env.update(cursor_env or {})
             completed = subprocess.run([str(bin_dir / 'des-ui-session')], env=env, timeout=4,
                                        capture_output=True)
             return completed.returncode, (root / 'previous-used').exists(), (root / 'cage-used').exists()
 
     def test_clean_logout_does_not_fallback(self):
         self.assertEqual(self.attempt('exit 0\n'), (0, False, False))
+
+    def test_cursor_defaults_reach_the_desktop_including_local_theme_path(self):
+        source = '''
+[ "$XCURSOR_THEME" = DEs-UI ] || exit 9
+[ "$XCURSOR_SIZE" = 24 ] || exit 9
+case "$XCURSOR_PATH" in *:/usr/local/share/icons:*) ;; *) exit 9;; esac
+case "$XCURSOR_PATH" in "$XDG_CACHE_HOME/des-ui/cursor-theme:"*) ;; *) exit 9;; esac
+exit 0
+'''
+        self.assertEqual(self.attempt(source), (0, False, False))
+
+    def test_explicit_cursor_preferences_are_preserved(self):
+        source = '''
+[ "$XCURSOR_THEME" = UserTheme ] || exit 9
+[ "$XCURSOR_SIZE" = 48 ] || exit 9
+[ "$XCURSOR_PATH" = /custom/icons ] || exit 9
+exit 0
+'''
+        self.assertEqual(self.attempt(source, cursor_env={
+            'XCURSOR_THEME': 'UserTheme', 'XCURSOR_SIZE': '48', 'XCURSOR_PATH': '/custom/icons',
+        }), (0, False, False))
 
     def test_hang_skips_unsupported_previous_and_uses_cage(self):
         self.assertEqual(self.attempt('sleep 60\n', previous='legacy'), (0, False, True))

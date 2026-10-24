@@ -24,6 +24,10 @@ pub struct InputSettings {
     pub mouse_natural_scroll: bool,
     pub mouse_speed: f32,
     pub mouse_left_handed: bool,
+    /// Logical pixels used by the desktop pointer.
+    pub cursor_size: u32,
+    /// Opaque RGB fill for the desktop pointer.
+    pub cursor_color: [u8; 3],
     /// An XKB layout such as `us` or `de`; empty for the system's default.
     pub keyboard_layout: String,
     pub keyboard_variant: String,
@@ -40,6 +44,12 @@ pub struct InputSettings {
     pub hand_control: bool,
     /// How far the pointer goes for the hand's movement, from -1 to 1.
     pub hand_speed: f32,
+    /// Pinch forgiveness, from -1 (firm) to 1 (gentle).
+    pub hand_pinch_sensitivity: f32,
+    /// Scrolling speed, from -1 (slowest) to 1 (fastest).
+    pub hand_scroll_speed: f32,
+    /// A second pinch and movement grabs; another pinch drops without holding.
+    pub hand_drag_lock: bool,
 }
 
 impl Default for InputSettings {
@@ -52,6 +62,8 @@ impl Default for InputSettings {
             mouse_natural_scroll: false,
             mouse_speed: 0.0,
             mouse_left_handed: false,
+            cursor_size: CURSOR_BASE_SIZE,
+            cursor_color: DEFAULT_CURSOR_COLOR,
             keyboard_layout: String::new(),
             keyboard_variant: String::new(),
             repeat_delay: 250,
@@ -60,9 +72,19 @@ impl Default for InputSettings {
             screen_off_after: None,
             hand_control: false,
             hand_speed: 0.0,
+            hand_pinch_sensitivity: 0.0,
+            hand_scroll_speed: 0.0,
+            hand_drag_lock: true,
         }
     }
 }
+
+pub const CURSOR_BASE_SIZE: u32 = 24;
+/// The solid arrow in base-size logical pixels, relative to the pointer tip.
+/// Shared by the compositor renderer and Settings preview.
+pub const CURSOR_ARROW_POINTS: [[f32; 2]; 3] = [[0.0, 0.0], [13.0, 14.0], [4.0, 22.0]];
+pub const CURSOR_SIZE_RANGE: (u32, u32) = (16, 64);
+pub const DEFAULT_CURSOR_COLOR: [u8; 3] = [247, 246, 242];
 
 pub const REPEAT_DELAY_RANGE: (u32, u32) = (150, 800);
 pub const REPEAT_RATE_RANGE: (u32, u32) = (10, 60);
@@ -82,7 +104,7 @@ impl InputSettings {
                 "off" => false,
                 _ => default,
             };
-            let speed = |default: f32| value.parse::<f32>().map_or(default, |speed| speed.clamp(-1.0, 1.0));
+            let speed = |default: f32| value.parse::<f32>().ok().filter(|speed| speed.is_finite()).map_or(default, |speed| speed.clamp(-1.0, 1.0));
             // Layout names are passed to the keymap compiler: letters, digits and a few
             // marks only.
             let name = |default: &str| {
@@ -99,8 +121,21 @@ impl InputSettings {
                 "mouse_natural_scroll" => settings.mouse_natural_scroll = switch(settings.mouse_natural_scroll),
                 "mouse_speed" => settings.mouse_speed = speed(settings.mouse_speed),
                 "mouse_left_handed" => settings.mouse_left_handed = switch(settings.mouse_left_handed),
+                "cursor_size" => {
+                    if let Ok(size) = value.parse::<u32>() {
+                        settings.cursor_size = size.clamp(CURSOR_SIZE_RANGE.0, CURSOR_SIZE_RANGE.1);
+                    }
+                }
+                "cursor_color" => {
+                    if value.len() == 6 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                        settings.cursor_color = [0, 2, 4].map(|at| u8::from_str_radix(&value[at..at + 2], 16).unwrap());
+                    }
+                }
                 "hand_control" => settings.hand_control = switch(settings.hand_control),
                 "hand_speed" => settings.hand_speed = speed(settings.hand_speed),
+                "hand_pinch_sensitivity" => settings.hand_pinch_sensitivity = speed(settings.hand_pinch_sensitivity),
+                "hand_scroll_speed" => settings.hand_scroll_speed = speed(settings.hand_scroll_speed),
+                "hand_drag_lock" => settings.hand_drag_lock = switch(settings.hand_drag_lock),
                 "keyboard_layout" => settings.keyboard_layout = name(&settings.keyboard_layout),
                 "keyboard_variant" => settings.keyboard_variant = name(&settings.keyboard_variant),
                 "keyboard_repeat_delay" => {
@@ -172,6 +207,55 @@ mod tests {
         assert!(settings.hand_control);
         assert_eq!(settings.hand_speed, 0.3);
         assert!(!InputSettings::default().hand_control, "the camera is never on unasked");
+    }
+
+    #[test]
+    fn comfortable_hand_controls_have_safe_defaults_and_parse() {
+        let defaults = InputSettings::parse("");
+        assert_eq!(defaults.hand_pinch_sensitivity, 0.0);
+        assert_eq!(defaults.hand_scroll_speed, 0.0);
+        assert!(defaults.hand_drag_lock);
+        let settings = InputSettings::parse("hand_pinch_sensitivity = 0.7\nhand_scroll_speed = -0.4\nhand_drag_lock = off");
+        assert_eq!(settings.hand_pinch_sensitivity, 0.7);
+        assert_eq!(settings.hand_scroll_speed, -0.4);
+        assert!(!settings.hand_drag_lock);
+        let clamped = InputSettings::parse("hand_pinch_sensitivity = 8\nhand_scroll_speed = -8");
+        assert_eq!(clamped.hand_pinch_sensitivity, 1.0);
+        assert_eq!(clamped.hand_scroll_speed, -1.0);
+    }
+
+    #[test]
+    fn normalized_speeds_reject_nonfinite_and_invalid_values() {
+        for key in ["touchpad_speed", "mouse_speed", "hand_speed", "hand_pinch_sensitivity", "hand_scroll_speed"] {
+            for invalid in ["NaN", "inf", "-inf", "fast", ""] {
+                let parsed = InputSettings::parse(&format!("{key} = {invalid}"));
+                assert_eq!(parsed, InputSettings::default(), "{key} = {invalid}");
+                let valid = InputSettings::parse(&format!("{key} = 0.4"));
+                let repeated = InputSettings::parse(&format!("{key} = 0.4\n{key} = {invalid}"));
+                assert_eq!(repeated, valid, "{key} must retain its previous finite value");
+            }
+        }
+        assert!(InputSettings::parse("hand_drag_lock = invalid").hand_drag_lock);
+        assert!(!InputSettings::parse("hand_drag_lock = off\nhand_drag_lock = invalid").hand_drag_lock);
+    }
+
+    #[test]
+    fn cursor_preferences_parse_and_keep_defaults_for_invalid_values() {
+        let defaults = InputSettings::default();
+        assert_eq!(defaults.cursor_size, 24);
+        assert_eq!(defaults.cursor_color, DEFAULT_CURSOR_COLOR);
+        assert_eq!(CURSOR_SIZE_RANGE, (16, 64));
+        let settings = InputSettings::parse("cursor_size = 40\ncursor_color = 12aBef");
+        assert_eq!(settings.cursor_size, 40);
+        assert_eq!(settings.cursor_color, [18, 171, 239]);
+        assert_eq!(InputSettings::parse("cursor_size = 0").cursor_size, 16);
+        assert_eq!(InputSettings::parse("cursor_size = 999").cursor_size, 64);
+        for invalid in ["-2", "large", "NaN", "24.5", "4294967296", ""] {
+            assert_eq!(InputSettings::parse(&format!("cursor_size = 40\ncursor_size = {invalid}")).cursor_size, 40);
+        }
+        for invalid in ["#ffffff", "abc", "11223344", "gg1122", "12 456", ""] {
+            assert_eq!(InputSettings::parse(&format!("cursor_color = 123456\ncursor_color = {invalid}")).cursor_color, [18, 52, 86]);
+        }
     }
 
     #[test]

@@ -42,8 +42,19 @@ impl eframe::App for App {
         }
         self.answer_control();
         self.clipboard.poll(self.launcher.open);
+        self.companion.pump(ctx);
+        if std::mem::take(&mut self.companion.panel_requested) {self.toggle_companion(ctx);}
+        let mut companion_requested = false;
+        let mut companion_voice_requested = false;
+        let mut companion_controls = Vec::new();
         let mut shortcut_requested = false;
         if let Some(desktop) = &mut self.desktop {
+            if std::mem::take(&mut desktop.companion_blur_requested) {self.companion.blur_text();}
+            companion_controls=std::mem::take(&mut desktop.companion_controls);
+            companion_voice_requested=std::mem::take(&mut desktop.companion_voice_requested);
+            companion_requested = std::mem::take(&mut desktop.companion_requested);
+            if !desktop.connected() || desktop.locked || desktop.lock_requested || !desktop.shots.is_empty() {self.companion.close();}
+            else if desktop.launcher_requested || desktop.settings_requested || desktop.music_requested || desktop.notifications_requested || desktop.quick_requested || desktop.power_requested {self.companion.blur_text();}
             shortcut_requested = std::mem::take(&mut desktop.shortcuts_requested);
             if desktop.launcher_requested || desktop.settings_requested || desktop.music_requested || desktop.notifications_requested || desktop.quick_requested || desktop.power_requested { self.shortcut_reference.close(); }
             if !desktop.connected() { self.dock_area = None; self.overlay_area = None; self.secondary_areas.clear(); }
@@ -114,6 +125,11 @@ impl eframe::App for App {
                 self.panels_synced = true;
             }
         }
+        if !self.lock.locked && !self.polkit.active() && !self.capture.marking() {
+            for action in companion_controls { self.companion.control(action); }
+        }
+        if companion_voice_requested {self.summon_voice(ctx);}
+        if companion_requested { self.toggle_companion(ctx); }
         if shortcut_requested && !self.polkit.active() { self.toggle_shortcut_reference(); }
         for tab in &mut self.tabs {
             tab.pump();
@@ -202,6 +218,7 @@ impl eframe::App for App {
             power::Act::Suspend.run();
         }
         if self.lock.locked {
+            self.companion.close();
             self.shortcut_reference.close();
             self.settings.appearance_editor.sync_visibility(false);
             let state=self.desktop.as_ref().map(|d|d.state.clone());
@@ -251,8 +268,9 @@ impl eframe::App for App {
         self.settings.appearance_editor.sync_visibility(self.settings.open && !self.polkit.active());
         if let Some(path) = files::take_request(ctx) { self.open_files(path); }
         if self.polkit.active() { self.shortcut_reference.close(); }
+        if self.polkit.active() || self.capture.marking() || self.lock.locked { self.companion.close(); }
         let events = self.take_shortcuts(ctx);
-        let reference_input = shortcuts::take_modal_input(ctx, self.shortcut_reference.open);
+        let mut reference_input = shortcuts::take_modal_input(ctx, self.shortcut_reference.open || self.companion.open);
         if self.launcher.open || self.settings.open || self.music.open || self.notices.open || self.power_menu.open {
             self.world.expanded = false;
             self.files_browser = None;
@@ -298,7 +316,8 @@ impl eframe::App for App {
         let workspace = Rect::from_min_max(workspace.min, pos2(workspace.max.x, (workspace.max.y - osk_height).max(workspace.min.y)));
         let dock_keys = self.dock.reserve_keyboard(ctx);
         // While the scratchpad is down it has the keyboard, not the panes.
-        let scratch_keys = self.shortcut_reference.open || self.scratchpad.visible() || self.polkit.active() || self.fs.has_keyboard() || self.quick.open;
+        let mut scratch_keys = self.companion.open || self.shortcut_reference.open || self.scratchpad.visible() || self.polkit.active() || self.fs.has_keyboard() || self.quick.open;
+        let mut chat_area=None;
         CentralPanel::default()
             .frame(Frame::new().fill(ui::GROUND))
             .show(ctx, |ui| {
@@ -387,13 +406,37 @@ impl eframe::App for App {
                 }
                 let mut typed = None;
                 if open.bottom {
-                    let rect = Rect::from_min_max(workspace.left_bottom(), pos2(workspace.right(), keys_top));
-                    typed = region(ui, rect, vec2(24.0, 16.0), Layout::top_down(Align::Min), |ui| {
-                        let cwd = self.tabs[self.focus_tab()].cwd();
-                        self.fs.show(ui, &theme, cwd.as_deref())
+                    let rect=Rect::from_min_max(workspace.left_bottom(),pos2(workspace.right(),keys_top));
+                    typed=region(ui,rect,vec2(24.0,10.0),Layout::top_down(Align::Min),|ui|{
+                        ui.horizontal(|ui|{
+                            if ui.selectable_label(!self.companion.chat_selected,"FILES").clicked(){self.companion.select_files();}
+                            if ui.selectable_label(self.companion.chat_selected,"CHAT").clicked(){self.fs.blur();self.companion.open(ctx);}
+                            if self.companion.chat_selected {
+                                if self.companion.voice_active(){ui.label(egui::RichText::new("VOICE ACTIVE").color(theme.main));}
+                                ui.with_layout(Layout::right_to_left(Align::Center),|ui|{
+                                    if ui.small_button("Settings").clicked(){self.companion.settings_requested=true;self.companion.blur_text();}
+                                });
+                            }
+                        });
+                        ui.add_space(4.0);
+                        if self.companion.chat_selected {
+                            self.fs.blur();
+                            if self.companion.open && !self.shortcut_reference.open {ctx.input_mut(|i|i.events.extend(std::mem::take(&mut reference_input)));}
+                            self.companion.panel_ui(ui,&theme);
+                            if self.companion.open {let _=shortcuts::take_modal_input(ctx,true);}
+                            if self.companion.open {chat_area=Some(rect);}
+                            None
+                        } else {
+                            let cwd=self.tabs[self.focus_tab()].cwd();
+                            self.fs.show(ui,&theme,cwd.as_deref())
+                        }
                     });
                 } else {
-                    self.fs.blur();
+                    self.fs.blur();self.companion.blur_text();
+                }
+                scratch_keys |= self.companion.open;
+                if self.companion.open && ctx.input(|i|i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p|workspace.contains(p))) {
+                    self.companion.blur_text();
                 }
 
                 // The top bar stays in view while an application covers what is below
@@ -432,7 +475,7 @@ impl eframe::App for App {
                         self.settings.set_music_status(self.music.connection_status());
                         self.settings.set_live_terminal_counts(self.tabs.iter().filter(|tab| tab.persistent_id.is_some()).count(), self.tabs.len());
                         self.settings.set_desktop_connected(self.desktop.as_ref().is_some_and(|d|d.connected()));
-                        self.settings.show(ui, mine, &theme, &self.config, open, &self.mon, &places, displays, &self.input)
+                        self.settings.show(ui, mine, &theme, &self.config, open, &self.mon, &places, displays, &self.input, &mut self.companion)
                     });
                     for change in changes {
                         self.apply(ctx, change);
@@ -589,7 +632,7 @@ impl eframe::App for App {
 
         let look = self.config.term_look();
         let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
-        let scratch = if self.shortcut_reference.open { None } else { self.scratchpad.show(ctx, workspace, screen, &theme, &look, animate,
+        let scratch = if self.companion.open || self.shortcut_reference.open { None } else { self.scratchpad.show(ctx, workspace, screen, &theme, &look, animate,
             (&self.shell, &home, self.config.scrollback, self.config.keep_terminal_sessions && self.live_terminal_lease.is_some()), &events) };
         // The quick settings, when open, take the lifted area: they are the one in use.
         let readings = quick::Readings {
@@ -706,8 +749,21 @@ impl eframe::App for App {
         }
         // A reference modal owns the entire display, including pointer input,
         // while applications beneath it retain their workspace/process state.
-        let overlay_area = if self.shortcut_reference.open { Some(screen) } else { quick_area.or(scratch) }.map(scratchpad::area);
-        if scratchpad::changed(&mut self.overlay_area, overlay_area) { self.send(Command::Overlay(overlay_area)); }
+        let companion_suppressed=self.lock.locked || self.polkit.active() || self.capture.marking() || self.capture.recording.is_some() || self.notices.quiet || self.shortcut_reference.open || self.quick.open || self.scratchpad.visible() || self.launcher.open || self.settings.open || self.music.open || self.notices.open || self.power_menu.open || (ctx.dragged_id().is_some() || ctx.input(|i|!i.focused)) || self.desktop.as_ref().is_some_and(|d|!d.connected() || d.state.focus.is_some() || d.state.covering().is_some() || d.overview.is_some());
+        let _companion_bubble=self.companion.social_tick(ctx,companion_suppressed,&theme,animate);
+        let voice_allowed=!self.lock.locked && !self.polkit.active() && !self.capture.marking();
+        if let Some(pointer)=self.desktop.as_mut().and_then(|d|d.companion_pointer.take()) {self.companion.set_voice_pointer(pointer);}
+        let voice_caption=if voice_allowed {self.companion.voice_bubble(ctx,&theme,animate)}else{None};
+        for command in self.companion.cursor_commands(voice_caption,voice_allowed,Instant::now()) {self.send(command);}
+        if std::mem::take(&mut self.companion.settings_requested) {
+            self.settings.open_at(&self.config, "companion");
+            self.send(Command::Terminal);
+        }
+        let overlay_area = if self.shortcut_reference.open {Some(screen)} else {chat_area.or(quick_area).or(scratch)}.map(scratchpad::area);
+        if scratchpad::changed(&mut self.overlay_area, overlay_area) {
+            self.send(Command::CompanionChat(self.companion.open && chat_area.is_some()));
+            self.send(Command::Overlay(overlay_area));
+        }
         // Last, so that it is above everything else.
         self.polkit.show(ctx, &theme, false);
 

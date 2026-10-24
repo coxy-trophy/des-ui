@@ -18,7 +18,7 @@ use smithay::{
             protocol::wl_surface::WlSurface,
         },
     },
-    utils::{Logical, Point, Rectangle},
+    utils::{IsAlive, Logical, Point, Rectangle},
     wayland::{
         compositor::{CompositorClientState, CompositorState},
         dmabuf::{DmabufGlobal, DmabufState},
@@ -129,6 +129,8 @@ pub struct DesComp {
     pub idle_inhibitors: Vec<WlSurface>,
     /// Where in the shell's window its toasts are, to be shown above everything.
     pub toast: Option<Rectangle<i32, Logical>>,
+    pub companion_bubble: Option<(Rectangle<i32, Logical>, Instant)>,
+    pub companion_bubble_id: smithay::backend::renderer::element::Id,
     /// The shell-local dock and its pointer corridor, independent of notifications.
     pub dock: Option<Rectangle<i32, Logical>>,
     /// Temporarily routes keys to the dock while preserving application selection.
@@ -141,6 +143,7 @@ pub struct DesComp {
     /// A part of the shell's window on the main display shown above everything, such
     /// as its drop-down terminal; the keyboard is the shell's while it shows.
     pub overlay: Option<Rectangle<i32, Logical>>,
+    pub companion_chat: bool,
     pub overlay_id: smithay::backend::renderer::element::Id,
     /// Whether the pinned application has the keyboard, having been clicked.
     pub pin_focused: bool,
@@ -168,6 +171,8 @@ pub struct DesComp {
     pub focus_screen: usize,
     /// What the client under the pointer wants the pointer to look like.
     pub cursor_status: CursorImageStatus,
+    pub cursors: crate::handlers::cursor_shape::Cursors,
+    pub cursor_theme_worker: crate::cursor_theme::ThemeWorker,
     /// Testing aid: treat the left and right halves of the window as two displays.
     pub split: bool,
 
@@ -221,6 +226,7 @@ pub struct DesComp {
     /// Hand control, while des-hands runs; how it stands, as the shell was told; and
     /// whether the settings last asked for it, to act only when they change.
     pub hands: Option<crate::hands::Running>,
+    pub hand_feedback: crate::hand_feedback::Feedback,
     pub hands_state: des_common::ipc::Hands,
     pub hands_setting: Option<bool>,
 }
@@ -320,6 +326,8 @@ impl DesComp {
             idle_held: false,
             idle_inhibitors: Vec::new(),
             toast: None,
+            companion_bubble: None,
+            companion_bubble_id: smithay::backend::renderer::element::Id::new(),
             dock: None,
             dock_keyboard: false,
             dock_keyboard_screen: 0,
@@ -329,6 +337,7 @@ impl DesComp {
             splash: std::env::var_os("DES_TEST_SPLASH_MS").map(|_| crate::splash::Splash::new(Duration::from_millis(test_millis("DES_TEST_SPLASH_MS", 1400)))),
             toast_id: smithay::backend::renderer::element::Id::new(),
             overlay: None,
+            companion_chat: false,
             overlay_id: smithay::backend::renderer::element::Id::new(),
             pin_focused: false,
             backdrops: Vec::new(),
@@ -343,6 +352,8 @@ impl DesComp {
             panels: Panels::default(),
             focus_screen: 0,
             cursor_status: CursorImageStatus::default_named(),
+            cursors: crate::handlers::cursor_shape::Cursors::new(),
+            cursor_theme_worker: crate::cursor_theme::ThemeWorker::new(),
             split: false,
 
             ipc: None,
@@ -372,6 +383,7 @@ impl DesComp {
             switcher_released: false,
             swipe: None,
             hands: None,
+            hand_feedback: Default::default(),
             hands_state: des_common::ipc::Hands::Off,
             hands_setting: None,
         }
@@ -464,6 +476,9 @@ impl DesComp {
 
     /// Work due before drawing a frame. Returns false once the session is over.
     pub fn before_frame(&mut self) -> bool {
+        if matches!(&self.cursor_status, CursorImageStatus::Surface(surface) if !surface.alive()) {
+            self.cursor_status = CursorImageStatus::default_named();
+        }
         self.motions.tick(Instant::now());
         self.glide_hands();
         self.tick_drag_overview();

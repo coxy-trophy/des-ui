@@ -31,8 +31,8 @@ const LONGEST: Duration = Duration::from_millis(120);
 pub struct Running {
     child: Child,
     source: RegistrationToken,
-    /// The speed it was started with.
-    speed: f32,
+    /// Preferences this process was started with.
+    settings: HandSettings,
     /// Bytes of a line not yet ended.
     partial: Vec<u8>,
     /// Logical pixels still to go, and in how long.
@@ -44,6 +44,37 @@ pub struct Running {
     last_motion: Option<Instant>,
     /// Buttons it has pressed and not let go.
     held: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct HandSettings {
+    speed: f32,
+    pinch_sensitivity: f32,
+    scroll_speed: f32,
+    drag_lock: bool,
+}
+
+impl From<&des_common::input::InputSettings> for HandSettings {
+    fn from(input: &des_common::input::InputSettings) -> Self {
+        Self { speed: input.hand_speed, pinch_sensitivity: input.hand_pinch_sensitivity,
+            scroll_speed: input.hand_scroll_speed, drag_lock: input.hand_drag_lock }
+    }
+}
+
+impl HandSettings {
+    fn args(self) -> Vec<String> {
+        vec!["--serve".into(), "--speed".into(), self.speed.to_string(),
+            "--pinch-sensitivity".into(), self.pinch_sensitivity.to_string(),
+            "--scroll-speed".into(), self.scroll_speed.to_string(),
+            "--drag-lock".into(), if self.drag_lock { "on" } else { "off" }.into()]
+    }
+}
+
+// A temporary Super+H choice remains in effect when adjusting preferences.
+fn restart_choice(wanted: bool, previous: Option<bool>, running: bool, changed: bool) -> Option<bool> {
+    if previous != Some(wanted) { Some(wanted) }
+    else if running && changed { Some(true) }
+    else { None }
 }
 
 /// How much of `pending` to move by now, `elapsed` since the last time, with
@@ -76,22 +107,23 @@ impl DesComp {
     fn tell_hands(&mut self, state: Hands) {
         if self.hands_state != state {
             self.hands_state = state;
-            if let Some(ipc) = self.ipc.as_mut() {
-                ipc.send(&Event::hands(state));
-            }
+            // Commands temporarily take the socket out of the compositor. Queue
+            // the transition there too, including camera-on before any hand is seen.
+            self.tell(Event::hands(state));
         }
     }
 
     /// Hand control as the settings have it, when they have changed: on or off, and
     /// started again at a new speed.
     pub fn apply_hand_settings(&mut self) {
-        let (wanted, speed) = (self.input_settings.hand_control, self.input_settings.hand_speed);
-        let changed = self.hands_setting != Some(wanted);
+        let wanted = self.input_settings.hand_control;
+        let settings = HandSettings::from(&self.input_settings);
+        let changed = self.hands.as_ref().is_some_and(|running| running.settings != settings);
+        let restart = restart_choice(wanted, self.hands_setting, self.hands.is_some(), changed);
         self.hands_setting = Some(wanted);
-        let respeed = self.hands.as_ref().is_some_and(|running| running.speed != speed);
-        if changed || respeed {
+        if let Some(start) = restart {
             self.stop_hands();
-            if wanted {
+            if start {
                 self.start_hands();
             }
         }
@@ -107,9 +139,9 @@ impl DesComp {
     }
 
     fn start_hands(&mut self) {
-        let speed = self.input_settings.hand_speed;
+        let settings = HandSettings::from(&self.input_settings);
         let spawned = Command::new(program())
-            .args(["--serve", "--speed", &format!("{speed:.2}")])
+            .args(settings.args())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -157,7 +189,7 @@ impl DesComp {
         self.hands = Some(Running {
             child,
             source,
-            speed,
+            settings,
             partial: Vec::new(),
             pending: (0.0, 0.0),
             glide_left: Duration::ZERO,
@@ -171,6 +203,7 @@ impl DesComp {
 
     /// Stops des-hands, which lets go of the camera, and of any button it held.
     pub fn stop_hands(&mut self) {
+        self.hand_feedback.reset();
         let Some(mut running) = self.hands.take() else {
             return;
         };
@@ -184,6 +217,7 @@ impl DesComp {
 
     /// des-hands stopped by itself: without a camera, say.
     fn hands_ended(&mut self) {
+        self.hand_feedback.reset();
         let Some(mut running) = self.hands.take() else {
             return;
         };
@@ -249,10 +283,15 @@ impl DesComp {
             Message::Press(which) | Message::Release(which) => {
                 let button = if which == Button::Left { BTN_LEFT } else { BTN_RIGHT };
                 let pressed = matches!(message, Message::Press(_));
-                // What is still to glide arrives first, so that the click lands there.
-                self.finish_glide();
+                // Click where the pointer is visibly resting, not at a later
+                // camera sample that has not yet reached the display.
+                if let Some(running) = self.hands.as_mut() {
+                    running.pending = (0.0, 0.0);
+                    running.glide_left = Duration::ZERO;
+                }
                 if let Some(running) = self.hands.as_mut() {
                     if pressed {
+                        if running.held.contains(&button) { return; }
                         running.held.push(button);
                     } else if let Some(at) = running.held.iter().position(|held| *held == button) {
                         running.held.remove(at);
@@ -260,6 +299,7 @@ impl DesComp {
                         return;
                     }
                 }
+                self.hand_feedback.button(which, pressed, Instant::now());
                 self.input_activity();
                 self.pointer_button(button, if pressed { ButtonState::Pressed } else { ButtonState::Released }, time);
             }
@@ -275,6 +315,7 @@ impl DesComp {
             Message::Scroll(_) => {}
             // As on a touchpad: towards the left is the next workspace.
             Message::Sweep(side) => {
+                if self.locked || self.picking { return; }
                 self.input_activity();
                 match side {
                     Side::Left => self.switch_workspace(self.workspace + 1),
@@ -284,7 +325,15 @@ impl DesComp {
             }
             Message::Seen | Message::Wake => self.tell_hands(Hands::Following),
             Message::Rest | Message::Gone => {
-                self.finish_glide();
+                // Rest is a lift, not a final movement. Do not jump to a pending
+                // camera sample or leave a malformed/lost gesture holding a button.
+                if let Some(running) = self.hands.as_mut() {
+                    running.pending = (0.0, 0.0);
+                    running.glide_left = Duration::ZERO;
+                    let held = std::mem::take(&mut running.held);
+                    self.let_go(held);
+                }
+                self.hand_feedback.reset();
                 self.tell_hands(Hands::Watching);
             }
         }
@@ -310,18 +359,6 @@ impl DesComp {
         self.move_by_hand(step);
     }
 
-    /// The rest of the way at once.
-    fn finish_glide(&mut self) {
-        let Some(running) = self.hands.as_mut() else {
-            return;
-        };
-        let step = std::mem::take(&mut running.pending);
-        running.glide_left = Duration::ZERO;
-        if step != (0.0, 0.0) {
-            self.move_by_hand(step);
-        }
-    }
-
     fn move_by_hand(&mut self, step: (f64, f64)) {
         let elapsed = self.start_time.elapsed();
         self.input_activity();
@@ -333,6 +370,26 @@ impl DesComp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preference_reload_preserves_temporary_on_and_off_choices() {
+        assert_eq!(restart_choice(false, Some(false), true, true), Some(true));
+        assert_eq!(restart_choice(true, Some(true), false, true), None);
+        assert_eq!(restart_choice(false, Some(false), true, false), None);
+        assert_eq!(restart_choice(false, Some(true), true, true), Some(false));
+        assert_eq!(restart_choice(true, Some(false), false, true), Some(true));
+    }
+
+    #[test]
+    fn every_gesture_preference_is_passed_to_the_camera_process() {
+        let input = des_common::input::InputSettings::parse("hand_speed = 0.4\nhand_pinch_sensitivity = 0.8\nhand_scroll_speed = -0.5\nhand_drag_lock = off");
+        let settings = HandSettings::from(&input);
+        assert_eq!(settings.args(), ["--serve", "--speed", "0.4", "--pinch-sensitivity", "0.8", "--scroll-speed", "-0.5", "--drag-lock", "off"]);
+        for key in ["hand_speed", "hand_pinch_sensitivity", "hand_scroll_speed", "hand_drag_lock"] {
+            let value = if key == "hand_drag_lock" { "off" } else { "0.7" };
+            assert_ne!(settings, HandSettings::from(&des_common::input::InputSettings::parse(&format!("{key} = {value}"))));
+        }
+    }
 
     #[test]
     fn glides_its_share_and_then_the_rest() {

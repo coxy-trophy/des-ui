@@ -33,6 +33,12 @@ pub struct Desktop {
     /// Likewise for the settings shortcut.
     pub settings_requested: bool,
     pub shortcuts_requested: bool,
+    pub companion_requested: bool,
+    pub companion_voice_requested: bool,
+    pub companion_blur_requested: bool,
+    pub companion_pointer: Option<(i32, i32, usize)>,
+    /// Pending fixed companion controls, drained by the runtime each frame.
+    pub companion_controls: Vec<des_common::ipc::CompanionAction>,
     /// Likewise for the music shortcut.
     pub music_requested: bool,
     /// Likewise for the notifications shortcut.
@@ -91,6 +97,11 @@ impl Desktop {
             dock_screen_requested: None,
             settings_requested: false,
             shortcuts_requested: false,
+            companion_requested: false,
+            companion_voice_requested: false,
+            companion_blur_requested: false,
+            companion_pointer: None,
+            companion_controls: Vec::new(),
             music_requested: false,
             notifications_requested: false,
             quick_requested: false,
@@ -116,7 +127,7 @@ impl Desktop {
             let Ok(message) = self.rx.try_recv() else { break };
             let event = match message {
                 Message::Ready => { self.heard = true; continue; }
-                Message::Disconnected => { self.heard = false; self.overview = None; self.window_shelf = false; continue; }
+                Message::Disconnected => { self.heard = false; self.overview = None; self.window_shelf = false; self.companion_pointer = None; continue; }
                 Message::SecurityConfirmed(generation, locked) => {
                     if generation == self.security_generation { self.security_confirmed = Some(locked); }
                     continue;
@@ -133,6 +144,13 @@ impl Desktop {
                 Event::DockOn(screen) => self.dock_screen_requested = Some(screen),
                 Event::Settings => self.settings_requested = true,
                 Event::Shortcuts => self.shortcuts_requested = true,
+                Event::Companion => self.companion_requested = true,
+                Event::VoiceCompanion => self.companion_voice_requested = true,
+                Event::CompanionBlur => self.companion_blur_requested = true,
+                Event::CompanionPointer { x, y, screen } => self.companion_pointer = Some((x, y, screen)),
+                Event::CompanionControl(action) => {
+                    if self.companion_controls.len() < 16 { self.companion_controls.push(action); }
+                }
                 Event::Music => self.music_requested = true,
                 Event::Notifications => self.notifications_requested = true,
                 Event::Quick => self.quick_requested = true,
@@ -143,7 +161,7 @@ impl Desktop {
                 Event::Displays(displays) => self.displays = displays,
                 Event::Layouts(layouts) => self.layouts = layouts,
                 Event::LockRequested => self.lock_requested = true,
-                Event::Locked(locked) => self.locked = locked,
+                Event::Locked(locked) => { self.locked = locked; if locked { self.companion_pointer = None; } },
                 Event::Overview(layout) => self.overview = layout,
             }
         }

@@ -640,3 +640,67 @@ this feature cannot be converted; save their work before the first desktop updat
 - [ ] Test actual browsers exposing native tab drags, including Xwayland separately. Internal browser reorder gestures may never create a desktop drag.
 - [ ] Toggle Settings Dock drag overview; check persistence, ordinary dragging while disabled, animation-off, Reduce motion and Reduce transparency.
 - [ ] Review animation, preview labels, wallpaper continuity and compositor CPU/GPU use in the installed session. Automated tests do not establish native visual acceptance.
+
+
+## Comfortable hand gestures
+
+Status: awaiting installed-session testing. On 2026-10-23 the user deferred logout, so the new gesture mappings, comfort settings and pointer feedback have not been tested in their desktop session. Keep the checks below open until matching binaries are installed and a fresh session can be tested.
+
+- [ ] Try relaxed fingers and small palm movements seated at the actual camera; verify no click merely by entering the view pinched.
+- [ ] Light index pinch clicks once and holding never right-clicks; middle pinch right-clicks once. Confirm aim stays on small targets.
+- [ ] Two quick taps double-click. Tap then pinch again and move grabs; relax fingers to carry and pinch to drop. Repeat with hold-pinch mode disabled/enabled.
+- [ ] Fist, lower hand, tracking loss and picture edges release drag once; returning reanchors without a jump.
+- [ ] Adjust sensitivity and scroll speed, including while temporarily enabled/paused by Super+H; verify saved preferences and no stuck grab on reload.
+- [ ] Confirm click/grab markers in applications and terminals across DPI/output changes, fullscreen, reduced motion, lock and capture. Review physical comfort and actual camera jitter; automated synthetic hands cannot establish these.
+
+
+## Solid morph cursor
+
+Status: implemented, awaiting fresh installed-session acceptance. The user cannot log out now; no running session was changed.
+
+- [ ] Check pointer/link/text/grab/resize/busy morphs in shell, settings, Files and native applications; clicking remains at the same point while changing shape.
+- [ ] Check all resize directions, copy/move/forbidden/precision/zoom semantics, rapid retargeting and drag-overview interactions.
+- [ ] Inspect 1×, fractional and high-DPI outputs, monitor crossings and small-size contrast on bright/dark wallpaper; confirm no duplicate host cursor in ./dev.sh.
+- [ ] Confirm animation-off and Reduce motion snap/freeze; custom cursor images and deliberate hidden pointers remain intact; close an app supplying a cursor surface.
+- [ ] Confirm pointer-inclusive recording/capture shows the same cursor and does not reset resize morphs. Lock, screenshot selection and startup splash retain ownership.
+- [ ] Verify DEs-UI fallback theme in older Wayland clients and Xwayland; explicit cursor theme/size/path choices remain respected. Theme files are static endpoints, not cross-state morphs.
+- [ ] Assess idle and busy cursor CPU/GPU use in the installed compositor. Automated geometry/cache tests and libXcursor loading are not native visual acceptance.
+
+
+## Cursor color and size
+
+Status: implemented with automated cursor checks complete; installed-session acceptance deferred because the user cannot log out. Full workspace checks also retain the terminal backpressure timeout documented in docs/validation/2026-10-23-cursor-preferences.md. No installed binaries or desktop settings were changed by the agent.
+
+- [ ] Mouse & touchpad: adjust size16–64px, Apply/Reset opaque cursor colors, Reset size; verify persistence and exact previews on light/dark grounds, including black and white.
+- [ ] Verify live native changes during morphs, app switching and dragging; pointer click point stays fixed at all sizes and display scales.
+- [ ] Reopen older apps after changing size/color; check logical size on1×/2×/3×/4× outputs, custom theme overrides, and newly launched apps after reconnect.
+- [ ] Simulate an unwritable/full cursor cache; named cursor stays usable, prior legacy generation remains available, and later reload retries publication. Check no render stalls during rapid slider changes.
+
+## Cursor AI companion —2026-10-23
+
+Implementation and mocked tests are present; no paid OpenAI request, real microphone or installed-session activation has been performed. Existing gesture/cursor/session checks above remain open. No shell restart or installation was performed.
+
+- [ ] Settings → Companion setup with a locally entered key; text reply, failure/quota feedback, model change retaining the key, worker/shell restart requiring re-entry unless environment configured.
+- [ ] Global and shell text/voice mappings, Escape/focus restoration against terminal and native apps, no key leakage into another app; visual acceptance at actual scaling and multiple displays.
+- [ ] Real GPT-Live access, connection latency, microphone/output defaults, speaker echo vs headset, natural interruption and playback quality. Default PipeWire source/sink are used.
+- [ ] Quick summon follow-up auto-close, Keep talking, mute vs stop, five-minute cutoff while speaking, explicit resume preserving context, no automatic reconnect.
+- [ ] Stop/lock/authentication/screenshot/shell restart ends mic and audio immediately. Test worker crash while microphone is live.
+- [ ] Finalized and unconfirmed usage presentation against actual provider accounting; daily limits include backend costs separately from connection minutes.
+- [ ] Social opt-in bubble on exposed desktop, Talk/Quiet hit targets, ignored approach after restart, app focus/fullscreen/drag/recording suppression and cadence.
+- [ ] Self-authored identity evolution across text/voice context; edit, restore, reset, approved memory/forget/clear and history limits.
+
+Deferred controls: spoken “keep talking” recognition, disconnected local wake detector, provider alternatives, per-companion audio device selectors, and explicit screenshot/file attachments. No ambient screen/file access exists. A five-minute cap is an application limit, not a verified exact provider billing cutoff. Text replies are completed responses; token-by-token text streaming is not implemented.
+
+### Companion setup and thought-bubble revision
+
+The reported “Voice connection failed” did not identify its underlying cause. Longer handshake allowance, safe status-specific diagnostics and reconnect-state repair are implemented and mock-tested; a successful real voice connection is still unverified. Retest from Settings → Companion and use the displayed diagnostic without sharing the key. Check animated thought-trail/fade near all screen edges, reduced motion, social Talk/Quiet click targets, new global control mappings and Settings navigation in the installed session. No shell restart/installation or paid test was performed during this revision.
+
+### Bottom chat, saved key and speaking cursor —2026-10-24
+
+- [ ] Save a real key into the system keyring; restart shell and confirm automatic restoration, locked/unavailable feedback, explicit removal, and no unexpected unlock prompt on idle startup. Development tests use fake keyrings and never inspect real saved credentials.
+- [ ] Super+J opens the bottom panel's Chat tab from collapsed state over native apps. Switch Files/Chat; Enter sends once; Escape/clicking terminal/native apps returns keyboard correctly. Draft/history survive tab switches; text controls explain disabled/setup/loading states.
+- [ ] Super+Ctrl+J starts voice without opening Chat. Cursor pulse and speaking caption follow actual output audio, stop/drain/mute/lock behavior and reduced motion. Pointer-transparent caption never blocks clicks or steals native app focus.
+- [ ] Actual pulse quality at different cursor sizes/colors/output scales. Cursor pulse supports all outputs; captions currently use the primary shell surface and are suppressed for secondary-pointer anchors.
+- [ ] Keep/Stop during key restoration, voice timeout/failure notices, five-minute cutoff and explicit continuation in the installed session.
+
+No installation, restart, real API/keyring operation or microphone test was performed for these changes. Secret Service runtime dependencies are included in package metadata; a login keyring may need unlocking once per desktop login. Existing hardware acceptance items remain open.

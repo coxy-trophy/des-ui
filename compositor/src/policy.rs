@@ -115,6 +115,10 @@ fn layout_info(workspace: usize, screen: usize, mode: &ScreenMode, split_anyway:
     Some(LayoutInfo { workspace, screen, kind, ratio: mode.ratios.primary(kind), ratio2: mode.ratios.secondary(kind) })
 }
 
+fn companion_chat_should_blur(chat: bool, overlay: bool, locked: bool, picking: bool, grabbed: bool, on_overlay: bool) -> bool {
+    chat && overlay && !locked && !picking && !grabbed && !on_overlay
+}
+
 fn command_allowed(locked: bool, picking:bool, command: &Command) -> bool {
     (!locked || matches!(command, Command::Lock | Command::Unlock | Command::ReloadInput)) && (!picking || !matches!(command,Command::Dock(Some(_))|Command::DockOn(_,Some(_))|Command::Overlay(Some(_))|Command::DragFiles(_)|Command::Overview|Command::AppWindows(..)))
 }
@@ -1198,6 +1202,7 @@ impl DesComp {
         if self.locked != locked {
             tracing::info!(locked, "screen lock");
             self.locked = locked;
+            if locked { self.cursors.set_speaking(false, std::time::Instant::now()); self.companion_bubble = None; self.companion_chat = false; }
             if locked {
                 // No pre-lock keyboard grab may intercept the lock screen.
                 if let Some(keyboard) = self.seat.get_keyboard() {
@@ -1265,6 +1270,18 @@ impl DesComp {
         }
     }
 
+    /// Only the chat editor opts into outside-click dismissal. Other overlays
+    /// retain their existing focus lifecycle; ongoing voice is independent.
+    pub(crate) fn blur_companion_chat_on_press(&mut self, grabbed: bool, on_overlay: bool) {
+        if companion_chat_should_blur(self.companion_chat, self.overlay.is_some(), self.locked, self.picking, grabbed, on_overlay) {
+            self.companion_chat = false;
+            self.overlay = None;
+            self.tell(des_common::ipc::Event::COMPANION_BLUR.into());
+            // Even a click within the already-focused app needs focus restored.
+            self.arrange();
+        }
+    }
+
     /// A click landed at `pos`: that display, and that half of it, are now in use.
     pub fn focus_at(&mut self, pos: Point<f64, Logical>) {
         // A click on a layer surface that takes the keyboard on demand goes to it.
@@ -1304,7 +1321,12 @@ impl DesComp {
         let Some(mut ipc) = self.ipc.take() else {
             return;
         };
-        for command in ipc.poll(self.shell_pid) {
+        let commands = ipc.poll(self.shell_pid);
+        if !ipc.has_shell_client() || self.locked || self.picking {
+            self.companion_bubble = None;
+            self.cursors.set_speaking(false, std::time::Instant::now());
+        }
+        for command in commands {
             if self.modes.is_empty() {
                 break;
             }
@@ -1313,6 +1335,20 @@ impl DesComp {
                 continue;
             }
             match command {
+                Command::CompanionChat(active) => { self.companion_chat = active && !self.locked && !self.picking && ipc.has_shell_client(); }
+                Command::CompanionBubble(area) => {
+                    if area.is_some() && ipc.has_shell_client() {
+                        if let Some(line) = self.companion_pointer_event() { ipc.send(&line); }
+                    }
+                    self.companion_bubble = area.filter(|_| !self.locked && !self.picking && ipc.has_shell_client())
+                        .map(|(x,y,w,h)| (Rectangle::new((x,y).into(), (w,h).into()), std::time::Instant::now() + std::time::Duration::from_secs(2)));
+                }
+                Command::CompanionSpeaking(active) => {
+                    if active && ipc.has_shell_client() {
+                        if let Some(line) = self.companion_pointer_event() { ipc.send(&line); }
+                    }
+                    self.cursors.set_speaking(active && !self.locked && !self.picking && ipc.has_shell_client(), std::time::Instant::now());
+                }
                 // The window may have closed while the request was on its way.
                 Command::Activate(index) if index < self.apps.len() => {
                     self.activate(index);
@@ -1385,6 +1421,7 @@ impl DesComp {
                 Command::Overview => self.toggle_overview(),
                 Command::AppWindows(screen,id) => self.open_app_windows(screen,&id),
                 Command::Overlay(area) => {
+                    if area.is_none() { self.companion_chat = false; }
                     self.overlay = area.map(|(x, y, w, h)| Rectangle::new((x, y).into(), (w, h).into()));
                     // The keyboard goes to the shell while the overlay shows, and back after.
                     if !self.picking {
@@ -1404,6 +1441,7 @@ impl DesComp {
             }
         }
         if !ipc.has_shell_client() {
+            self.companion_chat = false;
             self.dock = None;
             self.docks.clear();
             if self.overlay.take().is_some() {
@@ -1441,6 +1479,19 @@ impl DesComp {
             ipc.send(&line);
         }
         self.ipc = Some(ipc);
+    }
+
+    /// Sample only when voice starts or the shell refreshes an active visual.
+    /// The compositor owns pointer coordinates even while another app has focus.
+    pub(crate) fn companion_pointer_event(&self) -> Option<String> {
+        if self.locked || self.picking { return None; }
+        let pointer = self.seat.get_pointer()?.current_location();
+        let origin = self.screens.first()?.loc;
+        Some(des_common::ipc::Event::companion_pointer(
+            (pointer.x - origin.x as f64).round() as i32,
+            (pointer.y - origin.y as f64).round() as i32,
+            self.screen_at(pointer),
+        ))
     }
 
     /// Says something to the shell: at once, or as soon as the socket is back in hand.
@@ -1574,5 +1625,19 @@ mod pin_and_overlay_tests {
         assert!(!command_allowed(true, false, &Command::Pin(0)));
         assert!(!command_allowed(true, false, &Command::Unpin));
         assert!(command_allowed(false, false, &Command::Pin(0)));
+    }
+}
+
+#[cfg(test)]
+mod companion_chat_blur_tests {
+    use super::*;
+    #[test]
+    fn only_chat_overlay_releases_keyboard_on_an_ungrabbed_outside_press() {
+        assert!(companion_chat_should_blur(true, true, false, false, false, false));
+        for args in [(false,true,false,false,false,false), (true,false,false,false,false,false),
+                     (true,true,true,false,false,false), (true,true,false,true,false,false),
+                     (true,true,false,false,true,false), (true,true,false,false,false,true)] {
+            assert!(!companion_chat_should_blur(args.0,args.1,args.2,args.3,args.4,args.5));
+        }
     }
 }

@@ -21,6 +21,8 @@ mod overview;
 mod switcher;
 mod gestures;
 mod hands;
+mod hand_feedback;
+mod cursor_theme;
 mod phosphor;
 mod udev;
 mod winit;
@@ -48,6 +50,8 @@ Options:
   --no-xwayland        Do not start an X server for X11 applications
   --split              Treat the window's halves as two displays (for testing)
   --screenshot <FILE>  Save a PPM screenshot after 5 seconds and exit (for testing)
+  --write-cursor-theme <DIR>  Export the matching Xcursor theme and exit
+  --write-configured-cursor-theme <DIR>  Export current cursor preferences and exit
   -h, --help           Show this help
 
 Keys (hold Super, or Ctrl+Alt):
@@ -121,6 +125,11 @@ fn announce_session(socket_name: &std::ffi::OsStr, x_display: Option<u32>) {
     if let Some(number) = x_display {
         variables.push(format!("DISPLAY=:{number}"));
     }
+    for name in ["XCURSOR_THEME", "XCURSOR_SIZE", "XCURSOR_PATH"] {
+        if let Ok(value) = std::env::var(name) {
+            variables.push(format!("{name}={value}"));
+        }
+    }
     let variables: Vec<&str> = variables.iter().map(String::as_str).collect();
     run("dbus-update-activation-environment", &variables);
 }
@@ -136,6 +145,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--write-cursor-theme" => {
+                let path = args.next().map(PathBuf::from).unwrap_or_else(|| usage_error("--write-cursor-theme needs a directory"));
+                cursor_theme::write_theme(&path)?;
+                return Ok(());
+            },
+            "--write-configured-cursor-theme" => {
+                let path = args.next().map(PathBuf::from).unwrap_or_else(|| usage_error("--write-configured-cursor-theme needs a directory"));
+                let preferences = handlers::cursor_shape::Preferences::from(&des_common::input::InputSettings::load());
+                cursor_theme::write_theme_with_preferences(&path, preferences)?;
+                return Ok(());
+            },
             "--shell" => match args.next() {
                 Some(path) => shell = PathBuf::from(path),
                 None => usage_error("--shell needs a value"),
@@ -173,6 +193,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let display: Display<DesComp> = Display::new()?;
     let mut data = DesComp::new(&mut event_loop, display);
+    data.input_settings = des_common::input::InputSettings::load();
+    let cursor = handlers::cursor_shape::Preferences::from(&data.input_settings);
+    data.cursors.configure(cursor);
+    // Publish before any shell or Xwayland client can cache its first cursor.
+    // Later changes use the coalescing worker, never the rendering thread.
+    match cursor_theme::publish_configured(cursor) {
+        Ok(()) => data.cursor_theme_worker.note_published(cursor),
+        Err(error) => tracing::warn!(%error, "could not prepare configured cursor theme; keeping installed fallback"),
+    }
     data.screenshot = screenshot;
     data.split = split;
 

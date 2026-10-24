@@ -824,6 +824,21 @@ impl OverviewLayout {
     }
 }
 
+/// Fixed companion operations accepted across the compositor IPC boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompanionAction { Keep, Mute, Stop, Quiet }
+
+impl CompanionAction {
+    pub fn encode(self) -> &'static str {
+        match self {
+            Self::Keep => "companion-keep\n",
+            Self::Mute => "companion-mute\n",
+            Self::Stop => "companion-stop\n",
+            Self::Quiet => "companion-quiet\n",
+        }
+    }
+}
+
 /// A message from the compositor to the shell.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
@@ -839,6 +854,12 @@ pub enum Event {
     Settings,
     /// Open the full keyboard shortcut reference.
     Shortcuts,
+    Companion,
+    VoiceCompanion,
+    CompanionControl(CompanionAction),
+    CompanionBlur,
+    /// Pointer position relative to the primary shell surface, only during voice UI.
+    CompanionPointer { x: i32, y: i32, screen: usize },
     /// The music shortcut was pressed.
     Music,
     /// The notifications shortcut was pressed.
@@ -866,6 +887,8 @@ pub enum Event {
 }
 
 impl Event {
+    pub fn companion_pointer(x: i32, y: i32, screen: usize) -> String { format!("companion-pointer {x} {y} {screen}\n") }
+
     pub fn dock_on(screen: usize) -> String { format!("dock-screen {screen}\n") }
 
     pub fn dock() -> String { "dock\n".to_string() }
@@ -875,6 +898,9 @@ impl Event {
     /// ```
     /// assert_eq!(des_common::ipc::Event::decode(des_common::ipc::Event::SHORTCUTS), Some(des_common::ipc::Event::Shortcuts));
     /// ```
+    pub const VOICE_COMPANION: &str = "voice-companion\n";
+    pub const COMPANION_BLUR: &str = "companion-blur\n";
+    pub const COMPANION: &str = "companion\n";
     pub const SHORTCUTS: &str = "shortcuts\n";
     pub const MUSIC: &str = "music\n";
     pub const NOTIFICATIONS: &str = "notifications\n";
@@ -905,6 +931,14 @@ impl Event {
     }
 
     pub fn decode(line: &str) -> Option<Event> {
+        if let Some(rest) = line.trim_end_matches('\n').strip_prefix("companion-pointer ") {
+            let mut words = rest.split_whitespace();
+            let x = words.next()?.parse().ok()?;
+            let y = words.next()?.parse().ok()?;
+            let screen = words.next()?.parse::<usize>().ok().filter(|screen| *screen < 32)?;
+            if words.next().is_some() { return None; }
+            return Some(Event::CompanionPointer { x, y, screen });
+        }
         if let Some(screen)=line.trim_end().strip_prefix("dock-screen ") { return screen.parse::<usize>().ok().filter(|s|*s<32).map(Event::DockOn); }
 
         match line.trim_end_matches('\n') {
@@ -913,6 +947,13 @@ impl Event {
             "launcher" => return Some(Event::Launcher),
             "settings" => return Some(Event::Settings),
             "shortcuts" => return Some(Event::Shortcuts),
+            "companion" => return Some(Event::Companion),
+            "companion-blur" => return Some(Event::CompanionBlur),
+            "voice-companion" => return Some(Event::VoiceCompanion),
+            "companion-keep" => return Some(Event::CompanionControl(CompanionAction::Keep)),
+            "companion-mute" => return Some(Event::CompanionControl(CompanionAction::Mute)),
+            "companion-stop" => return Some(Event::CompanionControl(CompanionAction::Stop)),
+            "companion-quiet" => return Some(Event::CompanionControl(CompanionAction::Quiet)),
             "music" => return Some(Event::Music),
             "notifications" => return Some(Event::Notifications),
             "quick" => return Some(Event::Quick),
@@ -1014,6 +1055,12 @@ pub enum Command {
     /// An application is showing something to watch (or no longer): do not lock the
     /// screen for want of input meanwhile.
     HoldIdle(bool),
+    /// Ephemeral companion playback activity; refreshed while audio is audible.
+    CompanionSpeaking(bool),
+    /// Identifies a chat editor overlay that releases keyboard focus on outside click.
+    CompanionChat(bool),
+    /// Render-only shell crop: never participates in keyboard or pointer focus.
+    CompanionBubble(Option<(i32, i32, i32, i32)>),
     /// Take a screenshot.
     Shot(ShotMode),
     /// A control capture, correlated end to end independently of local hotkeys.
@@ -1087,6 +1134,12 @@ impl Command {
             Command::Dock(None) => "dock none\n".to_string(),
             Command::Dock(Some((x, y, w, h))) => format!("dock {x} {y} {w} {h}\n"),
             Command::Toast(None) => "toast none\n".to_string(),
+            Command::CompanionBubble(None) => "companion-bubble none\n".to_string(),
+            Command::CompanionBubble(Some((x,y,w,h))) => format!("companion-bubble {x} {y} {w} {h}\n"),
+            Command::CompanionChat(true) => "companion-chat on\n".to_string(),
+            Command::CompanionChat(false) => "companion-chat off\n".to_string(),
+            Command::CompanionSpeaking(true) => "companion-speaking on\n".to_string(),
+            Command::CompanionSpeaking(false) => "companion-speaking off\n".to_string(),
             Command::HoldIdle(true) => "hold-idle on\n".to_string(),
             Command::HoldIdle(false) => "hold-idle off\n".to_string(),
             Command::ShotRequest { id, mode } => format!("shot-request {id} {}\n", mode.word()),
@@ -1173,6 +1226,11 @@ impl Command {
         if let Some(path) = line.trim_end_matches('\n').strip_prefix("record ") {
             return (!path.is_empty()).then(|| Command::Record(path.to_string()));
         }
+        if let Some(area) = line.trim_end().strip_prefix("companion-bubble ") {
+            return match Command::decode(&format!("dock {area}"))? {
+                Command::Dock(area) => Some(Command::CompanionBubble(area)), _ => None,
+            };
+        }
         if let Some(area) = line.trim_end().strip_prefix("dock ") {
             if area == "none" { return Some(Command::Dock(None)); }
             let numbers: Vec<i32> = area.split(' ').map(str::parse).collect::<Result<_, _>>().ok()?;
@@ -1222,6 +1280,10 @@ impl Command {
             ("layout-at", Some(word)) => Command::LayoutAt(LayoutInfo::from_word(word)?),
             ("unpin", None) => Command::Unpin,
             ("overview", None) => Command::Overview,
+            ("companion-chat", Some("on")) => Command::CompanionChat(true),
+            ("companion-chat", Some("off")) => Command::CompanionChat(false),
+            ("companion-speaking", Some("on")) => Command::CompanionSpeaking(true),
+            ("companion-speaking", Some("off")) => Command::CompanionSpeaking(false),
             ("hold-idle", Some("on")) => Command::HoldIdle(true),
             ("hold-idle", Some("off")) => Command::HoldIdle(false),
             ("panel", Some("left")) => Command::TogglePanel(Panel::Left),
@@ -1671,5 +1733,81 @@ mod window_shelf_tests {
             let layout=OverviewLayout{kind,screen:0,selected:Some(0),filter:"50".into(),strip:Some((16,250,600,240)),workspaces:vec![],thumbs:vec![OverviewThumb{app:3,area:(32,290,260,150)}]};
             assert_eq!(Event::decode(&OverviewLayout::encode(Some(&layout))),Some(Event::Overview(Some(layout))));
         }
+    }
+}
+
+#[cfg(test)]
+mod companion_control_tests {
+    use super::*;
+    #[test]
+    fn companion_control_events_accept_only_fixed_operations() {
+        for (wire, action) in [
+            ("companion-keep\n", CompanionAction::Keep),
+            ("companion-mute\n", CompanionAction::Mute),
+            ("companion-stop\n", CompanionAction::Stop),
+            ("companion-quiet\n", CompanionAction::Quiet),
+        ] {
+            assert_eq!(Event::decode(wire), Some(Event::CompanionControl(action)));
+            assert_eq!(action.encode(), wire);
+        }
+        for invalid in ["companion-run", "companion-keep extra", "companion-mute\ncompanion-stop", "companion-quiet "] {
+            assert_eq!(Event::decode(invalid), None);
+        }
+    }
+}
+
+#[cfg(test)]
+mod companion_speaking_tests {
+    use super::*;
+    #[test]
+    fn speaking_is_a_fixed_boolean_command() {
+        for active in [false, true] {
+            let command = Command::CompanionSpeaking(active);
+            assert_eq!(Command::decode(&command.encode()), Some(command));
+        }
+        assert_eq!(Command::decode("companion-speaking yes"), None);
+        assert_eq!(Command::decode("companion-speaking on extra"), None);
+    }
+}
+
+#[cfg(test)]
+mod companion_bubble_tests {
+    use super::*;
+    #[test]
+    fn bubble_crop_round_trips_and_rejects_invalid_bounds() {
+        for area in [None, Some((4, 8, 220, 72))] {
+            let command = Command::CompanionBubble(area);
+            assert_eq!(Command::decode(&command.encode()), Some(command));
+        }
+        for wire in ["companion-bubble 0 0 0 10", "companion-bubble 0 0 -1 3", "companion-bubble 2147483647 0 2 4", "companion-bubble none extra"] {
+            assert_eq!(Command::decode(wire), None);
+        }
+    }
+}
+
+#[cfg(test)]
+mod companion_pointer_tests {
+    use super::*;
+    #[test]
+    fn pointer_anchor_preserves_signed_primary_coordinates_and_display() {
+        assert_eq!(Event::decode(&Event::companion_pointer(-24, 400, 1)), Some(Event::CompanionPointer { x: -24, y: 400, screen: 1 }));
+        for wire in ["companion-pointer 0 0 32", "companion-pointer 0 0", "companion-pointer 0 0 1 extra", "companion-pointer 0 0 -1"] {
+            assert_eq!(Event::decode(wire), None);
+        }
+    }
+}
+
+#[cfg(test)]
+mod companion_chat_focus_tests {
+    use super::*;
+    #[test]
+    fn chat_keyboard_marker_and_blur_event_are_fixed_protocol_values() {
+        for active in [true, false] {
+            let command = Command::CompanionChat(active);
+            assert_eq!(Command::decode(&command.encode()), Some(command));
+        }
+        assert_eq!(Event::decode(Event::COMPANION_BLUR), Some(Event::CompanionBlur));
+        assert_eq!(Event::decode("companion-blur extra"), None);
+        assert_eq!(Command::decode("companion-chat on extra"), None);
     }
 }

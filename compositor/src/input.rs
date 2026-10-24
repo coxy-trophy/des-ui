@@ -34,6 +34,9 @@ enum Action {
     Dock,
     Settings,
     Shortcuts,
+    Companion,
+    VoiceCompanion,
+    CompanionControl(des_common::ipc::CompanionAction),
     Music,
     Notifications,
     /// Super+A: the quick settings, over whatever is in view.
@@ -120,6 +123,12 @@ fn desktop_shortcut(bindings: &des_common::shortcuts::Bindings, chord: &des_comm
         "desktop.hands" => Action::ToggleHands,
         "desktop.overview" => Action::ToggleOverview,
         "desktop.help" => Action::Shortcuts,
+        "desktop.companion" => Action::Companion,
+        "desktop.voice_companion" => Action::VoiceCompanion,
+        "desktop.companion_keep" => Action::CompanionControl(des_common::ipc::CompanionAction::Keep),
+        "desktop.companion_mute" => Action::CompanionControl(des_common::ipc::CompanionAction::Mute),
+        "desktop.companion_stop" => Action::CompanionControl(des_common::ipc::CompanionAction::Stop),
+        "desktop.companion_quiet" => Action::CompanionControl(des_common::ipc::CompanionAction::Quiet),
         "desktop.workspace_1" => Action::Workspace(0),
         "desktop.send_1" => Action::SendTo(0),
         "desktop.workspace_2" => Action::Workspace(1),
@@ -267,6 +276,11 @@ impl DesComp {
     /// pointing device.
     pub fn reload_input(&mut self) {
         self.input_settings = des_common::input::InputSettings::load();
+        let cursor = crate::handlers::cursor_shape::Preferences::from(&self.input_settings);
+        self.cursors.configure(cursor);
+        // The worker deduplicates successful/in-flight preferences. Re-requesting
+        // on reload also lets a transient cache failure recover after reconnect.
+        self.cursor_theme_worker.request(cursor);
         self.shortcut_bindings = des_common::shortcuts::Bindings::load();
         self.drag_overview_enabled=crate::dnd::overview_wanted();
         self.motions.enabled = crate::motion::wanted();
@@ -390,6 +404,9 @@ impl DesComp {
         // Click to focus: the keyboard follows the display that was clicked.
         // Shell overlays own their clicks; only their explicit commands change focus.
         let on_overlay = self.shell_overlay_contains(pointer.current_location());
+        if button_state == ButtonState::Pressed {
+            self.blur_companion_chat_on_press(pointer.is_grabbed(), on_overlay);
+        }
         // The left button on a divider between windows drags it; neither the
         // press nor its release reaches the windows either side.
         if button == BTN_LEFT {
@@ -617,6 +634,12 @@ impl DesComp {
                     }
                     Some(Action::Launcher) => self.open_launcher(),
                     Some(Action::Settings) => self.open_settings(),
+                    Some(Action::VoiceCompanion) => {
+                        if let Some(line) = self.companion_pointer_event() { self.tell(line); }
+                        self.tell(des_common::ipc::Event::VOICE_COMPANION.into());
+                    }
+                    Some(Action::Companion) => self.tell(des_common::ipc::Event::COMPANION.into()),
+                    Some(Action::CompanionControl(action)) => self.tell(action.encode().into()),
                     Some(Action::Shortcuts) => self.tell(des_common::ipc::Event::SHORTCUTS.into()),
                     Some(Action::Music) => self.open_music(),
                     Some(Action::Notifications) => self.ask_notifications(),

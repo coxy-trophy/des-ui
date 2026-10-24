@@ -1,10 +1,12 @@
 //! des-hands: follows a hand in front of the webcam and says what it does: each
 //! gesture as it happens, and once a second how fast, the pose and where the pointer
-//! would be. Nothing is controlled by it yet.
+//! would be. The compositor consumes its --serve events as native pointer input.
 //!
 //!   des-hands [--camera /dev/video0] [--seconds N] [--record file]
 //!   des-hands --serve [--speed S]     for the compositor: what the hand does, one
 //!                                     line each on standard output
+//!   --pinch-sensitivity S --scroll-speed S --drag-lock on|off
+//!                                     comfort settings; S is from -1 to 1
 //!   des-hands --replay file           the gestures in a recording
 //!   des-hands --learn file            asks for each gesture in turn, records them
 //!                                     marked, and says how well each was seen
@@ -17,6 +19,7 @@ mod geometry;
 mod gestures;
 mod hand;
 mod models;
+mod options;
 mod palm;
 mod replay;
 
@@ -108,11 +111,15 @@ fn milliseconds(total: Duration, runs: u32) -> f64 {
     if runs == 0 { 0.0 } else { total.as_secs_f64() * 1000.0 / runs as f64 }
 }
 
-fn live(tracker: &mut Tracker, path: &str, seconds: Option<u64>, mut record: Option<std::fs::File>) -> std::io::Result<()> {
+fn gesture_preferences(options: options::ServeOptions) -> gestures::Preferences {
+    gestures::Preferences { pinch_sensitivity: options.pinch_sensitivity, drag_lock: options.drag_lock }
+}
+
+fn live(tracker: &mut Tracker, path: &str, seconds: Option<u64>, mut record: Option<std::fs::File>, options: options::ServeOptions) -> std::io::Result<()> {
     use std::io::Write;
     let started = Instant::now();
     let (mut since, mut frames, mut seen) = (Instant::now(), 0u32, 0u32);
-    let mut gestures = Gestures::default();
+    let mut gestures = Gestures::with_preferences(gesture_preferences(options));
     let mut pointer: Option<(f32, f32)> = None;
     let mut header = false;
     let mut edge = false;
@@ -157,14 +164,14 @@ fn live(tracker: &mut Tracker, path: &str, seconds: Option<u64>, mut record: Opt
 }
 
 /// What a gesture is, told to the compositor.
-fn message(event: gestures::Event, speed: f32) -> des_common::hands::Message {
+fn message(event: gestures::Event, speed: f32, scroll_speed: f32) -> des_common::hands::Message {
     use des_common::hands::{Button, Message, Side};
     let button = |which: gestures::Button| if which == gestures::Button::Left { Button::Left } else { Button::Right };
     match event {
         gestures::Event::Motion { dx, dy } => Message::Motion { dx: dx * speed, dy: dy * speed },
         gestures::Event::Press(which) => Message::Press(button(which)),
         gestures::Event::Release(which) => Message::Release(button(which)),
-        gestures::Event::Scroll(by) => Message::Scroll(by),
+        gestures::Event::Scroll(by) => Message::Scroll(by * scroll_speed),
         gestures::Event::Sweep(side) => Message::Sweep(if side == gestures::Side::Left { Side::Left } else { Side::Right }),
         gestures::Event::Rest => Message::Rest,
         gestures::Event::Wake => Message::Wake,
@@ -176,12 +183,13 @@ fn message(event: gestures::Event, speed: f32) -> des_common::hands::Message {
 /// `speed`, from -1 to 1, makes the pointer go from half as far to twice as far.
 /// Stops when nobody is reading any more, or the compositor that started it is gone:
 /// the camera is never left on behind its back.
-fn serve(tracker: &mut Tracker, path: &str, speed: f32) -> std::io::Result<()> {
+fn serve(tracker: &mut Tracker, path: &str, options: options::ServeOptions) -> std::io::Result<()> {
     use std::io::Write;
     let parent = std::os::unix::process::parent_id();
-    let factor = 2f32.powf(speed.clamp(-1.0, 1.0));
+    let factor = 2f32.powf(options.speed);
+    let scroll_factor = 2f32.powf(options.scroll_speed);
     let started = Instant::now();
-    let mut gestures = Gestures::default();
+    let mut gestures = Gestures::with_preferences(gesture_preferences(options));
     let mut seen = false;
     let mut out = std::io::stdout().lock();
     let mut broken = false;
@@ -196,7 +204,7 @@ fn serve(tracker: &mut Tracker, path: &str, speed: f32) -> std::io::Result<()> {
             if event == gestures::Event::Gone {
                 seen = false;
             }
-            lines.push_str(&message(event, factor).encode());
+            lines.push_str(&message(event, factor, scroll_factor).encode());
         }
         broken = !lines.is_empty() && out.write_all(lines.as_bytes()).and_then(|()| out.flush()).is_err();
         !broken && std::os::unix::process::parent_id() == parent
@@ -205,9 +213,9 @@ fn serve(tracker: &mut Tracker, path: &str, speed: f32) -> std::io::Result<()> {
 
 /// The gestures `--learn` asks for, each by its name in the recording and what to do.
 const LESSONS: [(&str, &str); 6] = [
-    ("open", "Open hand, palm to the camera, fingers apart: move it slowly about"),
-    ("pinch", "Pinch your thumb and index fingertip together, and hold"),
-    ("drag", "Pinch again, and keep pinching while you move your hand slowly"),
+    ("open", "Keep your fingers relaxed, palm visible: move your hand slowly"),
+    ("pinch", "Lightly tap thumb and index together, then separate them"),
+    ("right", "Lightly tap thumb and middle finger together, then separate them"),
     ("two", "Index and middle fingers up, the other two folded down"),
     ("fist", "Make a fist"),
     ("away", "Take your hand out of view"),
@@ -303,6 +311,7 @@ fn still(tracker: &mut Tracker, path: &str) -> Result<(), String> {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let options = options::ServeOptions::parse(&args);
     let value = |flag: &str| args.iter().position(|arg| arg == flag).and_then(|at| args.get(at + 1)).cloned();
     if args.iter().any(|arg| arg == "--camera-only") {
         let (mut since, mut frames) = (Instant::now(), 0);
@@ -350,8 +359,7 @@ fn main() {
         let hand = tracker.models.hand(&vec![0.0; hand::SIZE * hand::SIZE * 3]).map_err(|e| e.to_string());
         palm.and_then(|palm| hand.map(|hand| println!("palm: {}\nhand: {}", palm.describe(), hand.describe())))
     } else if args.iter().any(|arg| arg == "--serve") {
-        let speed = value("--speed").and_then(|speed| speed.parse().ok()).unwrap_or(0.0);
-        serve(&mut tracker, &value("--camera").unwrap_or("/dev/video0".into()), speed).map_err(|e| e.to_string())
+        serve(&mut tracker, &value("--camera").unwrap_or("/dev/video0".into()), options).map_err(|e| e.to_string())
     } else if let Some(path) = value("--learn") {
         learn(&mut tracker, &value("--camera").unwrap_or("/dev/video0".into()), &path)
     } else if let Some(path) = value("--picture") {
@@ -365,7 +373,7 @@ fn main() {
                 std::process::exit(1);
             }
         };
-        live(&mut tracker, &value("--camera").unwrap_or("/dev/video0".into()), seconds, record).map_err(|e| e.to_string())
+        live(&mut tracker, &value("--camera").unwrap_or("/dev/video0".into()), seconds, record, options).map_err(|e| e.to_string())
     };
     if let Err(e) = result {
         eprintln!("des-hands: {e}");

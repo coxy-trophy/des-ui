@@ -1,0 +1,11 @@
+# Companion settings and thought bubbles
+
+User direction: configuration belongs in Settings, interaction is summoned with shortcuts, and thought bubbles should feel polished and animate naturally. Preserve the existing shared material, typography, accessibility and five-minute voice lifecycle.
+
+Implementation: move setup/memory/limits into the native Companion settings page; leave conversation and voice status in the summoned surface. Add explicit connection status, retry and safe actionable failures. Separate setup drafts from acknowledged worker state. Add configurable keep/mute/stop/quiet actions, routed through existing IPC. Thought bubbles use a once-anchored position near the cursor, a small thought trail, restrained rise/fade and existing theme; reduced motion renders static. Do not move hit targets during a press or steal focus.
+
+Tests: fake bridge setup submission/ack, no configuration fields in chat, animation lifetime/reduced motion, existing narrow-screen/focus tests, shortcut/IPC tests, mocked HTTP failures/redaction. No real key reads, paid calls, installation or session restart. Actual failure cause remains pending the user's error message; distinguish verified local defects from account/network hypotheses.
+
+Execution: moved configuration to Settings with no configuration fields left in conversation; added typed global controls and near-pointer themed thoughts with stable hit areas and reduced-motion behavior. User supplied exact voice failure state; no secret requested/read. Verified transport had a1second handshake allowance and UI kept stale voice state after worker loss. Split handshake10seconds/read1second, repaired state recovery, and added safe status-specific diagnostics. The actual account/network cause of the user's failure remains unverified. Pre-session-start failures now release reserved voice minutes; ambiguous send/later failures remain conservative. Reviewed and repaired empty diagnostic fallback; Quiet always disables social.
+
+Verification: observed failing regressions before implementation; final50Python tests and12filtered workspace companion tests passed; common full57tests plus1doctest passed. Strict static UI audit zero findings. No paid API, live microphone, installation, session restart or commit. Full workspace build evidence recorded in validation document.

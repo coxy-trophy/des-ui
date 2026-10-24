@@ -3,8 +3,8 @@
 //! | The hand                     | Does                                          |
 //! |------------------------------|-----------------------------------------------|
 //! | open                         | moves the pointer, as a finger on a touchpad  |
-//! | thumb and index pinched      | clicks; moved while pinched, drags; held      |
-//! |                              | still a moment, clicks the right button       |
+//! | thumb and index pinched      | clicks; a second pinch and movement locks a drag |
+//! | thumb and middle pinched     | clicks the right button                        |
 //! | index and middle up          | scrolls with the hand up and down; a quick    |
 //! |                              | sweep sideways goes to the next workspace     |
 //! | a fist                       | holds still, to rest the hand                 |
@@ -23,8 +23,8 @@ use crate::hand::Hand;
 
 /// How near the thumb has to come to a fingertip to pinch, and how far it has to go
 /// again to let go, in palm lengths. The gap between them keeps a pinch from flickering.
-const PINCH: f32 = 0.25;
-const UNPINCH: f32 = 0.40;
+const PINCH: f32 = 0.33;
+const UNPINCH: f32 = 0.50;
 /// How far a fingertip is from the wrist, against the base of its finger, when the
 /// finger is straight and when it is curled.
 const STRAIGHT: f32 = 1.5;
@@ -32,8 +32,10 @@ const CURLED: f32 = 1.25;
 /// With two fingers up, how much shorter the other two have to reach than they do:
 /// folded fingers are not always folded as far as `CURLED`, but are always shorter.
 const SHORTER: f32 = 0.3;
-/// How long a pinch held still, in seconds, is a click of the right button.
-const LONG_PINCH: f64 = 0.5;
+/// The second tap in this interval can become a latched drag.
+const DOUBLE_TAP: f64 = 0.45;
+/// Intentional movement during the second pinch, in camera-view fractions.
+const DRAG_SLOP: f32 = 0.012;
 /// How far the pointer goes, in screens, for the hand going across the camera's
 /// whole view slowly; and how much more for each view a second faster, up to a most.
 const GAIN: f32 = 1.8;
@@ -42,10 +44,6 @@ const MOST_GAIN: f32 = 6.0;
 /// How near the edge of the picture, as a fraction of it, the palm is too near to be
 /// followed well.
 const EDGE: f32 = 0.06;
-/// After a button is pressed, the pointer holds still until the hand has plainly
-/// moved, as a fraction of the screen, so that a click lands where it was aimed: a
-/// hand held still still drifts by a few pixels a second.
-const CLICK_SLOP: f32 = 0.035;
 /// After a button is let go, the pointer holds still this long, in seconds, while
 /// the fingers part.
 const RELEASE_HOLD: f64 = 0.12;
@@ -132,6 +130,7 @@ pub enum Event {
 pub enum Pose {
     Open,
     Pinch,
+    RightPinch,
     Two,
     Fist,
     Other,
@@ -143,6 +142,32 @@ const FINGERS: [(usize, usize); 4] = [(5, 8), (9, 12), (13, 16), (17, 20)];
 /// What the hand is doing. `before` is the pose it was in, for a pinch to let go
 /// only once the thumb is well clear.
 pub fn pose(hand: &Hand, before: Pose) -> Pose {
+    pose_with_preferences(hand, before, Preferences::default())
+}
+
+/// Hand comfort settings. Positive sensitivity accepts a wider pinch gap.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Preferences {
+    pub pinch_sensitivity: f32,
+    pub drag_lock: bool,
+}
+
+impl Default for Preferences {
+    fn default() -> Self {
+        Self { pinch_sensitivity: 0.0, drag_lock: true }
+    }
+}
+
+impl Preferences {
+    fn normalized(self) -> Self {
+        Self {
+            pinch_sensitivity: if self.pinch_sensitivity.is_finite() { self.pinch_sensitivity.clamp(-1.0, 1.0) } else { 0.0 },
+            ..self
+        }
+    }
+}
+
+fn pose_with_preferences(hand: &Hand, before: Pose, preferences: Preferences) -> Pose {
     let joints = &hand.joints;
     let palm = joints[0].distance(joints[9]).max(1.0);
     let reach: Vec<f32> = FINGERS
@@ -157,13 +182,22 @@ pub fn pose(hand: &Hand, before: Pose) -> Pose {
     if curled(1) && curled(2) && curled(3) && !straight(0) {
         return Pose::Fist;
     }
-    let limit = if before == Pose::Pinch { UNPINCH } else { PINCH };
-    if joints[4].distance(joints[8]) / palm < limit {
+    let sensitivity = preferences.normalized().pinch_sensitivity * 0.10;
+    let index = joints[4].distance(joints[8]) / palm;
+    let middle = joints[4].distance(joints[12]) / palm;
+    let index_limit = if before == Pose::Pinch { UNPINCH } else { PINCH } + sensitivity;
+    let middle_limit = if before == Pose::RightPinch { UNPINCH } else { PINCH } + sensitivity;
+    // The nearest fingertip distinguishes the two pinches even when adjacent
+    // fingertips are closer together than the relaxed activation threshold.
+    if index <= middle && index < index_limit {
         return Pose::Pinch;
+    }
+    if middle < index && middle < middle_limit {
+        return Pose::RightPinch;
     }
     if straight(0) && straight(1) && reach[2].max(reach[3]) < reach[0].min(reach[1]) - SHORTER {
         Pose::Two
-    } else if (0..4).filter(|finger| straight(*finger)).count() >= 3 {
+    } else if (0..4).filter(|finger| !curled(*finger)).count() >= 2 {
         Pose::Open
     } else {
         Pose::Other
@@ -200,32 +234,32 @@ pub fn pointer_motion(by: (f32, f32), seconds: f64) -> (f32, f32) {
     (by.0 * gain, by.1 * gain)
 }
 
-/// A pinch, from when it began: waiting to see whether it is a click, a drag or a
-/// right click; dragging with the left button down; or done, the right button clicked.
+/// How an index pinch currently controls the left button.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Pinching {
-    Waiting { since: f64, moved: (f32, f32) },
-    Dragging,
-    Done,
+    Clicked,
+    Second { origin: (f32, f32) },
+    Grip,
+    Unlocking,
+    Ignored,
 }
 
 /// Follows the hand from frame to frame and says what it does.
 pub struct Gestures {
-    /// The pose in force, and one that is turning up but has not lasted yet.
+    preferences: Preferences,
     pose: Pose,
     coming: (Pose, u32),
     seen: bool,
+    /// A neutral pose must be seen before a newly visible hand can click.
+    armed: bool,
     x: OneEuro,
     y: OneEuro,
-    /// Where the hand was last, smoothed, as fractions of the view, and when; none
-    /// while it is lifted.
     last: Option<((f32, f32), f64)>,
-    /// A pinch under way.
     pinch: Option<Pinching>,
-    /// Until when the pointer holds still after a button is let go.
+    held_left: bool,
+    drag_locked: bool,
+    last_click: Option<f64>,
     hold_until: f64,
-    /// Two fingers up: where the hand was last, unsmoothed, and the recent sideways
-    /// positions with their times, for sweeps.
     scroll_from: Option<f32>,
     sweep: Vec<(f64, f32)>,
     swept: bool,
@@ -233,95 +267,158 @@ pub struct Gestures {
 
 impl Default for Gestures {
     fn default() -> Gestures {
-        Gestures {
+        Self::with_preferences(Preferences::default())
+    }
+}
+
+impl Gestures {
+    pub fn with_preferences(preferences: Preferences) -> Self {
+        Self {
+            preferences: preferences.normalized(),
             pose: Pose::Other,
             coming: (Pose::Other, 0),
             seen: false,
+            armed: false,
             x: OneEuro::new(1.0, 4.0),
             y: OneEuro::new(1.0, 4.0),
             last: None,
             pinch: None,
+            held_left: false,
+            drag_locked: false,
+            last_click: None,
             hold_until: 0.0,
             scroll_from: None,
             sweep: Vec::new(),
             swept: false,
         }
     }
-}
 
-impl Gestures {
     pub fn pose(&self) -> Pose {
         self.pose
     }
 
-    /// Takes in one frame: the hand in a `width` by `height` picture, if one was
-    /// found, at `time` seconds.
+    fn release_left(&mut self, events: &mut Vec<Event>) {
+        if std::mem::take(&mut self.held_left) {
+            events.push(Event::Release(Button::Left));
+        }
+        self.drag_locked = false;
+    }
+
+    fn cancel(&mut self, events: &mut Vec<Event>) {
+        self.release_left(events);
+        self.pinch = None;
+        self.last_click = None;
+        self.armed = false;
+        self.last = None;
+        self.x.reset();
+        self.y.reset();
+    }
+
+    /// Takes one frame. Unsafe tracking (including an edge-clipped hand) always
+    /// lets go; returning pinched cannot click until a neutral pose arms it again.
     pub fn update(&mut self, hand: Option<&Hand>, width: f32, height: f32, time: f64) -> Vec<Event> {
         let mut events = Vec::new();
-        let Some(hand) = hand else {
-            // A drag ends; a pinch not yet a click is not one.
-            if self.pinch.take() == Some(Pinching::Dragging) {
-                events.push(Event::Release(Button::Left));
-            }
+        let Some(hand) = hand.filter(|hand| !at_edge(hand, width, height)) else {
+            self.cancel(&mut events);
             if std::mem::take(&mut self.seen) {
                 events.push(Event::Gone);
             }
             self.pose = Pose::Other;
             self.coming = (Pose::Other, 0);
-            self.x.reset();
-            self.y.reset();
-            self.last = None;
             self.scroll_from = None;
             self.sweep.clear();
+            self.swept = false;
             return events;
         };
         self.seen = true;
-
-        // A new pose counts once it has lasted.
-        let seen = pose(hand, self.pose);
-        self.coming = if seen == self.coming.0 { (seen, self.coming.1 + 1) } else { (seen, 1) };
+        let seen = pose_with_preferences(hand, self.pose, self.preferences);
+        self.coming = if seen == self.coming.0 { (seen, self.coming.1.saturating_add(1)) } else { (seen, 1) };
         let before = self.pose;
         if seen != self.pose && self.coming.1 >= STEADY {
             self.pose = seen;
         }
         let pose = self.pose;
+        let raw = in_view(palm_middle(hand), width, height);
 
-        let middle = palm_middle(hand);
-        let raw = in_view(middle, width, height);
-        let smooth = (self.x.filter(raw.0 as f64, time) as f32, self.y.filter(raw.1 as f64, time) as f32);
-
+        // A fist or an incompatible pose cancels even during pose debounce.
+        if matches!(seen, Pose::Fist | Pose::Other | Pose::Two) && self.held_left {
+            self.cancel(&mut events);
+        }
+        if seen == Pose::Other {
+            self.armed = false;
+            self.last_click = None;
+        }
         if pose != before {
-            // Leaving a pose.
-            match before {
-                Pose::Pinch => {
-                    match self.pinch.take() {
-                        Some(Pinching::Waiting { .. }) => events.extend([Event::Press(Button::Left), Event::Release(Button::Left)]),
-                        Some(Pinching::Dragging) => events.push(Event::Release(Button::Left)),
-                        Some(Pinching::Done) | None => {}
-                    }
-                    self.hold_until = time + RELEASE_HOLD;
+            // Preserve the held state across generic pinch exit: releasing a
+            // grip or pending second tap must not also trigger a right click.
+            let was_holding_left = self.held_left;
+            if before == Pose::Pinch {
+                if !self.drag_locked {
+                    self.release_left(&mut events);
                 }
-                Pose::Fist => events.push(Event::Wake),
-                Pose::Two => {
-                    self.scroll_from = None;
-                    self.sweep.clear();
-                    self.swept = false;
-                }
-                _ => {}
+                self.pinch = None;
+                self.hold_until = time + RELEASE_HOLD;
             }
-            // Coming into one.
+            if before == Pose::RightPinch {
+                self.hold_until = time + RELEASE_HOLD;
+            }
+            if before == Pose::Fist {
+                events.push(Event::Wake);
+            }
+            if before == Pose::Two {
+                self.scroll_from = None;
+                self.sweep.clear();
+                self.swept = false;
+            }
+            // Fresh anchors on pose changes avoid smoothing a finger transition
+            // into movement of a click target or into the start of a drag.
+            self.last = None;
+            self.x.reset();
+            self.y.reset();
             match pose {
-                Pose::Pinch => self.pinch = Some(Pinching::Waiting { since: time, moved: (0.0, 0.0) }),
-                Pose::Fist => events.push(Event::Rest),
+                Pose::Pinch if self.drag_locked => {
+                    self.release_left(&mut events);
+                    self.last_click = None;
+                    self.pinch = Some(Pinching::Unlocking);
+                }
+                Pose::Pinch if !self.armed => self.pinch = Some(Pinching::Ignored),
+                Pose::Pinch if !self.preferences.drag_lock => {
+                    events.push(Event::Press(Button::Left));
+                    self.held_left = true;
+                    self.pinch = Some(Pinching::Grip);
+                }
+                Pose::Pinch => {
+                    if self.last_click.take().is_some_and(|last| (0.0..=DOUBLE_TAP).contains(&(time - last))) {
+                        events.push(Event::Press(Button::Left));
+                        self.held_left = true;
+                        self.pinch = Some(Pinching::Second { origin: raw });
+                    } else {
+                        events.extend([Event::Press(Button::Left), Event::Release(Button::Left)]);
+                        self.last_click = Some(time);
+                        self.pinch = Some(Pinching::Clicked);
+                    }
+                }
+                Pose::RightPinch => {
+                    self.release_left(&mut events);
+                    self.last_click = None;
+                    if self.armed && !was_holding_left {
+                        events.extend([Event::Press(Button::Right), Event::Release(Button::Right)]);
+                    }
+                }
+                Pose::Fist => {
+                    self.cancel(&mut events);
+                    events.push(Event::Rest);
+                }
                 _ => {}
             }
         }
+        if seen == pose && matches!(pose, Pose::Open | Pose::Fist | Pose::Two) {
+            self.armed = true;
+        }
 
+        let smooth = (self.x.filter(raw.0 as f64, time) as f32, self.y.filter(raw.1 as f64, time) as f32);
         match pose {
-            Pose::Fist => {}
-            Pose::Two => {
-                // Up and down scrolls, by the smoothed hand and only once it has gone
-                // further than it shakes; a quick sweep sideways, once, goes on.
+            Pose::Two if seen == pose => {
                 let down = smooth.1;
                 match self.scroll_from {
                     Some(from) if (down - from).abs() > SCROLL_STILL => {
@@ -342,49 +439,34 @@ impl Gestures {
                 }
             }
             Pose::Open | Pose::Pinch => {
-                let mut motion = match self.last {
-                    Some((from, then)) => pointer_motion((smooth.0 - from.0, smooth.1 - from.1), time - then),
-                    None => (0.0, 0.0),
-                };
-                // Held still just after a release, and while the hand is changing
-                // pose, as it does when fingers come together to pinch.
+                let mut motion = self.last.map_or((0.0, 0.0), |(from, then)| {
+                    pointer_motion((smooth.0 - from.0, smooth.1 - from.1), time - then)
+                });
                 if seen != pose || time < self.hold_until {
                     motion = (0.0, 0.0);
                 }
-                // A pinch holds the pointer still: moved plainly, it drags, from where
-                // it began; held long enough, it clicks the right button.
-                match self.pinch {
-                    Some(Pinching::Waiting { since, moved }) => {
-                        let moved = (moved.0 + motion.0, moved.1 + motion.1);
-                        motion = (0.0, 0.0);
-                        if moved.0.hypot(moved.1) >= CLICK_SLOP {
-                            events.push(Event::Press(Button::Left));
-                            motion = moved;
-                            self.pinch = Some(Pinching::Dragging);
-                        } else if time - since >= LONG_PINCH {
-                            events.extend([Event::Press(Button::Right), Event::Release(Button::Right)]);
-                            self.pinch = Some(Pinching::Done);
-                        } else {
-                            self.pinch = Some(Pinching::Waiting { since, moved });
+                if pose == Pose::Pinch && !self.drag_locked {
+                    match self.pinch {
+                        Some(Pinching::Second { origin }) if (raw.0 - origin.0).hypot(raw.1 - origin.1) >= DRAG_SLOP && seen == pose => {
+                            self.drag_locked = true;
                         }
+                        Some(Pinching::Grip) => {}
+                        _ => motion = (0.0, 0.0),
                     }
-                    Some(Pinching::Done) => motion = (0.0, 0.0),
-                    Some(Pinching::Dragging) | None => {}
                 }
                 if motion != (0.0, 0.0) {
                     events.push(Event::Motion { dx: motion.0, dy: motion.1 });
                 }
                 self.last = Some((smooth, time));
             }
-            // Something in between: the pointer stays.
-            Pose::Other => {}
+            _ => {}
         }
-        // Lifted, or the hand off doing something else: it starts again from where
-        // it is next time.
         if !matches!(pose, Pose::Open | Pose::Pinch) {
             self.last = None;
-            self.x.reset();
-            self.y.reset();
+            if pose != Pose::Two {
+                self.x.reset();
+                self.y.reset();
+            }
         }
         events
     }
@@ -446,8 +528,8 @@ mod tests {
     #[test]
     fn a_pinch_lets_go_only_once_the_thumb_is_clear() {
         let mut nearly = hand(OPEN, Some(8));
-        // A third of a palm out to the side: not yet a pinch, but not yet let go of one.
-        nearly.joints[4].x -= 33.0;
+        // Between activation and release distances: only an existing pinch stays on.
+        nearly.joints[4].x -= 42.0;
         assert_eq!(pose(&nearly, Pose::Open), Pose::Open);
         assert_eq!(pose(&nearly, Pose::Pinch), Pose::Pinch);
     }
@@ -492,57 +574,179 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn a_quick_pinch_clicks_where_the_pointer_was() {
-        let mut gestures = Gestures::default();
-        let moving: Vec<Option<Hand>> = (0..5).map(|step| Some(hand_at(Point::new(320.0 + step as f32 * 3.0, 400.0), OPEN, None))).collect();
-        let events = run(&mut gestures, &moving, 0.0);
-        assert!(matches!(events.first(), Some(Event::Motion { .. })), "{events:?}");
-        let open = vec![Some(hand_at(Point::new(332.0, 400.0), OPEN, None)); 5];
-        run(&mut gestures, &open, 0.5);
-        // Pinching, the hand shifts a little: nothing yet.
-        let pinched = vec![Some(hand_at(Point::new(335.0, 402.0), OPEN, Some(8))); 4];
-        assert_eq!(run(&mut gestures, &pinched, 1.0), []);
-        // Let go soon: a click, and the pointer still where it was.
-        let events = run(&mut gestures, &open, 1.2);
-        assert_eq!(&events[..2], [Event::Press(Button::Left), Event::Release(Button::Left)]);
-        assert!(!events[2..].iter().any(|event| matches!(event, Event::Press(_))));
+    fn arm(gestures: &mut Gestures) {
+        run(gestures, &vec![Some(hand(OPEN, None)); 3], 0.0);
+    }
+
+    fn buttons(events: Vec<Event>) -> Vec<Event> {
+        events.into_iter().filter(|event| matches!(event, Event::Press(_) | Event::Release(_))).collect()
     }
 
     #[test]
-    fn a_pinch_moved_far_drags() {
+    fn relaxed_fingers_point_and_a_gentle_index_pinch_clicks_once() {
+        let mut relaxed = hand(OPEN, None);
+        for tip in [8, 12, 16, 20] { relaxed.joints[tip].y = 260.0; }
+        assert_eq!(pose(&relaxed, Pose::Other), Pose::Open);
+        // Two relaxed fingers point; only the deliberate straight two-finger
+        // shape (covered separately) enters scrolling.
+        for tip in [16, 20] { relaxed.joints[tip].y = 305.0; }
+        assert_eq!(pose(&relaxed, Pose::Other), Pose::Open);
+        let mut gentle = hand(OPEN, Some(8));
+        gentle.joints[4].x -= 30.0;
+        assert_eq!(pose(&gentle, Pose::Open), Pose::Pinch);
         let mut gestures = Gestures::default();
-        run(&mut gestures, &vec![Some(hand(OPEN, None)); 5], 0.0);
-        let mut frames = vec![Some(hand(OPEN, Some(8))); 3];
-        frames.extend((1..=10).map(|step| Some(hand_at(Point::new(320.0 - step as f32 * 15.0, 400.0), OPEN, Some(8)))));
-        let events = run(&mut gestures, &frames, 1.0);
-        assert_eq!(events[0], Event::Press(Button::Left));
-        assert!(matches!(events[1], Event::Motion { .. }), "the drag starts from where the pinch did: {events:?}");
-        assert!(!events.contains(&Event::Release(Button::Left)));
-        let events = run(&mut gestures, &vec![Some(hand(OPEN, None)); 3], 2.0);
-        assert_eq!(events.first(), Some(&Event::Release(Button::Left)));
+        arm(&mut gestures);
+        assert_eq!(run(&mut gestures, &vec![Some(gentle); 4], 1.0), [Event::Press(Button::Left), Event::Release(Button::Left)]);
+        let events = run(&mut gestures, &vec![Some(hand(OPEN, None)); 3], 1.2);
+        assert!(buttons(events).is_empty());
     }
 
     #[test]
-    fn a_pinch_held_still_is_the_right_button() {
+    fn a_long_index_pinch_never_right_clicks_or_moves_the_aim() {
         let mut gestures = Gestures::default();
-        run(&mut gestures, &vec![Some(hand(OPEN, None)); 3], 0.0);
-        let events = run(&mut gestures, &vec![Some(hand(OPEN, Some(8))); 30], 1.0);
+        arm(&mut gestures);
+        let frames: Vec<_> = (0..60).map(|step| Some(hand_at(Point::new(320.0 - step as f32, 400.0), OPEN, Some(8)))).collect();
+        assert_eq!(run(&mut gestures, &frames, 1.0), [Event::Press(Button::Left), Event::Release(Button::Left)]);
+    }
+
+    #[test]
+    fn two_short_index_taps_preserve_an_ordinary_double_click() {
+        let mut gestures = Gestures::default();
+        arm(&mut gestures);
+        let first = run(&mut gestures, &vec![Some(hand(OPEN, Some(8))); 3], 1.0);
+        assert_eq!(buttons(first), [Event::Press(Button::Left), Event::Release(Button::Left)]);
+        run(&mut gestures, &vec![Some(hand(OPEN, None)); 3], 1.1);
+        let second = run(&mut gestures, &vec![Some(hand(OPEN, Some(8))); 3], 1.2);
+        assert_eq!(buttons(second), [Event::Press(Button::Left)]);
+        assert_eq!(buttons(run(&mut gestures, &vec![Some(hand(OPEN, None)); 3], 1.3)), [Event::Release(Button::Left)]);
+    }
+
+    fn latch(gestures: &mut Gestures) {
+        arm(gestures);
+        run(gestures, &vec![Some(hand(OPEN, Some(8))); 3], 1.0);
+        run(gestures, &vec![Some(hand(OPEN, None)); 3], 1.1);
+        run(gestures, &vec![Some(hand(OPEN, Some(8))); 3], 1.2);
+        let moving: Vec<_> = (1..=5).map(|step| Some(hand_at(Point::new(320.0 - step as f32 * 5.0, 400.0), OPEN, Some(8)))).collect();
+        let events = run(gestures, &moving, 1.3);
+        assert!(events.iter().any(|event| matches!(event, Event::Motion { .. })), "{events:?}");
+        assert!(buttons(events).is_empty());
+    }
+
+    #[test]
+    fn second_pinch_motion_latches_and_next_index_pinch_releases_once() {
+        let mut gestures = Gestures::default();
+        latch(&mut gestures);
+        assert!(buttons(run(&mut gestures, &vec![Some(hand_at(Point::new(295.0, 400.0), OPEN, None)); 3], 1.5)).is_empty());
+        let moving: Vec<_> = (1..=5).map(|step| Some(hand_at(Point::new(295.0 - step as f32 * 5.0, 400.0), OPEN, None))).collect();
+        assert!(run(&mut gestures, &moving, 1.7).iter().any(|event| matches!(event, Event::Motion { .. })));
+        assert_eq!(buttons(run(&mut gestures, &vec![Some(hand_at(Point::new(270.0, 400.0), OPEN, Some(8))); 3], 2.0)), [Event::Release(Button::Left)]);
+        assert!(buttons(run(&mut gestures, &vec![Some(hand_at(Point::new(270.0, 400.0), OPEN, None)); 3], 2.2)).is_empty());
+    }
+
+    #[test]
+    fn lost_hand_fist_edge_and_other_cancel_a_latched_drag() {
+        for interruption in [None, Some(hand([false; 4], None)), Some(hand_at(Point::new(10.0, 400.0), OPEN, None)), Some(hand([true, false, false, false], None))] {
+            let mut gestures = Gestures::default();
+            latch(&mut gestures);
+            let events = run(&mut gestures, &vec![interruption.clone(); 3], 1.5);
+            assert_eq!(buttons(events), [Event::Release(Button::Left)], "{interruption:?}");
+            assert!(buttons(run(&mut gestures, &vec![interruption; 3], 1.7)).is_empty());
+        }
+    }
+
+    #[test]
+    fn entering_view_pinched_requires_a_neutral_pose_before_clicking() {
+        let mut gestures = Gestures::default();
+        assert!(buttons(run(&mut gestures, &vec![Some(hand(OPEN, Some(8))); 5], 0.0)).is_empty());
+        run(&mut gestures, &vec![Some(hand(OPEN, None)); 3], 0.3);
+        assert_eq!(buttons(run(&mut gestures, &vec![Some(hand(OPEN, Some(8))); 3], 0.5)), [Event::Press(Button::Left), Event::Release(Button::Left)]);
+        gestures.update(None, 640.0, 480.0, 1.0);
+        assert!(run(&mut gestures, &vec![Some(hand_at(Point::new(100.0, 300.0), OPEN, Some(8))); 5], 1.1).iter().all(|event| !matches!(event, Event::Press(_) | Event::Release(_) | Event::Motion { .. })));
+    }
+
+    #[test]
+    fn a_middle_pinch_right_clicks_once_and_never_repeats_while_held() {
+        assert_eq!(pose(&hand(OPEN, Some(12)), Pose::Open), Pose::RightPinch);
+        let mut gestures = Gestures::default();
+        arm(&mut gestures);
+        let events = run(&mut gestures, &vec![Some(hand(OPEN, Some(12))); 60], 1.0);
         assert_eq!(events, [Event::Press(Button::Right), Event::Release(Button::Right)]);
-        // Letting go afterwards clicks nothing more.
-        let events = run(&mut gestures, &vec![Some(hand(OPEN, None)); 3], 2.0);
-        assert!(!events.iter().any(|event| matches!(event, Event::Press(_) | Event::Release(_))), "{events:?}");
+        assert!(buttons(run(&mut gestures, &vec![Some(hand(OPEN, None)); 3], 3.1)).is_empty());
     }
 
     #[test]
-    fn a_lost_hand_lets_go_of_a_drag() {
+    fn a_middle_pinch_safely_ends_a_latched_drag_without_right_clicking() {
         let mut gestures = Gestures::default();
-        run(&mut gestures, &vec![Some(hand(OPEN, None)); 3], 0.0);
-        let mut frames = vec![Some(hand(OPEN, Some(8))); 3];
-        frames.extend((1..=5).map(|step| Some(hand_at(Point::new(320.0 - step as f32 * 15.0, 400.0), OPEN, Some(8)))));
-        run(&mut gestures, &frames, 1.0);
-        assert_eq!(gestures.update(None, 640.0, 480.0, 2.0), [Event::Release(Button::Left), Event::Gone]);
-        assert!(gestures.update(None, 640.0, 480.0, 2.1).is_empty());
+        latch(&mut gestures);
+        run(&mut gestures, &vec![Some(hand_at(Point::new(295.0, 400.0), OPEN, None)); 3], 1.5);
+        assert_eq!(buttons(run(&mut gestures, &vec![Some(hand_at(Point::new(295.0, 400.0), OPEN, Some(12))); 3], 1.7)), [Event::Release(Button::Left)]);
+        assert!(buttons(run(&mut gestures, &vec![Some(hand(OPEN, None)); 3], 2.0)).is_empty());
+    }
+
+    #[test]
+    fn switching_a_held_left_pinch_to_middle_pinch_only_releases_left() {
+        for drag_lock in [false, true] {
+            let mut gestures = Gestures::with_preferences(Preferences { drag_lock, ..Preferences::default() });
+            arm(&mut gestures);
+            if drag_lock {
+                run(&mut gestures, &vec![Some(hand(OPEN, Some(8))); 3], 1.0);
+                run(&mut gestures, &vec![Some(hand(OPEN, None)); 3], 1.1);
+            }
+            assert_eq!(buttons(run(&mut gestures, &vec![Some(hand(OPEN, Some(8))); 3], 1.2)), [Event::Press(Button::Left)]);
+            assert_eq!(buttons(run(&mut gestures, &vec![Some(hand(OPEN, Some(12))); 3], 1.3)), [Event::Release(Button::Left)]);
+            assert!(buttons(run(&mut gestures, &vec![Some(hand(OPEN, Some(12))); 3], 1.5)).is_empty());
+            assert!(buttons(run(&mut gestures, &vec![Some(hand(OPEN, None)); 3], 1.7)).is_empty());
+        }
+    }
+
+    #[test]
+    fn grip_mode_holds_until_unpinched_and_moves_while_held() {
+        let mut gestures = Gestures::with_preferences(Preferences { drag_lock: false, ..Preferences::default() });
+        arm(&mut gestures);
+        assert_eq!(buttons(run(&mut gestures, &vec![Some(hand(OPEN, Some(8))); 3], 1.0)), [Event::Press(Button::Left)]);
+        let moving: Vec<_> = (1..=5).map(|step| Some(hand_at(Point::new(320.0 - step as f32 * 5.0, 400.0), OPEN, Some(8)))).collect();
+        let events = run(&mut gestures, &moving, 1.2);
+        assert!(events.iter().any(|event| matches!(event, Event::Motion { .. })));
+        assert!(buttons(events).is_empty());
+        assert_eq!(buttons(run(&mut gestures, &vec![Some(hand_at(Point::new(295.0, 400.0), OPEN, None)); 3], 1.5)), [Event::Release(Button::Left)]);
+        assert!(buttons(gestures.update(None, 640.0, 480.0, 2.0)).is_empty());
+    }
+
+    #[test]
+    fn grip_mode_also_releases_on_tracking_loss_and_fist() {
+        for interruption in [None, Some(hand([false; 4], None))] {
+            let mut gestures = Gestures::with_preferences(Preferences { drag_lock: false, ..Preferences::default() });
+            arm(&mut gestures);
+            run(&mut gestures, &vec![Some(hand(OPEN, Some(8))); 3], 1.0);
+            assert_eq!(buttons(run(&mut gestures, &vec![interruption; 3], 1.2)), [Event::Release(Button::Left)]);
+        }
+    }
+
+    #[test]
+    fn pinch_sensitivity_is_bounded_and_invalid_values_use_the_default() {
+        let mut gentle = hand(OPEN, Some(8));
+        gentle.joints[4].x -= 38.0;
+        let classify = |sensitivity| pose_with_preferences(&gentle, Pose::Open, Preferences { pinch_sensitivity: sensitivity, ..Preferences::default() });
+        assert_eq!(classify(0.0), Pose::Open);
+        assert_eq!(classify(1.0), Pose::Pinch);
+        assert_eq!(classify(100.0), classify(1.0));
+        assert_eq!(classify(-100.0), classify(-1.0));
+        assert_eq!(classify(f32::NAN), classify(0.0));
+        assert_eq!(classify(f32::INFINITY), classify(0.0));
+        let mut sensitive = Gestures::with_preferences(Preferences { pinch_sensitivity: 1.0, ..Preferences::default() });
+        arm(&mut sensitive);
+        assert_eq!(buttons(run(&mut sensitive, &vec![Some(gentle); 3], 1.0)), [Event::Press(Button::Left), Event::Release(Button::Left)]);
+    }
+
+    #[test]
+    fn a_cancelled_second_pinch_cannot_click_again_on_exit() {
+        let mut gestures = Gestures::default();
+        arm(&mut gestures);
+        run(&mut gestures, &vec![Some(hand(OPEN, Some(8))); 3], 1.0);
+        run(&mut gestures, &vec![Some(hand(OPEN, None)); 3], 1.1);
+        run(&mut gestures, &vec![Some(hand(OPEN, Some(8))); 3], 1.2);
+        assert_eq!(buttons(gestures.update(None, 640.0, 480.0, 1.3)), [Event::Release(Button::Left)]);
+        assert!(buttons(run(&mut gestures, &vec![Some(hand(OPEN, None)); 3], 1.5)).is_empty());
     }
 
     #[test]
@@ -570,6 +774,34 @@ mod tests {
         let across: Vec<Option<Hand>> = (0..10).map(|step| Some(hand_at(Point::new(450.0 - step as f32 * 30.0, 300.0), two, None))).collect();
         let sweeps: Vec<Event> = run(&mut gestures, &across, 0.0).into_iter().filter(|event| matches!(event, Event::Sweep(_))).collect();
         assert_eq!(sweeps, [Event::Sweep(Side::Right)]);
+    }
+
+    #[test]
+    fn a_reacquired_hand_can_sweep_again() {
+        let two = [true, true, false, false];
+        let across: Vec<Option<Hand>> = (0..10)
+            .map(|step| Some(hand_at(Point::new(450.0 - step as f32 * 30.0, 300.0), two, None)))
+            .collect();
+        let mut gestures = Gestures::default();
+        for time in [0.0, 1.0] {
+            let events = run(&mut gestures, &across, time);
+            assert_eq!(events.iter().filter(|event| matches!(event, Event::Sweep(_))).count(), 1);
+            gestures.update(None, 640.0, 480.0, time + 0.5);
+        }
+    }
+
+    #[test]
+    fn two_finger_scrolling_filters_small_alternating_jitter() {
+        let two = [true, true, false, false];
+        let mut gestures = Gestures::default();
+        run(&mut gestures, &vec![Some(hand_at(Point::new(320.0, 400.0), two, None)); 10], 0.0);
+        // Fourteen pixels between frames exceeds the scroll threshold, but this
+        // seven-pixel shake around a stationary palm should be smoothed away.
+        let shaken: Vec<Option<Hand>> = (0..60)
+            .map(|frame| Some(hand_at(Point::new(320.0, 400.0 + if frame % 2 == 0 { 7.0 } else { -7.0 }), two, None)))
+            .collect();
+        let events = run(&mut gestures, &shaken, 0.5);
+        assert!(!events.iter().any(|event| matches!(event, Event::Scroll(_))), "{events:?}");
     }
 
     #[test]

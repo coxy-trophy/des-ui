@@ -6,6 +6,7 @@ mod autostart;
 mod app_icons;
 mod dock;
 mod capture;
+mod companion;
 mod config;
 mod control;
 mod desktop;
@@ -166,6 +167,7 @@ struct App {
     dock_area: Option<Option<(i32, i32, i32, i32)>>,
     settings: settings::Settings,
     shortcut_reference: shortcuts::Reference,
+    companion: companion::Companion,
     music: music::Music,
     notices: notify::Center,
     /// Sleep, and what holds off the lock.
@@ -382,6 +384,7 @@ impl App {
             dock_area: None,
             settings: settings::Settings::default(),
             shortcut_reference: Default::default(),
+            companion: Default::default(),
             music,
             notices,
             power,
@@ -563,6 +566,7 @@ impl App {
 
     /// Opens or closes the settings, which like the launcher take the terminal's place.
     fn toggle_settings(&mut self) {
+        self.companion.blur_text();
         self.world.expanded = false;
         if self.settings.open {
             self.settings.appearance_editor.reset(&self.config.appearance);
@@ -582,6 +586,7 @@ impl App {
 
     /// Opens or closes the music player, which also takes the terminal's place.
     fn toggle_music(&mut self) {
+        self.companion.blur_text();
         self.world.expanded = false;
         self.launcher.open = false;
         self.settings.open = false; self.files_browser = None;
@@ -595,6 +600,7 @@ impl App {
 
     /// Opens or closes the list of notifications, which also takes the terminal's place.
     fn toggle_notices(&mut self) {
+        self.companion.blur_text();
         self.world.expanded = false;
         self.launcher.open = false;
         self.settings.open = false; self.files_browser = None;
@@ -606,6 +612,7 @@ impl App {
     }
 
     fn toggle_recording(&mut self) {
+        self.companion.close();
         if let Some(command) = self.capture.toggle_recording(&mut self.notices) {
             self.send(command);
         }
@@ -613,6 +620,7 @@ impl App {
 
     /// Opens or closes the power menu, which also takes the terminal's place.
     fn toggle_power(&mut self) {
+        self.companion.blur_text();
         self.world.expanded = false;
         self.launcher.open = false;
         self.settings.open = false; self.files_browser = None;
@@ -657,6 +665,7 @@ impl App {
     }
 
     fn lock_now(&mut self) {
+        self.companion.close();
         self.lock.prepare(&self.ctx);
     }
 
@@ -855,6 +864,11 @@ impl App {
                     apply_style(ctx, &self.theme);
                 }
                 // The compositor owns the devices these are about.
+                if key.starts_with("cursor_") {
+                    // Reuse the existing reload retry path if the compositor is
+                    // temporarily disconnected; the saved preference remains authoritative.
+                    self.shortcuts_synced = self.desktop.as_mut().is_some_and(|desktop| desktop.send(Command::ReloadInput).is_ok());
+                }
                 if ["keyboard_", "mouse_", "touchpad_", "hand_", "lock_after", "screen_off_after"].iter().any(|prefix| key.starts_with(prefix)) {
                     self.send(Command::ReloadInput);
                 }
@@ -905,6 +919,7 @@ impl App {
     /// Opens or closes the launcher. It is drawn where the terminal is, so anything
     /// covering that must make way.
     fn toggle_launcher(&mut self) {
+        self.companion.blur_text();
         self.world.expanded = false;
         self.settings.open = false; self.files_browser = None;
         self.music.open = false;
@@ -953,7 +968,25 @@ impl App {
         }
     }
 
+    fn summon_voice(&mut self, ctx: &egui::Context) {
+        if self.capture.marking() || self.polkit.active() || self.lock.locked {return;}
+        self.companion.start_voice(ctx);
+    }
+
+    fn toggle_companion(&mut self, ctx: &egui::Context) {
+        if self.capture.marking() || self.polkit.active() || self.lock.locked {return;}
+        self.shortcut_reference.close();self.quick.open=false;self.scratchpad.close_now();self.dock.reset();
+        self.fs.blur();
+        self.companion.open(ctx);self.companion.panel_requested=false;
+        let bottom=self.desktop.as_ref().map_or(self.local_panels.bottom,|d|d.state.panels.bottom);
+        if !bottom {
+            if self.desktop.is_some(){self.send(Command::TogglePanel(des_common::Panel::Bottom));}
+            else {self.local_panels.bottom=true;}
+        }
+    }
+
     fn toggle_shortcut_reference(&mut self) {
+        self.companion.blur_text();
         if self.capture.marking() { return; }
         if self.shortcut_reference.open { self.shortcut_reference.close(); }
         else { self.shortcut_reference.open = true; self.quick.open = false; self.dock.reset(); }
@@ -961,6 +994,7 @@ impl App {
 
     /// Handles registry-owned shell shortcuts; focused editors and modals own input first.
     fn take_shortcuts(&mut self, ctx: &egui::Context) -> Vec<Event> {
+        if self.companion.open { return Vec::new(); }
         let files_modal = self.files_browser.as_ref().is_some_and(files::Browser::captures_keyboard) && !self.scratchpad.visible() && !self.quick.open;
         if self.polkit.active() || self.shortcut_reference.open || self.settings.shortcut_capture_active() || files_modal || (self.settings.open && self.settings.appearance_editor.picker_open()) {
             return Vec::new();
@@ -982,6 +1016,8 @@ impl App {
                 if self.files_browser.is_some() && !self.scratchpad.visible() && !self.quick.open && modifiers.ctrl && modifiers.shift && !modifiers.alt && !modifiers.mac_cmd && *key == Key::N { continue; }
                 let action = shell_shortcut(&self.config.shortcuts, *key, *modifiers);
                 match action {
+                    Some("shell.voice_companion") => { self.summon_voice(ctx); return Vec::new(); }
+                    Some("shell.companion") => { self.toggle_companion(ctx); return Vec::new(); }
                     Some("shell.help") => { self.toggle_shortcut_reference(); return Vec::new(); }
                     Some("shell.scratchpad") => self.scratchpad.toggle(),
                     Some("shell.keyboard") => self.toggle_osk(),

@@ -44,6 +44,8 @@ pub fn init_winit(
     let display_handle = &state.display_handle.clone();
 
     let (mut backend, winit) = winit::init::<GlesRenderer>()?;
+    // The nested desktop paints its own cursor, including application surfaces.
+    backend.window().set_cursor_visible(false);
 
     let mode = Mode {
         size: backend.window_size(),
@@ -150,6 +152,7 @@ pub fn init_winit(
 
                 let capture = state.screenshot.is_some() && state.start_time.elapsed() > Duration::from_millis(crate::state::test_millis("DES_TEST_SHOT_MS", 5000));
                 let toast_area = state.toast_area();
+                let companion_bubble_area = state.companion_bubble_area();
                 let overlay_area = state.overlay_area();
                 let docks = state.dock_layers();
                 let primary = state.screens.first().map(|screen| screen.loc);
@@ -161,8 +164,22 @@ pub fn init_winit(
                 {
                     let (renderer, mut framebuffer) = backend.bind().unwrap();
                     let mut toasts: Vec<crate::splash::TopElements> = Vec::new();
+                    if state.splash.is_none() {
+                        if let Some(pointer) = state.seat.get_pointer() {
+                            let status = crate::udev::effective_cursor_status(&state.cursor_status, state.resize_hover);
+                            toasts.extend(crate::udev::cursor_elements::<crate::splash::TopElements>(renderer,
+                                &mut state.cursors, &status, pointer.current_location(), scale,
+                                crate::motion::allowed(state.motions.enabled, state.locked, state.picking), std::time::Instant::now()));
+                        }
+                    }
                     if let Some(splash) = state.splash.as_mut() {
                         toasts.extend(splash.elements(renderer, size.to_f64().to_logical(scale).to_i32_round(), scale));
+                    }
+                    if !state.locked && !state.picking && state.splash.is_none() {
+                        if let Some(pointer) = state.seat.get_pointer() {
+                            toasts.extend(state.hand_feedback.elements(pointer.current_location(), scale, std::time::Instant::now())
+                                .into_iter().map(crate::splash::TopElements::Solid));
+                        }
                     }
                     if let Some(pointer)=state.seat.get_pointer() {
                         toasts.extend(crate::dnd::icon_elements::<crate::splash::TopElements>(renderer,state.drag_icon.as_ref(),pointer.current_location(),scale));
@@ -178,6 +195,8 @@ pub fn init_winit(
                         matches!(overview.kind, des_common::ipc::OverviewKind::Workspaces | des_common::ipc::OverviewKind::Drag) && state.space.output_geometry(&output).is_some_and(|geometry| geometry.contains_rect(overview.layout.display))
                     });
                     if !covered {
+                    toasts.extend(crate::toast::elements(renderer, state.shell.as_ref(), companion_bubble_area, primary,
+                        &state.companion_bubble_id, (0,0).into(), scale).into_iter().map(crate::splash::TopElements::Toast));
                     toasts.extend(
                         crate::toast::elements(renderer, state.shell.as_ref(), toast_area, primary, &state.toast_id, (0, 0).into(), scale)
                             .into_iter()

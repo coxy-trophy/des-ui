@@ -30,6 +30,12 @@ pub const DEFINITIONS: &[Definition] = &[
     Definition { id: "desktop.restart_shell", label: "Restart shell", group: "Desktop", scope: Scope::Desktop, default: "Super+Shift+R" },
     Definition { id: "desktop.hands", label: "Hand control on or off", group: "Desktop", scope: Scope::Desktop, default: "Super+H" },
     Definition { id: "desktop.overview", label: "Workspace overview", group: "Workspaces", scope: Scope::Desktop, default: "Super+W" },
+    Definition { id: "desktop.voice_companion", label: "Summon companion voice", group: "Desktop", scope: Scope::Desktop, default: "Super+Ctrl+J" },
+    Definition { id: "desktop.companion", label: "Cursor companion", group: "Desktop", scope: Scope::Desktop, default: "Super+J" },
+    Definition { id: "desktop.companion_keep", label: "Keep companion talking", group: "Desktop", scope: Scope::Desktop, default: "Super+Shift+J" },
+    Definition { id: "desktop.companion_mute", label: "Mute companion voice", group: "Desktop", scope: Scope::Desktop, default: "Super+Alt+J" },
+    Definition { id: "desktop.companion_stop", label: "Stop companion voice", group: "Desktop", scope: Scope::Desktop, default: "Super+Ctrl+Shift+J" },
+    Definition { id: "desktop.companion_quiet", label: "Quiet companion mode", group: "Desktop", scope: Scope::Desktop, default: "Super+Alt+Shift+J" },
     Definition { id: "desktop.help", label: "Shortcut reference", group: "Desktop", scope: Scope::Desktop, default: "Super+Slash" },
     Definition { id: "desktop.workspace_1", label: "Workspace 1", group: "Workspaces", scope: Scope::Desktop, default: "Super+1" },
     Definition { id: "desktop.send_1", label: "Send to workspace 1", group: "Workspaces", scope: Scope::Desktop, default: "Super+Shift+1" },
@@ -55,6 +61,8 @@ pub const DEFINITIONS: &[Definition] = &[
     Definition { id: "shell.focus_right", label: "Focus pane right", group: "Shell", scope: Scope::Shell, default: "Ctrl+Shift+Right" },
     Definition { id: "shell.focus_up", label: "Focus pane up", group: "Shell", scope: Scope::Shell, default: "Ctrl+Shift+Up" },
     Definition { id: "shell.focus_down", label: "Focus pane down", group: "Shell", scope: Scope::Shell, default: "Ctrl+Shift+Down" },
+    Definition { id: "shell.voice_companion", label: "Summon companion voice", group: "Shell", scope: Scope::Shell, default: "Ctrl+Shift+U" },
+    Definition { id: "shell.companion", label: "Cursor companion", group: "Shell", scope: Scope::Shell, default: "Ctrl+Shift+J" },
     Definition { id: "shell.help", label: "Shortcut reference", group: "Shell", scope: Scope::Shell, default: "Ctrl+Shift+H" },
     Definition { id: "shell.next_tab", label: "Next tab", group: "Shell", scope: Scope::Shell, default: "Ctrl+Tab" },
     Definition { id: "shell.previous_tab", label: "Previous tab", group: "Shell", scope: Scope::Shell, default: "Ctrl+Shift+Tab" },
@@ -121,7 +129,7 @@ impl Bindings {
 /// Physical alternatives available in nested compositor sessions.
 fn effective_chords(chord:&Chord)->Vec<Chord> {
     let mut result=vec![chord.clone()];
-    if chord.super_key && !chord.ctrl {
+    if chord.super_key && !chord.ctrl && (!chord.alt || matches!(chord.key.as_str(), "Left"|"Right")) {
         let mut alias=chord.clone(); alias.super_key=false;alias.ctrl=true;alias.alt=true;
         if chord.alt {alias.shift=true} result.push(alias);
     }
@@ -130,8 +138,31 @@ fn effective_chords(chord:&Chord)->Vec<Chord> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn companion_controls_are_distinct_configurable_global_shortcuts() {
+        let mut b=Bindings::default();
+        assert!(b.validate().is_ok());
+        for (id, default) in [
+            ("desktop.companion_keep", "Super+Shift+J"),
+            ("desktop.companion_mute", "Super+Alt+J"),
+            ("desktop.companion_stop", "Super+Ctrl+Shift+J"),
+            ("desktop.companion_quiet", "Super+Alt+Shift+J"),
+        ] {
+            assert_eq!(b.binding(id), default);
+            assert!(Bindings::default().set("desktop.help", default).is_err());
+            b.set(id, "").unwrap();
+            b.set(id, "Super+Ctrl+Alt+K").unwrap();
+            assert_eq!(Bindings::parse(&b.encode()), Some(b.clone()));
+            b.set(id, "").unwrap();
+        }
+    }
+    #[test] fn companion_shortcuts_are_registered_and_conflict_checked() {
+        let b=Bindings::default();
+        assert_eq!(b.binding("desktop.companion"), "Super+J");
+        assert_eq!(b.binding("shell.companion"), "Ctrl+Shift+J");
+        assert!(Bindings::default().set("desktop.help", "Super+J").is_err());
+    }
     #[test] fn remap_and_disable_survive_roundtrip() {
-        let mut b=Bindings::default();b.set("desktop.help","Super+J").unwrap();
+        let mut b=Bindings::default();b.set("desktop.help","Super+K").unwrap();
         assert!(!b.matches("desktop.help",&Chord::parse("Super+Slash").unwrap()));
         b.set("desktop.help","").unwrap(); assert_eq!(Bindings::parse(&b.encode()),Some(b));
     }

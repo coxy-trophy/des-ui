@@ -1,0 +1,13 @@
+# Companion panel, saved key and speaking cursor
+
+**Goal:** Apply the user's screenshot correction: compact chat in bottom Files/Chat tabs; Super+J selects/reveals Chat, Super+Ctrl+J summons voice independently; secure key survives restart; voice has near-cursor captions and a restrained solid-cursor speaking pulse.
+
+**Architecture:** Shell owns tabs, chat focus and noninteractive thought captions. Existing bounded Python worker owns model/audio and new Secret Service key operations. Compositor owns pointer artwork and a render-only caption crop; neither signal changes cursor hotspot nor app input focus. Key never enters ordinary config/SQLite. Respect reduced motion and five-minute sessions, no silent reconnect.
+
+**Ownership/tasks:** Root: shell companion/panels/runtime and shortcut defaults. Credential agent: libsecret module/worker lifecycle/tests/packaging. Cursor agent: audio speaking state, typed IPC and compositor pulse/caption crop/tests. Independent review after integration. Preserve existing dirty tree; no install/restart/paid calls/real keyring reads.
+
+**Interfaces:** worker credential_status/loading/remember_key plus configure persist_key and remove_saved_key. Shell defers explicit voice request until startup credential load completes. Voice emits speaking while PCM queued, listening after drain; shell sends ephemeral CompanionSpeaking heartbeat plus render-only CompanionBubble region. IPC expires after2seconds and clears on lock/capture/peer loss. Chat captures keyboard only while editor active; switching Files or clicking terminal releases it, with closing-frame keys consumed. Bottom-panel geometry remains shared with compositor.
+
+**Verification:** mocked credential restore/remove/locked/unavailable/stale results; voice PCM→speaking→drained state; cursor bounds/hotspot/reducedmotion/expiry; tab and Enter/Escape focus/input isolation; narrow/wide panel geometry; shortcut conflict defaults. Build workspace and record installed-session/real provider/keyring/hardware visual acceptance as untested.
+
+Completed: secure-key worker and package integration; bottom Files/Chat with Enter/Escape/focus preservation; shortcut default swap; independent voice with key-restore wait and pending Stop cancellation; actual playback speaking state, restrained cursor pulse and pointer-transparent caption IPC with expiry. Review repaired native-app outside-click keyboard retention through scoped CompanionChat marker and CompanionBlur event. Keyring/API/hardware operations were mocked; real acceptance is explicitly untested. Caption currently primary-display only; pulse supports all outputs. Build/test evidence: docs/validation/2026-10-24-companion-panel-and-speaking.md.

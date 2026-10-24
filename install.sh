@@ -18,7 +18,21 @@ else
     echo "Without it, turn off Keep terminals across shell restarts in Settings for direct terminals." >&2
 fi
 
+if ! python3 -c 'import websocket' >/dev/null 2>&1; then
+    echo "Note: companion voice requires python3-websocket (websocket-client). Text remains available." >&2
+fi
+
+if ! /usr/bin/python3 -c 'import gi; gi.require_version("Secret", "1"); from gi.repository import Secret' >/dev/null 2>&1 || ! command -v gnome-keyring-daemon >/dev/null; then
+    echo "Note: remembering companion keys requires: sudo apt install python3-gi gir1.2-secret-1 gnome-keyring dbus-user-session" >&2
+    echo "Secret Service starts through D-Bus on demand. Unlock the login keyring when saving a key." >&2
+fi
+
 cargo build --release
+
+# Legacy clients load these images instead of the cursor-shape protocol. Export
+# with the same rasterizer as des-comp, before changing the installed programs.
+rm -rf target/cursor-theme
+target/release/des-comp --write-cursor-theme target/cursor-theme
 
 # Keep the build being replaced: the session falls back to it if the new one cannot start.
 for program in des-ui des-comp; do
@@ -43,8 +57,13 @@ sudo install -Dm644 session/des-ui.desktop /usr/share/wayland-sessions/des-ui.de
 sudo install -Dm644 session/des-ui-portals.conf /usr/share/xdg-desktop-portal/des-ui-portals.conf
 sudo install -Dm644 session/des-ui.portal /usr/share/xdg-desktop-portal/portals/des-ui.portal
 sudo install -Dm644 session/org.freedesktop.impl.portal.desktop.des-ui.service /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.des-ui.service
+sudo install -d /usr/local/share/des-ui/companion
+sudo install -m644 companion/service.py companion/voice.py companion/credentials.py /usr/local/share/des-ui/companion/
 sudo install -d /usr/local/share/des-ui/themes
 sudo install -m644 themes/*.json /usr/local/share/des-ui/themes/
+sudo install -d /usr/local/share/icons/DEs-UI/cursors
+sudo install -m644 target/cursor-theme/index.theme /usr/local/share/icons/DEs-UI/index.theme
+sudo install -m644 target/cursor-theme/cursors/* /usr/local/share/icons/DEs-UI/cursors/
 
 # This desktop was called edex-rs before. Whatever still starts a session under that
 # name gets this one; the rest of the old installation goes once nothing of it runs.

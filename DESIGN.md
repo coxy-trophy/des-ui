@@ -95,3 +95,28 @@ common/src/shortcuts.rs owns definitions, normalized chords, defaults, validatio
 Window shelf: running markers, active underlines and counts distinguish application state. Multiple windows open compositor previews, nine per page, rather than cycling; old compositors receive a native window-list fallback. All windows opens the workspace overview. The collapsed left rail stacks upright hours and minutes using the regional clock format. Shared floating materials and reduced-motion preferences apply throughout.
 
 Drag overview: a confirmed native desktop drag opens destination previews. A 450ms hover reveals the real destination while retaining the original data offer and pointer grab; the user drops inside that application. Settings → Frame → Dock owns the persisted opt-out. Browser support depends on a browser exposing a native desktop drag; internal tab rearrangement is not guaranteed.
+
+
+Hand control: keep the webcam indicator visible while active. Mouse & touchpad owns native pointer speed, pinch sensitivity (Firm–Gentle), independent scroll speed and release-pinch dragging controls. A short static accent marker beside the pointer confirms hand clicks; a steady center mark identifies a held drag. Markers never take input, animate continuously or appear over lock, screenshot selection or startup splash. Sharp geometry and shared theme accents remain authoritative.
+
+
+Solid morph pointer: the approved family is a filled off-white silhouette with a dark contrast keyline. Point is a narrow convex triangle without a notch; links use a fuller rounded wedge, text an insertion needle, grab a compact slanted form and resize a directional spindle. Cursor-shape owns vector outlines, 120ms interruptible morphs and bounded high-DPI rasters. One hotspot anchors changes; Reduce motion and animation-off snap to static states. No decorative accent pieces or trails. Precise, forbidden, copy, move and zoom meanings remain distinct. Client-supplied cursor artwork and hidden cursors retain their behavior. The DEs-UI Xcursor fallback theme uses the same canonical raster artwork for clients without the shape protocol; it changes states statically.
+
+
+Cursor preferences live in Settings → Mouse & touchpad, before mouse/hand controls. Reuse shared sliders, opaque RGB picker, Apply/Reset and native buttons. Size ranges16–64px (default24); default color is F7F6F2. Light/dark previews use the same shared triangle and base-size constants as the compositor; dark fills receive a light keyline with a fine dark outer hint. No alpha control or new decorative effects. Preview color is a draft until Apply, while size updates directly. Native cursors update live; the interface explains that some apps update when reopened.
+
+## Cursor companion
+
+The cursor companion uses the shared Floating material, display typography and theme controls. Its conversation surface anchors once near the pointer and stays still while typing. It does not add a face, decorative tail or perpetual cursor animation. Text and explicit voice summons have separate configurable mappings. A full modal owns keyboard events; Escape never reaches the terminal/launcher beneath it. Closing restores prior egui focus and stops speech/capture. Social text bubbles appear only on the exposed shell, do not focus themselves, fade after15seconds, and offer Talk/Quiet.
+
+The companion's character is self-authored conversational data rather than a preset temperament. A blank identity journal evolves through typed exchanges; shared voice history provides continuity. Setup and private memory remain inside an explicit disclosure, keeping the primary surface focused on conversation. Capture, lock and authentication take precedence over the companion. No ambient desktop context or execution tools are attached.
+
+Companion revision: connection/key, model, social preferences, limits, identity and memory now live directly in Settings → Companion. Summoned conversation contains no configuration form. Thought bubbles anchor once near the pointer, use the shared Floating material and theme accent, and have a brief cubic opacity entrance/exit with a small rising thought trail. Hit targets stay fixed, focus is never taken, and reduced motion removes transitions. Configurable global Keep/Mute/Stop/Quiet operations supplement text/voice summons; Quiet always disables social approaches.
+
+## Bottom-panel companion —2026-10-24
+
+The current conversation owner is the bottom panel, with Files and Chat tabs; the earlier floating conversation modal is retired. Super+J reveals/selects Chat and focuses its compact composer. Message history scrolls within shared bottom geometry; Escape releases typing without erasing the draft, and clicking a native app returns keyboard ownership while Chat stays visible. Settings owns credentials, memory and usage controls.
+
+Voice is independent of Chat. Super+Ctrl+J summons it without opening text UI. A pointer-transparent thought caption indicates listening/speaking, while the existing solid cursor pulses gently only during output playback. The configured color, shape and hotspot remain intact. Captions have a separate render-only compositor crop and cannot steal clicks or keyboard focus. Reduced motion retains a steady indicator. Cursor pulse works across outputs; the first caption implementation is limited to the primary shell surface.
+
+The key is remembered through the system Secret Service by default. Settings reports loading/saved/locked/unavailable states; it never falls back to plaintext configuration. Explicit Remove saved key disables subsequent autoload. A locked login keyring may need unlocking; it does not require re-entering the API key.

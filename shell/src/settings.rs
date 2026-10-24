@@ -5,7 +5,7 @@ use eframe::egui;
 use crate::config::{Config, LINE_HEIGHT_RANGE, MAX_FONT_SIZE, MIN_FONT_SIZE, Palette, SCROLLBACK_CHOICES};
 use crate::radio::Radio;
 use crate::term::CursorShape;
-use des_common::input::{InputSettings, REPEAT_DELAY_RANGE, REPEAT_RATE_RANGE};
+use des_common::input::{InputSettings, CURSOR_ARROW_POINTS, CURSOR_BASE_SIZE, CURSOR_SIZE_RANGE, DEFAULT_CURSOR_COLOR, REPEAT_DELAY_RANGE, REPEAT_RATE_RANGE};
 use crate::geo::{Place, Snapshot, parse_location};
 use crate::sysmon::SysMon;
 use crate::theme::{self, Theme};
@@ -99,6 +99,7 @@ enum Section {
     Bluetooth,
     Keyboard,
     Shortcuts,
+    Companion,
     Pointer,
     Globe,
     Sound,
@@ -108,7 +109,7 @@ enum Section {
     Health,
 }
 
-const SECTIONS: [(Section, &str); 15] = [
+const SECTIONS: [(Section, &str); 16] = [
     (Section::Appearance, "APPEARANCE"),
     (Section::Terminal, "TERMINAL"),
     (Section::Frame, "FRAME"),
@@ -117,6 +118,7 @@ const SECTIONS: [(Section, &str); 15] = [
     (Section::Bluetooth, "BLUETOOTH"),
     (Section::Keyboard, "KEYBOARD"),
     (Section::Shortcuts, "SHORTCUTS"),
+    (Section::Companion, "COMPANION"),
     (Section::Pointer, "MOUSE & TOUCHPAD"),
     (Section::Globe, "GLOBE"),
     (Section::Sound, "SOUND & SCREEN"),
@@ -142,6 +144,7 @@ pub struct Settings {
     /// Installed themes and their accents, read when the screen opens.
     themes: Vec<(String, Color32)>,
     accent_draft: Option<([u8; 3], [u8; 3])>,
+    cursor_color_draft: Option<([u8; 3], [u8; 3])>,
     pub appearance_editor: crate::appearance_editor::Editor,
     location_text: String,
     location_error: bool,
@@ -178,6 +181,7 @@ impl Default for Settings {
             appearance_tab: AppearanceTab::default(),
             themes: Vec::new(),
             accent_draft: None,
+            cursor_color_draft: None,
             appearance_editor: Default::default(),
             location_text: String::new(),
             location_error: false,
@@ -304,6 +308,7 @@ impl Settings {
         geo: &Snapshot,
         displays: Option<&Displays>,
         input: &InputSettings,
+        companion: &mut crate::companion::Companion,
     ) -> Vec<Change> {
         let mut changes = Vec::new();
         // Escape closes, unless it is being used to leave the text field.
@@ -330,6 +335,10 @@ impl Settings {
                             Section::Bluetooth => {
                                 let radio = settings.radio.get_or_insert_with(|| Radio::new(ui.ctx().clone()));
                                 radio.show_bluetooth(ui, theme);
+                            }
+                            Section::Companion => {
+                                heading(ui, "CURSOR COMPANION", "Connection, identity and quiet controls. Use your shortcuts to talk.");
+                                companion.settings_ui(ui, theme);
                             }
                             Section::Shortcuts => {
                                 if let Some(bindings) = settings.shortcut_editor.show(ui, theme, &config.shortcuts) {
@@ -650,11 +659,71 @@ impl Settings {
         note(ui, "Keyboard changes reach applications as they are next given the keyboard.");
     }
 
+    fn cursor(&mut self, ui: &mut Ui, theme: &Theme, input: &InputSettings, changes: &mut Vec<Change>) {
+        heading(ui, "CURSOR", "Changes apply now. Some apps update when reopened.");
+        let (low, high) = CURSOR_SIZE_RANGE;
+        if let Some(frac) = slider_row(ui, theme, "Cursor size", (input.cursor_size - low) as f32 / (high - low) as f32, &format!("{} px", input.cursor_size)) {
+            let size = (low as f32 + frac * (high - low) as f32).round() as u32;
+            if size != input.cursor_size {
+                changes.push(Change::Set("cursor_size", Some(size.to_string())));
+            }
+        }
+        if ui.add_enabled(input.cursor_size != CURSOR_BASE_SIZE, egui::Button::new("Reset size")).clicked() {
+            changes.push(Change::Set("cursor_size", None));
+        }
+        ui.add_space(12.0);
+        let current = input.cursor_color;
+        let (basis, draft) = self.cursor_color_draft.get_or_insert((current, current));
+        if *basis != current { *basis = current; *draft = current; }
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Cursor color");
+            ui.color_edit_button_srgb(draft).on_hover_text("Choose cursor color");
+            ui.label(egui::RichText::new(format!("#{:02X}{:02X}{:02X}", draft[0], draft[1], draft[2])).font(ui::mono(12.0)));
+            if ui.add_enabled(*draft != current, egui::Button::new("Apply color")).clicked() {
+                changes.push(Change::Set("cursor_color", Some(format!("{:02X}{:02X}{:02X}", draft[0], draft[1], draft[2]))));
+            }
+            if ui.add_enabled(current != DEFAULT_CURSOR_COLOR || *draft != current, egui::Button::new("Reset color")).clicked() {
+                *draft = DEFAULT_CURSOR_COLOR;
+                changes.push(Change::Set("cursor_color", None));
+            }
+        });
+        ui.add_space(12.0);
+        ui.horizontal_wrapped(|ui| {
+            for (background, label) in [(ui::TEXT, "Light"), (ui::GROUND, "Dark")] {
+                ui.vertical(|ui| {
+                    ui::text(ui, label, ui::mono(12.0), ui::SECONDARY);
+                    let (rect, _) = ui.allocate_exact_size(vec2(104.0, 96.0), Sense::hover());
+                    ui.painter().rect_filled(rect, ui::CONTROL_RADIUS, background);
+                    ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
+                    // Exact compositor arrow: (16,16), (29,30), (20,38), relative to its tip.
+                    let scale = input.cursor_size as f32 / CURSOR_BASE_SIZE as f32;
+                    let tip = rect.center() - vec2(6.5, 11.0) * scale;
+                    let points = CURSOR_ARROW_POINTS.map(|[x, y]| tip + vec2(x, y) * scale);
+                    let fill = Color32::from_rgb(draft[0], draft[1], draft[2]);
+                    let dark = Color32::from_rgb(29, 31, 33);
+                    let luminance = 0.2126 * draft[0] as f32 + 0.7152 * draft[1] as f32 + 0.0722 * draft[2] as f32;
+                    let outline = if luminance < 128.0 {
+                        // The wider dark stroke leaves a 0.15px outer hint around
+                        // the light keyline, matching the compositor's cursor art.
+                        ui.painter().add(egui::Shape::convex_polygon(points.to_vec(), fill, Stroke::new(1.15 * scale, dark)));
+                        Color32::from_rgb(DEFAULT_CURSOR_COLOR[0], DEFAULT_CURSOR_COLOR[1], DEFAULT_CURSOR_COLOR[2])
+                    } else { dark };
+                    ui.painter().add(egui::Shape::convex_polygon(points.to_vec(), fill, Stroke::new(0.85 * scale, outline)));
+                });
+            }
+        });
+        ui.add_space(22.0);
+    }
+
     fn pointer(&mut self, ui: &mut Ui, theme: &Theme, input: &InputSettings, changes: &mut Vec<Change>) {
         let on_off = |on: bool| Some(if on { "on" } else { "off" }.to_string());
-        let speed = |ui: &mut Ui, key: &'static str, value: f32, changes: &mut Vec<Change>| {
-            let label = if value.abs() < 0.05 { "normal".to_string() } else { format!("{value:+.1}") };
-            if let Some(frac) = slider_row(ui, theme, "Pointer speed", (value + 1.0) / 2.0, &label) {
+        let speed = |ui: &mut Ui, key: &'static str, name: &str, value: f32, changes: &mut Vec<Change>| {
+            let label = if key == "hand_pinch_sensitivity" {
+                if value.abs() < 0.05 { "balanced".to_string() }
+                else if value > 0.0 { format!("gentle {value:+.1}") }
+                else { format!("firm {value:+.1}") }
+            } else if value.abs() < 0.05 { "normal".to_string() } else { format!("{value:+.1}") };
+            if let Some(frac) = slider_row(ui, theme, name, (value + 1.0) / 2.0, &label) {
                 let new = ((frac * 2.0 - 1.0) * 10.0).round() / 10.0;
                 if new != value {
                     changes.push(Change::Set(key, Some(format!("{new:.1}"))));
@@ -673,9 +742,10 @@ impl Settings {
             changes.push(Change::Set("touchpad_while_typing_off", on_off(!input.touchpad_while_typing_off)));
         }
         ui.add_space(12.0);
-        speed(ui, "touchpad_speed", input.touchpad_speed, changes);
+        speed(ui, "touchpad_speed", "Pointer speed", input.touchpad_speed, changes);
         ui.add_space(22.0);
 
+        self.cursor(ui, theme, input, changes);
         heading(ui, "MOUSE", "");
         if switch_row(ui, theme, "Natural scrolling", "Reverses the wheel", input.mouse_natural_scroll) {
             changes.push(Change::Set("mouse_natural_scroll", on_off(!input.mouse_natural_scroll)));
@@ -684,7 +754,7 @@ impl Settings {
             changes.push(Change::Set("mouse_left_handed", on_off(!input.mouse_left_handed)));
         }
         ui.add_space(12.0);
-        speed(ui, "mouse_speed", input.mouse_speed, changes);
+        speed(ui, "mouse_speed", "Pointer speed", input.mouse_speed, changes);
         ui.add_space(22.0);
 
         heading(ui, "HAND CONTROL", "Move the pointer with your hand in front of the webcam.");
@@ -692,11 +762,22 @@ impl Settings {
             changes.push(Change::Set("hand_control", on_off(!input.hand_control)));
         }
         ui.add_space(12.0);
-        speed(ui, "hand_speed", input.hand_speed, changes);
+        speed(ui, "hand_speed", "Pointer speed", input.hand_speed, changes);
+        speed(ui, "hand_pinch_sensitivity", "Pinch sensitivity", input.hand_pinch_sensitivity, changes);
+        note(ui, "Firm needs a closer pinch; Gentle recognizes a lighter pinch.");
         ui.add_space(8.0);
-        note(ui, "Open hand: moves the pointer. Pinch thumb and index: click; keep pinching and move to drag; \
-                  hold the pinch still to right-click. Index and middle up: scroll, or sweep sideways for the next workspace. \
-                  A fist lifts the hand, to start again elsewhere.");
+        speed(ui, "hand_scroll_speed", "Scroll speed", input.hand_scroll_speed, changes);
+        ui.add_space(8.0);
+        if switch_row(ui, theme, "Release pinch while dragging", "Tap, then pinch again and move to grab. Relax your fingers; pinch again to drop.", input.hand_drag_lock) {
+            changes.push(Change::Set("hand_drag_lock", on_off(!input.hand_drag_lock)));
+        }
+        ui.add_space(8.0);
+        note(ui, "A relaxed hand moves the pointer. Pinch thumb and index to click; thumb and middle to right-click. \
+                  Tap twice without moving to double-click. Index and middle up: scroll, or sweep sideways for the next workspace. \
+                  Make a fist or lower your hand to pause.");
+        if !input.hand_drag_lock {
+            note(ui, "To drag, keep pinching thumb and index while moving; release to drop.");
+        }
         ui.add_space(4.0);
         note(ui, "Hold your hand up where the camera sees your wrist. The camera is on only while the status bar says so; \
                   nothing it sees leaves this computer.");
@@ -1424,6 +1505,111 @@ pub(crate) fn switch_row(ui: &mut Ui, theme: &Theme, name: &str, what: &str, on:
 
 #[cfg(test)]
 mod tests {
+    fn render_cursor(settings: &mut Settings, ctx: &egui::Context, input: &InputSettings, width: f32, events: Vec<egui::Event>) -> (egui::FullOutput, Vec<Change>) {
+        let mut changes = Vec::new();
+        let output = ctx.run(egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(width, 700.0))), events, ..Default::default()
+        }, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| settings.cursor(ui, &Theme::load("signal"), input, &mut changes));
+        });
+        (output, changes)
+    }
+
+    #[test]
+    fn cursor_settings_fit_and_preview_drafts_without_writing() {
+        for width in [280.0, 640.0, 1100.0] {
+            let ctx = egui::Context::default();
+            crate::ui::install_fonts(&ctx, None, None);
+            let input = InputSettings { cursor_size: 64, ..InputSettings::default() };
+            let mut settings = Settings::default();
+            settings.cursor_color_draft = Some((input.cursor_color, [30, 140, 220]));
+            let (output, changes) = render_cursor(&mut settings, &ctx, &input, width, Vec::new());
+            assert!(changes.is_empty(), "previewing a draft must not save");
+            assert_eq!(settings.cursor_color_draft.unwrap().1, [30, 140, 220]);
+            for shape in output.shapes {
+                if let egui::Shape::Text(text) = shape.shape {
+                    assert!(text.pos.x + text.galley.size().x <= width + 1.0, "cursor text spills: {}", text.galley.job.text);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dark_cursor_preview_has_a_light_keyline_on_both_backgrounds() {
+        let ctx = egui::Context::default();
+        crate::ui::install_fonts(&ctx, None, None);
+        let mut settings = Settings::default();
+        let input = InputSettings::default();
+        settings.cursor_color_draft = Some((input.cursor_color, [0, 0, 0]));
+        let (output, _) = render_cursor(&mut settings, &ctx, &input, 640.0, Vec::new());
+        let outlined = output.shapes.iter().filter(|shape| matches!(&shape.shape,
+            egui::Shape::Path(path) if path.closed && path.points.len() == 3 && path.fill == Color32::BLACK
+                && path.stroke == Stroke::new(0.85, Color32::from_rgb(247, 246, 242)).into()
+        )).count();
+        assert_eq!(outlined, 2, "black cursor needs a contrasting light keyline on both preview tiles");
+    }
+
+    #[test]
+    fn cursor_color_requires_apply_and_reset_restores_defaults() {
+        let ctx = egui::Context::default();
+        crate::ui::install_fonts(&ctx, None, None);
+        let input = InputSettings { cursor_color: [20, 30, 40], cursor_size: 48, ..InputSettings::default() };
+        let mut settings = Settings::default();
+        settings.cursor_color_draft = Some((input.cursor_color, [80, 90, 100]));
+        for (label, expected) in [
+            ("Apply color", Change::Set("cursor_color", Some("505A64".to_string()))),
+            ("Reset color", Change::Set("cursor_color", None)),
+            ("Reset size", Change::Set("cursor_size", None)),
+        ] {
+            let (output, changes) = render_cursor(&mut settings, &ctx, &input, 640.0, Vec::new());
+            assert!(changes.is_empty());
+            let pos = output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == label => Some(text.pos + text.galley.size() / 2.0), _ => None,
+            }).unwrap_or_else(|| panic!("missing {label}"));
+            for pressed in [true, false] {
+                let (_, changes) = render_cursor(&mut settings, &ctx, &input, 640.0, vec![
+                    egui::Event::PointerMoved(pos), egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE },
+                ]);
+                if !pressed { assert_eq!(changes, vec![expected.clone()]); }
+            }
+        }
+        assert_eq!(settings.cursor_color_draft.unwrap().1, DEFAULT_CURSOR_COLOR);
+        let updated = InputSettings { cursor_color: [200, 210, 220], ..input };
+        let (_, changes) = render_cursor(&mut settings, &ctx, &updated, 640.0, Vec::new());
+        assert!(changes.is_empty());
+        assert_eq!(settings.cursor_color_draft, Some((updated.cursor_color, updated.cursor_color)));
+    }
+
+    #[test]
+    fn comfortable_hand_controls_fit_narrow_and_wide_settings() {
+        for width in [320.0, 640.0, 1100.0] {
+            for drag_lock in [true, false] {
+                let ctx = egui::Context::default();
+                crate::ui::install_fonts(&ctx, None, None);
+                let mut settings = Settings::default();
+                let input = InputSettings { hand_drag_lock: drag_lock, ..InputSettings::default() };
+                let mut changes = Vec::new();
+                let rect = Rect::from_min_size(egui::Pos2::ZERO, vec2(width, 2400.0));
+                let output = ctx.run(egui::RawInput { screen_rect: Some(rect), ..Default::default() }, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        settings.pointer(ui, &Theme::load("signal"), &input, &mut changes);
+                    });
+                });
+                assert!(changes.is_empty(), "opening settings must not rewrite preferences");
+                let texts: Vec<_> = output.shapes.iter().filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) => Some(text), _ => None,
+                }).collect();
+                for label in ["Pinch sensitivity", "Scroll speed", "Release pinch while dragging"] {
+                    assert!(texts.iter().any(|text| text.galley.job.text == label), "missing control: {label}");
+                }
+                assert_eq!(texts.iter().any(|text| text.galley.job.text.contains("keep pinching thumb and index")), !drag_lock);
+                for text in texts {
+                    assert!(text.pos.x + text.galley.size().x <= width + 1.0, "pointer settings text spills at {width}: {}", text.galley.job.text);
+                }
+            }
+        }
+    }
+
     #[test]
     fn settings_appearance_tabs_wrap_explanations_and_sliders_on_narrow_screens() {
         for tab in [AppearanceTab::Wallpaper, AppearanceTab::Theme, AppearanceTab::Effects] {

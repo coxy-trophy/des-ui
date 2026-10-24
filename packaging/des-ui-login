@@ -12,7 +12,9 @@
 set -eu
 bin=$(dirname "$(readlink -f "$0")")
 config=/etc/greetd/config.toml
-state=/var/lib/des-ui/greeter
+log_dir=/var/lib/des-ui/greeter
+# The greeter may write its logs, but never the state consumed by this root tool.
+state=/var/lib/des-ui/login
 alias=/etc/systemd/system/display-manager.service
 
 # The login manager systemd starts at boot, as a unit name, or nothing.
@@ -25,10 +27,56 @@ ours() {
 need_root() {
     [ "$(id -u)" -eq 0 ] || { echo "This changes the system: run it with sudo." >&2; exit 1; }
 }
+fail_state() {
+    echo "Unsafe login-manager state: $1" >&2
+    exit 1
+}
+root_directory() {
+    [ ! -L "$1" ] && [ -d "$1" ] || fail_state "$1 must be a real directory"
+    [ "$(stat -c %u "$1")" = 0 ] || fail_state "$1 must be root-owned"
+    mode=$(stat -c %a "$1")
+    [ "$((0$mode & 022))" -eq 0 ] || fail_state "$1 must not be writable by others"
+}
+secure_state() {
+    # Validate before install/chmod so an existing symlink is never followed.
+    for directory in /var /var/lib /var/lib/des-ui; do
+        if [ ! -e "$directory" ] && [ ! -L "$directory" ]; then
+            install -d -o root -m 755 "$directory"
+        fi
+        root_directory "$directory"
+    done
+    if [ ! -e "$state" ] && [ ! -L "$state" ]; then
+        install -d -o root -m 700 "$state"
+    fi
+    root_directory "$state"
+    chmod 700 "$state"
+}
+unit_name() {
+    case "$1" in
+        ''|[!a-zA-Z0-9]*|*[!a-zA-Z0-9_.@:-]*) return 1 ;;
+        *.service) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+read_previous() {
+    before=
+    saved="$state/previous-login-manager"
+    if [ -e "$saved" ] || [ -L "$saved" ]; then
+        [ ! -L "$saved" ] && [ -f "$saved" ] || fail_state "$saved must be a regular file"
+        [ "$(stat -c %u "$saved")" = 0 ] || fail_state "$saved must be root-owned"
+        mode=$(stat -c %a "$saved")
+        [ "$((0$mode & 022))" -eq 0 ] || fail_state "$saved must not be writable by others"
+        [ "$(stat -c %s "$saved")" -le 256 ] || fail_state "$saved is too large"
+        before=$(cat "$saved")
+        [ -z "$before" ] || unit_name "$before" || fail_state "invalid login-manager unit"
+    fi
+}
 
 case "${1:-}" in
 enable)
     need_root
+    secure_state
+    read_previous
     # The account greetd runs the login screen as, and the console it uses, are the
     # distribution's choices: keep them.
     user=$(sed -n 's/^user *= *"\(.*\)"/\1/p' "$config" 2>/dev/null | head -n 1)
@@ -40,13 +88,23 @@ enable)
         exit 1
     fi
     # Where the login screen keeps its log, for when it misbehaves.
-    install -d -o "$user" -m 755 "$state"
+    install -d -o "$user" -m 755 "$log_dir"
 
     # What starts at boot now is what "disable" puts back. greetd may be that already,
     # showing its own text login.
     before=$(current)
+    [ -z "$before" ] || unit_name "$before" || fail_state "invalid current login-manager unit"
     if ! ours || [ ! -f "$state/previous-login-manager" ]; then
-        echo "$before" >"$state/previous-login-manager"
+        # An old installation has no trusted record. Let disable find a known
+        # installed manager instead of treating our own greetd as its predecessor.
+        if ours; then before=; fi
+        # Never import the legacy greeter-writable previous-login-manager file.
+        # A private temporary file and rename also avoid following destination links.
+        temporary=$(mktemp "$state/.previous-login-manager.XXXXXX")
+        trap 'rm -f "$temporary"' EXIT HUP INT TERM
+        printf '%s\n' "$before" >"$temporary"
+        mv -fT "$temporary" "$state/previous-login-manager"
+        trap - EXIT HUP INT TERM
     fi
     if [ -f "$config" ] && ! ours && [ ! -f "$config.before-des-ui" ]; then
         cp "$config" "$config.before-des-ui"
@@ -73,7 +131,8 @@ disable)
         echo "The DEs-UI login screen is not this machine's login screen; nothing to do."
         exit 0
     fi
-    before=$(cat "$state/previous-login-manager" 2>/dev/null || true)
+    secure_state
+    read_previous
     if [ -z "$before" ]; then
         for known in gdm3 gdm sddm lightdm; do
             if [ -e "/usr/lib/systemd/system/$known.service" ]; then

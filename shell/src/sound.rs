@@ -39,6 +39,8 @@ pub struct Elsewhere {
     pub device: u32,
     /// The profile to change over to.
     pub profile: u32,
+    /// The connector route to use on that profile.
+    pub route: u32,
     pub name: String,
 }
 
@@ -79,6 +81,7 @@ pub fn parse_elsewhere(dump: &str) -> Vec<Elsewhere> {
                 .filter_map(|index| profile(*index))
                 .filter(|profile| profile["available"] != "no")
                 .max_by_key(|profile| (listens(profile) == keep_input, profile["priority"].as_i64().unwrap_or(0)));
+            let Some(route_index) = route["index"].as_u64() else { continue };
             let Some(index) = best.and_then(|profile| profile["index"].as_u64()) else { continue };
             // What is plugged in names itself, a TV say; otherwise the card and the port.
             let info = route["info"].as_array().cloned().unwrap_or_default();
@@ -89,21 +92,55 @@ pub fn parse_elsewhere(dump: &str) -> Vec<Elsewhere> {
                 None => format!("{product} {port}"),
             };
             if !found.iter().any(|known: &Elsewhere| known.device == device as u32 && known.name == name) {
-                found.push(Elsewhere { device: device as u32, profile: index as u32, name });
+                found.push(Elsewhere { device: device as u32, profile: index as u32, route: route_index as u32, name });
             }
         }
     }
     found
 }
 
-/// The PipeWire number of an output that belongs to sound card `device`.
-fn output_of(dump: &str, device: u32) -> Option<u32> {
+/// Wait for the requested profile, then match the route's ACP device indices to
+/// the sink's card.profile.device (the same mapping wpctl set-route uses).
+fn output_of(dump: &str, place: &Elsewhere) -> Option<u32> {
     let objects: Vec<serde_json::Value> = serde_json::from_str(dump).ok()?;
+    let card = objects.iter().find(|object| object["id"].as_u64() == Some(place.device as u64))?;
+    let params = &card["info"]["params"];
+    if !params["Profile"].as_array()?.iter().any(|profile| profile["index"].as_u64() == Some(place.profile as u64)) {
+        return None;
+    }
+    let route = params["EnumRoute"].as_array()?.iter().find(|route| {
+        route["index"].as_u64() == Some(place.route as u64) && route["direction"] == "Output"
+    })?;
+    let devices = route["devices"].as_array()?;
     objects.iter().find_map(|object| {
         let props = &object["info"]["props"];
-        let belongs = props["media.class"] == "Audio/Sink" && props["device.id"].as_u64() == Some(device as u64);
+        let route_device = props["card.profile.device"].as_u64()?;
+        let belongs = props["media.class"] == "Audio/Sink"
+            && props["device.id"].as_u64() == Some(place.device as u64)
+            && devices.iter().any(|device| device.as_u64() == Some(route_device));
         belongs.then(|| object["id"].as_u64()).flatten().map(|id| id as u32)
     })
+}
+
+/// The callbacks keep profile transitions testable without changing system audio.
+fn change_profile(
+    place: &Elsewhere,
+    mut command: impl FnMut(&[&str]) -> Option<String>,
+    mut dump: impl FnMut() -> Option<String>,
+    mut wait: impl FnMut(),
+) {
+    if command(&["set-profile", &place.device.to_string(), &place.profile.to_string()]).is_none() {
+        return;
+    }
+    for _ in 0..20 {
+        if let Some(output) = dump().and_then(|dump| output_of(&dump, place)) {
+            if command(&["set-route", &output.to_string(), &place.route.to_string()]).is_some() {
+                let _ = command(&["set-default", &output.to_string()]);
+            }
+            return;
+        }
+        wait();
+    }
 }
 
 fn pw_dump() -> Option<String> {
@@ -235,18 +272,9 @@ impl Sound {
     /// Changes a card over to the profile that reaches an output, then plays through
     /// that output once it appears.
     fn change_over(&self, place: &Elsewhere) {
-        let (device, profile) = (place.device, place.profile);
+        let place = place.clone();
         self.act_with(
-            move || {
-                let _ = wpctl(&["set-profile", &device.to_string(), &profile.to_string()]);
-                for _ in 0..20 {
-                    if let Some(output) = pw_dump().and_then(|dump| output_of(&dump, device)) {
-                        let _ = wpctl(&["set-default", &output.to_string()]);
-                        return;
-                    }
-                    std::thread::sleep(Duration::from_millis(150));
-                }
-            },
+            move || change_profile(&place, wpctl, pw_dump, || std::thread::sleep(Duration::from_millis(150))),
             true,
         );
     }
@@ -481,25 +509,98 @@ Settings
             {"index": 2, "direction": "Output", "name": "analog-output-speaker", "description": "Speakers", "available": "unknown", "profiles": [1, 2]},
             {"index": 0, "direction": "Input", "name": "analog-input-internal-mic", "description": "Internal Microphone", "available": "unknown", "profiles": [1, 3]},
             {"index": 4, "direction": "Output", "name": "hdmi-output-0", "description": "HDMI / DisplayPort", "available": "yes",
-             "info": [2, "port.type", "hdmi", "device.product.name", "Beyond TV"], "profiles": [4, 3]},
+             "info": [2, "port.type", "hdmi", "device.product.name", "Beyond TV"], "devices": [7], "profiles": [4, 3]},
             {"index": 5, "direction": "Output", "name": "hdmi-output-1", "description": "HDMI / DisplayPort 2", "available": "no", "profiles": [5]}
           ]
         }}},
-      {"id": 53, "info": {"props": {"media.class": "Audio/Sink", "device.id": 49}}}
+      {"id": 53, "info": {"props": {"media.class": "Audio/Sink", "device.id": 49, "card.profile.device": 0}}}
     ]"#;
 
     #[test]
     fn finds_outputs_a_card_has_to_change_over_to() {
         // The TV, by the profile that keeps the microphone; nothing for the unplugged port.
-        assert_eq!(parse_elsewhere(DUMP), [Elsewhere { device: 49, profile: 3, name: "Beyond TV (HDMI / DisplayPort)".into() }]);
+        assert_eq!(parse_elsewhere(DUMP), [Elsewhere { device: 49, profile: 3, route: 4, name: "Beyond TV (HDMI / DisplayPort)".into() }]);
         // Once changed over, the speakers are the ones elsewhere.
         let changed = DUMP.replace(r#""Profile": [{"index": 1,"#, r#""Profile": [{"index": 3,"#);
         let elsewhere = parse_elsewhere(&changed);
         assert_eq!(elsewhere.len(), 1);
         assert_eq!((elsewhere[0].profile, elsewhere[0].name.as_str()), (1, "Built-in Audio Speakers"));
-        assert_eq!(output_of(DUMP, 49), Some(53));
-        assert_eq!(output_of(DUMP, 50), None);
         assert!(parse_elsewhere("not json").is_empty());
+    }
+
+    #[test]
+    fn does_not_select_the_old_sink_while_a_profile_changes() {
+        // The original analog sink still belongs to this card until teardown finishes.
+        assert_eq!(output_of(DUMP, &parse_elsewhere(DUMP)[0]), None);
+    }
+
+    fn hdmi_ready() -> String {
+        let mut objects: Vec<serde_json::Value> = serde_json::from_str(DUMP).unwrap();
+        objects[0]["info"]["params"]["Profile"][0]["index"] = 3.into();
+        // The analog sink is still present, before the HDMI sink in the dump.
+        objects.push(serde_json::json!({"id": 54, "info": {"props": {
+            "media.class": "Audio/Sink", "device.id": 49, "card.profile.device": 7
+        }}}));
+        serde_json::to_string(&objects).unwrap()
+    }
+
+    #[test]
+    fn chooses_the_requested_route_among_multiple_card_outputs() {
+        let place = &parse_elsewhere(DUMP)[0];
+        assert_eq!(output_of(&hdmi_ready(), place), Some(54));
+        // An active profile alone is insufficient while the new sink is not ready.
+        let mut objects: Vec<serde_json::Value> = serde_json::from_str(&hdmi_ready()).unwrap();
+        objects.pop();
+        assert_eq!(output_of(&serde_json::to_string(&objects).unwrap(), place), None);
+    }
+
+    #[test]
+    fn waits_for_hdmi_then_sets_its_route_and_default() {
+        let place = &parse_elsewhere(DUMP)[0];
+        let mut snapshots = [DUMP.to_string(), hdmi_ready()].into_iter();
+        let mut commands = Vec::new();
+        let mut waits = 0;
+        change_profile(place, |args| {
+            commands.push(args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>());
+            Some(String::new())
+        }, || snapshots.next(), || waits += 1);
+        assert_eq!(waits, 1);
+        assert_eq!(commands, [
+            vec!["set-profile", "49", "3"],
+            vec!["set-route", "54", "4"],
+            vec!["set-default", "54"],
+        ]);
+    }
+
+    #[test]
+    fn failed_profile_or_route_never_changes_the_default() {
+        let place = &parse_elsewhere(DUMP)[0];
+        let mut commands = Vec::new();
+        change_profile(place, |args| {
+            commands.push(args[0].to_string());
+            None
+        }, || panic!("a failed profile must not poll for sinks"), || panic!("must not wait"));
+        assert_eq!(commands, ["set-profile"]);
+
+        commands.clear();
+        change_profile(place, |args| {
+            commands.push(args[0].to_string());
+            (args[0] != "set-route").then(String::new)
+        }, || Some(hdmi_ready()), || panic!("sink is already ready"));
+        assert_eq!(commands, ["set-profile", "set-route"]);
+    }
+
+    #[test]
+    fn absent_target_times_out_without_selecting_another_sink() {
+        let place = &parse_elsewhere(DUMP)[0];
+        let mut commands = Vec::new();
+        let mut waits = 0;
+        change_profile(place, |args| {
+            commands.push(args[0].to_string());
+            Some(String::new())
+        }, || Some(DUMP.to_string()), || waits += 1);
+        assert_eq!(commands, ["set-profile"]);
+        assert_eq!(waits, 20);
     }
 
     #[test]

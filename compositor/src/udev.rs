@@ -51,7 +51,7 @@ use smithay::{
         rustix::fs::OFlags,
         wayland_server::backend::GlobalId,
     },
-    utils::{DeviceFd, IsAlive, Rectangle, Transform},
+    utils::{DeviceFd, Rectangle, Transform},
     wayland::{compositor::with_states, dmabuf::DmabufFeedbackBuilder},
 };
 
@@ -81,17 +81,27 @@ render_elements! {
 
 /// The pointer as something to draw at `position` on a display: the arrow, or the
 /// image the application under it supplies.
-pub fn cursor_elements(
+pub fn effective_cursor_status(status: &CursorImageStatus, resizing: bool) -> CursorImageStatus {
+    if resizing {
+        CursorImageStatus::Named(smithay::input::pointer::CursorIcon::ColResize)
+    } else { status.clone() }
+}
+
+pub fn cursor_elements<C>(
     renderer: &mut GlesRenderer,
-    cursors: &crate::handlers::cursor_shape::Cursors,
+    cursors: &mut crate::handlers::cursor_shape::Cursors,
     status: &CursorImageStatus,
     position: smithay::utils::Point<f64, smithay::utils::Logical>,
     scale: f64,
-) -> Vec<OutputElements> {
+    animate: bool,
+    now: Instant,
+) -> Vec<C>
+where C: From<MemoryRenderBufferRenderElement<GlesRenderer>> + From<WaylandSurfaceRenderElement<GlesRenderer>> {
     let mut elements = Vec::new();
     match status {
-        CursorImageStatus::Hidden => {}
+        CursorImageStatus::Hidden => { cursors.suspend(); }
         CursorImageStatus::Surface(surface) => {
+            cursors.suspend();
             let hotspot = with_states(surface, |states| {
                 states
                     .data_map
@@ -109,10 +119,10 @@ pub fn cursor_elements(
             ));
         }
         CursorImageStatus::Named(icon) => {
-            let (picture, hotspot) = cursors.get(*icon);
+            let (picture, hotspot) = cursors.get(*icon, scale, animate, now);
             let at = (position - hotspot.to_f64()).to_physical(scale);
             if let Ok(pointer) = MemoryRenderBufferRenderElement::from_buffer(renderer, at, picture, None, None, None, Kind::Cursor) {
-                elements.push(OutputElements::Cursor(pointer));
+                elements.push(C::from(pointer));
             }
         }
     }
@@ -190,7 +200,6 @@ pub struct UdevData {
     /// Connected monitors that are turned off in the settings.
     dark: Vec<DisplayInfo>,
     manager: Manager,
-    pub cursor: crate::handlers::cursor_shape::Cursors,
     /// False while another virtual terminal owns the displays.
     active: bool,
     /// Frames that have reached a screen.
@@ -256,7 +265,6 @@ pub fn init_udev(
         monitors: Vec::new(),
         dark: Vec::new(),
         manager,
-        cursor: crate::handlers::cursor_shape::Cursors::new(),
         active: true,
         flips: 0,
         devices: Vec::new(),
@@ -991,6 +999,7 @@ impl DesComp {
             return;
         }
         let toast_area = self.toast_area();
+        let companion_bubble_area = self.companion_bubble_area();
         let overlay_area = self.overlay_area();
         let docks = self.dock_layers();
         let primary = self.screens.first().map(|screen| screen.loc);
@@ -1004,14 +1013,10 @@ impl DesComp {
         if !udev.active {
             return;
         }
-        if matches!(&self.cursor_status, CursorImageStatus::Surface(surface) if !surface.alive()) {
-            self.cursor_status = CursorImageStatus::default_named();
-        }
         let pointer = self.seat.get_pointer().unwrap().current_location();
         let UdevData {
             renderer,
             monitors,
-            cursor,
             ..
         } = udev;
 
@@ -1044,12 +1049,13 @@ impl DesComp {
             } else if geometry.to_f64().contains(pointer) {
                 let position = pointer - geometry.loc.to_f64();
                 // Over a divider between windows, or dragging one, the double arrow.
-                let status = if self.resize_hover {
-                    CursorImageStatus::Named(smithay::input::pointer::CursorIcon::ColResize)
-                } else {
-                    self.cursor_status.clone()
-                };
-                elements.extend(cursor_elements(renderer, cursor, &status, position, scale));
+                let status = effective_cursor_status(&self.cursor_status, self.resize_hover);
+                elements.extend(cursor_elements(renderer, &mut self.cursors, &status, position, scale,
+                    crate::motion::allowed(self.motions.enabled, self.locked, self.picking), now));
+                if !self.locked && !self.picking {
+                    elements.extend(self.hand_feedback.elements(position, scale, now)
+                        .into_iter().map(OutputElements::Solid));
+                }
                 elements.extend(crate::dnd::icon_elements::<OutputElements>(renderer,self.drag_icon.as_ref(),position,scale));
             }
             // The overview, or the switcher's strip, above all but the pointer. The
@@ -1059,6 +1065,8 @@ impl DesComp {
                 elements.extend(crate::overview::elements::<OutputElements>(renderer, overview, &self.space, if overview.screen==0 {self.shell.as_ref()}else{self.backdrops.get(overview.screen-1)}, &monitor.output, now));
             }
             if !overview.is_some_and(|overview| matches!(overview.kind, des_common::ipc::OverviewKind::Workspaces | des_common::ipc::OverviewKind::Drag)) {
+            elements.extend(crate::toast::elements(renderer, self.shell.as_ref(), companion_bubble_area, primary,
+                &self.companion_bubble_id, geometry.loc, scale).into_iter().map(OutputElements::Toast));
             elements.extend(
                 crate::toast::elements(renderer, self.shell.as_ref(), toast_area, primary, &self.toast_id, geometry.loc, scale)
                     .into_iter()
@@ -1116,6 +1124,17 @@ impl DesComp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recording_and_display_share_the_resize_override_and_hidden_status() {
+        use smithay::input::pointer::CursorIcon;
+        for icon in [CursorIcon::Default, CursorIcon::Pointer, CursorIcon::Text, CursorIcon::Wait] {
+            let original = CursorImageStatus::Named(icon);
+            assert!(matches!(effective_cursor_status(&original, true), CursorImageStatus::Named(CursorIcon::ColResize)));
+            assert!(matches!(effective_cursor_status(&original, false), CursorImageStatus::Named(found) if found == icon));
+        }
+        assert!(matches!(effective_cursor_status(&CursorImageStatus::Hidden, false), CursorImageStatus::Hidden));
+    }
 
     /// The CTA extension of a 4K TV's EDID, as read from the TV itself.
     const TV: &str = "020362f052616066653f5f5e5d1f2220051404130312102f09070715075057070067040035072883010000e200cb6e030c001000b844210080010203046ad85dc40178886f023090e305e301e20f0fe3060f01e5018b849001681a00000101309000000000000000000000000000000000000000000000000000000000000054";
