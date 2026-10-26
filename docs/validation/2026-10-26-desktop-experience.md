@@ -33,3 +33,9 @@ Pointer artwork uses the configured fill without an opaque outline, plus a contr
 Wide and short native previews were inspected for Music, System, Apps, launcher, Devices, Settings search and keyboard/native-window placement. Static design audit and diff checks passed. Independent reviews found issues that were repaired; follow-up reviews found no further actionable regressions. Music/desktop previews used private Xvfb/configuration/runtime directories. Raw captures, inventories and logs remain local and are not committed.
 
 No installed binary, live desktop, monitor configuration, camera or microphone was changed. Install the source update, then log out and back in to activate matching shell, compositor and cursor-session environment. Release installation and physical monitor reconnect are not claimed as completed by these source/debug checks.
+
+## System panel spacing follow-up
+
+The supplied screenshot exposed an unused middle band: the flexible instrument reservation consumed all remaining card height, while Displays and Controls were anchored to the floor. Instrument rendering now reports its actual content extent; Displays and Controls follow it with an 8px gap. Music keeps its protected bottom reservation. No new scrolling or live-session changes were introduced.
+
+Fresh verification: all 499 shell tests passed. A rendered egui regression checks 192px and 292px columns at 480px, 720px and 1000px heights, both with and without playback, for the globe-to-display gap and local-reading clearance above playback. Existing footer and height-budget tests also passed; git diff --check passed. This follow-up was verified through headless rendering geometry, not an installed live-session preview.

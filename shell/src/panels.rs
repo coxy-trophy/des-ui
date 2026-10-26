@@ -427,13 +427,19 @@ fn right_budget(height: f32, music: f32, levels: usize, remote: bool, screens: u
 }
 
 /// Fixed regions paint and interact only inside their reservation. They never
-/// advance the enclosing column's cursor or expand its minimum rectangle.
-fn right_region(ui: &mut Ui, rect: Rect, id: &'static str, draw: impl FnOnce(&mut Ui)) {
-    if rect.height() <= 0.0 || rect.width() <= 0.0 { return; }
+/// advance the enclosing column's cursor or expand its minimum rectangle. The
+/// returned painted extent lets following sections avoid unused reservation space.
+fn right_region(ui: &mut Ui, rect: Rect, id: &'static str, draw: impl FnOnce(&mut Ui)) -> f32 {
+    if rect.height() <= 0.0 || rect.width() <= 0.0 { return rect.top(); }
     let mut child = ui.new_child(eframe::egui::UiBuilder::new().id_salt(id).max_rect(rect).layout(Layout::top_down(Align::Min)));
     child.set_clip_rect(rect.intersect(ui.clip_rect()));
     child.spacing_mut().item_spacing = vec2(8.0, 7.0);
     draw(&mut child);
+    child.min_rect().bottom().min(rect.bottom())
+}
+
+fn right_footer_top(content_bottom: f32, reserved_bottom: f32) -> f32 {
+    content_bottom.min(reserved_bottom) + 8.0
 }
 
 /// The right column. Its bottom reservations are independent of the globe and
@@ -457,35 +463,13 @@ pub fn right(
     let remote = mon.remote.as_ref().is_some_and(|remote| remote.live);
     let levels = readings.iter().filter(|(_, value)| value.is_some()).count();
     let budget = right_budget(area.height(), music_height, levels, remote, desktop.map_or(0, |desktop| desktop.screens));
-    let mut bottom = area.bottom();
+    let bottom = area.bottom();
     if budget.music > 0.0 {
         let rect = Rect::from_min_max(pos2(area.left(), bottom - budget.music), pos2(area.right(), bottom));
         right_region(ui, rect, "right-playback", playing);
-        bottom = (rect.top() - 8.0).max(area.top());
-    }
-    if budget.controls > 0.0 {
-        let rect = Rect::from_min_max(pos2(area.left(), bottom - budget.controls), pos2(area.right(), bottom));
-        right_region(ui, rect, "right-local-controls", |ui| {
-            right_levels(ui, theme, readings, remote, mon.battery_health, mon.power.is_some_and(|power| power.plugged));
-        });
-        bottom = (rect.top() - 8.0).max(area.top());
-    }
-    if budget.displays > 0.0 {
-        let rect = Rect::from_min_max(pos2(area.left(), bottom - budget.displays), pos2(area.right(), bottom));
-        right_region(ui, rect, "right-displays", |ui| {
-            if let Some(desktop) = desktop {
-                right_heading(ui, "DISPLAYS", &format!("{} CONNECTED", desktop.screens));
-                if budget.displays > 40.0 {
-                    display_tiles(ui, theme, desktop);
-                } else {
-                    let summary = (0..desktop.screens).map(|index| format!("Display {}", index + 1)).collect::<Vec<_>>().join(" · ");
-                    ui.interact(ui.min_rect(), ui.id().with("display-summary"), Sense::hover()).on_hover_text(summary);
-                }
-            }
-        });
     }
     let instruments = Rect::from_min_size(area.min, vec2(area.width(), budget.instruments));
-    right_region(ui, instruments, "right-instruments", |ui| {
+    let content_bottom = right_region(ui, instruments, "right-instruments", |ui| {
         let online = !mon.ip.is_empty();
         ui::section(ui, "NETWORK", |ui| ui::meta(ui, if online { "ONLINE" } else { "OFFLINE" }, if online { theme.main } else { ui::CAUTION }));
         if budget.instruments < 42.0 { return; }
@@ -534,11 +518,85 @@ pub fn right(
             }
         }
     });
+    // The budget is a ceiling, not a spacer: place ordinary sections after the
+    // content actually painted. Playback alone stays anchored to the card floor.
+    let mut top = right_footer_top(content_bottom, instruments.bottom());
+    if budget.displays > 0.0 {
+        let rect = Rect::from_min_max(pos2(area.left(), top), pos2(area.right(), top + budget.displays));
+        right_region(ui, rect, "right-displays", |ui| {
+            if let Some(desktop) = desktop {
+                right_heading(ui, "DISPLAYS", &format!("{} CONNECTED", desktop.screens));
+                if budget.displays > 40.0 {
+                    display_tiles(ui, theme, desktop);
+                } else {
+                    let summary = (0..desktop.screens).map(|index| format!("Display {}", index + 1)).collect::<Vec<_>>().join(" · ");
+                    ui.interact(ui.min_rect(), ui.id().with("display-summary"), Sense::hover()).on_hover_text(summary);
+                }
+            }
+        });
+        top = rect.bottom() + 8.0;
+    }
+    if budget.controls > 0.0 {
+        let rect = Rect::from_min_max(pos2(area.left(), top), pos2(area.right(), top + budget.controls));
+        right_region(ui, rect, "right-local-controls", |ui| {
+            right_levels(ui, theme, readings, remote, mon.battery_health, mon.power.is_some_and(|power| power.plugged));
+        });
+    }
+
 }
 
 #[cfg(test)]
 mod right_budget_tests {
     use super::*;
+
+    #[test]
+    fn footer_follows_content_instead_of_unused_instrument_height() {
+        for available_bottom in [540.0, 760.0, 1040.0] {
+            assert_eq!(right_footer_top(520.0, available_bottom), 528.0);
+        }
+        // Even an overflowing optional widget must respect the footer reservation.
+        assert_eq!(right_footer_top(900.0, 540.0), 548.0);
+    }
+
+    #[test]
+    fn rendered_system_sections_follow_globe_and_stay_above_playback() {
+        use eframe::egui;
+        for height in [480.0, 720.0, 1000.0] {
+            for width in [192.0, 292.0] {
+                for music in [0.0, crate::music::PANEL_HEIGHT] {
+                    let ctx = egui::Context::default();
+                    ui::install_fonts(&ctx, None, None);
+                    let theme = Theme::load("signal");
+                    let mut mon = SysMon::new();
+                    mon.brightness = Some(79);
+                    mon.battery = Some(87);
+                    let widgets = crate::widgets::Widgets::new(ctx.clone());
+                    let mut world = globe::Explorer::default();
+                    let geo = Snapshot { home: Some(crate::geo::Place { lat: 5.6, lon: -0.2, label: "Accra".into() }), ..Default::default() };
+                    let area = Rect::from_min_size(pos2(20.0, 20.0), vec2(width, height));
+                    let output = ctx.run(egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(width+40.0, height+40.0))), ..Default::default() }, |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            let mut column = ui.new_child(egui::UiBuilder::new().max_rect(area));
+                            column.set_clip_rect(area);
+                            right(&mut column, &theme, &mon, Some(&DesktopState { screens: 1, ..Default::default() }), &mut world, false, &geo, &widgets, music, |_| {});
+                        });
+                    });
+                    let text_rect = |needle: &str| output.shapes.iter().find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.job.text == needle => Some(Rect::from_min_size(text.pos, text.galley.size())),
+                        _ => None,
+                    });
+                    let displays = text_rect("DISPLAYS").expect("display heading");
+                    if let Some(home) = text_rect("ACCRA · BY IP") {
+                        assert!(displays.top() - home.bottom() < 40.0, "stretched blank gap at {width}x{height}: {home:?} / {displays:?}");
+                        assert!(displays.top() >= home.bottom());
+                    }
+                    let last_control = text_rect("87%").expect("battery reading");
+                    let floor = area.bottom() - music - if music > 0.0 { 8.0 } else { 0.0 };
+                    assert!(last_control.bottom() <= floor, "controls overlap playback at {width}x{height}: {last_control:?} / {floor}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn actual_footer_paint_fits_at_narrow_widths() {
