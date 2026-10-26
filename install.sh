@@ -88,6 +88,7 @@ fi
 if [ "${XDG_CURRENT_DESKTOP:-}" = des-ui ]; then
     echo "Installed. Super+Shift+R restarts the shell on the new build; managed terminals reconnect;"
     echo "a new compositor takes effect the next time you log in."
+    echo "For frame geometry updates, log out and in so shell and compositor switch together."
 else
     echo "Installed. Log out and pick 'DEs-UI' from the session menu on the login screen."
 fi

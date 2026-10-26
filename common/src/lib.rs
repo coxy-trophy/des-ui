@@ -109,7 +109,7 @@ pub fn bottom_height(screen_height: f32) -> f32 {
 }
 
 /// Width retained by a minimized monitoring column in collapse mode.
-pub const COLLAPSED_SIDE_WIDTH: f32 = 36.0;
+pub const COLLAPSED_SIDE_WIDTH: f32 = 56.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PanelBehavior {

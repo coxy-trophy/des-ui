@@ -1089,7 +1089,7 @@ pub fn collapsed_rail(ui: &mut Ui, theme: &Theme, panel: Panel) -> bool {
         Panel::Bottom => return false,
     };
     let hint = crate::shortcuts::hint(ui.ctx(), label, id);
-    let response = ui.interact(rect, ui.id().with("expand-panel"), Sense::click());
+    let response = ui.interact(rect, ui.id().with(("expand-panel", id)), Sense::click());
     response.widget_info(|| eframe::egui::WidgetInfo::labeled(eframe::egui::WidgetType::Button, ui.is_enabled(), hint.as_str()));
     let highlighted = response.hovered() || response.has_focus();
     if highlighted { ui.painter().rect_filled(rect, 0.0, theme.tint()); }
@@ -1102,16 +1102,19 @@ pub fn collapsed_rail(ui: &mut Ui, theme: &Theme, panel: Panel) -> bool {
     if panel == Panel::Left && rect.height() >= 146.0 {
         let now = chrono::Local::now();
         let (hours,minutes,half)=crate::region::vertical_clock(&now);
-        let font = ui::display((rect.width() * 0.57).clamp(12.0, 20.0));
-        let x = rect.center().x;
-        ui.painter().text(pos2(x, rect.top() + 82.0), Align2::CENTER_CENTER,
-            format!("{hours:0>2}"), font.clone(), ui::TEXT);
-        ui.painter().text(pos2(x, rect.top() + 106.0), Align2::CENTER_CENTER,
-            minutes, font, theme.main);
-        if let Some(half) = half {
-            ui.painter().text(pos2(x, rect.top() + 126.0), Align2::CENTER_CENTER,
-                half, ui::mono(9.0), ui::SECONDARY);
+        // Rotate the whole clock: hours at the bottom, minutes at the top,
+        // with the glyphs facing right rather than stacked upright.
+        let text = format!("{hours}:{minutes}{}", half.map(|period| format!(" {period}")).unwrap_or_default());
+        let mut galley = ui.painter().layout_no_wrap(text.clone(), ui::display(26.0), theme.main);
+        let available = rect.height() - 80.0;
+        if galley.size().x > available {
+            let font_size = 26.0 * available / galley.size().x;
+            galley = ui.painter().layout_no_wrap(text, ui::display(font_size), theme.main);
         }
+        let size = galley.size();
+        let origin = pos2(rect.center().x - size.y / 2.0, rect.top() + 72.0 + size.x);
+        ui.painter().add(eframe::egui::epaint::TextShape::new(origin, galley, theme.main)
+            .with_angle(-std::f32::consts::FRAC_PI_2));
         use chrono::Timelike;
         ui.ctx().request_repaint_after(Duration::from_secs((60 - now.second()) as u64));
     }
@@ -1124,6 +1127,38 @@ pub fn collapsed_rail(ui: &mut Ui, theme: &Theme, panel: Panel) -> bool {
 mod rail_interaction_tests {
     use super::*;
     use eframe::egui::{self, Event, Modifiers, PointerButton};
+
+    #[test]
+    fn both_rails_have_independent_click_ownership() {
+        let ctx = egui::Context::default();
+        ui::install_fonts(&ctx, None, None);
+        let theme = Theme::load("signal");
+        for target in 0..2 {
+            let point = pos2(if target == 0 { 30.0 } else { 770.0 }, 200.0);
+            for phase in 0..3 {
+                let mut input = egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0))),
+                    ..Default::default()
+                };
+                input.events.push(Event::PointerMoved(point));
+                if phase > 0 {
+                    input.events.push(Event::PointerButton { pos: point, button: PointerButton::Primary, pressed: phase == 1, modifiers: Modifiers::NONE });
+                }
+                let mut clicked = [false; 2];
+                let _ = ctx.run(input, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        for (i, panel) in [Panel::Left, Panel::Right].into_iter().enumerate() {
+                            let x = if i == 0 { 8.0 } else { 748.0 };
+                            // Shared parent and default child salt match the real frame regions.
+                            let mut rail = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(pos2(x, 8.0), vec2(44.0, 564.0))));
+                            clicked[i] = collapsed_rail(&mut rail, &theme, panel);
+                        }
+                    });
+                });
+                for i in 0..2 { assert_eq!(clicked[i], phase == 2 && target == i); }
+            }
+        }
+    }
 
     #[test]
     fn either_minimized_column_can_be_reopened_by_clicking_its_rail() {

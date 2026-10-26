@@ -175,9 +175,11 @@ Remember API key securely defaults on. libsecret operations run on one bounded b
 
 ## Right-panel applications —2026-10-25
 
-Apps is the default right-panel tab; System preserves existing instruments. No bottom app strip or reserved dock band remains. Apps groups running windows across workspaces/displays and exposes activation, launch, close, pin ordering and window workspace controls. Super+D opens and focuses Apps. Escape/activation/outside native clicks release keyboard ownership without hiding the normal panel. Secondary displays show a transient right rail for keyboard switching. Existing Dock IPC names are retained internally for overlay crop and explicit keyboard ownership.
+System is the default right-panel tab; Apps remains available on demand. No bottom app strip or reserved dock band remains. Apps groups running windows across workspaces/displays and exposes activation, launch, close, pin ordering and window workspace controls. Super+D opens and focuses Apps. Escape/activation/outside native clicks release keyboard ownership without hiding the normal panel. Secondary displays show a transient right rail for keyboard switching. Existing Dock IPC names are retained internally for overlay crop and explicit keyboard ownership.
 
 
 Separated frame geometry: common::frame::Layout is the canonical source for primary side panels/rails, center/header, Files/Chat and the inset native workspace. The compositor uses exactly its workspace rectangle; the shell uses all surface rectangles. New shell/compositor builds must be activated together for geometry changes. Fullscreen and secondary outputs retain their existing ownership. Initial right-panel selection is System; Super+D still explicitly selects Apps and handles keyboard/focus as before. No persistent tab-selection field is introduced.
 
 The on-screen keyboard retains its existing shell-only scope: it reserves shell drawing space and types into shell controls/terminals, not native applications. This change does not add an OSK reservation protocol to the compositor.
+
+Collapsed side cards keep a 44px-wide click target, an 8px channel beside the center, and a whole rotated regional clock on the left. Its glyphs face right and HH:MM reads from bottom to top. Shared frame geometry owns the 56px rail reservation in shell and compositor.

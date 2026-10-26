@@ -78,6 +78,17 @@ mod tests {
         assert_eq!(hidden.center.x, 8.0);
     }
     #[test]
+    fn collapsed_cards_have_a_full_width_click_target_and_keep_the_app_inset() {
+        for width in [640.0, 1098.0, 1920.0] {
+            let layout = Layout::new(width, 900.0, Panels::from_bits(0).unwrap(), PanelBehavior::Collapse);
+            for rail in [layout.left.unwrap(), layout.right.unwrap()] {
+                assert!(rail.width >= 44.0, "collapsed rail is too narrow: {rail:?}");
+            }
+            assert_eq!(layout.center.x - right(layout.left.unwrap()), GAP);
+            assert_eq!(layout.workspace.x - layout.center.x, RIM);
+        }
+    }
+    #[test]
     fn all_panel_states_stay_inside_small_and_fractional_display_bounds() {
         for (width,height) in [(320.0,240.0),(640.0,480.0),(1280.0,720.0),(1098.0,618.0),(1920.0,1080.0)] {
             for bits in 0..8 { for behavior in [PanelBehavior::Collapse,PanelBehavior::Hide] {
