@@ -1,0 +1,50 @@
+{
+  "files_sha256": {
+    "common/src/ipc.rs": "06b91f0b3fd37a0a62931c797c574b60ba4218cf36ab284beb3ca7965d4e44de",
+    "compositor/src/capture.rs": "28faecf4d01050ed1c904edfac724606061ca1e7dace83d8a67ed40312377a91",
+    "compositor/src/udev.rs": "881e92ebb01c5f7005c4157a55356dcc6934fbfc94f979f08acaad881afadc83",
+    "compositor/src/winit.rs": "7d98d8a5d9996ca265c29775e4c30828dbdc204388f5f2c24b351101432baef4",
+    "compositor/src/policy.rs": "97b3a4ac2ef0c4e9aacec3f29df8da461ad6bbd02c507e8a6a44e40e129e163a",
+    "hands/src/main.rs": "c6b784cedf3edff9416ff2e420315e48a4663167309d9b1ac8120d5c7f0022d6",
+    "hands/src/options.rs": "1fa521c55df8f8a20f13caf01f2e13bc3768e98c754592fb5758a389ab265616",
+    "hands/tests/cli.rs": "5542567bae78c88fedf0ef6bfe24832536bafecf5a6773908f77e8612ab7a5f3",
+    "shell/src/capture.rs": "c1e8aeac6555f46d5dfca0ee58fef6e10fc4fb6a1a6d4b094e8fbd6ae9e54562",
+    "shell/src/desktop.rs": "922c5731e4de4b61c6de0036eed1b7a68914005987e6fc4170b44efcb0918c4f",
+    "shell/src/runtime.rs": "9f8449f862eac1e81d5da74b86a9873a9b725400e3a30510d6f47ece2c57c42b",
+    "shell/src/term.rs": "22574f5baaf11332e82068904faa1027e956423a11226fa21fcd6fa1d08b2dd9",
+    "shell/src/files.rs": "d41299ea3cd23ec97e31e50a934e64a21cfebb8125fb2410a589ad070290c42f",
+    "shell/src/commands.rs": "3dc1316e576fbbc8dbebfbe61fd4d676729da882b2ece06953e1af0959876d0b"
+  },
+  "python_tests": 77,
+  "rust_unit_tests": 754,
+  "rust_integration_tests": 3,
+  "rust_doctests": 1,
+  "workspace_debug_build": "passed",
+  "website_build": "passed",
+  "installed_session_changed": false,
+  "native_capture_failure_responses_ms": [
+    313,
+    304
+  ],
+  "preview_main_thread_cpu_percent": {
+    "covering_app": {
+      "before": 20.0,
+      "after": 5.4
+    },
+    "two_displays": {
+      "before": 15.6,
+      "after": 10.2
+    }
+  },
+  "benchmark_limits": "Instrumented debug builds with private Xvfb/software OpenGL; not installed DRM release performance.",
+  "release_build": "passed",
+  "release_sha256": {
+    "des-ui": "9ebfc36e426863c455c1d30b89f27f58a44ac99af093cbfcd3105826f88bb281",
+    "des-comp": "d4bddb5f1af5a43c604ec911ec6563046ae9a7889b99dd318c316c78faee7488",
+    "des-hands": "6d5f4a45ad1262de9fe6aed262a5a16fc725f80dc523e5d617120bbaa25ee3a2",
+    "des-ui-ctl": "6066d6d655599cd88e3c1f74031aa3d182bed9779405a2c1c63cfd769d770f03",
+    "des-portal": "6008451c2e0f9ea1b2a0b1fa305a6ce38653be371b6279d76c5f87537827665b",
+    "des-music": "4b09a67b53e6b79a7a300bf9bdeb5dd5522ac8e8019ee9176a01ac5827e3ed7b"
+  },
+  "website_source_sha256": "618540cd0c46d1ba46101c7ae8cec4f4c60d0b7a673d39a9dfff0b161d6520e7"
+}

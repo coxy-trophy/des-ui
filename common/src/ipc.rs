@@ -24,6 +24,8 @@
 //! - `shot <screen|window|region|pick> <width> <height> <x,y,w,h|-> <file>` when a
 //!   screenshot has been taken: the file holds plain pixels, four bytes each, rows
 //!   from the top, and the four numbers say where in it the window in use lies;
+//! - `shot-failed <request-id|-> <reason>` when capture fails; tagged failures complete
+//!   a held control/portal request and `-` identifies a local hotkey;
 //! - `recording <on|off|failed>` when a recording starts, stops, or could not start;
 //! - `lock` when the user asks for the screen to be locked, which the shell answers
 //!   with its own `lock` once it is ready to show the lock screen;
@@ -848,6 +850,7 @@ pub enum Event {
     /// The dock keyboard shortcut was pressed.
     Dock,
     DockOn(usize),
+    DockDismissed(usize),
     /// The launcher shortcut was pressed.
     Launcher,
     /// The settings shortcut was pressed.
@@ -873,6 +876,8 @@ pub enum Event {
     /// the window in use lies (left, top, width, height), when the shell may need to
     /// cut that out.
     Shot { request: Option<u64>, mode: ShotMode, width: u32, height: u32, window: Option<(u32, u32, u32, u32)>, path: String },
+    /// A capture could not produce a picture. Tagged failures complete that request.
+    ShotFailed { request: Option<u64>, reason: String },
     Recording(Recording),
     Hands(Hands),
     /// The lock shortcut was pressed.
@@ -889,6 +894,7 @@ pub enum Event {
 impl Event {
     pub fn companion_pointer(x: i32, y: i32, screen: usize) -> String { format!("companion-pointer {x} {y} {screen}\n") }
 
+    pub fn dock_dismissed(screen: usize) -> String { format!("dock-dismissed {screen}\n") }
     pub fn dock_on(screen: usize) -> String { format!("dock-screen {screen}\n") }
 
     pub fn dock() -> String { "dock\n".to_string() }
@@ -916,6 +922,12 @@ impl Event {
         format!("shot-request {id} {}", Self::shot(mode, width, height, window, path).strip_prefix("shot ").unwrap())
     }
 
+    pub fn shot_failed(request: Option<u64>, reason: &str) -> String {
+        let reason: String = reason.chars().take(512).map(|ch| if ch.is_control() { ' ' } else { ch }).collect();
+        let reason = if reason.trim().is_empty() { "capture failed" } else { reason.trim() };
+        format!("shot-failed {} {reason}\n", request.map_or("-".into(), |id| id.to_string()))
+    }
+
     /// `state` is `on`, `off` or `failed`.
     pub fn recording(state: &str) -> String {
         format!("recording {state}\n")
@@ -939,6 +951,7 @@ impl Event {
             if words.next().is_some() { return None; }
             return Some(Event::CompanionPointer { x, y, screen });
         }
+        if let Some(screen)=line.trim_end().strip_prefix("dock-dismissed ") { return screen.parse::<usize>().ok().filter(|s|*s<32).map(Event::DockDismissed); }
         if let Some(screen)=line.trim_end().strip_prefix("dock-screen ") { return screen.parse::<usize>().ok().filter(|s|*s<32).map(Event::DockOn); }
 
         match line.trim_end_matches('\n') {
@@ -982,6 +995,12 @@ impl Event {
         }
         if line.starts_with("overview ") {
             return OverviewLayout::decode(line).map(Event::Overview);
+        }
+        if let Some(failed) = line.trim_end_matches('\n').strip_prefix("shot-failed ") {
+            let (id, reason) = failed.split_once(' ')?;
+            let request = if id == "-" { None } else { Some(id.parse::<u64>().ok().filter(|id| *id != 0)?) };
+            if reason.trim().is_empty() || reason.len() > 2048 || reason.chars().any(char::is_control) { return None; }
+            return Some(Event::ShotFailed { request, reason: reason.into() });
         }
         if let Some(tagged) = line.strip_prefix("shot-request ") {
             let (id, rest) = tagged.split_once(' ')?;
@@ -1051,6 +1070,7 @@ pub enum Command {
     Toast(Option<(i32, i32, i32, i32)>),
     Dock(Option<(i32, i32, i32, i32)>),
     DockOn(usize, Option<(i32, i32, i32, i32)>),
+    DockKeyboard { screen: usize, active: bool },
     PlaceApp(usize, usize, usize, Place),
     /// An application is showing something to watch (or no longer): do not lock the
     /// screen for want of input meanwhile.
@@ -1125,6 +1145,7 @@ impl Command {
             Command::ReloadFrame => "reload-frame\n".to_string(),
             Command::Lock => "lock\n".to_string(),
             Command::Unlock => "unlock\n".to_string(),
+            Command::DockKeyboard { screen, active } => format!("dock-keyboard {screen} {}\n", *active as u8),
             Command::DockOn(screen,None) => format!("dock-screen {screen} none\n"),
             Command::DockOn(screen,Some((x,y,w,h))) => format!("dock-screen {screen} {x} {y} {w} {h}\n"),
             Command::PlaceApp(index,screen,workspace,place) => format!("place {index} {screen} {workspace} {}\n",place.code()),
@@ -1187,6 +1208,13 @@ impl Command {
             return Some(Command::AppWindows(screen,ids));
         }
 
+        if let Some(rest)=line.trim_end().strip_prefix("dock-keyboard ") {
+            let words: Vec<_> = rest.split_whitespace().collect();
+            let [screen, active] = words.as_slice() else { return None; };
+            let screen = screen.parse::<usize>().ok().filter(|s| *s < 32)?;
+            let active = match *active { "0" => false, "1" => true, _ => return None };
+            return Some(Command::DockKeyboard { screen, active });
+        }
         if let Some(rest)=line.trim_end().strip_prefix("dock-screen ") {
             let (screen,area)=rest.split_once(' ')?;let screen=screen.parse::<usize>().ok().filter(|s|*s<32)?;
             return match Command::decode(&format!("dock {area}"))? {Command::Dock(area)=>Some(Command::DockOn(screen,area)),_=>None};
@@ -1319,6 +1347,17 @@ mod tests {
             workspaces: (0..WORKSPACES).map(|w| OverviewWorkspace { workspace: w, area: (48 + w as i32 * 400, 48, 376, 900), current: w == 2 }).collect(),
             thumbs: vec![OverviewThumb { app: 3, area: (60, 100, 300, 200) }, OverviewThumb { app: 0, area: (460, 100, 300, 170) }],
         }
+    }
+
+    #[test]
+    fn capture_failure_events_reach_the_shell_without_a_successful_picture() {
+        assert!(Event::decode("shot-failed 42 there is no such display\n").is_some());
+        assert!(Event::decode("shot-failed - cannot write the picture\n").is_some());
+        assert!(Event::decode("shot-failed 0 invalid request\n").is_none());
+        assert!(Event::decode("shot-failed 42 \n").is_none());
+        assert_eq!(Event::decode(&Event::shot_failed(Some(42), "cannot write\ntry again")),
+            Some(Event::ShotFailed { request: Some(42), reason: "cannot write try again".into() }));
+        assert!(Event::decode(&format!("shot-failed 42 {}\n", "x".repeat(2049))).is_none());
     }
 
     #[test]
@@ -1809,5 +1848,26 @@ mod companion_chat_focus_tests {
         assert_eq!(Event::decode(Event::COMPANION_BLUR), Some(Event::CompanionBlur));
         assert_eq!(Event::decode("companion-blur extra"), None);
         assert_eq!(Command::decode("companion-chat on extra"), None);
+    }
+}
+
+#[cfg(test)]
+mod dock_keyboard_tests {
+    use super::*;
+
+    #[test]
+    fn keyboard_ownership_and_dismissal_keep_display_identity() {
+        for screen in [0, 1, 31] {
+            for active in [false, true] {
+                let command = Command::DockKeyboard { screen, active };
+                assert_eq!(Command::decode(&command.encode()), Some(command));
+            }
+            assert_eq!(Event::decode(&Event::dock_dismissed(screen)), Some(Event::DockDismissed(screen)));
+        }
+        for line in ["dock-keyboard 32 1", "dock-keyboard 1 2", "dock-keyboard 1", "dock-keyboard 1 1 extra"] {
+            assert_eq!(Command::decode(line), None);
+        }
+        assert_eq!(Event::decode("dock-dismissed 32"), None);
+        assert_eq!(Event::decode("dock-dismissed 1 extra"), None);
     }
 }

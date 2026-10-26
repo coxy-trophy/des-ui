@@ -212,6 +212,18 @@ impl Capture {
         });
     }
 
+    /// Deliver an error through the same completion path as saved pictures.
+    pub fn failed(&mut self, request: Option<u64>, reason: String) {
+        if request.is_some() && request != self.active_request { return; }
+        if request.is_some() {
+            if self.marking.as_ref().is_some_and(|marking| marking.request == request) {
+                self.marking = None;
+            }
+            self.colour_next = false;
+        }
+        let _ = self.saved.0.send((request, Err(reason)));
+    }
+
     /// Whether a piece is being marked out, which takes the whole display.
     pub fn marking(&self) -> bool {
         self.marking.is_some()
@@ -338,7 +350,8 @@ impl Capture {
             painter.image(texture.id(), rect, whole, Color32::WHITE);
             let pointer = response.interact_pointer_pos().or_else(|| ui.input(|i| i.pointer.hover_pos()));
             if response.drag_started() {
-                marking.from = pointer;
+                marking.from = ui.input(|input| input.pointer.press_origin())
+                    .filter(|origin| rect.contains(*origin));
             }
             let chosen = match (marking.from, pointer) {
                 (Some(from), Some(to)) => Some(Rect::from_two_pos(from, to).intersect(rect)),
@@ -583,6 +596,50 @@ mod tests {
         assert!(!capture.marking());
         assert!(!capture.colour_next);
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn region_drag_starts_at_the_press_not_the_first_motion() {
+        let ctx = egui::Context::default();
+        let mut capture = colour_marking(&ctx);
+        capture.marking.as_mut().unwrap().colour = false;
+        frame(&mut capture, &ctx, vec![]);
+        let origin = pos2(20.0, 20.0);
+        frame(&mut capture, &ctx, vec![egui::Event::PointerMoved(origin)]);
+        frame(&mut capture, &ctx, vec![egui::Event::PointerButton {
+            pos: origin, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default(),
+        }]);
+        frame(&mut capture, &ctx, vec![egui::Event::PointerMoved(pos2(40.0, 35.0))]);
+        assert_eq!(capture.marking.as_ref().unwrap().from, Some(origin));
+    }
+
+    #[test]
+    fn failed_request_keeps_an_unrelated_local_chooser() {
+        let ctx = egui::Context::default();
+        let mut capture = colour_marking(&ctx);
+        let request = capture.begin_request(ShotMode::Region);
+        capture.failed(Some(request), "capture failed".into());
+        assert!(capture.marking(), "a local hotkey chooser belongs to a different operation");
+    }
+
+    #[test]
+    fn capture_failure_completes_only_its_own_request_and_clears_colour_mode() {
+        let ctx = egui::Context::default();
+        let mut notices = Center::new(ctx.clone(), true, false);
+        let mut capture = Capture::new(ctx);
+        let expired = capture.begin_request(ShotMode::Region);
+        capture.cancel_request();
+        let current = capture.begin_request(ShotMode::Region);
+        capture.pick_colour_next();
+        capture.failed(Some(expired), "stale".into());
+        capture.failed(None, "local hotkey failed".into());
+        assert!(capture.report(&mut notices).is_empty());
+        assert_eq!(capture.active_request, Some(current));
+        assert!(capture.colour_next);
+        capture.failed(Some(current), "there is no such display".into());
+        assert_eq!(capture.report(&mut notices), vec![Err("there is no such display".into())]);
+        assert_eq!(capture.active_request, None);
+        assert!(!capture.colour_next);
     }
 
     #[test]

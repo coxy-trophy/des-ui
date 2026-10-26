@@ -30,6 +30,7 @@ pub struct Desktop {
     pub launcher_requested: bool,
     pub dock_requested: bool,
     pub dock_screen_requested: Option<usize>,
+    pub dock_dismissed: Vec<usize>,
     /// Likewise for the settings shortcut.
     pub settings_requested: bool,
     pub shortcuts_requested: bool,
@@ -49,6 +50,7 @@ pub struct Desktop {
     pub power_requested: bool,
     /// Screenshots the compositor took, waiting to be taken over.
     pub shots: Vec<crate::capture::Shot>,
+    pub shot_failures: Vec<(Option<u64>, String)>,
     /// What the compositor has said about the recording since last looked at.
     pub recording_news: Vec<des_common::ipc::Recording>,
     /// How hand control stands, as the compositor last said.
@@ -95,6 +97,7 @@ impl Desktop {
             launcher_requested: false,
             dock_requested: false,
             dock_screen_requested: None,
+            dock_dismissed: Vec::new(),
             settings_requested: false,
             shortcuts_requested: false,
             companion_requested: false,
@@ -107,6 +110,7 @@ impl Desktop {
             quick_requested: false,
             power_requested: false,
             shots: Vec::new(),
+            shot_failures: Vec::new(),
             recording_news: Vec::new(),
             hands: des_common::ipc::Hands::Off,
             lock_requested: false,
@@ -142,6 +146,7 @@ impl Desktop {
                 Event::Launcher => self.launcher_requested = true,
                 Event::Dock => self.dock_requested = true,
                 Event::DockOn(screen) => self.dock_screen_requested = Some(screen),
+                Event::DockDismissed(screen) => self.dock_dismissed.push(screen),
                 Event::Settings => self.settings_requested = true,
                 Event::Shortcuts => self.shortcuts_requested = true,
                 Event::Companion => self.companion_requested = true,
@@ -156,6 +161,7 @@ impl Desktop {
                 Event::Quick => self.quick_requested = true,
                 Event::Power => self.power_requested = true,
                 Event::Shot { request, mode, width, height, window, path } => self.shots.push(crate::capture::Shot { request, mode, width, height, window, path }),
+                Event::ShotFailed { request, reason } => self.shot_failures.push((request, reason)),
                 Event::Recording(state) => self.recording_news.push(state),
                 Event::Hands(state) => self.hands = state,
                 Event::Displays(displays) => self.displays = displays,

@@ -311,6 +311,14 @@ fn still(tracker: &mut Tracker, path: &str) -> Result<(), String> {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|arg| matches!(arg.as_str(), "-h" | "--help")) {
+        println!("{}", options::USAGE);
+        return;
+    }
+    if let Err(error) = options::validate(&args) {
+        eprintln!("des-hands: {error}\n{}", options::USAGE);
+        std::process::exit(2);
+    }
     let options = options::ServeOptions::parse(&args);
     let value = |flag: &str| args.iter().position(|arg| arg == flag).and_then(|at| args.get(at + 1)).cloned();
     if args.iter().any(|arg| arg == "--camera-only") {
@@ -325,6 +333,7 @@ fn main() {
         });
         if let Err(e) = result {
             eprintln!("des-hands: {e}");
+            std::process::exit(1);
         }
         return;
     }

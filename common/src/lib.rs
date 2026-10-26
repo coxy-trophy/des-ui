@@ -155,8 +155,8 @@ pub fn workspace_with_behavior(screen_width: f32, screen_height: f32, panels: Pa
     area
 }
 
-/// The area between the open panels, below the top bar and above the status strip: the
-/// terminal's home, and where application windows are placed.
+/// The area between the open panels, below the top bar and above the files
+/// and status strip: the terminal's home, and where application windows are placed.
 pub fn workspace(screen_width: f32, screen_height: f32, panels: Panels) -> Rect {
     let side = side_width(screen_width);
     let left = if panels.left { side } else { 0.0 };
@@ -167,6 +167,16 @@ pub fn workspace(screen_width: f32, screen_height: f32, panels: Panels) -> Rect 
         y: TOP_BAR_HEIGHT,
         width: (screen_width - left - right).max(1.0),
         height: (screen_height - STATUS_HEIGHT - bottom - TOP_BAR_HEIGHT).max(1.0),
+    }
+}
+
+/// Application area without frame panels: the whole output, including on primary.
+pub fn unframed_workspace(screen_width: f32, screen_height: f32, _primary: bool) -> Rect {
+    Rect {
+        x: 0.0,
+        y: 0.0,
+        width: screen_width.max(1.0),
+        height: screen_height.max(1.0),
     }
 }
 
@@ -194,6 +204,42 @@ mod tests {
         panels.toggle(Panel::Left);
         let rect = workspace(1920.0, 1080.0, panels);
         assert_eq!((rect.x, rect.width), (0.0, 1600.0));
+    }
+
+    #[test]
+    fn workspace_reaches_files_or_status_with_every_panel_configuration() {
+        for bits in 0..8 {
+            let panels = Panels::from_bits(bits).unwrap();
+            let area = workspace(1920.0, 1080.0, panels);
+            let files = if panels.bottom { bottom_height(1080.0) } else { 0.0 };
+            assert_eq!(area.y + area.height + files, 1080.0 - STATUS_HEIGHT);
+        }
+    }
+
+    #[test]
+    fn unframed_apps_use_the_whole_output_on_primary_and_secondary() {
+        assert_eq!(unframed_workspace(1920.0, 1080.0, true), Rect { x: 0.0, y: 0.0, width: 1920.0, height: 1080.0 });
+        assert_eq!(unframed_workspace(1920.0, 1080.0, false), Rect { x: 0.0, y: 0.0, width: 1920.0, height: 1080.0 });
+        for primary in [false, true] {
+            for size in [0.0, 1.0, 50.0, 88.0] {
+                let area = unframed_workspace(size, size, primary);
+                assert_eq!(area.height, size.max(1.0));
+                assert!(area.width >= 1.0);
+            }
+        }
+    }
+
+    #[test]
+    fn tiny_workspaces_stay_positive_for_every_panel_configuration() {
+        for bits in 0..8 {
+            for size in [0.0, 1.0, 50.0] {
+                for behavior in [PanelBehavior::Hide, PanelBehavior::Collapse] {
+                    let area = workspace_with_behavior(size, size, Panels::from_bits(bits).unwrap(), behavior);
+                    assert!(area.width >= 1.0);
+                    assert_eq!(area.height, 1.0);
+                }
+            }
+        }
     }
 
     #[test]

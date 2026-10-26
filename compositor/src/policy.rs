@@ -87,6 +87,12 @@ pub struct ScreenMode {
     pub ratios: Ratios,
 }
 
+/// A single fullscreen client must cover the complete output. External layer
+/// reservations prevent advertising fullscreen when they reduce its area.
+fn client_fullscreen(fullscreen: bool, slots: usize, area: Rectangle<i32, Logical>, display: Rectangle<i32, Logical>) -> bool {
+    fullscreen && slots <= 1 && area == display
+}
+
 fn is_toplevel(window: &Window, surface: &WlSurface) -> bool {
     window.wl_surface().as_deref() == Some(surface)
 }
@@ -102,6 +108,14 @@ pub fn focus_of(window: &Window) -> Option<Focus> {
 fn occupies_restored_slot(active:usize,workspace:usize,live:Place,kept:Place,target:Place)->bool{
     (if workspace==active{live}else{kept})==target
 }
+fn dock_keyboard_change(owner: usize, screen: usize, active: bool, available: bool) -> Option<bool> {
+    if active { available.then_some(true) } else { (owner == screen).then_some(false) }
+}
+
+fn dock_keyboard_outside_press(active: bool, on_overlay: bool, locked: bool, picking: bool, grabbed: bool) -> bool {
+    active && !on_overlay && !locked && !picking && !grabbed
+}
+
 fn dismisses_dock_keyboard(keyboard_screen:usize,cleared_screen:usize,area_none:bool)->bool{
     area_none && keyboard_screen==cleared_screen
 }
@@ -120,12 +134,48 @@ fn companion_chat_should_blur(chat: bool, overlay: bool, locked: bool, picking: 
 }
 
 fn command_allowed(locked: bool, picking:bool, command: &Command) -> bool {
+    if let Command::DockKeyboard { active, .. } = command { return !*active || (!locked && !picking); }
     (!locked || matches!(command, Command::Lock | Command::Unlock | Command::ReloadInput)) && (!picking || !matches!(command,Command::Dock(Some(_))|Command::DockOn(_,Some(_))|Command::Overlay(Some(_))|Command::DragFiles(_)|Command::Overview|Command::AppWindows(..)))
 }
 
 #[cfg(test)]
 mod lock_command_tests {
     use super::*;
+    #[test]
+    fn outside_dock_press_before_divider_drag_respects_all_focus_guards() {
+        for active in [false, true] {
+            for overlay in [false, true] {
+                for locked in [false, true] {
+                    for picking in [false, true] {
+                        for grabbed in [false, true] {
+                            assert_eq!(dock_keyboard_outside_press(active, overlay, locked, picking, grabbed), active && !overlay && !locked && !picking && !grabbed);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn persistent_dock_keyboard_has_explicit_scoped_release() {
+        for locked in [false, true] {
+            for picking in [false, true] {
+                assert!(command_allowed(locked, picking, &Command::DockKeyboard { screen: 1, active: false }));
+                assert_eq!(command_allowed(locked, picking, &Command::DockKeyboard { screen: 1, active: true }), !locked && !picking);
+            }
+        }
+        assert_eq!(dock_keyboard_change(1, 1, false, true), Some(false));
+        assert_eq!(dock_keyboard_change(1, 0, false, true), None);
+        assert_eq!(dock_keyboard_change(1, 2, true, true), Some(true));
+        assert_eq!(dock_keyboard_change(1, 2, true, false), None);
+        assert_eq!(dock_keyboard_change(1, 1, false, false), Some(false));
+        assert!(dock_keyboard_outside_press(true, false, false, false, false));
+        assert!(!dock_keyboard_outside_press(true, true, false, false, false));
+        assert!(!dock_keyboard_outside_press(true, false, true, false, false));
+        assert!(!dock_keyboard_outside_press(true, false, false, true, false));
+        assert!(!dock_keyboard_outside_press(false, false, false, false, false));
+    }
+
     #[test]
     fn docks_cannot_override_lock_or_screenshot_and_clears_are_screen_local(){
         assert!(!command_allowed(true,false,&Command::DockOn(1,None)));
@@ -476,7 +526,7 @@ impl DesComp {
             let area = place.slot().and_then(|slot| slots.get(slot)).or(slots.first()).copied().unwrap_or(whole);
             // An application alone on a display in full screen is told so, which lets
             // it drop its own toolbars; sharing it is merely as large as it can be.
-            let alone = self.mode(screen).fullscreen && slots.len() <= 1 && area == self.screens.get(screen).copied().unwrap_or_default();
+            let alone = client_fullscreen(self.mode(screen).fullscreen, slots.len(), area, self.screens.get(screen).copied().unwrap_or_default());
             if held != Some(screen) || place == Place::Hidden {
                 configure(&window, area, alone, focus_app == Some(i));
             }
@@ -1282,8 +1332,20 @@ impl DesComp {
         }
     }
 
+    /// Runs before divider presses can consume the click, so native keyboard focus
+    /// returns even when no application receives a pointer button.
+    pub(crate) fn dismiss_dock_keyboard_on_press(&mut self, grabbed: bool, on_overlay: bool) {
+        if dock_keyboard_outside_press(self.dock_keyboard, on_overlay, self.locked, self.picking, grabbed) {
+            self.dock_keyboard = false;
+            self.tell(Event::dock_dismissed(self.dock_keyboard_screen));
+            // Restore focus even when this is the already-selected application.
+            self.arrange();
+        }
+    }
+
     /// A click landed at `pos`: that display, and that half of it, are now in use.
     pub fn focus_at(&mut self, pos: Point<f64, Logical>) {
+        self.dismiss_dock_keyboard_on_press(false, self.shell_overlay_contains(pos));
         // A click on a layer surface that takes the keyboard on demand goes to it.
         if self.layer_click(pos) {
             return;
@@ -1332,6 +1394,9 @@ impl DesComp {
             }
             // Lock requests remain idempotent and acknowledged while already locked.
             if !command_allowed(self.locked, self.picking, &command) {
+                if let Command::ShotRequest { id, .. } = command {
+                    self.tell(Event::shot_failed(Some(id), if self.locked { "screen is locked" } else { "a screenshot is being marked" }));
+                }
                 continue;
             }
             match command {
@@ -1397,6 +1462,15 @@ impl DesComp {
                 Command::HoldIdle(held) => {
                     tracing::info!(held, "an application is asking that the screen be left alone");
                     self.idle_held = held;
+                }
+                Command::DockKeyboard { screen, active } => {
+                    let available = screen < self.screens.len() && self.dock_area_on(screen).is_some();
+                    if let Some(active) = dock_keyboard_change(self.dock_keyboard_screen, screen, active, available) {
+                        let changed = self.dock_keyboard != active || (active && self.dock_keyboard_screen != screen);
+                        self.dock_keyboard = active;
+                        if active { self.dock_keyboard_screen = screen; }
+                        if changed && !self.picking { self.arrange(); }
+                    }
                 }
                 Command::DockOn(screen,area) => {
                     if screen==0 { self.dock=area.map(|(x,y,w,h)|Rectangle::new((x,y).into(),(w,h).into())); }
@@ -1589,6 +1663,20 @@ fn configure(window: &Window, area: Rectangle<i32, Logical>, fullscreen: bool, a
 #[cfg(test)]
 mod pin_and_overlay_tests {
     use super::*;
+
+    #[test]
+    fn fullscreen_client_state_requires_the_whole_output() {
+        let display = Rectangle::new((1920, 100).into(), (1920, 1080).into());
+        for primary in [false, true] {
+            let area = to_rectangle(des_common::unframed_workspace(1920.0, 1080.0, primary), display.loc);
+            assert_eq!(area, display);
+            assert!(client_fullscreen(true, 1, area, display));
+            assert!(!client_fullscreen(false, 1, area, display));
+            assert!(!client_fullscreen(true, 2, area, display));
+            let reserved_by_layer = Rectangle::new(area.loc, (area.size.w, area.size.h - 20).into());
+            assert!(!client_fullscreen(true, 1, reserved_by_layer, display));
+        }
+    }
 
     #[test]
     fn picture_in_picture_is_a_quarter_wide_in_the_corner_and_keeps_its_shape() {

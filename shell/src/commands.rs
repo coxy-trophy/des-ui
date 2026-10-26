@@ -338,12 +338,27 @@ fn read_bounded(from: impl std::io::Read) -> String {
 }
 
 fn list_units() -> Vec<Unit> {
+    list_units_with(|args| run_bounded("systemctl", args, COMMAND_TIMEOUT))
+}
+
+fn list_units_with(mut run: impl FnMut(&[&str]) -> Result<String, String>) -> Vec<Unit> {
     let mut units = Vec::new();
-    if let Ok(text) = run_bounded("systemctl", &["--user", "list-units", "--type=service", "--plain", "--no-legend"], COMMAND_TIMEOUT) {
+    if let Ok(text) = run(&["--user", "list-units", "--all", "--type=service", "--plain", "--no-legend"]) {
         units.extend(parse_units(&text, true));
     }
-    if let Ok(text) = run_bounded("systemctl", &["list-units", "--type=service", "--state=failed,running", "--plain", "--no-legend"], COMMAND_TIMEOUT) {
+    if let Ok(text) = run(&["list-units", "--type=service", "--state=failed,running", "--plain", "--no-legend"]) {
         units.extend(parse_units(&text, false));
+    }
+    // Installed units may not yet be loaded by the manager. Preserve live state
+    // and descriptions where available; add only services with a usable identity.
+    if let Ok(text) = run(&["--user", "list-unit-files", "--type=service", "--plain", "--no-legend"]) {
+        for line in text.lines().take(MAX_UNITS) {
+            let mut words = line.split_whitespace();
+            let (Some(name), Some(state)) = (words.next(), words.next()) else { continue };
+            if !name.ends_with(".service") || name.ends_with("@.service") || state.starts_with("masked")
+                || units.iter().any(|unit| unit.user && unit.name == name) { continue; }
+            units.push(Unit { name: name.into(), user: true, active: "inactive".into(), sub: "dead".into(), description: name.trim_end_matches(".service").into() });
+        }
     }
     units.truncate(MAX_UNITS);
     units
@@ -748,6 +763,24 @@ impl Worker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unit_catalog_includes_inactive_and_unloaded_user_services() {
+        let units = list_units_with(|args| {
+            Ok(if args.contains(&"--user") && args.contains(&"list-units") {
+                let mut text = "running.service loaded active running Running service\n".to_string();
+                if args.contains(&"--all") { text.push_str("stopped.service loaded inactive dead Stopped service\n"); }
+                text
+            } else if args.contains(&"--user") && args.contains(&"list-unit-files") {
+                "running.service enabled enabled\nstopped.service disabled enabled\nunloaded.service disabled enabled\nworker@.service static -\n".into()
+            } else { String::new() })
+        });
+        for name in ["running.service", "stopped.service", "unloaded.service"] {
+            assert_eq!(units.iter().filter(|unit| unit.user && unit.name == name).count(), 1, "missing or duplicated {name}: {units:?}");
+        }
+        assert_eq!(units.iter().find(|unit| unit.name == "running.service").unwrap().active, "active");
+        assert!(!units.iter().any(|unit| unit.name == "worker@.service"), "templates require an instance before they can start");
+    }
+
 
     #[test]
     fn ssh_config_keeps_named_hosts_follows_one_include_and_skips_patterns() {

@@ -89,7 +89,7 @@ pub fn init_winit(
     });
 
     state.backend = Some(backend);
-    let logical = move |size: smithay::utils::Size<i32, smithay::utils::Physical>| size.to_f64().to_logical(scale).to_i32_round::<i32>();
+    let logical = move |size| crate::udev::logical_screen_size(size, scale);
     state.set_screens(screens_of(logical(mode.size).w, logical(mode.size).h, state.split));
 
     let mut damage_tracker = OutputDamageTracker::from_output(&output);

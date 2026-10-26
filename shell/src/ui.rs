@@ -424,8 +424,6 @@ pub enum Icon {
     Download,
     Upload,
     Display,
-    /// An arrow to the right: send to the next display.
-    Send,
     PanelLeft,
     PanelBottom,
     PanelRight,
@@ -482,7 +480,7 @@ impl Icon {
     pub fn label(self) -> &'static str {
         match self {
             Self::Search => "Find in terminal",
-            Self::Close => "Close", Self::Send => "Send to next display",
+            Self::Close => "Close",
             Self::PanelLeft => "Left panel", Self::PanelBottom => "File panel", Self::PanelRight => "Right panel",
             Self::SplitPane => "Split terminal",
             Self::Settings => "Settings", Self::Music => "Music", Self::Power => "Power",
@@ -634,11 +632,6 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color3
         Icon::Close => {
             painter.line_segment([c + vec2(-4.0, -4.0), c + vec2(4.0, 4.0)], stroke);
             painter.line_segment([c + vec2(4.0, -4.0), c + vec2(-4.0, 4.0)], stroke);
-        }
-        Icon::Send => {
-            painter.line_segment([c + vec2(-6.0, 0.0), c + vec2(5.0, 0.0)], stroke);
-            painter.line_segment([c + vec2(1.0, -4.0), c + vec2(5.0, 0.0)], stroke);
-            painter.line_segment([c + vec2(1.0, 4.0), c + vec2(5.0, 0.0)], stroke);
         }
         Icon::SplitPane => {
             let frame = Rect::from_center_size(c, vec2(14.0, 10.0));

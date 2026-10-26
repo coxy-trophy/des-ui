@@ -165,6 +165,9 @@ struct App {
     browser_openers: Vec<std::sync::mpsc::Receiver<Result<(), String>>>,
     document_openers: Vec<std::sync::mpsc::Receiver<Result<(),String>>>,
     dock_area: Option<Option<(i32, i32, i32, i32)>>,
+    right_apps: bool,
+    apps_panel_pending: bool,
+    dock_keyboard: std::collections::BTreeMap<usize,bool>,
     settings: settings::Settings,
     shortcut_reference: shortcuts::Reference,
     companion: companion::Companion,
@@ -382,6 +385,9 @@ impl App {
             browser_openers: Vec::new(),
             document_openers: Vec::new(),
             dock_area: None,
+            right_apps: true,
+            apps_panel_pending: false,
+            dock_keyboard: Default::default(),
             settings: settings::Settings::default(),
             shortcut_reference: Default::default(),
             companion: Default::default(),
@@ -438,7 +444,7 @@ impl App {
                 self.send(command);
             }
             dock::Action::Launcher => self.toggle_launcher(),
-            dock::Action::Unavailable(name) => self.notices.post("Application unavailable", &format!("{name} is no longer installed. Right-click its dock icon to unpin it."),false),
+            dock::Action::Unavailable(name) => self.notices.post("Application unavailable", &format!("{name} is no longer installed. Right-click it in Apps to unpin it."),false),
             dock::Action::Launch(entry) => {
                 self.launcher.open=false;
                 self.settings.open=false;self.files_browser=None;
@@ -473,7 +479,7 @@ impl App {
                 if pins == self.config.dock_pins { return; }
                 match config::set("dock_pins",Some(&serde_json::to_string(&pins).unwrap())) {
                     Ok(_) => self.config.dock_pins=pins,
-                    Err(error) => self.notices.post("Could not save dock pins",&error.to_string(),true),
+                    Err(error) => self.notices.post("Could not save pinned apps",&error.to_string(),true),
                 }
             }
         }
@@ -992,9 +998,28 @@ impl App {
         else { self.shortcut_reference.open = true; self.quick.open = false; self.dock.reset(); }
     }
 
-    /// Handles registry-owned shell shortcuts; focused editors and modals own input first.
+    /// Reveal Apps while preserving the compositor's asynchronous panel state.
+    fn focus_apps(&mut self, screen: usize) {
+        if screen > 0 { self.secondary_docks.entry(screen).or_default().reveal_keyboard(); return; }
+        self.right_apps = true;
+        self.shortcut_reference.close();
+        self.quick.open = false;
+        self.scratchpad.close_now();
+        self.companion.blur_text();
+        self.fs.blur();
+        self.dock.reveal_keyboard();
+        let open = self.desktop.as_ref().map_or(self.local_panels.right, |d| d.state.panels.right);
+        let request_open = !open && !self.apps_panel_pending;
+        self.apps_panel_pending = !open;
+        if request_open {
+            if self.desktop.is_some() { self.send(Command::TogglePanel(des_common::Panel::Right)); }
+            else { self.local_panels.right = true; }
+        }
+    }
+
+    /// Focused editors and modals own input before registry shortcuts.
     fn take_shortcuts(&mut self, ctx: &egui::Context) -> Vec<Event> {
-        if self.companion.open { return Vec::new(); }
+        if self.companion.open || self.dock.captures_keyboard() { return Vec::new(); }
         let files_modal = self.files_browser.as_ref().is_some_and(files::Browser::captures_keyboard) && !self.scratchpad.visible() && !self.quick.open;
         if self.polkit.active() || self.shortcut_reference.open || self.settings.shortcut_capture_active() || files_modal || (self.settings.open && self.settings.appearance_editor.picker_open()) {
             return Vec::new();
@@ -1021,7 +1046,7 @@ impl App {
                     Some("shell.help") => { self.toggle_shortcut_reference(); return Vec::new(); }
                     Some("shell.scratchpad") => self.scratchpad.toggle(),
                     Some("shell.keyboard") => self.toggle_osk(),
-                    Some("shell.dock") => self.dock.reveal_keyboard(),
+                    Some("shell.dock") => self.focus_apps(0),
                     Some("shell.new_tab") => self.new_tab(),
                     Some("shell.launcher") => self.toggle_launcher(),
                     Some("shell.settings") => self.toggle_settings(),
@@ -1191,7 +1216,7 @@ fn tab(ui: &mut Ui, theme: &Theme, tab: Tab) -> Response {
 }
 
 impl App {
-    /// Draws terminal tabs and workspace controls. Graphical apps live in the dock.
+    /// Draws terminal tabs and workspace controls. Graphical apps live in the right Apps panel.
     fn top_bar(&mut self, ui: &mut Ui, theme: &Theme, state: Option<&DesktopState>) -> BarActions {
         let layouts = self.desktop.as_ref().map(|desktop| desktop.layouts.clone());
         let mut actions = BarActions::default();

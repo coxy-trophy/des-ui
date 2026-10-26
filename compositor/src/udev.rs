@@ -894,7 +894,7 @@ impl DesComp {
             );
             self.space.map_output(&monitor.output, position);
             if mirrored.is_none() {
-                let size = turned.to_f64().to_logical(scale).to_i32_round::<i32>();
+                let size = logical_screen_size(turned, scale);
                 next_x += size.w;
                 screens.push(Rectangle::new(position.into(), size));
             }
@@ -1121,9 +1121,29 @@ impl DesComp {
     }
 }
 
+// Keep display placement and capture geometry in the same logical coordinates.
+pub(crate) fn logical_screen_size(size: smithay::utils::Size<i32, smithay::utils::Physical>, scale: f64) -> smithay::utils::Size<i32, smithay::utils::Logical> {
+    size.to_f64().to_logical(scale).to_i32_ceil::<i32>()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fractional_display_sizes_match_smithay_output_geometry() {
+        use smithay::{desktop::{Space, Window}, output::{PhysicalProperties, Subpixel, Scale}};
+        let mut space = Space::<Window>::default();
+        let output = Output::new("capture-test".into(), PhysicalProperties {
+            size: (0, 0).into(), subpixel: Subpixel::Unknown, make: "test".into(), model: "test".into(),
+        });
+        let size = (1920, 1080).into();
+        for scale in [1.0, 1.25, 1.5, 1.75, 2.0, 2.25] {
+            output.change_current_state(Some(WlMode { size, refresh: 60000 }), Some(Transform::Normal), Some(Scale::Fractional(scale)), None);
+            space.map_output(&output, (0, 0));
+            assert_eq!(logical_screen_size(size, scale), space.output_geometry(&output).unwrap().size, "scale {scale}");
+        }
+    }
 
     #[test]
     fn recording_and_display_share_the_resize_override_and_hidden_status() {

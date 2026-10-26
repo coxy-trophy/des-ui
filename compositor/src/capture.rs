@@ -210,7 +210,10 @@ impl DesComp {
     pub fn take_requested_shot(&mut self, mode: ShotMode, request: Option<u64>) {
         self.cursors.set_speaking(false, std::time::Instant::now());
         self.companion_bubble = None;
-        if self.locked { return; }
+        if self.locked {
+            self.tell(Event::shot_failed(request, "screen is locked"));
+            return;
+        }
         let screen = self.focus_screen;
         // Where the window in use lies on its display, if there is one.
         let window = self.focused_on(screen).and_then(|index| {
@@ -236,6 +239,7 @@ impl DesComp {
             Ok(frame) => frame,
             Err(e) => {
                 tracing::warn!("screenshot failed: {e}");
+                self.tell(Event::shot_failed(request, &e));
                 return;
             }
         };
@@ -244,6 +248,7 @@ impl DesComp {
         let path = runtime.join(format!("des-shot-{}-{}.rgba", std::process::id(), self.shots));
         if let Err(e) = std::fs::write(&path, &frame.rgba) {
             tracing::warn!("cannot hand over the screenshot: {e}");
+            self.tell(Event::shot_failed(request, &format!("cannot hand over the screenshot: {e}")));
             return;
         }
         let mut window = window.map(|area| (area.loc.x.max(0), area.loc.y.max(0), area.size.w, area.size.h));

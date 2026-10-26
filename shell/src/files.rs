@@ -201,6 +201,15 @@ impl Browser {
         });
         if keyboard && !typing && !busy && self.dialog.is_none() && !self.menu_open {
             if !self.in_trash {
+                // Native integrations translate clipboard chords into semantic
+                // events instead of Key events. Leave them for text fields,
+                // dialogs and other keyboard owners outside this branch.
+                ui.input_mut(|input| input.events.retain(|event| match event {
+                    egui::Event::Copy => { copy = true; false },
+                    egui::Event::Cut => { cut = true; false },
+                    egui::Event::Paste(_) => { paste = true; false },
+                    _ => true,
+                }));
                 copy |= ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::C));
                 cut |= ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::X));
                 paste |= ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::V));
@@ -513,6 +522,45 @@ mod tests {
 #[cfg(test)]
 mod interaction_tests {
     use super::*;
+    #[test]
+    fn native_clipboard_copy_and_cut_events_select_the_file() {
+        for (event, cut) in [(egui::Event::Copy, false), (egui::Event::Cut, true)] {
+            let ctx = egui::Context::default(); crate::ui::install_fonts(&ctx, None, None);
+            let mut browser = Browser::new("/tmp".into(), Mode::Browse); browser.loaded = true;
+            browser.entries = vec![Entry { path: "/tmp/selected.png".into(), directory: false, bytes: 10 }];
+            browser.selected = Some("/tmp/selected.png".into());
+            render(&mut browser, &ctx, Vec::new(), 700.0);
+            let action = render(&mut browser, &ctx, vec![event], 700.0).1;
+            assert!(matches!(action, Some(Event::Clipboard(Clipboard { source, cut: actual })) if source == PathBuf::from("/tmp/selected.png") && actual == cut));
+        }
+    }
+    #[test]
+    fn native_clipboard_events_stay_with_another_keyboard_owner() {
+        let ctx = egui::Context::default(); crate::ui::install_fonts(&ctx, None, None);
+        let mut browser = Browser::new("/tmp".into(), Mode::Browse); browser.loaded = true;
+        browser.selected = Some("/tmp/source.txt".into());
+        let mut action = None;
+        let _ = ctx.run(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(700.0, 680.0))),
+            events: vec![egui::Event::Copy, egui::Event::Cut, egui::Event::Paste("keep".into())],
+            ..Default::default()
+        }, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| action = browser.show_with_keyboard(ui, false));
+            assert_eq!(ctx.input(|input| input.events.iter().filter(|event| matches!(event, egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_))).count()), 3);
+        });
+        assert!(action.is_none());
+    }
+
+    #[test]
+    fn native_clipboard_paste_uses_the_selected_file_clipboard() {
+        let ctx = egui::Context::default(); crate::ui::install_fonts(&ctx, None, None);
+        let mut browser = Browser::new("/tmp/destination".into(), Mode::Browse); browser.loaded = true;
+        browser.configure_operations(Some(Clipboard { source: "/tmp/source.txt".into(), cut: false }), None);
+        render(&mut browser, &ctx, Vec::new(), 700.0);
+        let action = render(&mut browser, &ctx, vec![egui::Event::Paste("unrelated system clipboard text".into())], 700.0).1;
+        assert!(matches!(action, Some(Event::Operate(crate::file_ops::Operation::Copy { source, .. })) if source == PathBuf::from("/tmp/source.txt")));
+    }
+
     #[test]
     fn dragging_an_entry_emits_one_desktop_drag_without_opening_it() {
         for mode in [Mode::Browse, Mode::ImagePicker] {

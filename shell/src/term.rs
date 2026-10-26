@@ -742,6 +742,7 @@ impl TermTab {
 
         for row in 0..rows {
             let job = ui.fonts(|fonts| row_job(fonts, screen, row, cols, theme, look, &font, cw, pixels_per_point));
+            if job.sections.is_empty() { continue; }
             let galley = ui.fonts(|f| f.layout_job(job));
             let pos = Pos2::new(rect.min.x, rect.min.y + row as f32 * ch + inset);
             painter.galley(pos, galley, theme.term_fg);
@@ -789,6 +790,9 @@ fn row_job(fonts: &egui::text::Fonts, screen: &vt100::Screen, row: u16, cols: u1
     for col in 0..cols {
         let Some(cell) = screen.cell(row, col) else { continue };
         if cell.is_wide_continuation() { continue; }
+        // Empty cells have no glyphs. Their backgrounds, inverse fill and
+        // selection are painted separately. Keep underlined blanks visible.
+        if !cell.has_contents() && !cell.underline() { continue; }
         let text = if cell.has_contents() { cell.contents() } else { " " };
         let style = CellStyle::of(cell, theme, look.bold_bright);
         let mut format = style.format(font);
@@ -988,6 +992,41 @@ mod tests {
                     "text drift at font {size}, scale {scale}: marker x {}, cursor x {cursor_x}, cell {cw}", marker.pos.x);
             });
         });
+    }
+
+    #[test]
+    fn underlined_blanks_keep_their_decoration_and_next_glyph_column() {
+        let ctx = egui::Context::default(); crate::ui::install_fonts(&ctx, None, None);
+        let mut parser = vt100::Parser::new(1, 20, 0);
+        parser.process(b"\x1b[4m    \x1b[0mX");
+        let look = TermLook { font_size: 14.0, line_height: 1.0, cursor: CursorShape::Block,
+            cursor_blink: false, bold_bright: true, copy_on_select: false };
+        let theme = Theme::load("signal");
+        let font = FontId::monospace(14.0);
+        let _ = ctx.run(Default::default(), |ctx| ctx.fonts(|fonts| {
+            let cw = cell_width(fonts, &font, 1.0);
+            let job = row_job(fonts, parser.screen(), 0, 20, &theme, &look, &font, cw, 1.0);
+            assert!(job.text.starts_with("    X"));
+            assert!(job.sections.iter().any(|section| section.format.underline.width > 0.0));
+            let galley = fonts.layout_job(job);
+            let marker = galley.rows[0].glyphs.iter().find(|glyph| glyph.chr == 'X').unwrap();
+            assert!((marker.pos.x - 4.0*cw).abs() < 0.51);
+        }));
+    }
+
+    #[test]
+    fn blank_terminal_cells_do_not_allocate_text_layout_sections() {
+        let ctx = egui::Context::default(); crate::ui::install_fonts(&ctx, None, None);
+        let parser = vt100::Parser::new(60, 160, 0);
+        let look = TermLook { font_size: 14.0, line_height: 1.0, cursor: CursorShape::Block,
+            cursor_blink: false, bold_bright: true, copy_on_select: false };
+        let theme = Theme::load("signal");
+        let font = FontId::monospace(14.0);
+        let _ = ctx.run(Default::default(), |ctx| ctx.fonts(|fonts| {
+            let cw = cell_width(fonts, &font, 1.0);
+            let sections: usize = (0..60).map(|row| row_job(fonts, parser.screen(), row, 160, &theme, &look, &font, cw, 1.0).sections.len()).sum();
+            assert_eq!(sections, 0, "blank cells have no glyphs; their backgrounds are painted separately");
+        }));
     }
 
     #[test]

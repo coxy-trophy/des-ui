@@ -1,4 +1,44 @@
 //! Bounded command-line preferences for camera-driven hand control.
+pub const USAGE: &str = "Usage: des-hands [OPTIONS]
+  -h, --help                  Show help without opening the camera
+  --camera PATH               Camera device (default: /dev/video0)
+  --seconds N                 Stop live tracking after N seconds
+  --record FILE               Save live tracking
+  --serve                     Send gesture events to the compositor
+  --speed S                   Pointer speed (-1 to 1)
+  --scroll-speed S            Scroll speed (-1 to 1)
+  --pinch-sensitivity S       Pinch sensitivity (-1 to 1)
+  --drag-lock on|off           Carry a drag between pinches
+  --replay FILE               Replay recorded gestures
+  --learn FILE                Record labeled gestures
+  --picture FILE              Analyze one picture
+  --describe                  Describe model outputs
+  --camera-only               Measure camera frame rate";
+
+/// Reject invalid invocations before loading models or touching any device.
+pub fn validate(args: &[String]) -> Result<(), String> {
+    let mut words = args.iter();
+    while let Some(flag) = words.next() {
+        match flag.as_str() {
+            "--serve" | "--describe" | "--camera-only" => {},
+            "--camera" | "--seconds" | "--record" | "--replay" | "--learn" | "--picture" |
+            "--speed" | "--scroll-speed" | "--pinch-sensitivity" | "--drag-lock" => {
+                let value = words.next().filter(|word| !word.is_empty() && !word.starts_with("--"))
+                    .ok_or_else(|| format!("{flag} requires a value"))?;
+                let valid = match flag.as_str() {
+                    "--seconds" => value.parse::<u64>().is_ok(),
+                    "--speed" | "--scroll-speed" | "--pinch-sensitivity" => value.parse::<f32>().is_ok_and(f32::is_finite),
+                    "--drag-lock" => matches!(value.as_str(), "on" | "off"),
+                    _ => true,
+                };
+                if !valid { return Err(format!("invalid value for {flag}: {value}")); }
+            }
+            _ => return Err(format!("unknown option: {flag}")),
+        }
+    }
+    Ok(())
+}
+
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ServeOptions {

@@ -1,5 +1,7 @@
 # Not yet tried on real hardware
 
+Hardware testing began on 26 October 2026. See [the machine validation record](validation/2026-10-26-machine/RESULTS.md) for actual passes, failures and pending cases. A checked item applies only to the recorded hardware/binaries. This is an incomplete run; TV and gesture follow-ups were deferred by the user.
+
 Things that are built and pass their automatic tests, but that nobody has yet
 watched work on a real machine. Tick them off, or note what went wrong.
 
@@ -54,13 +56,13 @@ watched work on a real machine. Tick them off, or note what went wrong.
 
 - [ ] FULL SCREEN, AREA and WINDOW each save the right picture
 - [ ] The letter keys in the chooser (F, A, W, R, Enter, Escape)
-- [ ] The keyboard goes back to the application after the chooser closes
+- [x] The keyboard goes back to the application after the chooser closes
 - [ ] Alt+Print and Shift+Print
-- [ ] Copy to the clipboard (needs `wl-clipboard`)
-- [ ] A real recording (needs `ffmpeg`): starts, shows `REC` in the status strip,
+- [x] Copy to the clipboard (needs `wl-clipboard`)
+- [x] A real recording (needs `ffmpeg`): starts, shows `REC` in the status strip,
       stops, and plays back with the pointer in it
-- [ ] The toast when `ffmpeg` is missing
-- [ ] Locking during a recording stops it; no locked screen is captured
+- [x] The toast when `ffmpeg` is missing
+- [x] Locking during a recording stops it; no locked screen is captured
 - [ ] Screenshots and recordings of a second display
 
 ## Power and battery
@@ -224,7 +226,7 @@ watched work on a real machine. Tick them off, or note what went wrong.
 - [ ] An `ssh` host from `~/.ssh/config` opens in a tab, and the tab closes when ssh exits
 - [ ] `kill <name>` ends a real process of your own, and never one of root's
 - [ ] `start`, `stop` and `restart` on a user unit; a system unit is refused without polkit
-- [ ] A `.command` file with `terminal = yes` runs in a tab; `exec` with quoted arguments
+- [x] A `.command` file with `terminal = yes` runs in a tab; `exec` with quoted arguments
 
 ## Instruments (the side panels)
 
@@ -247,7 +249,7 @@ watched work on a real machine. Tick them off, or note what went wrong.
 ## des-ui-ctl
 
 - [ ] Each word from a terminal inside the session, and `state` printing the open apps
-- [ ] While locked, `launcher` is refused and `lock` is a no-op; `ping` still answers
+- [x] While locked, `launcher` is refused and `lock` is a no-op; `ping` still answers
 - [ ] A second user on the machine is refused at the socket
 - [ ] The socket comes back after the shell restarts (Super+Shift+R)
 
@@ -285,7 +287,7 @@ watched work on a real machine. Tick them off, or note what went wrong.
 - [ ] The three example widgets copied into `~/.config/des-ui/widgets/` show on the
       real panels, left and right, and the companion keeps its room
 - [ ] A widget added, changed or removed shows within 30 seconds
-- [ ] A program that hangs shows "no answer" and the others keep updating
+- [x] A program that hangs shows "no answer" and the others keep updating
 - [ ] A `meter` with `"state":"caution"` and a `series` filling its history
 
 ## Window rules and picture in picture
@@ -345,7 +347,7 @@ watched work on a real machine. Tick them off, or note what went wrong.
 - [ ] Escape in the chooser makes the application see "cancelled", not a failure
 - [ ] `journalctl --user -u xdg-desktop-portal` shows des-ui chosen for Screenshot and
       gtk for the rest; no 25-second waits on start
-- [ ] Locked: a portal request is refused at once and nothing is captured
+- [x] Locked: a portal request is refused at once and nothing is captured
 - [ ] A file name with spaces or non-ASCII letters arrives intact as a URI
 
 ## Input methods, pointer capture and shortcut grabs
@@ -704,3 +706,13 @@ The reported “Voice connection failed” did not identify its underlying cause
 - [ ] Keep/Stop during key restoration, voice timeout/failure notices, five-minute cutoff and explicit continuation in the installed session.
 
 No installation, restart, real API/keyring operation or microphone test was performed for these changes. Secret Service runtime dependencies are included in package metadata; a login keyring may need unlocking once per desktop login. Existing hardware acceptance items remain open.
+
+## Right-panel Apps —2026-10-25
+
+- [ ] Installed session: Apps/System tab switching, open applications, all-workspace/display groups, previews, close and workspace operations.
+- [ ] Super+D reveals a collapsed right panel; Escape and native outside clicks return keyboard ownership. Repeat on secondary displays, fullscreen apps and mixed display scales.
+- [ ] Pin/reorder persistence, long window titles, many running apps, wallpaper contrast and reduced motion.
+
+Previous bottom-dock acceptance items are superseded. Mobile remains read-only. No installed session restart or installation performed.
+
+Automated evidence and the isolated native preview: [right-panel validation](validation/2026-10-25-right-panel-apps.md).

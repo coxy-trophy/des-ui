@@ -84,19 +84,13 @@ impl DesComp {
         area.loc+=display.loc;
         area.intersection(*display)
     }
-    pub fn dock_trigger_area_on(&self,screen:usize)->Option<Rectangle<i32,Logical>>{
-        if self.locked || self.picking || self.shell_on(screen).is_none(){return None;}
-        let display=self.screens.get(screen)?;
-        let area=des_common::dock_trigger(display.size.w as f32,display.size.h as f32);
-        Some(Rectangle::new(display.loc+Point::from((area.x as i32,area.y as i32)),(area.width as i32,area.height as i32).into()))
-    }
     pub fn dock_layers(&self)->Vec<(Window,Rectangle<i32,Logical>,Point<i32,Logical>,Id)>{
         (0..self.screens.len()).filter_map(|screen|Some((self.shell_on(screen)?.clone(),self.dock_area_on(screen)?,self.screens.get(screen)?.loc,
             if screen==0{self.dock_id.clone()}else{self.docks.get(&screen)?.1.clone()}))).collect()
     }
     pub fn shell_overlay_contains(&self,pos:Point<f64,Logical>)->bool{
         let screen=self.screen_at(pos);
-        [self.toast_area().filter(|_|screen==0),self.overlay_area().filter(|_|screen==0),self.dock_area_on(screen),self.dock_trigger_area_on(screen)].into_iter().flatten().any(|area|area.to_f64().contains(pos))
+        [self.toast_area().filter(|_|screen==0),self.overlay_area().filter(|_|screen==0),self.dock_area_on(screen)].into_iter().flatten().any(|area|area.to_f64().contains(pos))
     }
 
     /// A visual caption only. Deliberately excluded from shell_overlay_contains.

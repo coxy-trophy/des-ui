@@ -9,3 +9,6 @@
 
 # Python startup watchdog test caches
 __pycache__/
+
+# Private installed-machine captures, logs and session metadata
+/docs/validation/2026-10-26-machine/

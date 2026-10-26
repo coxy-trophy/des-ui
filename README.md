@@ -32,13 +32,17 @@ The website has a version of the desktop you can use in the browser:
 
 ## What it is
 
-One login session, made of three programs:
+The login session has three core programs:
 
 | Program | Where | What it does |
 |---|---|---|
 | **`des-ui`** | `shell/` | The interface: terminal, system panels, file browser, launcher, settings, lock and login screens. |
 | **`des-comp`** | `compositor/` | A Wayland compositor that shows the shell fullscreen and places other applications in the middle of its frame. |
 | **`des-music`** | `music/` | A Spotify player with no window of its own; the shell is its interface. |
+
+The workspace also builds the desktop portal (`portal/`), the camera gesture helper
+(`hands/`) and the `des-ui-ctl` command-line client. `common/` holds shared geometry,
+protocols and settings.
 
 ```
 ┌─ des-comp ── drives the displays and input ───────────────┐
@@ -227,18 +231,16 @@ Side panels can minimize to a narrow rail; click the rail to reopen them. In
 or **Hide** to reclaim their entire width. The file browser still hides completely.
 Action icons show their names and shortcuts on hover; status icons keep their readings.
 
-Graphical applications appear in the bottom dock instead of the terminal tab bar.
-Move the pointer to the bottom edge to reveal it; it slides away after you leave.
-The dock grows to fit its icons, wrapping to another row at the screen edge without a scrollbar.
-Click an app to focus it (repeated clicks cycle through its windows). Right-click to
-pin/unpin, change pin order, open another window, close a window or send it to another
-display. The launcher also offers **Pin to dock** on right-click. Pins are saved.
+Graphical applications appear in the right panel's **Apps** tab. **System** shows
+the instruments. Apps lists running windows and saved pins, grouped across
+workspaces and displays. Click an app to focus it; right-click for window and pin
+actions. The launcher also offers pinning, and pins are saved.
 
-**Super+D** (or **Ctrl+Alt+D**) opens dock keyboard navigation: use **Left/Right**,
-**Enter**, and **Escape**. In the terminal, **Ctrl+Shift+D** also opens it. Terminal
-and launcher shortcuts remain available in the dock. **Settings → Frame → Animate
-dock** turns the sliding motion off. Each display has its own dock, showing windows on that display and the same saved pins. Super+D opens keyboard navigation on the display under the pointer.
-Launcher and dock use installed app icons; missing icons use a generic app symbol.
+**Super+D** (or **Ctrl+Alt+D**) reveals Apps and opens keyboard navigation: use
+**Up/Down**, **Enter**, and **Escape**. In the terminal, **Ctrl+Shift+D** also opens
+it. Secondary displays use a transient right rail with their own windows and the
+same saved pins. Launcher and Apps use installed icons; missing icons use a
+generic app symbol.
 
 ## Quick settings
 
@@ -763,13 +765,12 @@ run `sudo systemctl disable greetd && sudo systemctl enable gdm3 && sudo reboot`
   to and editing playlists, podcasts
 - In notifications: icons that exist only as SVG drawings
 - On the login screen: accounts that need more than a password
-- From the original: on-screen keyboard, sound effects, mouse click and motion reporting to
-  terminal apps
+- From the original: sound effects, mouse click and motion reporting to terminal apps
 
 ## Validation
 
 `./scripts/verify.sh` checks installation-script syntax, runs every workspace test,
-and builds all three programs. Run it on a Linux host that permits Unix sockets;
+and builds every workspace program. Run it on a Linux host that permits Unix sockets;
 restricted sandboxes can fail the socket integration tests. Those failures must not
 be treated as passing tests.
 

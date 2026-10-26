@@ -48,8 +48,13 @@ impl eframe::App for App {
         let mut companion_voice_requested = false;
         let mut companion_controls = Vec::new();
         let mut shortcut_requested = false;
+        let mut apps_requested = None;
         if let Some(desktop) = &mut self.desktop {
             if std::mem::take(&mut desktop.companion_blur_requested) {self.companion.blur_text();}
+            for screen in std::mem::take(&mut desktop.dock_dismissed) {
+                if screen==0 {self.dock.dismiss_keyboard(ctx);}
+                else if let Some(dock)=self.secondary_docks.get_mut(&screen){dock.dismiss_keyboard(ctx);}
+            }
             companion_controls=std::mem::take(&mut desktop.companion_controls);
             companion_voice_requested=std::mem::take(&mut desktop.companion_voice_requested);
             companion_requested = std::mem::take(&mut desktop.companion_requested);
@@ -57,11 +62,11 @@ impl eframe::App for App {
             else if desktop.launcher_requested || desktop.settings_requested || desktop.music_requested || desktop.notifications_requested || desktop.quick_requested || desktop.power_requested {self.companion.blur_text();}
             shortcut_requested = std::mem::take(&mut desktop.shortcuts_requested);
             if desktop.launcher_requested || desktop.settings_requested || desktop.music_requested || desktop.notifications_requested || desktop.quick_requested || desktop.power_requested { self.shortcut_reference.close(); }
-            if !desktop.connected() { self.dock_area = None; self.overlay_area = None; self.secondary_areas.clear(); }
+            if !desktop.connected() { self.dock_area = None; self.overlay_area = None; self.secondary_areas.clear();self.dock_keyboard.clear(); }
             if let Some(screen)=desktop.dock_screen_requested.take(){
-                if screen==0{self.dock.reveal_keyboard();}else if screen<desktop.state.screens{self.secondary_docks.entry(screen).or_default().reveal_keyboard();}
+                if screen<desktop.state.screens {apps_requested=Some(screen); }
             }
-            if std::mem::take(&mut desktop.dock_requested) { self.dock.reveal_keyboard(); }
+            if std::mem::take(&mut desktop.dock_requested) { apps_requested=Some(0); }
             if std::mem::take(&mut desktop.launcher_requested) && !self.launcher.open {
                 self.world.expanded = false;
                 self.settings.open = false; self.files_browser = None;
@@ -130,6 +135,7 @@ impl eframe::App for App {
         }
         if companion_voice_requested {self.summon_voice(ctx);}
         if companion_requested { self.toggle_companion(ctx); }
+        if let Some(screen)=apps_requested {self.focus_apps(screen);}
         if shortcut_requested && !self.polkit.active() { self.toggle_shortcut_reference(); }
         for tab in &mut self.tabs {
             tab.pump();
@@ -184,6 +190,9 @@ impl eframe::App for App {
             for shot in std::mem::take(&mut desktop.shots) {
                 self.capture.take(shot);
             }
+            for (request, reason) in std::mem::take(&mut desktop.shot_failures) {
+                self.capture.failed(request, reason);
+            }
             for state in std::mem::take(&mut desktop.recording_news) {
                 self.capture.recording_is(state, &mut self.notices);
             }
@@ -224,6 +233,7 @@ impl eframe::App for App {
             let state=self.desktop.as_ref().map(|d|d.state.clone());
             self.secondary_views(ctx,state.as_ref(),true);
             self.dock.reset();
+            self.apps_panel_pending=false;
             if self.dock_area != Some(None) {
                 self.dock_area = Some(None);
                 self.send(Command::Dock(None));
@@ -314,7 +324,9 @@ impl eframe::App for App {
         let osk_height = self.osk.height();
         let keys_top = status_top - osk_height;
         let workspace = Rect::from_min_max(workspace.min, pos2(workspace.max.x, (workspace.max.y - osk_height).max(workspace.min.y)));
-        let dock_keys = self.dock.reserve_keyboard(ctx);
+        let mut dock_keys = self.dock.reserve_keyboard(ctx);
+        let mut apps_output = dock::Output::default();
+        ctx.data_mut(|data| data.insert_temp(egui::Id::new("window-shelf-capable"), self.desktop.as_ref().is_some_and(|d| d.connected() && d.window_shelf)));
         // While the scratchpad is down it has the keyboard, not the panes.
         let mut scratch_keys = self.companion.open || self.shortcut_reference.open || self.scratchpad.visible() || self.polkit.active() || self.fs.has_keyboard() || self.quick.open;
         let mut chat_area=None;
@@ -372,6 +384,20 @@ impl eframe::App for App {
                 if open.right {
                     let rect = Rect::from_min_max(pos2(workspace.right(), screen.top()), pos2(screen.right(), keys_top));
                     region(ui, rect, column, Layout::top_down(Align::Min), |ui| {
+                        ui.horizontal(|ui| {
+                            if ui.selectable_label(self.right_apps, "APPS").clicked() {self.right_apps=true;}
+                            if ui.selectable_label(!self.right_apps, "SYSTEM").clicked() {self.right_apps=false;self.dock.dismiss_keyboard(ctx);}
+                        });
+                        ui.add_space(12.0);
+                        if self.right_apps && !self.capture.marking() {
+                            ctx.input_mut(|i|i.events.extend(std::mem::take(&mut dock_keys)));
+                            apps_output=self.dock.panel_on(0,ui,state.as_ref(),&self.config.dock_pins,&theme,animate);
+                            if let Some(area)=apps_output.overlay {apps_output.overlay=Some(area.union(rect));}
+                            if apps_output.keyboard {self.companion.blur_text();self.fs.blur();}
+                            scratch_keys |= self.dock.captures_keyboard();
+                            if self.dock.captures_keyboard() {let _=shortcuts::take_modal_input(ctx,true);}
+                            return false;
+                        }
                         let music = &mut self.music;
                         let world_was_open = self.world.expanded;
                         let mut wanted = false;
@@ -556,6 +582,12 @@ impl eframe::App for App {
                 // One continuous wallpaper sample covers the workspace padding and
                 // split gaps as well as the terminal cells. No bright picture frame.
                 material::paint(ctx, ui.painter(), mine, 0.0, material::Role::Terminal);
+                // Keep pumping every PTY above, but do not lay out text, acquire
+                // keyboard focus or blink a cursor behind a covering native app.
+                let focused = self.focus_tab();
+                if skip_covered_terminal(state.as_ref(), &mut typed, |bytes| self.tabs[focused].input(bytes)) {
+                    return;
+                }
                 // One pane, or two with a gap and a rule between them.
                 let panes: Vec<(usize, Rect)> = match self.side {
                     None => vec![(self.active, inner)],
@@ -655,14 +687,9 @@ impl eframe::App for App {
         powerup::frame_lines(&lines, screen, workspace, keys_top, open,
             self.config.side_panel_behavior == des_common::PanelBehavior::Collapse, line, &stage);
 
-        ctx.data_mut(|data| data.insert_temp(egui::Id::new("window-shelf-capable"), self.desktop.as_ref().is_some_and(|d| d.connected() && d.window_shelf)));
-        ctx.input_mut(|input| input.events.extend(dock_keys));
-        let dock = if self.capture.marking() {
-            self.dock.reset();
-            dock::Output::default()
-        } else {
-            self.dock.show(ctx, screen, state.as_ref(), &self.config.dock_pins, &theme, animate)
-        };
+        if open.right {self.apps_panel_pending=false;}
+        if (!open.right && !self.apps_panel_pending) || self.capture.marking() {self.dock.reset();self.apps_panel_pending=false;}
+        let dock = apps_output;
         let dock_area = dock.overlay.map(|rect| (
             rect.left().floor() as i32, rect.top().floor() as i32,
             rect.width().ceil() as i32 + 1, rect.height().ceil() as i32 + 1,
@@ -674,6 +701,11 @@ impl eframe::App for App {
                 }
                 None => self.dock_area=Some(dock_area),
             }
+        }
+        if self.dock_keyboard.get(&0).copied()!=Some(dock.keyboard) {
+            if let Some(desktop)=&mut self.desktop {
+                if desktop.send(Command::DockKeyboard {screen:0,active:dock.keyboard}).is_ok(){self.dock_keyboard.insert(0,dock.keyboard);}
+            } else {self.dock_keyboard.insert(0,dock.keyboard);}
         }
         if let Some(action) = dock.action { self.apply_dock_action(action); }
         if let Some(id) = self.launcher.take_pin_request() { self.apply_dock_action(dock::Action::Pin(id,true)); }
@@ -811,19 +843,27 @@ impl App {
                 Request::ScreenshotFile(mode) => {
                     let id = self.capture.begin_request(mode);
                     self.pending_shot_replies.push(reply);
-                    self.send(Command::ShotRequest { id, mode });
+                    if let Some(desktop) = self.desktop.as_mut() {
+                        if let Err(error) = desktop.send(Command::ShotRequest { id, mode }) {
+                            self.capture.failed(Some(id), format!("cannot request screenshot: {error}"));
+                        }
+                    }
                     continue;
                 }
                 Request::PickColor => {
                     let id = self.capture.begin_request(des_common::ipc::ShotMode::Region);
                     self.pending_color = Some(reply);
                     self.capture.pick_colour_next();
-                    self.send(Command::ShotRequest { id, mode: des_common::ipc::ShotMode::Region });
+                    if let Some(desktop) = self.desktop.as_mut() {
+                        if let Err(error) = desktop.send(Command::ShotRequest { id, mode: des_common::ipc::ShotMode::Region }) {
+                            self.capture.failed(Some(id), format!("cannot request colour picker: {error}"));
+                        }
+                    }
                     continue;
                 }
                 Request::Workspace(n) => { self.send(Command::Workspace(n)); Answer::Ok }
                 Request::Toast(text) => { self.notices.post("des-ui-ctl", &text, false); Answer::Ok }
-                Request::Dock => { self.dock.reveal_keyboard(); Answer::Ok }
+                Request::Dock => { self.focus_apps(0); Answer::Ok }
                 Request::Launcher => { if !self.launcher.open { self.toggle_launcher(); } Answer::Ok }
                 Request::Settings(None) => { if !self.settings.open { self.toggle_settings(); } Answer::Ok }
                 Request::Settings(Some(section)) => {
@@ -850,10 +890,13 @@ impl App {
     /// "cancelled" when marking was called off.
     pub(super) fn answer_held(&mut self, saved: Option<Vec<Result<PathBuf, String>>>, called_off: bool) {
         for result in saved.unwrap_or_default() {
-            if self.pending_shot_replies.is_empty() {
-                break;
+            if !self.pending_shot_replies.is_empty() {
+                self.pending_shot_replies.remove(0).send(control::shot_answer(&result));
+            } else if let Err(why) = result {
+                if let Some(reply) = self.pending_color.take() {
+                    reply.send(control::Answer::Error(why));
+                }
             }
-            self.pending_shot_replies.remove(0).send(control::shot_answer(&result));
         }
         if called_off {
             self.capture.cancel_request();
@@ -898,5 +941,37 @@ impl App {
                 self.lock_now();
             }
         }
+    }
+}
+
+// A covered terminal still accepts commands explicitly chosen in the Files panel.
+fn skip_covered_terminal(state: Option<&DesktopState>, typed: &mut Option<String>, mut send: impl FnMut(&[u8])) -> bool {
+    let covered = state.is_some_and(|state| !state.terminal_split && state.covering().is_some());
+    if covered {
+        if let Some(text) = typed.take() { send(text.as_bytes()); }
+    }
+    covered
+}
+
+#[cfg(test)]
+mod terminal_visibility_tests {
+    use super::*;
+    #[test]
+    fn covered_terminal_keeps_explicit_files_commands() {
+        let state = DesktopState::decode("state 1 0 0 0 0\t0 1:0:74657374 Test app\n").unwrap();
+        let mut typed = Some("cd ..\r".to_string());
+        let mut sent = Vec::new();
+        assert!(skip_covered_terminal(Some(&state), &mut typed, |bytes| sent.extend_from_slice(bytes)));
+        assert_eq!(sent, b"cd ..\r");
+        assert!(typed.is_none(), "the explicit command must only be delivered once");
+    }
+    #[test]
+    fn visible_terminal_keeps_commands_for_normal_input_order() {
+        let mut state = DesktopState::default();
+        let mut typed = Some("cd ..\r".to_string());
+        assert!(!skip_covered_terminal(Some(&state), &mut typed, |_| panic!("ordinary input is routed later")));
+        assert!(typed.is_some());
+        state = DesktopState::decode("state 1 0 1 0 0\t0 1:0:74657374 Test app\n").unwrap();
+        assert!(!skip_covered_terminal(Some(&state), &mut typed, |_| panic!("split terminal remains visible")));
     }
 }
