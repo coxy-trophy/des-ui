@@ -716,3 +716,10 @@ No installation, restart, real API/keyring operation or microphone test was perf
 Previous bottom-dock acceptance items are superseded. Mobile remains read-only. No installed session restart or installation performed.
 
 Automated evidence and the isolated native preview: [right-panel validation](validation/2026-10-25-right-panel-apps.md).
+
+
+## Separated frame panels and voice transport — 2026-10-26
+
+Automated tests and a private native-shell preview pass. System starts selected; primary frame cards share 8px gaps/radius and a 4px native-workspace rim. Matching compositor and shell builds must be installed and activated together. Check native apps, panel collapse/hide, fractional DPI, fullscreen and Files/Chat at the next controlled login. Existing OSK/native reservation limitations remain unchanged.
+
+Authenticated voice handshake now succeeds after suppressing the server client's synthetic Origin header (the previous request returned403). No real microphone or paid spoken conversation was started. Verify end-to-end speech, playback, interruption and lock/stop after installing the updated companion helper. See [validation](validation/2026-10-26-panels-and-voice.md).

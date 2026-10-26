@@ -312,18 +312,14 @@ impl eframe::App for App {
         };
         let mut command = None;
 
-        // Every region is placed from the shared geometry, so that the workspace is
-        // exactly where the compositor puts application windows.
-        let area = des_common::workspace_with_behavior(screen.width(), screen.height(), open, self.config.side_panel_behavior);
-        let workspace = Rect::from_min_size(
-            screen.min + vec2(area.x, area.y),
-            vec2(area.width, area.height),
-        );
-        let status_top = screen.bottom() - des_common::STATUS_HEIGHT;
-        // The on-screen keys sit above the status strip and push the frame up.
+        // The compositor places native windows in this same inset workspace.
         let osk_height = self.osk.height();
+        let frame_layout = des_common::frame::Layout::new(screen.width(), (screen.height()-osk_height).max(1.0), open, self.config.side_panel_behavior);
+        let on_screen = |rect: des_common::Rect| Rect::from_min_size(screen.min+vec2(rect.x,rect.y),vec2(rect.width,rect.height));
+        let workspace = on_screen(frame_layout.workspace);
+        let center = on_screen(frame_layout.center);
+        let status_top = screen.bottom() - des_common::STATUS_HEIGHT;
         let keys_top = status_top - osk_height;
-        let workspace = Rect::from_min_max(workspace.min, pos2(workspace.max.x, (workspace.max.y - osk_height).max(workspace.min.y)));
         let mut dock_keys = self.dock.reserve_keyboard(ctx);
         let mut apps_output = dock::Output::default();
         ctx.data_mut(|data| data.insert_temp(egui::Id::new("window-shelf-capable"), self.desktop.as_ref().is_some_and(|d| d.connected() && d.window_shelf)));
@@ -334,6 +330,7 @@ impl eframe::App for App {
             .frame(Frame::new().fill(ui::GROUND))
             .show(ctx, |ui| {
                 material::paint(ctx, ui.painter(), screen, 0.0, material::Role::Background);
+                material::paint(ctx, ui.painter(), center, des_common::frame::RADIUS, material::Role::Panel);
                 let status = Rect::from_min_max(pos2(screen.left(), status_top), screen.max);
                 if osk_height > 0.0 {
                     self.osk.show(ui, &theme, Rect::from_min_max(pos2(screen.left(), keys_top), pos2(screen.right(), status_top)));
@@ -376,14 +373,14 @@ impl eframe::App for App {
 
                 let column = vec2(24.0, 24.0);
                 if open.left {
-                    let rect = Rect::from_min_max(screen.min, pos2(workspace.left(), keys_top));
-                    region(ui, rect, column, Layout::top_down(Align::Min), |ui| {
+                    let rect = on_screen(frame_layout.left.expect("open left panel"));
+                    frame_region(ui, rect, column, Layout::top_down(Align::Min), |ui| {
                         panels::left(ui, &theme, &self.mon, &mut self.pet, &self.widgets)
                     });
                 }
                 if open.right {
-                    let rect = Rect::from_min_max(pos2(workspace.right(), screen.top()), pos2(screen.right(), keys_top));
-                    region(ui, rect, column, Layout::top_down(Align::Min), |ui| {
+                    let rect = on_screen(frame_layout.right.expect("open right panel"));
+                    frame_region(ui, rect, column, Layout::top_down(Align::Min), |ui| {
                         ui.horizontal(|ui| {
                             if ui.selectable_label(self.right_apps, "APPS").clicked() {self.right_apps=true;}
                             if ui.selectable_label(!self.right_apps, "SYSTEM").clicked() {self.right_apps=false;self.dock.dismiss_keyboard(ctx);}
@@ -419,10 +416,10 @@ impl eframe::App for App {
                 }
                 if self.config.side_panel_behavior == des_common::PanelBehavior::Collapse {
                     for (panel, visible, rect) in [
-                        (des_common::Panel::Left, open.left, Rect::from_min_max(screen.min, pos2(workspace.left(), keys_top))),
-                        (des_common::Panel::Right, open.right, Rect::from_min_max(pos2(workspace.right(), screen.top()), pos2(screen.right(), keys_top))),
+                        (des_common::Panel::Left, open.left, frame_layout.left.map(on_screen)),
+                        (des_common::Panel::Right, open.right, frame_layout.right.map(on_screen)),
                     ] {
-                        if !visible && region(ui, rect, vec2(0.0, 0.0), Layout::top_down(Align::Center), |ui| panels::collapsed_rail(ui, &theme, panel)) {
+                        if !visible && rect.is_some() && frame_region(ui, rect.unwrap(), vec2(0.0, 0.0), Layout::top_down(Align::Center), |ui| panels::collapsed_rail(ui, &theme, panel)) {
                             match &self.desktop {
                                 Some(_) => command = Some(Command::TogglePanel(panel)),
                                 None => self.local_panels.toggle(panel),
@@ -432,8 +429,8 @@ impl eframe::App for App {
                 }
                 let mut typed = None;
                 if open.bottom {
-                    let rect=Rect::from_min_max(workspace.left_bottom(),pos2(workspace.right(),keys_top));
-                    typed=region(ui,rect,vec2(24.0,10.0),Layout::top_down(Align::Min),|ui|{
+                    let rect=on_screen(frame_layout.bottom.expect("open bottom panel"));
+                    typed=frame_region(ui,rect,vec2(24.0,10.0),Layout::top_down(Align::Min),|ui|{
                         ui.horizontal(|ui|{
                             if ui.selectable_label(!self.companion.chat_selected,"FILES").clicked(){self.companion.select_files();}
                             if ui.selectable_label(self.companion.chat_selected,"CHAT").clicked(){self.fs.blur();self.companion.open(ctx);}
@@ -467,7 +464,7 @@ impl eframe::App for App {
 
                 // The top bar stays in view while an application covers what is below
                 // it, so it is also the way back to the terminal.
-                let bar = Rect::from_min_max(pos2(workspace.left(), screen.top()), workspace.right_top());
+                let bar = on_screen(frame_layout.header);
                 let actions = region(ui, bar, vec2(16.0, 0.0), Layout::left_to_right(Align::Center), |ui| {
                     self.top_bar(ui, &theme, state.as_ref())
                 });
@@ -489,7 +486,7 @@ impl eframe::App for App {
                 let mut mine = workspace;
                 if state.as_ref().is_some_and(|state| state.terminal_split) {
                     // An application has the right half; keep the terminal out from under it.
-                    let (left, _) = area.halves();
+                    let (left, _) = frame_layout.workspace.halves();
                     mine.set_width(left.width);
                 }
                 let inner = mine.shrink2(vec2(24.0, 18.0));
@@ -681,7 +678,7 @@ impl eframe::App for App {
         let quick_area = self.quick.open.then(|| quick::area(screen, keys_top));
 
 
-        // The one-pixel lines between the frame's regions, drawn over all of them.
+        // Subtle rounded outlines belong to the same shared panel rectangles.
         let lines = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("frame-lines")));
         let line = Stroke::new(1.0, ui::LINE);
         powerup::frame_lines(&lines, screen, workspace, keys_top, open,

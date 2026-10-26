@@ -120,3 +120,10 @@ The current conversation owner is the bottom panel, with Files and Chat tabs; th
 Voice is independent of Chat. Super+Ctrl+J summons it without opening text UI. A pointer-transparent thought caption indicates listening/speaking, while the existing solid cursor pulses gently only during output playback. The configured color, shape and hotspot remain intact. Captions have a separate render-only compositor crop and cannot steal clicks or keyboard focus. Reduced motion retains a steady indicator. Cursor pulse works across outputs; the first caption implementation is limited to the primary shell surface.
 
 The key is remembered through the system Secret Service by default. Settings reports loading/saved/locked/unavailable states; it never falls back to plaintext configuration. Explicit Remove saved key disables subsequent autoload. A locked login keyring may need unlocking; it does not require re-entering the API key.
+
+
+## Separated frame panels
+
+The login default is System in the right panel. Apps remains an explicit tab and Super+D selects it. This selection is ephemeral; existing panel visibility preferences are unchanged.
+
+`des_common::frame::Layout` owns the primary display rectangles for the shell and compositor. Frame cards use 8 logical-pixel gaps, an 8px corner radius and a subtle shared LINE outline. The center keeps a 4px rim around native application/terminal content, so native rectangular surfaces do not cover the rounded outer corners. Fullscreen and secondary-display application rectangles remain edge-to-edge. Side panels, collapsed rails, and Files/Chat reuse the same frame surface; inner controls keep their existing 6px radius. Wallpaper sampling remains screen-aligned and static. Use the existing startup progress for outlines; add no new idle repaint loop.

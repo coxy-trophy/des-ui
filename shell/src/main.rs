@@ -385,7 +385,7 @@ impl App {
             browser_openers: Vec::new(),
             document_openers: Vec::new(),
             dock_area: None,
-            right_apps: true,
+            right_apps: false,
             apps_panel_pending: false,
             dock_keyboard: Default::default(),
             settings: settings::Settings::default(),
@@ -1112,7 +1112,15 @@ fn region<R>(
     layout: Layout,
     add: impl FnOnce(&mut Ui) -> R,
 ) -> R {
-    material::paint(ui.ctx(), ui.painter(), rect, 0.0, material::Role::Panel);
+    region_surface(ui, rect, margin, layout, 0.0, add)
+}
+
+fn frame_region<R>(ui: &mut Ui, rect: Rect, margin: egui::Vec2, layout: Layout, add: impl FnOnce(&mut Ui) -> R) -> R {
+    region_surface(ui, rect, margin, layout, des_common::frame::RADIUS, add)
+}
+
+fn region_surface<R>(ui: &mut Ui, rect: Rect, margin: egui::Vec2, layout: Layout, radius: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
+    material::paint(ui.ctx(), ui.painter(), rect, radius, material::Role::Panel);
     let mut child = ui.new_child(UiBuilder::new().max_rect(rect.shrink2(margin)).layout(layout));
     child.set_clip_rect(rect);
     add(&mut child)

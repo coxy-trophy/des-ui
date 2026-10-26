@@ -232,7 +232,7 @@ or **Hide** to reclaim their entire width. The file browser still hides complete
 Action icons show their names and shortcuts on hover; status icons keep their readings.
 
 Graphical applications appear in the right panel's **Apps** tab. **System** shows
-the instruments. Apps lists running windows and saved pins, grouped across
+the instruments and is selected when you log in. Apps lists running windows and saved pins, grouped across
 workspaces and displays. Click an app to focus it; right-click for window and pin
 actions. The launcher also offers pinning, and pins are saved.
 

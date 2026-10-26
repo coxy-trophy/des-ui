@@ -140,6 +140,30 @@ class VoiceTests(unittest.TestCase):
         self.assertEqual(self.events[-1]['usage_seconds'], 15)
         self.assertNotIn('secret', json.dumps(self.events))
         self.assertFalse(self.events[-1]['finalized'])
+    def test_provider_rejection_reports_safe_action_without_provider_text(self):
+        self.ready()
+        self.socket.event('error', error={'type':'invalid_request_error',
+            'code':'responses_validation_failed', 'message':'private-api-key',
+            'param':'private-provider-body'})
+        until(lambda: self.events[-1]['reason'] == 'provider_error')
+        self.assertIn('backend model', self.events[-1]['message'])
+        self.assertNotIn('private-api-key', json.dumps(self.events))
+        self.assertNotIn('private-provider-body', json.dumps(self.events))
+
+    def test_audio_start_failure_reports_audio_error_and_stops_partial_devices(self):
+        class FailedAudio(Audio):
+            def start(self):
+                raise FileNotFoundError('private-provider-body')
+        audio = FailedAudio(None, None)
+        self.voice.audio_factory = lambda *args: audio
+        self.start()
+        self.socket.event('session.started', session={'id':'test'})
+        until(lambda: self.events[-1]['state'] == 'stopping')
+        self.assertTrue(audio.stopped)
+        self.assertEqual(self.events[-1]['reason'], 'audio_error')
+        self.assertIn('PipeWire', self.events[-1]['message'])
+        self.assertNotIn('private-provider-body', json.dumps(self.events))
+
     def test_muting_stops_local_capture_and_resume_is_explicit(self):
         self.ready()
         self.voice.mute(True)
@@ -348,6 +372,14 @@ class ConnectionDiagnosticTests(unittest.TestCase):
                 self.assertIn(action, event['message'])
                 self.assertIn(str(status), event['message'])
 
+    def test_forbidden_handshake_explains_access_and_network_checks(self):
+        import websocket
+        event = self.failed_connection(websocket.WebSocketBadStatusException(
+            'private-provider-body', 403))
+        self.assertIn('project permissions', event['message'])
+        self.assertIn('network', event['message'])
+        self.assertIn('before audio started', event['message'])
+
     def test_local_dependency_network_tls_and_timeout_have_distinct_actions(self):
         import socket
         import ssl
@@ -432,3 +464,6 @@ class TransportTimeoutTests(unittest.TestCase):
         self.assertEqual(calls[0][1]['timeout'], 10)
         self.assertEqual(transport.timeout, 1)
         self.assertEqual(calls[0][1]['redirect_limit'], 0)
+        self.assertTrue(calls[0][1].get('suppress_origin', False))
+        self.assertEqual(calls[0][0], 'wss://api.openai.com/v1/live/sessions')
+        self.assertEqual(calls[0][1]['header'], ['Authorization: Bearer test-key'])

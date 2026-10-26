@@ -4,6 +4,7 @@
 //! The shell draws the frame; the compositor places application windows inside it.
 //! All geometry is in logical pixels.
 
+pub mod frame;
 pub mod input;
 pub mod hands;
 pub mod shortcuts;

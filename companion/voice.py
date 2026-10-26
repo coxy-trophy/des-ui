@@ -32,7 +32,9 @@ def _connect(key):
     connection = websocket.create_connection(
         'wss://api.openai.com/v1/live/sessions',
         header=['Authorization: Bearer ' + key], timeout=10,
-        enable_multithread=True, redirect_limit=0)
+        # This is a server-owned bearer connection, not a browser origin.
+        # websocket-client's synthetic Origin is rejected for authenticated Live.
+        suppress_origin=True, enable_multithread=True, redirect_limit=0)
     # Handshake latency and interruptible receive polling have separate budgets.
     connection.settimeout(1)
     return connection
@@ -63,7 +65,7 @@ def _connection_diagnostic(error):
             if status == 401:
                 action = 'Check your OpenAI API key in companion settings.'
             elif status == 403:
-                action = 'Check your OpenAI project permissions and GPT-Live access.'
+                action = 'Access was denied before audio started. Check your OpenAI project permissions, GPT-Live access, and network or proxy restrictions.'
             elif status == 404:
                 action = 'The GPT-Live endpoint was not found. Check service availability and project access.'
             elif status == 429:
@@ -498,13 +500,25 @@ class LiveVoice:
                                 session.backend_usage[key] = session.backend_usage.get(key, 0) + value
             if session.closing: return
             if kind == 'error':
-                self._stop(session, 'provider_error')  # Provider text may contain credentials.
+                # Never forward free-form provider text, parameters, or identifiers.
+                error = event.get('error')
+                code = error.get('code') if isinstance(error, dict) else None
+                message = ('Voice backend configuration was rejected. Check the backend model and OpenAI project access.'
+                           if code == 'responses_validation_failed' else
+                           'OpenAI rejected the voice session. Check API model access, billing, and session settings.')
+                self._stop(session, 'provider_error', message)
             elif kind == 'session.started' and not session.ready:
                 session.ready = True
-                session.audio = self.audio_factory(lambda data: self._capture(session, data),
-                                                   lambda: self._stop(session, 'audio_error'))
-                session.audio.mute(session.muted)
-                session.audio.start()
+                try:
+                    session.audio = self.audio_factory(lambda data: self._capture(session, data),
+                                                       lambda: self._stop(session, 'audio_error',
+                                                           'Voice audio stopped. Check PipeWire and your default microphone and speakers.'))
+                    session.audio.mute(session.muted)
+                    session.audio.start()
+                except Exception:
+                    self._stop(session, 'audio_error',
+                               'Voice audio could not start. Check PipeWire, pw-record, pw-play, and your default audio devices.')
+                    return
                 _thread(self._sender, session)
                 self._event(session)
             elif kind == 'session.output_audio.delta' and session.ready:

@@ -452,7 +452,7 @@ impl DesComp {
             rect
         } else {
             to_rectangle(
-                des_common::workspace_with_behavior(rect.size.w as f32, rect.size.h as f32, self.panels, self.side_panel_behavior),
+                des_common::frame::Layout::new(rect.size.w as f32, rect.size.h as f32, self.panels, self.side_panel_behavior).workspace,
                 rect.loc,
             )
         };
