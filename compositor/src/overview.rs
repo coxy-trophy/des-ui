@@ -115,6 +115,13 @@ pub fn pack(area: Rectangle<i32, Logical>, aspects: &[f64]) -> Vec<Rectangle<i32
         .collect()
 }
 
+/// Content beneath a workspace heading, before packing its window pictures.
+fn workspace_content(cell: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
+    let pad = 16.min((cell.size.w / 8).max(0)).min(((cell.size.h - HEADER) / 4).max(0));
+    Rectangle::new((cell.loc.x + pad, cell.loc.y + HEADER + pad).into(),
+        ((cell.size.w - 2 * pad).max(1), (cell.size.h - HEADER - 2 * pad).max(1)).into())
+}
+
 /// Whether a window answers what was typed: part of its title or application id,
 /// regardless of case.
 pub fn matches(filter: &str, title: &str, app_id: &str) -> bool {
@@ -584,7 +591,7 @@ impl DesComp {
                         })
                         .map(|(index, app)| (index, &app.window))
                         .collect();
-                    let area = Rectangle::new((cell.loc.x, cell.loc.y + HEADER).into(), (cell.size.w, (cell.size.h - HEADER).max(1)).into());
+                    let area = workspace_content(cell);
                     let aspects: Vec<f64> = windows.iter().map(|(_, window)| aspect_of(window)).collect();
                     for ((index, window), rect) in windows.into_iter().zip(pack(area, &aspects)) {
                         layout.thumbs.push((window.clone(), index, rect));
@@ -824,6 +831,24 @@ mod tests {
         }
         // A rotated display is narrow too.
         assert!(cells(size(1080, 1920))[2].loc.y > 0);
+    }
+
+    #[test]
+    fn workspace_previews_leave_room_for_selection_borders_and_names() {
+        for display in [size(1920, 1080), size(1280, 900), size(640, 480)] {
+            for cell in cells(display) {
+                let content = workspace_content(cell);
+                for n in 1..=12 {
+                    for thumb in pack(content, &vec![16.0 / 9.0; n]) {
+                        // The selected stroke expands 4px, then extends another 2px.
+                        assert!(thumb.loc.x >= cell.loc.x + 12);
+                        assert!(thumb.loc.x + thumb.size.w + 6 <= cell.loc.x + cell.size.w);
+                        assert!(thumb.loc.y - 6 >= cell.loc.y + HEADER + 6);
+                        assert!(thumb.loc.y + thumb.size.h + LABEL <= cell.loc.y + cell.size.h - 6);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

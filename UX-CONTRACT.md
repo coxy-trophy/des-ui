@@ -183,3 +183,5 @@ Separated frame geometry: common::frame::Layout is the canonical source for prim
 The on-screen keyboard retains its existing shell-only scope: it reserves shell drawing space and types into shell controls/terminals, not native applications. This change does not add an OSK reservation protocol to the compositor.
 
 Collapsed side cards keep a 44px-wide click target, an 8px channel beside the center, and a whole rotated regional clock on the left. Its glyphs face right and HH:MM reads from bottom to top. Shared frame geometry owns the 56px rail reservation in shell and compositor.
+
+Overview presentation: the compositor owns preview geometry, window activation and drag input; shell paint has no independent hit targets or fade/sizing delay. The full-screen ground sits above frame chrome. Captures render native overview elements before the shell background, including hidden-workspace apps; ordinary Space rendering alone is insufficient. Thumbnail content is inset 16px where space permits, with labels and selection borders remaining inside workspace cells.

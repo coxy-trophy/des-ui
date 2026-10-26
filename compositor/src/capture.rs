@@ -161,16 +161,28 @@ impl DesComp {
                 elements.clear();
                 elements.extend(crate::udev::splash_elements(splash, renderer, rect.size, scale));
             }
-            elements.extend(
-                crate::toast::elements(renderer, self.shell.as_ref(), toast_area, primary, &self.toast_id, rect.loc, scale)
-                    .into_iter()
-                    .map(OutputElements::Toast),
-            );
-            for (shell,area,origin,id) in &docks {
-                elements.extend(crate::toast::elements(renderer,Some(shell),Some(*area),Some(*origin),id,rect.loc,scale).into_iter().map(OutputElements::Toast));
+            // Match the visible overview composition. Hidden workspace windows are
+            // absent from Space: its ordinary elements only contain the shell's
+            // placeholder cards, not the native previews rendered above them.
+            let now = Instant::now();
+            if let Some(overview) = self.overview.as_ref() {
+                let shell = if overview.screen == 0 { self.shell.as_ref() }
+                    else { self.backdrops.get(overview.screen - 1) };
+                elements.extend(crate::overview::elements::<OutputElements>(
+                    renderer, overview, &self.space, shell, &output, now));
             }
-            let space = space_render_elements(renderer, [&self.space], &output, 1.0).map_err(|e| format!("{e:?}"))?;
-            elements.extend(space.into_iter().map(OutputElements::Space));
+            if !self.overview_covers(rect) {
+                elements.extend(
+                    crate::toast::elements(renderer, self.shell.as_ref(), toast_area, primary, &self.toast_id, rect.loc, scale)
+                        .into_iter()
+                        .map(OutputElements::Toast),
+                );
+                for (shell,area,origin,id) in &docks {
+                    elements.extend(crate::toast::elements(renderer,Some(shell),Some(*area),Some(*origin),id,rect.loc,scale).into_iter().map(OutputElements::Toast));
+                }
+                let space = space_render_elements(renderer, [&self.space], &output, 1.0).map_err(|e| format!("{e:?}"))?;
+                elements.extend(space.into_iter().map(OutputElements::Space));
+            }
 
             // The picture is the display as it is looked at: turned the way it stands.
             let size = output
