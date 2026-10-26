@@ -617,6 +617,18 @@ fn auto_scale(size: (i32, i32), physical: (i32, i32), internal: bool) -> u32 {
         .unwrap_or(100)
 }
 
+/// A hotplug notification can change a still-connected connector's modes (for
+/// example after a link-bandwidth change) or attach a different-sized monitor.
+/// Connector handles alone are therefore insufficient to retain an output.
+fn output_still_valid(current: Option<DisplayMode>, physical: (i32, i32), reported: (u32, u32), offered: &[DisplayMode]) -> bool {
+    let mode_valid = current.is_some_and(|mode| offered.contains(&mode));
+    // Missing millimetres can be a transient EDID read; do not replace a good
+    // physical size with unknown data and change its automatic scale.
+    let physical_changed = reported.0 > 0 && reported.1 > 0
+        && physical != (reported.0 as i32, reported.1 as i32);
+    mode_valid && !physical_changed
+}
+
 /// How a saved layout sets a monitor beyond its mode.
 fn setup_of(saved: &monitors::Saved) -> Setup {
     Setup {
@@ -679,9 +691,26 @@ impl DesComp {
         let mut index = 0;
         while index < udev.monitors.len() {
             let monitor = &udev.monitors[index];
-            if connected.iter().any(|info| info.handle() == monitor.connector) && !off(&monitor.output.name()) {
-                index += 1;
-                continue;
+            if let Some(info) = connected.iter().find(|info| info.handle() == monitor.connector).filter(|_| !off(&monitor.output.name())) {
+                let current = monitor.output.current_mode().map(|mode| DisplayMode {
+                    width: mode.size.w as u32, height: mode.size.h as u32, refresh: mode.refresh as u32,
+                });
+                let offered = offered_modes(info, current.map(|mode| (mode.width as u16, mode.height as u16)));
+                // Validate against every driver mode, not the capped/filterable
+                // list offered by Settings: a valid low resolution may sort last.
+                let reported_modes: Vec<_> = info.modes().iter().filter(|mode| !mode.flags().contains(ModeFlags::INTERLACE)).map(|mode| {
+                    let mode = WlMode::from(*mode);
+                    DisplayMode { width: mode.size.w as u32, height: mode.size.h as u32, refresh: mode.refresh as u32 }
+                }).collect();
+                let physical = monitor.output.physical_properties().size;
+                if output_still_valid(current, (physical.w, physical.h), info.size().unwrap_or((0, 0)), &reported_modes) {
+                    // Refresh Settings even when no modeset is required. Otherwise
+                    // an earlier cable's mode list survives every hotplug event.
+                    udev.monitors[index].modes = offered;
+                    index += 1;
+                    continue;
+                }
+                tracing::info!(output = %monitor.output.name(), ?current, reported_physical = ?info.size(), "output capabilities changed; rebuilding display state");
             }
             let gone = udev.monitors.remove(index);
             tracing::info!(output = %gone.output.name(), "monitor disconnected or turned off");
@@ -886,6 +915,9 @@ impl DesComp {
                     (monitor.setup.scale as f64 / 100.0, position)
                 }
             };
+            if monitor.output.current_scale().fractional_scale() != scale || monitor.output.current_transform() != transform {
+                tracing::info!(output = %monitor.output.name(), physical = ?turned, logical = ?logical_screen_size(turned, scale), scale, mirrored = mirrored.is_some(), "display geometry configured");
+            }
             monitor.output.change_current_state(
                 None,
                 Some(transform),
@@ -910,6 +942,17 @@ impl DesComp {
                 configure_device(device, &settings);
             }
         }
+    }
+
+    /// Explicit display ownership for client scale selection. Mirrors do not own
+    /// windows, even though their scanout geometries overlap the primary output.
+    pub(crate) fn output_is_mirror(&self, output: &Output) -> bool {
+        self.udev.as_ref().is_some_and(|udev| udev.monitors.iter().any(|monitor| monitor.output == *output && monitor.setup.usage == Usage::Mirror))
+    }
+
+    pub(crate) fn primary_output(&self) -> Option<Output> {
+        self.udev.as_ref().and_then(|udev| udev.monitors.first()).map(|monitor| monitor.output.clone())
+            .or_else(|| self.space.outputs().next().cloned())
     }
 
     /// The monitors being driven, left to right; `None` when this backend is not in use.
@@ -1129,6 +1172,17 @@ pub(crate) fn logical_screen_size(size: smithay::utils::Size<i32, smithay::utils
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hotplug_revalidates_modes_and_physical_size_without_resetting_valid_outputs() {
+        let mode = DisplayMode { width: 3840, height: 2160, refresh: 30000 };
+        let smaller = DisplayMode { width: 1920, height: 1080, refresh: 60000 };
+        assert!(output_still_valid(Some(mode), (1200, 680), (1200, 680), &[mode, smaller]));
+        assert!(!output_still_valid(Some(mode), (1200, 680), (1200, 680), &[smaller]), "link no longer supports active mode");
+        assert!(!output_still_valid(Some(mode), (1200, 680), (600, 340), &[mode]), "different physical monitor on same connector");
+        assert!(output_still_valid(Some(mode), (1200, 680), (0, 0), &[mode]), "transient missing EDID size must not change DPI");
+        assert!(!output_still_valid(None, (1200, 680), (1200, 680), &[mode]));
+    }
 
     #[test]
     fn fractional_display_sizes_match_smithay_output_geometry() {

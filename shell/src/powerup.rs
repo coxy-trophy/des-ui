@@ -253,11 +253,11 @@ pub fn swept_span(center: f32, from: f32, to: f32, progress: f32) -> Option<(f32
 
 /// Rounded panel outlines use the existing startup progress without bridging gaps.
 #[allow(clippy::too_many_arguments)]
-pub fn frame_lines(painter: &Painter, screen: Rect, _workspace: Rect, status_top: f32, open: Panels, collapse: bool, line: Stroke, stage: &Stage) {
-    let layout=des_common::frame::Layout::new(screen.width(),status_top-screen.top()+des_common::STATUS_HEIGHT,open,
-        if collapse {des_common::PanelBehavior::Collapse}else{des_common::PanelBehavior::Hide});
+pub fn frame_lines(painter: &Painter, screen: Rect, _workspace: Rect, status_top: f32, keyboard_height: f32, open: Panels, collapse: bool, line: Stroke, stage: &Stage) {
+    let layout=des_common::frame::Layout::with_keyboard(screen.width(),status_top-screen.top()+des_common::STATUS_HEIGHT,open,
+        if collapse {des_common::PanelBehavior::Collapse}else{des_common::PanelBehavior::Hide}, keyboard_height);
     let progress=stage.progress(Part::Lines);
-    for rect in [Some(layout.center),layout.left,layout.right,layout.bottom].into_iter().flatten() {
+    for rect in [Some(layout.center),layout.left,layout.right,layout.bottom,layout.keyboard].into_iter().flatten() {
         let rect=Rect::from_min_size(screen.min+egui::vec2(rect.x,rect.y),egui::vec2(rect.width,rect.height));
         if let Some((from,to))=swept_span(rect.center().x,rect.left(),rect.right(),progress) {
             let clip=Rect::from_min_max(egui::pos2(from,rect.top()),egui::pos2(to,rect.bottom())).intersect(painter.clip_rect());

@@ -56,7 +56,7 @@ marker or destination row focuses that place and pauses automatic rotation. HOME
 resets orientation/zoom and clears selection. RESUME clears the pin. Hovering the
 globe or expanded workspace pauses ambient movement; automatic rotation requires
 both animation and globe rotation settings. Controls provide non-drag alternatives.
-EXPAND brings the terminal workspace forward, closes sibling workflows, and focuses
+Double-clicking the compact globe brings the terminal workspace forward, closes sibling workflows, and focuses
 the labelled local destination search. CLEAR immediately resets search and returns
 focus to it. CLOSE/Escape return to the existing terminal; switching workflows closes
 the explorer. Lock prevents rendering/input. Selection survives disappearing links
@@ -138,7 +138,7 @@ Settings emits a proposed configuration and applies it only after atomic persist
 The reference is modal: background raw events are held until the reference renders, preventing launcher/file-panel handlers from consuming its Escape/Arrow/Enter. It lifts the whole display above applications, preserves their workspace/process state, and closes for lock/authentication. Scratchpad focus is suspended while the reference is shown. Configure opens Settings → Shortcuts; Escape cancels reference, recording, or pending reset before closing its parent. Hidden editors never retain shortcut capture. Manual draft entry and explicit recording are separate modes; recording cannot fire shell shortcuts behind Settings.
 
 
-Window shelf: dock.rs owns grouped application selection, bounded scrolling and stable keyboard focus; compositor overview.rs owns stable window identities, nine-preview pages and actual activation. Escape returns from the chooser to its dock item. Capability negotiation selects previews or the native list fallback. Regional formatting owns the collapsed rail clock.
+Window shelf: dock.rs owns grouped application selection, height-budgeted pages and stable keyboard focus; compositor overview.rs owns stable window identities, nine-preview pages and actual activation. Escape returns from the chooser to its dock item. Capability negotiation selects previews or the native list fallback. Regional formatting owns the collapsed rail clock.
 
 Drag destinations: compositor dnd.rs owns session, cancellation, 450ms dwell and real-surface handoff. Client callbacks only record state; frame/input processing handles pointer operations outside grab callbacks. Lock, capture, output changes and dead sources cancel safely. Native offers retain copy/move negotiation; previews never accept a drop. Returning to the bottom edge reopens destinations. Files emits outbound drags only from its normal browser; the wallpaper picker and Trash do not. The persisted drag_overview preference disables presentation while preserving ordinary native dragging.
 
@@ -180,8 +180,18 @@ System is the default right-panel tab; Apps remains available on demand. No bott
 
 Separated frame geometry: common::frame::Layout is the canonical source for primary side panels/rails, center/header, Files/Chat and the inset native workspace. The compositor uses exactly its workspace rectangle; the shell uses all surface rectangles. New shell/compositor builds must be activated together for geometry changes. Fullscreen and secondary outputs retain their existing ownership. Initial right-panel selection is System; Super+D still explicitly selects Apps and handles keyboard/focus as before. No persistent tab-selection field is introduced.
 
-The on-screen keyboard retains its existing shell-only scope: it reserves shell drawing space and types into shell controls/terminals, not native applications. This change does not add an OSK reservation protocol to the compositor.
+The on-screen keyboard types into shell controls and terminals. A bounded keyboard-height IPC reservation now keeps native application placement clear of the center-column keyboard card; it does not add virtual-keyboard typing into native applications. The same rounded height and canonical frame layout are used on both sides, including reconnect/lock reset.
 
 Collapsed side cards keep a 44px-wide click target, an 8px channel beside the center, and a whole rotated regional clock on the left. Its glyphs face right and HH:MM reads from bottom to top. Shared frame geometry owns the 56px rail reservation in shell and compositor.
 
 Overview presentation: the compositor owns preview geometry, window activation and drag input; shell paint has no independent hit targets or fade/sizing delay. The full-screen ground sits above frame chrome. Captures render native overview elements before the shell background, including hidden-workspace apps; ordinary Space rendering alone is insufficient. Thumbnail content is inset 16px where space permits, with labels and selection borders remaining inside workspace cells.
+
+Music Home is a presentation of actual library playlists; collection artwork, loading, unavailable and sign-in states reflect the existing service. Full music content has a bounded body and reserved transport; compact playback has a 136px allocation. Side-panel playback and local readings cannot be displaced by the globe, display tiles or custom widgets. Left telemetry yields to the selected pet's fixed footer. Optional instruments/custom widgets appear only where they fit; there is no side-panel scrolling.
+
+Applications: empty launcher search includes every installed app; typed palette results remain bounded. The launcher, shelf and tray share cached textures and background source invalidation; opening a surface does not clear artwork. Right-panel paging includes expanded window rows. Page buttons and keyboard selection move together so Enter always targets a visible row. Installed-app scans, icon resolution and decoding stay off the UI thread.
+
+Devices: initialize the inventory worker while Settings is closed; initial enumeration is quiet, subsequent hardware/status changes use existing notifications. Show cameras, audio endpoints, USB, input, storage, displays and connected/paired Bluetooth with honest status and stale-service handling. Inventory reads metadata and service snapshots; it never streams a camera/microphone, pairs devices or mounts media. Hand control uses a privately saved physical camera identity, resolves current video numbering only when enabled, and fails closed if that choice is missing. Camera changes take effect when hand control is restarted; other applications retain their own camera choices.
+
+Settings uses five category groups and one search catalog for names, descriptions and synonyms. Search never switches pages while typing; choosing a result clears the query and opens that existing section. Escape clears a nonempty search before closing Settings. Legacy uppercase section IDs and external settings destinations remain supported. Current section selection survives clicking its already active category. Cursor previews show the actual filled/shadowed style.
+
+Display reconnect revalidates advertised modes and physical dimensions before reusing outputs, while keeping valid current configurations. Mirrored outputs preserve primary client scale ownership instead of arbitrary output iteration; independent-output movement follows overlap. Cursor export forwards a strict theme/size/path/HOME/XDG allowlist into Xwayland, honors explicit alternate themes and custom cursor surfaces, and includes standard legacy aliases. No live monitor reconfiguration or application restart is implied by source verification.

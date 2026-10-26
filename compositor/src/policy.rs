@@ -452,7 +452,7 @@ impl DesComp {
             rect
         } else {
             to_rectangle(
-                des_common::frame::Layout::new(rect.size.w as f32, rect.size.h as f32, self.panels, self.side_panel_behavior).workspace,
+                des_common::frame::Layout::with_keyboard(rect.size.w as f32, rect.size.h as f32, self.panels, self.side_panel_behavior, self.keyboard_height as f32).workspace,
                 rect.loc,
             )
         };
@@ -1443,6 +1443,12 @@ impl DesComp {
                 Command::RevertDisplays => self.revert_displays(),
                 Command::ReloadInput => self.reload_input(),
                 Command::ToggleHands => self.toggle_hands(),
+                Command::KeyboardHeight(height) => {
+                    if self.keyboard_height != height {
+                        self.keyboard_height = height;
+                        self.arrange();
+                    }
+                },
                 Command::ReloadFrame => {
                     self.side_panel_behavior = des_common::PanelBehavior::load();
                     self.arrange();

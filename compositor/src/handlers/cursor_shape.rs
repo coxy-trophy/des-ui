@@ -342,14 +342,14 @@ mod tests {
     }
 
     #[test]
-    fn solid_art_has_one_component_light_fill_dark_keyline_and_transparent_border() {
+    fn solid_art_has_one_component_filled_body_soft_shadow_and_transparent_border() {
         for shape in SHAPES.iter().copied() {
             for scale in [1, 2] {
                 let pixels = art::raster(&art::boundary(shape, 0.0), shape, scale, 1.0);
                 let side = art::SIDE * scale;
                 assert!(connected(&pixels, side), "disconnected {shape:?} at {scale}");
                 assert!(pixels.chunks_exact(4).any(|p| p[3] == 255 && p[0] > 230), "no light fill {shape:?}");
-                assert!(pixels.chunks_exact(4).any(|p| p[3] == 255 && p[0] < 50), "no dark outline {shape:?}");
+                assert!(pixels.chunks_exact(4).any(|p| p[3]>0 && p[3]<200), "no antialiased shadow {shape:?}");
                 assert!(pixels.chunks_exact(4).all(|p| p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3]), "not premultiplied");
                 for edge in 0..side {
                     for at in [edge, (side-1)*side+edge, edge*side, edge*side+side-1] {
@@ -360,6 +360,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn pointer_and_text_bodies_have_no_opaque_outline_at_any_size_or_density() {
+        for shape in [Shape::Arrow,Shape::Link,Shape::Beam,Shape::Grab,Shape::ResizeHorizontal] {
+            for size in [16,24,40,64] {for density in [1.0,2.0,4.0] {for color in [[247,246,242],[19,23,29]] {
+                let pixels=art::raster_custom(&art::boundary(shape,0.0),shape,density,size,color,1.0);
+                let body:Vec<_>=pixels.chunks_exact(4).filter(|pixel|pixel[3]==255).collect();
+                assert!(!body.is_empty(),"missing body at {shape:?} {size}/{density}");
+                assert!(body.iter().all(|pixel|pixel[..3]==[color[2],color[1],color[0]]),"opaque contrast outline returned at {shape:?} {size}/{density}");
+                assert!(pixels.chunks_exact(4).any(|pixel|pixel[3]>0 && pixel[3]<128),"missing subtle shadow/edge");
+            }}}
+        }
+    }
     #[test]
     fn grab_is_a_slanted_pointed_lozenge_and_grabbing_is_compressed() {
         let grab=art::boundary(Shape::Grab,0.0);
@@ -610,8 +622,14 @@ mod tests {
             for icon in [CursorIcon::Default,CursorIcon::Pointer,CursorIcon::Text,CursorIcon::EwResize] {
                 let (w,_,_,_,pixels)=theme_image_with_preferences(icon,24,Preferences {size:24,color});
                 assert!(connected(&pixels,w as usize));
-                assert!(pixels.chunks_exact(4).filter(|p|p[3]==255&&p[0]>170&&p[1]>170&&p[2]>170).count()>4,"no bright contrast {icon:?} {color:?}");
-                assert!(pixels.chunks_exact(4).filter(|p|p[3]==255&&p[0]<60&&p[1]<60&&p[2]<60).count()>4,"no dark contrast {icon:?} {color:?}");
+                for background in [0.0_f32,255.0] {
+                    let visible=pixels.chunks_exact(4).filter(|pixel| {
+                        let alpha=pixel[3] as f32/255.0;
+                        let channel=pixel[0] as f32+background*(1.0-alpha);
+                        (channel-background).abs()>18.0
+                    }).count();
+                    assert!(visible>4,"cursor lacks definition on background {background}: {icon:?} {color:?}");
+                }
             }
         }
     }

@@ -185,6 +185,7 @@ pub struct DesComp {
     pub input_settings: des_common::input::InputSettings,
     pub shortcut_bindings: des_common::shortcuts::Bindings,
     pub side_panel_behavior: des_common::PanelBehavior,
+    pub keyboard_height: u16,
     /// The keyboard layout and variant last given to the keymap compiler.
     pub keymap_applied: Option<(String, String)>,
     /// While locked, only the shell is on screen, showing the lock screen, and the
@@ -361,6 +362,7 @@ impl DesComp {
             input_settings: des_common::input::InputSettings::default(),
             shortcut_bindings: des_common::shortcuts::Bindings::load(),
             side_panel_behavior: des_common::PanelBehavior::load(),
+            keyboard_height: 0,
             keymap_applied: None,
             locked: false,
             display_override: None,

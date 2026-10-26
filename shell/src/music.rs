@@ -399,6 +399,7 @@ fn connection(shared: Arc<Mutex<Shared>>, commands: Receiver<String>, ctx: egui:
 /// Which list the view is showing.
 #[derive(Debug, Clone, PartialEq)]
 enum Source {
+    Home,
     Liked,
     /// What plays next.
     Queue,
@@ -418,6 +419,7 @@ enum Source {
 impl Source {
     fn key(&self) -> String {
         match self {
+            Source::Home => "playlists:".to_string(),
             Source::Liked => "liked:".to_string(),
             Source::Queue => "queue:".to_string(),
             Source::Playlist { id, .. } => format!("tracks:{id}"),
@@ -443,6 +445,7 @@ impl Source {
 
     fn request(&self) -> Value {
         match self {
+            Source::Home => json!({ "cmd": "playlists" }),
             Source::Liked => json!({ "cmd": "liked" }),
             Source::Queue => json!({ "cmd": "queue" }),
             Source::Playlist { id, .. } => json!({ "cmd": "tracks", "playlist": id }),
@@ -461,7 +464,7 @@ impl Source {
         match self {
             Source::Liked => Some("liked".to_string()),
             Source::Playlist { uri, .. } | Source::Album { uri, .. } => Some(uri.clone()),
-            Source::Search(_) | Source::Queue | Source::Albums | Source::Artist { .. } | Source::Devices | Source::Lyrics => None,
+            Source::Home | Source::Search(_) | Source::Queue | Source::Albums | Source::Artist { .. } | Source::Devices | Source::Lyrics => None,
         }
     }
 }
@@ -562,6 +565,7 @@ fn control(ui: &mut Ui, theme: &Theme, which: Control, size: f32, lit: bool) -> 
     let ink = if lit { ui::TEXT } else if response.hovered() { ui::TEXT } else { ui::SECONDARY };
     let painter = ui.painter();
     if lit || response.hovered() { painter.rect_filled(rect, ui::CONTROL_RADIUS, if lit { theme.tint() } else { ui::TRACK }); }
+    if response.has_focus() { painter.rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
     let c = rect.center();
     let unit = size / 6.0;
     let triangle = |tip_x: f32, back_x: f32| {
@@ -647,7 +651,7 @@ impl Music {
             open: false,
             shared,
             commands,
-            source: Source::Liked,
+            source: Source::Home,
             query: String::new(),
             client_id: String::new(),
             queue_as_of: None,
@@ -732,48 +736,38 @@ impl Music {
 
     /// The right column's section: what is playing, and the three controls. Returns
     /// true when the title was clicked, to open the full view.
+    pub fn preferred_panel_height(&self) -> f32 {
+        if self.now().track.is_some() { PANEL_HEIGHT } else { 0.0 }
+    }
+
     pub fn panel(&mut self, ui: &mut Ui, theme: &Theme) -> bool {
         let now = self.now();
-        let Some(track) = now.track.clone() else {
-            return false;
-        };
+        let Some(track) = now.track.as_ref() else { return false; };
+        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_HEIGHT), Sense::hover());
+        let mut inner = ui.new_child(UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Min)));
+        inner.set_clip_rect(rect.intersect(ui.clip_rect()));
+        let ui = &mut inner;
+        ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+        ui::tracked(ui, if now.playing { "NOW PLAYING" } else { "PAUSED" }, ui::display_bold(10.0), ui::SECONDARY, 1.5);
         let mut open = false;
-        ui.add_space(22.0);
-        ui::section(ui, "NOW PLAYING", |ui| {
-            if let Some(device) = now.device.as_ref().filter(|_| now.playing) {
-                ui::meta(ui, &format!("ON {}", crate::panels::truncate(&device.to_uppercase(), 14)), theme.main);
-            } else if now.playing {
-                ui::meta(ui, "SPOTIFY", theme.main);
-            } else {
-                ui::meta(ui, "PAUSED", ui::LABEL);
-            }
+        ui.horizontal(|ui| {
+            self.draw_cover(ui, 48.0, track.cover.as_deref());
+            ui.vertical(|ui| {
+                let fit = (ui.available_width().max(0.0) / 8.0) as usize;
+                let title = ui.add(egui::Button::new(egui::RichText::new(crate::panels::truncate(&track.name, fit)).font(ui::display_bold(13.0)).color(ui::TEXT)).frame(false));
+                open = title.on_hover_text(format!("Open Music — {}", track.name)).clicked();
+                ui::text(ui, &crate::panels::truncate(&track.artists, fit), ui::display(11.0), ui::SECONDARY).on_hover_text(&track.artists);
+            });
         });
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 12.0;
-            self.draw_cover(ui, 56.0, track.cover.as_deref());
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 4.0;
-                let fit = (ui.available_width() / 8.5) as usize;
-                let title = ui::text(ui, &crate::panels::truncate(&track.name, fit), ui::display_bold(14.0), ui::TEXT);
-                open = ui.interact(title.rect, ui.id().with("now-playing-title"), Sense::click()).clicked();
-                ui::text(ui, &crate::panels::truncate(&track.artists, fit + 3), ui::display(11.0), ui::SECONDARY);
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
-                    if control(ui, theme, Control::Previous, 22.0, false).clicked() {
-                        self.send(json!({ "cmd": "prev" }));
-                    }
-                    let which = if now.playing { Control::Pause } else { Control::Play };
-                    if control(ui, theme, which, 22.0, true).clicked() {
-                        self.send(json!({ "cmd": "toggle" }));
-                    }
-                    if control(ui, theme, Control::Next, 22.0, false).clicked() {
-                        self.send(json!({ "cmd": "next" }));
-                    }
-                });
-            });
+            if control(ui, theme, Control::Previous, 28.0, false).clicked() { self.send(json!({ "cmd": "prev" })); }
+            if control(ui, theme, if now.playing { Control::Pause } else { Control::Play }, 28.0, true).clicked() { self.send(json!({ "cmd": "toggle" })); }
+            if control(ui, theme, Control::Next, 28.0, false).clicked() { self.send(json!({ "cmd": "next" })); }
+            ui::text(ui, &clock(now.position_ms()), ui::mono(10.0), ui::SECONDARY);
         });
         let frac = now.position_ms() as f32 / track.duration_ms.max(1) as f32;
         ui::bar(ui, theme, 3.0, frac.min(CAUTION_FREE), 0.0);
+        if now.playing { ui.ctx().request_repaint_after(Duration::from_millis(500)); }
         open
     }
 
@@ -901,7 +895,7 @@ impl Music {
             ui::text(ui, line, ui::display(12.0), if line.starts_with(char::is_numeric) { ui::TEXT } else { ui::SECONDARY });
         }
         ui.add_space(14.0);
-        let (field, _) = ui.allocate_exact_size(vec2(340.0, 36.0), Sense::hover());
+        let (field, _) = ui.allocate_exact_size(vec2(ui.available_width().min(340.0), 36.0), Sense::hover());
         ui.painter().rect_filled(field, ui::CONTROL_RADIUS, ui::PANEL);
         ui.painter().rect_stroke(field, ui::CONTROL_RADIUS, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
         ui.put(
@@ -952,28 +946,40 @@ impl Music {
             )
         };
 
-        let transport_height = 84.0;
+        let transport_height = if ui.available_width() < 480.0 { 210.0 } else { 164.0 };
         let problem_height = if problem.is_some() { 40.0 } else { 0.0 };
         let body_height = (ui.available_height() - transport_height - 12.0 - problem_height).max(80.0);
         let unconnected = matches!(&playlists, Some((_, Some(why))) if why.starts_with("Your library is not connected"));
         if unconnected {
-            ui.allocate_ui_with_layout(vec2(ui.available_width(), body_height), Layout::top_down(Align::Min), |ui| {
+            let (body, _) = ui.allocate_exact_size(vec2(ui.available_width(), body_height), Sense::hover());
+            let mut inner = ui.new_child(UiBuilder::new().max_rect(body).layout(Layout::top_down(Align::Min)));
+            inner.set_clip_rect(body.intersect(ui.clip_rect()));
+            ScrollArea::vertical().max_height(body_height).id_salt("connect-library").show(&mut inner, |ui| {
                 self.connect_library(ui, theme);
             });
             ui.add_space(12.0);
             self.transport(ui, theme, now, transport_height);
             return;
         }
-        ui.horizontal_top(|ui| {
-            ui.spacing_mut().item_spacing.x = 28.0;
+        let rail_width = (ui.available_width() * 0.23).clamp(152.0, 224.0);
+        let wide = ui.available_width() >= 660.0;
+        let navigation_top = ui.cursor().min.y;
+        if !wide { self.compact_navigation(ui, theme); }
+        let navigation_height = ui.cursor().min.y - navigation_top;
+        let body_height = (body_height - navigation_height).max(32.0);
+        let (body, _) = ui.allocate_exact_size(vec2(ui.available_width(), body_height), Sense::hover());
+        let mut body_ui = ui.new_child(UiBuilder::new().max_rect(body).layout(Layout::left_to_right(Align::Min)));
+        body_ui.set_clip_rect(body.intersect(ui.clip_rect()));
+        body_ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 20.0;
             // Left: search, then the library.
-            ui.allocate_ui_with_layout(vec2(240.0, body_height), Layout::top_down(Align::Min), |ui| {
+            if wide { ui.allocate_ui_with_layout(vec2(rail_width, body_height), Layout::top_down(Align::Min), |ui| {
                 ui.spacing_mut().item_spacing.y = 4.0;
-                let (field, _) = ui.allocate_exact_size(vec2(240.0, 36.0), Sense::hover());
+                let (field, _) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::hover());
                 ui.painter().rect_filled(field, ui::CONTROL_RADIUS, ui::PANEL);
                 ui.painter().rect_stroke(field, ui::CONTROL_RADIUS, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
                 let edit = ui.put(
-                    field.shrink2(vec2(10.0, 7.0)),
+                    Rect::from_min_max(field.min + vec2(10.0, 7.0), field.max - vec2(48.0, 7.0)),
                     TextEdit::singleline(&mut self.query)
                         .frame(false)
                         .font(ui::display(13.0))
@@ -983,7 +989,13 @@ impl Music {
                 if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !self.query.trim().is_empty() {
                     self.go(Source::Search(self.query.trim().to_string()), false);
                 }
+                if !self.query.is_empty() && ui.put(Rect::from_min_size(field.right_top() - vec2(44.0, 0.0), vec2(44.0, 36.0)), egui::Button::new("Clear")).on_hover_text("Clear search").clicked() {
+                    self.query.clear();
+                    self.go(Source::Home, false);
+                    edit.request_focus();
+                }
                 ui.add_space(10.0);
+                if side_row(ui, theme, "HOME", self.source == Source::Home) { self.go(Source::Home, false); }
                 if side_row(ui, theme, "LIKED SONGS", self.source == Source::Liked) {
                     self.go(Source::Liked, false);
                 }
@@ -1012,7 +1024,7 @@ impl Music {
                         ui::text(ui, &why, ui::display(11.0), ui::CAUTION);
                     }
                     Some((items, None)) => {
-                        ScrollArea::vertical().id_salt("playlists").auto_shrink([false, false]).show(ui, |ui| {
+                        ScrollArea::vertical().max_height((body_height - 300.0).max(24.0)).id_salt("playlists").auto_shrink([false, false]).show(ui, |ui| {
                             ui.spacing_mut().item_spacing.y = 2.0;
                             for playlist in &items {
                                 let chosen = matches!(&self.source, Source::Playlist { id, .. } if *id == playlist.id);
@@ -1030,9 +1042,11 @@ impl Music {
                 }
             });
 
+            }
             // Right: the list chosen.
             ui.allocate_ui_with_layout(vec2(ui.available_width(), body_height), Layout::top_down(Align::Min), |ui| {
                 let title = match &source {
+                    Source::Home => "YOUR MUSIC".to_string(),
                     Source::Liked => "LIKED SONGS".to_string(),
                     Source::Queue => "UP NEXT".to_string(),
                     Source::Playlist { name, .. } | Source::Album { name, .. } => name.to_uppercase(),
@@ -1075,18 +1089,53 @@ impl Music {
                     }
                     Some((_, Some(why))) => {
                         ui::text(ui, &why, ui::display(12.0), ui::CAUTION);
+                        if ui::button(ui, theme, "TRY AGAIN", None, false).clicked() {
+                            self.asked.retain(|key| key != &source.key());
+                            self.shared.lock().unwrap().lists.remove(&source.key());
+                        }
                     }
                     Some((items, None)) if items.is_empty() => {
                         let empty = match source {
                             Source::Queue => "Nothing is waiting to play.",
                             Source::Devices => "No device is online. Open Spotify on one and it shows up here.",
-                            _ => "Nothing here.",
+                            Source::Home => "Your playlists will appear here. Add a playlist in Spotify, or open Liked songs.",
+                            Source::Liked => "No liked songs yet. Search for a track, play it and choose Like.",
+                            Source::Albums => "No saved albums yet. Albums saved in Spotify appear here.",
+                            Source::Search(_) => "No results. Try another song, artist or album.",
+                            _ => "This collection is empty.",
                         };
-                        ui::text(ui, empty, ui::display(12.0), ui::LABEL);
+                        ui::text(ui, empty, ui::display(12.0), ui::SECONDARY);
+                        if source == Source::Home {
+                            ui.add_space(12.0);
+                            ui.horizontal_wrapped(|ui| {
+                                if ui::button(ui, theme, "LIKED SONGS", None, false).clicked() { self.go(Source::Liked, false); }
+                                if ui::button(ui, theme, "SAVED ALBUMS", None, false).clicked() { self.go(Source::Albums, false); }
+                            });
+                        }
+                    }
+                    Some((items, None)) if matches!(source, Source::Home | Source::Albums | Source::Artist { .. }) => {
+                        ScrollArea::vertical().max_height((body_height - 48.0).max(24.0)).id_salt(source.key()).auto_shrink([false, false]).show(ui, |ui| {
+                            if source == Source::Home {
+                                ui::text(ui, "Made yours", ui::display_bold(26.0), ui::TEXT);
+                                ui::text(ui, "Your playlists, saved albums and favourite songs.", ui::display(13.0), ui::SECONDARY);
+                                ui.add_space(12.0);
+                                ui.horizontal_wrapped(|ui| {
+                                    if ui::button(ui, theme, "LIKED SONGS", None, false).clicked() { self.go(Source::Liked, false); }
+                                    if ui::button(ui, theme, "SAVED ALBUMS", None, false).clicked() { self.go(Source::Albums, false); }
+                                });
+                                ui.add_space(18.0);
+                                ui::tracked(ui, "YOUR PLAYLISTS", ui::display_bold(11.0), ui::SECONDARY, 1.5);
+                                ui.add_space(8.0);
+                            }
+                            self.collection_cards(ui, theme, &items);
+                            if more && ui::button(ui, theme, "LOAD MORE", None, false).clicked() {
+                                if let Some(request) = source.further(items.len()) { self.send(request); }
+                            }
+                        });
                     }
                     Some((items, None)) => {
                         let playing = now.track.as_ref().map(|track| track.uri.as_str());
-                        ScrollArea::vertical().id_salt("tracks").auto_shrink([false, false]).show(ui, |ui| {
+                        ScrollArea::vertical().max_height((body_height - 48.0).max(24.0)).id_salt(source.key()).auto_shrink([false, false]).show(ui, |ui| {
                             ui.spacing_mut().item_spacing.y = 0.0;
                             let in_queue = source == Source::Queue;
                             for (index, item) in items.iter().enumerate() {
@@ -1167,6 +1216,69 @@ impl Music {
         self.transport(ui, theme, now, transport_height);
     }
 
+    /// Narrow workspaces retain every destination without squeezing a permanent rail.
+    fn compact_navigation(&mut self, ui: &mut Ui, theme: &Theme) {
+        ui.horizontal(|ui| {
+            let edit = ui.add_sized(vec2((ui.available_width() - 76.0).max(48.0), 30.0), TextEdit::singleline(&mut self.query).font(ui::display(13.0)).hint_text("Search Spotify · Enter"));
+            if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !self.query.trim().is_empty() {
+                self.go(Source::Search(self.query.trim().to_string()), false);
+            }
+            if !self.query.is_empty() && ui::button(ui, theme, "CLEAR", None, false).clicked() {
+                self.query.clear(); self.go(Source::Home, false); edit.request_focus();
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            for (label, source) in [("Home", Source::Home), ("Liked", Source::Liked), ("Albums", Source::Albums), ("Queue", Source::Queue), ("Lyrics", Source::Lyrics), ("Devices", Source::Devices)] {
+                if ui.selectable_label(self.source == source, egui::RichText::new(label).font(ui::display(12.0))).clicked() { self.go(source, false); }
+            }
+        });
+        ui.add_space(8.0);
+    }
+
+    /// Art leads browsing; selecting a collection still uses the existing service route.
+    fn collection_cards(&mut self, ui: &mut Ui, theme: &Theme, items: &[Item]) {
+        let width = ui.available_width();
+        let columns = ((width + 12.0) / 164.0).floor().max(1.0) as usize;
+        let tile = ((width - 12.0 * columns.saturating_sub(1) as f32) / columns as f32).max(24.0);
+        for chunk in items.chunks(columns) {
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 12.0;
+                for item in chunk {
+                    ui.push_id(&item.uri, |ui| {
+                        let (rect, response) = ui.allocate_exact_size(vec2(tile, tile + 58.0), Sense::click());
+                        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), format!("Open {} — {}", item.name, described(item))));
+                        let response = response.on_hover_text(format!("{}
+{}", item.name, described(item)));
+                        let painter = ui.painter_at(rect);
+                        crate::material::paint(ui.ctx(), &painter, rect, ui::CONTROL_RADIUS, crate::material::Role::Panel);
+                        if response.hovered() { painter.rect_filled(rect, ui::CONTROL_RADIUS, ui::TRACK); }
+                        if response.has_focus() { painter.rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
+                        let art = Rect::from_min_size(rect.min + vec2(8.0, 8.0), vec2((tile - 16.0).max(8.0), (tile - 16.0).max(8.0)));
+                        let cover = if ui.is_rect_visible(rect) { self.covers.get(ui.ctx(), item.cover.as_deref()) } else { None };
+                        if let Some(texture) = cover {
+                            painter.image(texture.id(), art, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), egui::Color32::WHITE);
+                        } else {
+                            painter.rect_filled(art, 0.0, ui::TRACK);
+                            ui::paint_icon(&painter, Rect::from_center_size(art.center(), vec2(24.0, 24.0)), ui::Icon::Music, ui::SECONDARY, false);
+                        }
+                        let chars = ((tile - 16.0) / 7.8) as usize;
+                        painter.text(pos2(rect.left() + 8.0, art.bottom() + 12.0), Align2::LEFT_TOP, crate::panels::truncate(&item.name, chars), ui::display_bold(13.0), ui::TEXT);
+                        painter.text(pos2(rect.left() + 8.0, art.bottom() + 34.0), Align2::LEFT_TOP, crate::panels::truncate(&described(item), chars), ui::display(11.0), ui::SECONDARY);
+                        if response.clicked() {
+                            match item.kind {
+                                Kind::Playlist => self.go(Source::Playlist { id: item.id.clone(), name: item.name.clone(), uri: item.uri.clone() }, true),
+                                Kind::Album => self.go(Source::Album { id: item.id.clone(), name: item.name.clone(), uri: item.uri.clone() }, true),
+                                Kind::Artist => self.go(Source::Artist { id: item.id.clone(), name: item.name.clone() }, true),
+                                _ => {}
+                            }
+                        }
+                    });
+                }
+            });
+            ui.add_space(12.0);
+        }
+    }
+
     /// The words of the track playing: the line being sung in the accent and kept in
     /// the middle, the rest around it. A click on a line goes to it.
     fn lyrics(&mut self, ui: &mut Ui, theme: &Theme, now: &Now) {
@@ -1237,102 +1349,62 @@ impl Music {
         let (strip, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
         crate::material::paint(ui.ctx(), ui.painter(), strip, ui::CONTROL_RADIUS, crate::material::Role::Panel);
         ui.painter().rect_stroke(strip, ui::CONTROL_RADIUS, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
-        let mut inner = ui.new_child(UiBuilder::new().max_rect(strip.shrink(14.0)).layout(Layout::left_to_right(Align::Center)));
+        let mut inner = ui.new_child(UiBuilder::new().max_rect(strip.shrink(10.0)).layout(Layout::top_down(Align::Min)));
+        inner.set_clip_rect(strip.intersect(ui.clip_rect()));
         let ui = &mut inner;
-        ui.spacing_mut().item_spacing.x = 14.0;
+        ui.spacing_mut().item_spacing = vec2(8.0, 4.0);
         let Some(track) = &now.track else {
-            ui::text(ui, "Nothing is playing. Pick a track above.", ui::display(12.0), ui::LABEL);
+            ui::text(ui, "Your next listen starts here", ui::display_bold(16.0), ui::TEXT);
+            ui::text(ui, "Choose a playlist, album or song to start playback.", ui::display(12.0), ui::SECONDARY);
             return;
         };
-        self.draw_cover(ui, 56.0, track.cover.as_deref());
-        let names = (strip.width() * 0.22).clamp(120.0, 260.0);
-        ui.allocate_ui_with_layout(vec2(names, 56.0), Layout::top_down(Align::Min), |ui| {
-            ui.spacing_mut().item_spacing.y = 4.0;
-            if now.device.is_none() {
-                ui.add_space(6.0);
-            }
-            let fit = (names / 8.5) as usize;
-            ui::text(ui, &crate::panels::truncate(&track.name, fit), ui::display_bold(15.0), ui::TEXT);
-            ui::text(ui, &crate::panels::truncate(&track.artists, fit + 4), ui::display(11.0), ui::SECONDARY);
-            // Playing somewhere else: say where, and offer the way to change that.
-            if let Some(device) = &now.device {
-                let label = format!("ON {}", crate::panels::truncate(&device.to_uppercase(), fit.saturating_sub(4)));
-                let said = ui::tracked(ui, &label, ui::display_bold(10.0), theme.main, 1.5);
-                if ui.interact(said.rect, ui.id().with("playing-on"), Sense::click()).on_hover_text("Choose where to play").clicked() {
-                    self.go(Source::Devices, false);
-                    self.devices_asked = None;
-                }
+        ui.horizontal(|ui| {
+            self.draw_cover(ui, 44.0, track.cover.as_deref());
+            ui.vertical(|ui| {
+                let fit = (ui.available_width() / 8.5).max(0.0) as usize;
+                ui::text(ui, &crate::panels::truncate(&track.name, fit), ui::display_bold(15.0), ui::TEXT).on_hover_text(&track.name);
+                ui::text(ui, &crate::panels::truncate(&track.artists, fit), ui::display(12.0), ui::SECONDARY).on_hover_text(&track.artists);
+            });
+        });
+        ui.horizontal_wrapped(|ui| {
+            if control(ui, theme, Control::Previous, 30.0, false).clicked() { self.send(json!({ "cmd": "prev" })); }
+            if control(ui, theme, if now.playing { Control::Pause } else { Control::Play }, 32.0, true).clicked() { self.send(json!({ "cmd": "toggle" })); }
+            if control(ui, theme, Control::Next, 30.0, false).clicked() { self.send(json!({ "cmd": "next" })); }
+            let state = now.device.as_deref().map(|device| format!("On {device}")).unwrap_or_else(|| if now.playing { "Playing on this desktop" } else { "Paused" }.to_string());
+            if ui.add(egui::Button::new(egui::RichText::new(crate::panels::truncate(&state, ((ui.available_width() / 7.8) as usize).max(4))).font(ui::display(11.0))).frame(false)).on_hover_text("Choose playback device").clicked() {
+                self.go(Source::Devices, false); self.devices_asked = None;
             }
         });
-        ui.spacing_mut().item_spacing.x = 4.0;
-        if control(ui, theme, Control::Previous, 32.0, false).clicked() {
-            self.send(json!({ "cmd": "prev" }));
-        }
-        let which = if now.playing { Control::Pause } else { Control::Play };
-        if control(ui, theme, which, 40.0, true).clicked() {
-            self.send(json!({ "cmd": "toggle" }));
-        }
-        if control(ui, theme, Control::Next, 32.0, false).clicked() {
-            self.send(json!({ "cmd": "next" }));
-        }
-        ui.add_space(10.0);
-        ui.spacing_mut().item_spacing.x = 10.0;
-        let position = now.position_ms();
-        ui::text(ui, &clock(position), ui::mono(12.0), ui::TEXT);
-        // What is left over, after the readings and controls to the right, is the bar.
-        // In a narrow view the volume gives way: the keyboard's keys still set it.
-        let roomy = strip.width() > 940.0;
-        let bar_width = (ui.available_width() - if roomy { 610.0 } else { 380.0 }).max(60.0);
-        let frac = position as f32 / track.duration_ms.max(1) as f32;
-        if let Some(to) = ui::slider(ui, theme, bar_width, frac, "Playback position") {
-            // Only on release: asking for every step of a drag would stutter.
-            if ui.input(|i| i.pointer.any_released()) || !ui.input(|i| i.pointer.any_down()) {
-                self.send(json!({ "cmd": "seek", "ms": (to * track.duration_ms as f32) as u32 }));
+        ui.horizontal(|ui| {
+            ui::text(ui, &clock(now.position_ms()), ui::mono(11.0), ui::SECONDARY);
+            let width = (ui.available_width() - 54.0).max(12.0);
+            if let Some(to) = ui::slider(ui, theme, width, now.position_ms() as f32 / track.duration_ms.max(1) as f32, "Playback position") {
+                if ui.input(|i| i.pointer.any_released()) || !ui.input(|i| i.pointer.any_down()) { self.send(json!({ "cmd": "seek", "ms": (to * track.duration_ms as f32) as u32 })); }
             }
-        }
-        ui::text(ui, &clock(track.duration_ms), ui::mono(12.0), ui::SECONDARY);
-        ui.add_space(8.0);
-        if ui::chip(ui, theme, "SHUFFLE", None, now.shuffle).clicked() {
-            self.send(json!({ "cmd": "shuffle", "on": !now.shuffle }));
-        }
-        // Off, then the whole list over again, then the one track.
-        let (label, next) = match now.repeat.as_str() {
-            "all" => ("REPEAT", "one"),
-            "one" => ("REPEAT 1", "off"),
-            _ => ("REPEAT", "all"),
-        };
-        if ui::chip(ui, theme, label, None, now.repeat != "off").clicked() {
-            self.send(json!({ "cmd": "repeat", "mode": next }));
-        }
-        let liked = now.liked == Some(true);
-        if ui::chip(ui, theme, if liked { "LIKED" } else { "LIKE" }, None, liked).clicked() {
-            self.send(json!({ "cmd": "like", "on": !liked }));
-        }
-        if !roomy {
-            return;
-        }
-        let on_lyrics = self.source == Source::Lyrics;
-        if ui::chip(ui, theme, "LYRICS", None, on_lyrics).clicked() {
-            if on_lyrics {
-                // Back to where the words were opened from.
-                let back = self.trail.pop().unwrap_or(Source::Liked);
-                self.source = back;
-            } else {
-                self.go(Source::Lyrics, true);
-                self.lyrics_at = None;
-            }
-        }
-        ui::text(ui, "VOL", ui::display(11.0), ui::LABEL);
-        if let Some(to) = ui::slider(ui, theme, 90.0, now.volume as f32 / 100.0, "Volume") {
-            let percent = (to * 100.0).round() as u8;
-            if percent != now.volume {
-                self.send(json!({ "cmd": "volume", "percent": percent }));
-            }
-        }
+            ui::text(ui, &clock(track.duration_ms), ui::mono(11.0), ui::SECONDARY);
+        });
+        ui.horizontal_wrapped(|ui| {
+            if ui::chip(ui, theme, "SHUFFLE", None, now.shuffle).clicked() { self.send(json!({ "cmd": "shuffle", "on": !now.shuffle })); }
+            let (label, next) = match now.repeat.as_str() { "all" => ("REPEAT", "one"), "one" => ("REPEAT 1", "off"), _ => ("REPEAT", "all") };
+            if ui::chip(ui, theme, label, None, now.repeat != "off").clicked() { self.send(json!({ "cmd": "repeat", "mode": next })); }
+            let liked = now.liked == Some(true);
+            if ui::chip(ui, theme, if liked { "LIKED" } else { "LIKE" }, None, liked).clicked() { self.send(json!({ "cmd": "like", "on": !liked })); }
+            ui.menu_button(egui::RichText::new("MORE").font(ui::display(11.0)), |ui| {
+                if ui.button("Lyrics").clicked() { self.go(Source::Lyrics, true); self.lyrics_at = None; ui.close_menu(); }
+                if ui.button("Devices").clicked() { self.go(Source::Devices, true); self.devices_asked = None; ui.close_menu(); }
+                ui::text(ui, "Volume", ui::display(12.0), ui::TEXT);
+                if let Some(to) = ui::slider(ui, theme, 130.0, now.volume as f32 / 100.0, "Volume") { self.send(json!({ "cmd": "volume", "percent": (to * 100.0).round() as u8 })); }
+            });
+        });
+        if now.playing { ui.ctx().request_repaint_after(Duration::from_millis(500)); }
     }
+
 }
 
-/// The progress bar never shows the caution colour: a track near its end is no warning.
+/// Finite right-panel playback reservation, including its internal spacing.
+pub const PANEL_HEIGHT: f32 = 136.0;
+
+/// A track near its end is no warning, so progress never shows the caution colour.
 const CAUTION_FREE: f32 = ui::CAUTION_ABOVE;
 
 /// A row in the left list. Returns true when clicked.
@@ -1346,6 +1418,7 @@ fn side_row(ui: &mut Ui, theme: &Theme, name: &str, chosen: bool) -> bool {
     } else if response.hovered() {
         painter.rect_filled(rect, ui::CONTROL_RADIUS, ui::TRACK);
     }
+    if response.has_focus() { painter.rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
     let (font, ink) = if chosen { (ui::display_bold(13.0), ui::TEXT) } else { (ui::display(13.0), ui::TEXT) };
     painter.text(rect.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, crate::panels::truncate(name, 26), font, ink);
     response.clicked()
@@ -1384,12 +1457,15 @@ const ROW: f32 = 44.0;
 /// them to what plays next, and say `queued` for a moment after.
 fn track_row(ui: &mut Ui, theme: &Theme, item: &Item, cover: Option<&TextureHandle>, playing: bool, queueable: bool, queued: bool) -> Picked {
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), format!("{} — {}", item.name, described(item))));
     // Under the pointer, the row offers to queue the track where its length is.
     let mut add = None;
     let track = item.kind == Kind::Track;
-    if queueable && track && (queued || ui.rect_contains_pointer(rect)) {
+    if queueable && track && (queued || response.has_focus() || ui.memory(|memory| memory.has_focus(ui.id().with("queue"))) || ui.rect_contains_pointer(rect)) {
         let spot = Rect::from_min_max(pos2(rect.right() - 92.0, rect.top()), rect.right_bottom());
-        add = Some((spot, ui.interact(spot, ui.id().with("queue"), Sense::click())));
+        let adding = ui.interact(spot, ui.id().with("queue"), Sense::click());
+        adding.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "Add to queue"));
+        add = Some((spot, adding));
     }
     let painter = ui.painter_at(rect);
     if response.hovered() {
@@ -1402,6 +1478,7 @@ fn track_row(ui: &mut Ui, theme: &Theme, item: &Item, cover: Option<&TextureHand
     if playing {
         painter.rect_filled(mark, 0.0, theme.main);
     }
+    if response.has_focus() { painter.rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
     // Its picture, where it has one; a device has none, and none is drawn for it.
     let lead = if item.kind == Kind::Device { 26.0 } else { 64.0 };
     if item.kind != Kind::Device {
@@ -1427,9 +1504,12 @@ fn track_row(ui: &mut Ui, theme: &Theme, item: &Item, cover: Option<&TextureHand
     let mut went = None;
     let mut link = |ui: &mut Ui, at: f32, text: String, quiet: egui::Color32, to: Picked, id: &str| {
         let from = rect.left_center() + vec2(at, 0.0);
+        let accessible_name = format!("Open {id}: {text}");
         let galley = painter.layout_no_wrap(text, ui::display(12.0), quiet);
         let spot = Rect::from_min_size(from - vec2(0.0, galley.size().y / 2.0), galley.size()).expand2(vec2(2.0, 6.0));
         let over = ui.interact(spot, ui.id().with(id), Sense::click());
+        over.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, ui.is_enabled(), accessible_name.clone()));
+        if over.has_focus() { painter.rect_stroke(spot, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
         if over.hovered() {
             painter.hline(spot.shrink2(vec2(2.0, 0.0)).x_range(), spot.bottom() - 5.0, Stroke::new(1.0, ui::TEXT));
         }
@@ -1462,6 +1542,7 @@ fn track_row(ui: &mut Ui, theme: &Theme, item: &Item, cover: Option<&TextureHand
             (false, false) => ("+ QUEUE", ui::SECONDARY),
         };
         painter.text(spot.right_center() - vec2(10.0, 0.0), Align2::RIGHT_CENTER, label, ui::display_bold(11.0), ink);
+        if adding.has_focus() { painter.rect_stroke(spot.shrink(1.0), ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
         if adding.clicked() {
             return Picked::Queue;
         }
@@ -1480,6 +1561,57 @@ fn track_row(ui: &mut Ui, theme: &Theme, item: &Item, cover: Option<&TextureHand
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// UI fixtures never start the service, fetch artwork, or touch a Spotify account.
+    fn fixture(now: Now) -> Music {
+        let (commands, _) = channel();
+        let (wanted, _) = channel();
+        let (_, ready) = channel();
+        Music {
+            open: true,
+            shared: Arc::new(Mutex::new(Shared {
+                link: Link::Connected, now, lists: HashMap::from([("playlists:".into(), (Vec::new(), None))]),
+                more: Default::default(), lyrics: None, problem: None, sign_in: None, refresh: false, cancel: false,
+            })),
+            commands, source: Source::Home, query: String::new(), client_id: String::new(),
+            queue_as_of: None, queued: None, asked: Vec::new(), asked_further: None, trail: Vec::new(),
+            covers: Covers { wanted, ready, held: HashMap::new() }, devices_asked: None, lyrics_asked: None, lyrics_at: None,
+        }
+    }
+
+    #[test]
+    fn compact_playback_reserves_finite_height_at_narrow_panel_widths() {
+        let theme = Theme::parse(include_str!("../../themes/signal.json")).unwrap();
+        for width in [192.0, 240.0, 292.0] {
+            for playing in [false, true] {
+                let now = Now::parse(&json!({"playing": playing, "track": {
+                    "uri": "fixture", "name": "A very long track title that should stay inside the panel",
+                    "artists": "An artist with a long display name", "duration_ms": 200000
+                }}));
+                let mut music = fixture(now);
+                assert_eq!(music.preferred_panel_height(), PANEL_HEIGHT);
+                let ctx = egui::Context::default();
+                ui::install_fonts(&ctx, None, None);
+                let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(width, 600.0));
+                let _ = ctx.run(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ctx| {
+                    egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
+                        // CentralPanel expands its min_rect to the whole screen before
+                        // our callback. Measure a fresh content child, as the real
+                        // right-panel reservation does, rather than that 600px frame.
+                        let mut probe = ui.new_child(UiBuilder::new().id_salt("playback-budget-probe").max_rect(screen).layout(Layout::top_down(Align::Min)));
+                        let start = probe.cursor().min;
+                        music.panel(&mut probe, &theme);
+                        assert!(probe.min_rect().width() <= width + 0.5, "panel expanded at {width}px: {:?}", probe.min_rect());
+                        assert!(probe.min_rect().bottom() - start.y <= PANEL_HEIGHT + 0.5, "panel exceeded its reservation: {:?}", probe.min_rect());
+                    });
+                });
+            }
+        }
+        let mut empty = fixture(Now::default());
+        assert_eq!(empty.preferred_panel_height(), 0.0);
+        empty.source = Source::Home;
+        assert_eq!(empty.source.key(), "playlists:");
+    }
 
     #[test]
     fn reads_what_the_service_says() {

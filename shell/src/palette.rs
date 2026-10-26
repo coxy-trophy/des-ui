@@ -141,13 +141,21 @@ pub fn results(query:&str, entries:&[AppEntry], state:Option<&DesktopState>, cat
         };
         (rank,label)
     });
-    items.truncate(128);
+    if !query.is_empty() { items.truncate(128); }
     items
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn browsing_keeps_every_application_while_search_stays_bounded() {
+        let entries:Vec<_>=(0..180).map(|n|entry(&format!("Application {n:03}"))).collect();
+        let browse=results("",&entries,None,&Catalog::default(),&[]);
+        assert_eq!(browse.iter().filter(|item|item.kind=="APP").count(),180);
+        assert!(browse.iter().any(|item|item.label=="Application 179"));
+        assert_eq!(results("application",&entries,None,&Catalog::default(),&[]).len(),128);
+    }
     #[test]
     fn a_window_that_wants_attention_comes_first() {
         let app=|title:&str,urgent:bool| des_common::ipc::AppInfo{app_id:"x".into(),title:title.into(),screen:0,workspace:0,place:des_common::ipc::Place::Main,pinned:false,urgent};

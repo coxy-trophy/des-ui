@@ -89,12 +89,13 @@ impl Faces {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum Section {
     Appearance,
     Terminal,
     Frame,
     Displays,
+    Devices,
     Network,
     Bluetooth,
     Keyboard,
@@ -109,11 +110,12 @@ enum Section {
     Health,
 }
 
-const SECTIONS: [(Section, &str); 16] = [
+const SECTIONS: [(Section, &str); 17] = [
     (Section::Appearance, "APPEARANCE"),
     (Section::Terminal, "TERMINAL"),
     (Section::Frame, "FRAME"),
     (Section::Displays, "DISPLAYS"),
+    (Section::Devices, "DEVICES"),
     (Section::Network, "NETWORK"),
     (Section::Bluetooth, "BLUETOOTH"),
     (Section::Keyboard, "KEYBOARD"),
@@ -128,9 +130,62 @@ const SECTIONS: [(Section, &str); 16] = [
     (Section::Health, "HEALTH"),
 ];
 
+// Keep protocol names in SECTIONS stable. Navigation and search share this catalog.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SettingsGroup { Desktop, Hardware, Connections, Personal, System }
+const SETTINGS_GROUPS: [(SettingsGroup, &str); 5] = [
+    (SettingsGroup::Desktop, "Desktop"), (SettingsGroup::Hardware, "Hardware"),
+    (SettingsGroup::Connections, "Connections"), (SettingsGroup::Personal, "Personal"),
+    (SettingsGroup::System, "System"),
+];
+struct SectionInfo {
+    section: Section,
+    group: SettingsGroup,
+    title: &'static str,
+    summary: &'static str,
+    keywords: &'static str,
+}
+const SETTINGS_CATALOG: [SectionInfo; 17] = [
+    SectionInfo { section: Section::Appearance, group: SettingsGroup::Desktop, title: "Appearance", summary: "Wallpaper, theme, accent and visual effects", keywords: "background color colour transparency frosted blur glow scanlines night light reduce motion" },
+    SectionInfo { section: Section::Frame, group: SettingsGroup::Desktop, title: "Desktop & panels", summary: "Panel visibility, application shelf and pet", keywords: "frame dock sidebar sidebars taskbar apps minimized collapsed animal companion pet" },
+    SectionInfo { section: Section::Terminal, group: SettingsGroup::Desktop, title: "Terminal", summary: "Font, text size, cursor and scrollback", keywords: "console shell typeface line height copy select clipboard blink" },
+    SectionInfo { section: Section::Globe, group: SettingsGroup::Desktop, title: "World view", summary: "Globe rotation and your location", keywords: "globe map earth latitude longitude geolocation lookup" },
+    SectionInfo { section: Section::Companion, group: SettingsGroup::Desktop, title: "AI companion", summary: "Chat, voice, connection and private memory", keywords: "cursor companion assistant api key model identity social quiet microphone speech" },
+    SectionInfo { section: Section::Devices, group: SettingsGroup::Hardware, title: "Connected devices", summary: "Cameras, USB, storage and hardware status", keywords: "devices webcam camera video microphone audio speaker headphones disk drive input monitor bluetooth inventory" },
+    SectionInfo { section: Section::Displays, group: SettingsGroup::Hardware, title: "Displays", summary: "Resolution, scaling and monitor arrangement", keywords: "screen monitor display resolution scaling scale refresh rate rotation orientation" },
+    SectionInfo { section: Section::Sound, group: SettingsGroup::Hardware, title: "Sound & screen", summary: "Volume, brightness and notifications", keywords: "audio speaker headphones microphone mute output input alert notification temperature warning screen brightness" },
+    SectionInfo { section: Section::Pointer, group: SettingsGroup::Hardware, title: "Mouse & touchpad", summary: "Cursor, scrolling and webcam hand control", keywords: "pointer trackpad mouse cursor size color colour speed sensitivity pinch gesture drag camera webcam hands" },
+    SectionInfo { section: Section::Keyboard, group: SettingsGroup::Hardware, title: "Keyboard", summary: "Layout, key repeat and on-screen keyboard", keywords: "typing input language repeat delay rate virtual touch touchscreen onscreen on screen keyboard" },
+    SectionInfo { section: Section::Shortcuts, group: SettingsGroup::Hardware, title: "Keyboard shortcuts", summary: "Find, remap or reset action bindings", keywords: "shortcuts hotkeys keybindings binding keys super ctrl record shortcut keyboard" },
+    SectionInfo { section: Section::Network, group: SettingsGroup::Connections, title: "Network & Wi-Fi", summary: "Wireless networks and wired connections", keywords: "network wifi wi fi internet ethernet wireless connection ip address" },
+    SectionInfo { section: Section::Bluetooth, group: SettingsGroup::Connections, title: "Bluetooth", summary: "Pair and connect wireless accessories", keywords: "bluetooth pair pairing wireless headphones headset speaker accessories" },
+    SectionInfo { section: Section::Region, group: SettingsGroup::Personal, title: "Date & region", summary: "Clock, time zone and regional formats", keywords: "date region time timezone time zone clock 12 24 hour language locale calendar" },
+    SectionInfo { section: Section::Users, group: SettingsGroup::Personal, title: "Users", summary: "Accounts, password and login picture", keywords: "user account avatar profile photo picture login password" },
+    SectionInfo { section: Section::Session, group: SettingsGroup::System, title: "Session & startup", summary: "Save, restore, autostart, lock and log out", keywords: "session startup autostart programs recovery reconnect terminal save restore lock logout log out sign out" },
+    SectionInfo { section: Section::Health, group: SettingsGroup::System, title: "System health", summary: "Service status, diagnostics and music connection", keywords: "health system service diagnostics troubleshoot failure error connected music status" },
+];
+fn section_info(section: Section) -> &'static SectionInfo {
+    SETTINGS_CATALOG.iter().find(|info| info.section == section).expect("every section has navigation metadata")
+}
+fn normalized_settings_query(query: &str) -> String {
+    query.to_lowercase().replace(['-', '_', '&'], " ").split_whitespace().collect::<Vec<_>>().join(" ")
+}
+fn settings_matches(query: &str) -> Vec<&'static SectionInfo> {
+    let query = normalized_settings_query(query);
+    if query.is_empty() { return Vec::new(); }
+    let mut matches = SETTINGS_CATALOG.iter().filter_map(|info| {
+        let title = normalized_settings_query(info.title);
+        let group = SETTINGS_GROUPS.iter().find(|(group, _)| *group == info.group).unwrap().1;
+        let haystack = normalized_settings_query(&format!("{} {} {} {}", info.title, info.summary, info.keywords, group));
+        query.split_whitespace().all(|word| haystack.contains(word)).then_some((if title == query { 0 } else if title.starts_with(&query) { 1 } else { 2 }, info))
+    }).collect::<Vec<_>>();
+    matches.sort_by_key(|(rank, _)| *rank);
+    matches.into_iter().map(|(_, info)| info).collect()
+}
+
 /// Canonical settings destinations used by the command palette.
 pub fn destinations() -> Vec<(&'static str, &'static str)> {
-    SECTIONS.iter().map(|(_, title)| (*title, *title)).collect()
+    SECTIONS.iter().map(|(section, id)| (*id, section_info(*section).title)).collect()
 }
 
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -139,6 +194,7 @@ enum AppearanceTab { #[default] Wallpaper, Theme, Effects }
 pub struct Settings {
     pub open: bool,
     section: Section,
+    search: String,
     shortcut_editor: crate::shortcuts::Editor,
     appearance_tab: AppearanceTab,
     /// Installed themes and their accents, read when the screen opens.
@@ -167,6 +223,7 @@ pub struct Settings {
     users: Option<crate::users::Users>,
     region: Option<crate::region::Region>,
     health: crate::health::Health,
+    devices: Option<crate::devices::Devices>,
     desktop_connected: Option<bool>,
     music_status: &'static str,
     live_terminal_counts: (usize, usize),
@@ -177,6 +234,7 @@ impl Default for Settings {
         Settings {
             open: false,
             section: Section::Appearance,
+            search: String::new(),
             shortcut_editor: Default::default(),
             appearance_tab: AppearanceTab::default(),
             themes: Vec::new(),
@@ -199,6 +257,7 @@ impl Default for Settings {
             users: None,
             region: None,
             health: Default::default(),
+            devices: None,
             desktop_connected: None,
             music_status: "unknown",
             live_terminal_counts: (0, 0),
@@ -262,6 +321,12 @@ fn held(slot: &mut Option<(u8, Instant)>, reading: Option<u8>) -> Option<u8> {
 }
 
 impl Settings {
+    /// Start once and poll from the shell's update, even while Settings is closed.
+    /// The caller delivers these messages through the shared notification center.
+    pub fn poll_devices(&mut self, ctx: &egui::Context) -> Vec<String> {
+        self.devices.get_or_insert_with(|| crate::devices::Devices::new(ctx.clone())).poll()
+    }
+
     pub fn set_live_terminal_counts(&mut self, managed: usize, total: usize) { self.live_terminal_counts = (managed, total); }
     pub fn set_music_status(&mut self,status:&'static str){self.music_status=status;}
 
@@ -270,6 +335,7 @@ impl Settings {
     }
 
     pub fn open(&mut self, config: &Config) {
+        self.search.clear();
         self.shortcut_editor.cancel();
         self.appearance_editor.reset(&config.appearance);
         self.themes = theme::installed();
@@ -289,6 +355,8 @@ impl Settings {
         let wanted = name.to_uppercase();
         if let Some((section, _)) = SECTIONS.iter().find(|(_, title)| title.starts_with(&wanted)) {
             self.section = *section;
+        } else if let Some(info) = settings_matches(name).first() {
+            self.section = info.section;
         }
     }
 
@@ -313,8 +381,12 @@ impl Settings {
         let mut changes = Vec::new();
         // Escape closes, unless it is being used to leave the text field.
         if !self.shortcut_capture_active() && !self.appearance_editor.picker_open() && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape)) {
-            self.appearance_editor.reset(&config.appearance);
-            self.open = false;
+            if !self.search.is_empty() {
+                self.search.clear();
+            } else {
+                self.appearance_editor.reset(&config.appearance);
+                self.open = false;
+            }
             return changes;
         }
 
@@ -348,6 +420,18 @@ impl Settings {
                             Section::Keyboard => settings.keyboard(ui, theme, config, input, &mut changes),
                             Section::Pointer => settings.pointer(ui, theme, input, &mut changes),
                             Section::Displays => settings.displays(ui, theme, displays, &mut changes),
+                            Section::Devices => {
+                                let devices = settings.devices.get_or_insert_with(|| crate::devices::Devices::new(ui.ctx().clone()));
+                                if let Some(destination) = devices.show(ui, theme) {
+                                    settings.section = match destination {
+                                        crate::devices::Destination::Sound => Section::Sound,
+                                        crate::devices::Destination::Bluetooth => Section::Bluetooth,
+                                        crate::devices::Destination::Displays => Section::Displays,
+                                        crate::devices::Destination::Pointer => Section::Pointer,
+                                        crate::devices::Destination::Keyboard => Section::Keyboard,
+                                    };
+                                }
+                            },
                             Section::Globe => settings.globe(ui, theme, config, geo, &mut changes),
                             Section::Sound => settings.sound(ui, theme, config, mon, &mut changes),
                             Section::Region => settings.region.get_or_insert_with(|| crate::region::Region::new(ui.ctx().clone())).show(ui, theme, config.twelve_hour, &mut changes),
@@ -356,7 +440,7 @@ impl Settings {
                         }
         });
         if !self.open { self.appearance_editor.reset(&config.appearance); }
-        if !self.open || self.section != Section::Shortcuts { self.shortcut_editor.cancel(); }
+        if !self.open || self.section != Section::Shortcuts || !self.search.trim().is_empty() { self.shortcut_editor.cancel(); }
         changes
     }
 
@@ -374,20 +458,61 @@ impl Settings {
                     }
                 });
             });
-            ui.add_space(16.0);
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                let clear_width = if self.search.is_empty() { 0.0 } else { 64.0 };
+                let search_width = (ui.available_width() - clear_width).max(60.0);
+                let hint = if search_width >= 520.0 { "Search settings: Wi-Fi, camera, volume…" } else { "Search settings…" };
+                let response = ui.add_sized(vec2(search_width, ui::CONTROL_HEIGHT),
+                    TextEdit::singleline(&mut self.search).hint_text(hint));
+                response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Search settings"));
+                if !self.search.is_empty() && ui.button("Clear").on_hover_text("Clear settings search").clicked() {
+                    self.search.clear(); response.request_focus();
+                }
+            });
+            ui.add_space(12.0);
+            if !self.search.trim().is_empty() {
+                let matches = settings_matches(&self.search);
+                ui.label(egui::RichText::new(format!("{} matching sections", matches.len())).font(ui::display(12.0)).color(ui::SECONDARY));
+                ui.add_space(8.0);
+                ScrollArea::vertical().id_salt("settings-search-results").auto_shrink([false, false]).show(ui, |ui| {
+                    if matches.is_empty() {
+                        heading(ui, "No matching settings", "Try a shorter term, such as camera, Wi-Fi, volume or shortcuts. Clear search to browse categories.");
+                    }
+                    for info in matches {
+                        let group = SETTINGS_GROUPS.iter().find(|(group, _)| *group == info.group).unwrap().1;
+                        if ui.add_sized(vec2(ui.available_width(), ui::CONTROL_HEIGHT),
+                            egui::Button::new(format!("{group}  /  {}", info.title)).wrap()).clicked() {
+                            self.section = info.section; self.log_out_armed = None; self.search.clear();
+                        }
+                        note(ui, info.summary);
+                        ui.add_space(12.0);
+                    }
+                });
+                return;
+            }
             let wide = ui.available_width() >= 720.0;
             if wide {
-                let navigation = 176.0;
+                let navigation = 196.0;
                 let content = (ui.available_width() - navigation - 24.0).max(1.0);
                 ui.horizontal_top(|ui| {
                     ui.spacing_mut().item_spacing.x = 24.0;
                     ui.allocate_ui_with_layout(vec2(navigation, ui.available_height()), Layout::top_down(Align::Min), |ui| {
                         ScrollArea::vertical().id_salt("settings-sections").auto_shrink([false, false]).show(ui, |ui| {
                             ui.spacing_mut().item_spacing.y = 4.0;
-                            for (section, title) in SECTIONS {
-                                let label = egui::RichText::new(title).font(ui::display(12.0));
-                                if ui.add_sized(vec2(navigation, 34.0), egui::Button::new(label).selected(self.section == section)).clicked() {
-                                    self.section = section; self.log_out_armed = None;
+                            let mut group = section_info(self.section).group;
+                            for (candidate, title) in SETTINGS_GROUPS {
+                                if ui.add_sized(vec2(navigation, ui::CONTROL_HEIGHT), egui::Button::new(title).selected(group == candidate)).clicked() && group != candidate {
+                                    group = candidate;
+                                    self.section = SETTINGS_CATALOG.iter().find(|info| info.group == group).unwrap().section;
+                                    self.log_out_armed = None;
+                                }
+                            }
+                            ui.add_space(8.0); ui.separator(); ui.add_space(8.0);
+                            for info in SETTINGS_CATALOG.iter().filter(|info| info.group == group) {
+                                if ui.add_sized(vec2(navigation, ui::CONTROL_HEIGHT), egui::Button::new(info.title).wrap().selected(self.section == info.section))
+                                    .on_hover_text(info.summary).clicked() {
+                                    self.section = info.section; self.log_out_armed = None;
                                 }
                             }
                         });
@@ -395,18 +520,33 @@ impl Settings {
                     ui.allocate_ui_with_layout(vec2(content, ui.available_height()), Layout::top_down(Align::Min), |ui| self.page_content(ui, draw));
                 });
             } else {
-                let current = SECTIONS.iter().find(|(section, _)| *section == self.section).map_or("APPEARANCE", |(_, title)| *title);
-                egui::ComboBox::from_id_salt("settings-section").width(ui.available_width()).selected_text(current).show_ui(ui, |ui| {
-                    for (section, title) in SECTIONS {
-                        if ui.selectable_value(&mut self.section, section, title).changed() { self.log_out_armed = None; }
+                let mut group = section_info(self.section).group;
+                let previous = group;
+                let group_title = SETTINGS_GROUPS.iter().find(|(candidate, _)| *candidate == group).unwrap().1;
+                ui.label(egui::RichText::new("Category").font(ui::display(12.0)).color(ui::SECONDARY));
+                egui::ComboBox::from_id_salt("settings-category").width(ui.available_width()).selected_text(group_title).show_ui(ui, |ui| {
+                    for (candidate, title) in SETTINGS_GROUPS { ui.selectable_value(&mut group, candidate, title); }
+                });
+                if group != previous {
+                    self.section = SETTINGS_CATALOG.iter().find(|info| info.group == group).unwrap().section;
+                    self.log_out_armed = None;
+                }
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("Section").font(ui::display(12.0)).color(ui::SECONDARY));
+                egui::ComboBox::from_id_salt("settings-section").width(ui.available_width()).selected_text(section_info(self.section).title).show_ui(ui, |ui| {
+                    for info in SETTINGS_CATALOG.iter().filter(|info| info.group == group) {
+                        if ui.selectable_value(&mut self.section, info.section, info.title).changed() { self.log_out_armed = None; }
                     }
                 });
-                ui.add_space(16.0);
+                ui.add_space(12.0);
                 self.page_content(ui, draw);
             }
         });
     }
     fn page_content(&mut self, ui: &mut Ui, draw: impl FnOnce(&mut Self, &mut Ui)) {
+        let info = section_info(self.section);
+        heading(ui, info.title, info.summary);
+        ui.add_space(12.0);
         if self.section == Section::Appearance {
         ui.horizontal_wrapped(|ui| {
             for (tab, title) in [(AppearanceTab::Wallpaper, "Wallpaper"), (AppearanceTab::Theme, "Theme"), (AppearanceTab::Effects, "Effects")] {
@@ -591,7 +731,7 @@ impl Settings {
     }
 
     fn keyboard(&mut self, ui: &mut Ui, theme: &Theme, config: &Config, input: &InputSettings, changes: &mut Vec<Change>) {
-        heading(ui, "ON SCREEN", "Keys along the foot of the desktop, for a touchscreen or without a keyboard.");
+        heading(ui, "ON SCREEN", "Keys in a framed center panel, for a touchscreen or without a keyboard.");
         if switch_row(ui, theme, "On-screen keyboard", "Types into the terminal and desktop fields. Configure its key mapping in Shortcuts.", config.osk) {
             changes.push(Change::Set("osk", (!config.osk).then(|| "on".to_string())));
         }
@@ -700,15 +840,13 @@ impl Settings {
                     let tip = rect.center() - vec2(6.5, 11.0) * scale;
                     let points = CURSOR_ARROW_POINTS.map(|[x, y]| tip + vec2(x, y) * scale);
                     let fill = Color32::from_rgb(draft[0], draft[1], draft[2]);
-                    let dark = Color32::from_rgb(29, 31, 33);
                     let luminance = 0.2126 * draft[0] as f32 + 0.7152 * draft[1] as f32 + 0.0722 * draft[2] as f32;
-                    let outline = if luminance < 128.0 {
-                        // The wider dark stroke leaves a 0.15px outer hint around
-                        // the light keyline, matching the compositor's cursor art.
-                        ui.painter().add(egui::Shape::convex_polygon(points.to_vec(), fill, Stroke::new(1.15 * scale, dark)));
-                        Color32::from_rgb(DEFAULT_CURSOR_COLOR[0], DEFAULT_CURSOR_COLOR[1], DEFAULT_CURSOR_COLOR[2])
-                    } else { dark };
-                    ui.painter().add(egui::Shape::convex_polygon(points.to_vec(), fill, Stroke::new(0.85 * scale, outline)));
+                    let shadow = if luminance < 128.0 {
+                        Color32::from_rgba_unmultiplied(247, 246, 242, 128)
+                    } else { Color32::from_rgba_unmultiplied(29, 31, 33, 128) };
+                    let shadow_points = points.map(|point| point + vec2(0.8, 1.2) * scale);
+                    ui.painter().add(egui::Shape::convex_polygon(shadow_points.to_vec(), shadow, Stroke::NONE));
+                    ui.painter().add(egui::Shape::convex_polygon(points.to_vec(), fill, Stroke::NONE));
                 });
             }
         });
@@ -812,7 +950,7 @@ impl Settings {
         });
         ui.add_space(26.0);
 
-        heading(ui, "DOCK", "Move to the bottom edge to show open and pinned apps. Configure dock keyboard navigation in Shortcuts.");
+        heading(ui, "APPLICATIONS", "Running and pinned apps live in the right panel’s Apps tab. Configure application switching in Keyboard shortcuts.");
         if switch_row(ui,theme,"Show windows while dragging","Hold over a window to open it, then drop inside. Applies to desktop data drags.",config.drag_overview) {
             changes.push(Change::Set("drag_overview",Some(if config.drag_overview {"off"}else{"on"}.into())));
         }
@@ -823,7 +961,7 @@ impl Settings {
         }
         ui.add_space(26.0);
 
-        heading(ui, "COMPANION", "An animal at the foot of the left column, where there is room for one.");
+        heading(ui, "COMPANION", "An animal with its own space at the foot of the left panel.");
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
             let none = crate::pet::kind_named(&config.pet).is_none();
@@ -1535,18 +1673,25 @@ mod tests {
     }
 
     #[test]
-    fn dark_cursor_preview_has_a_light_keyline_on_both_backgrounds() {
+    fn dark_cursor_preview_uses_filled_art_with_translucent_offset_shadow() {
         let ctx = egui::Context::default();
         crate::ui::install_fonts(&ctx, None, None);
         let mut settings = Settings::default();
         let input = InputSettings::default();
         settings.cursor_color_draft = Some((input.cursor_color, [0, 0, 0]));
         let (output, _) = render_cursor(&mut settings, &ctx, &input, 640.0, Vec::new());
-        let outlined = output.shapes.iter().filter(|shape| matches!(&shape.shape,
-            egui::Shape::Path(path) if path.closed && path.points.len() == 3 && path.fill == Color32::BLACK
-                && path.stroke == Stroke::new(0.85, Color32::from_rgb(247, 246, 242)).into()
-        )).count();
-        assert_eq!(outlined, 2, "black cursor needs a contrasting light keyline on both preview tiles");
+        let triangles = output.shapes.iter().filter_map(|shape| match &shape.shape {
+            egui::Shape::Path(path) if path.closed && path.points.len() == 3 => Some(path), _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(triangles.len(), 4, "two filled cursors and two subtle shadows");
+        for pair in triangles.chunks_exact(2) {
+            assert_eq!(pair[0].fill, Color32::from_rgba_unmultiplied(247, 246, 242, 128));
+            assert_eq!(pair[1].fill, Color32::BLACK);
+            assert_eq!(pair[0].stroke, Stroke::NONE.into());
+            assert_eq!(pair[1].stroke, Stroke::NONE.into());
+            let offset = pair[0].points[0] - pair[1].points[0];
+            assert!((offset.x - 0.8).abs() < 0.001 && (offset.y - 1.2).abs() < 0.001);
+        }
     }
 
     #[test]
@@ -1655,6 +1800,62 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn settings_catalog_preserves_every_protocol_destination_once() {
+        assert_eq!(SETTINGS_CATALOG.len(), SECTIONS.len());
+        for (section, _) in SECTIONS {
+            assert_eq!(SETTINGS_CATALOG.iter().filter(|info| info.section == section).count(), 1);
+        }
+        for (group, _) in SETTINGS_GROUPS {
+            assert!(SETTINGS_CATALOG.iter().any(|info| info.group == group));
+        }
+    }
+
+    #[test]
+    fn settings_search_finds_familiar_names_and_combined_words() {
+        for (query, expected) in [
+            ("Wi-Fi", Section::Network), ("wifi", Section::Network),
+            ("volume", Section::Sound), ("scaling", Section::Displays),
+            ("resolution", Section::Displays), ("pet", Section::Frame),
+            ("KEYBOARD SHORTCUTS", Section::Shortcuts),
+            ("on-screen keyboard", Section::Keyboard), ("cursor color", Section::Pointer),
+            ("save session", Section::Session),
+        ] {
+            assert_eq!(settings_matches(query).first().map(|info| info.section), Some(expected), "{query}");
+        }
+        for query in ["camera", "webcam"] {
+            let sections = settings_matches(query).iter().map(|info| info.section).collect::<Vec<_>>();
+            assert!(sections.contains(&Section::Devices));
+            assert!(sections.contains(&Section::Pointer));
+        }
+        assert!(settings_matches("no-such-setting").is_empty());
+        assert!(settings_matches("  ").is_empty());
+    }
+
+    #[test]
+    fn settings_search_results_fit_narrow_and_wide_workspaces() {
+        for width in [320.0, 900.0] {
+            let ctx = egui::Context::default();
+            crate::ui::install_fonts(&ctx, None, None);
+            let mut settings = Settings { search: "camera".into(), ..Default::default() };
+            let rect = Rect::from_min_size(egui::Pos2::ZERO, vec2(width, 700.0));
+            let output = ctx.run(egui::RawInput { screen_rect: Some(rect), ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    settings.page(ui, rect, &Theme::load("signal"), |_, _| panic!("search owns the body"));
+                });
+            });
+            let texts = output.shapes.iter().filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text), _ => None,
+            }).collect::<Vec<_>>();
+            assert!(texts.iter().any(|text| text.galley.job.text.contains("Connected devices")));
+            assert!(texts.iter().any(|text| text.galley.job.text.contains("Mouse & touchpad")));
+            for text in texts.iter().filter(|text| text.galley.job.text.starts_with("Hardware  /")) {
+                assert!(text.pos.x + text.galley.size().x <= width, "result wraps inside {width}");
+            }
+        }
+    }
+
 
     #[test]
     fn switch_explanations_wrap_and_reserve_their_height() {

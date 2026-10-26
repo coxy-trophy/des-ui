@@ -36,7 +36,7 @@ impl DesComp {
         let spawned = XWayland::spawn(
             &self.display_handle,
             None,
-            std::iter::empty::<(String, String)>(),
+            crate::cursor_theme::client_environment(),
             true,
             Stdio::null(),
             Stdio::null(),

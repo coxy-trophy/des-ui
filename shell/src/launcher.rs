@@ -32,6 +32,7 @@ impl Default for Files {
 pub struct Launcher {
     pub open:bool,
     grid_navigation:bool,
+    app_scan:Option<mpsc::Receiver<Vec<AppEntry>>>,app_scanned:Option<Instant>,
     pin_request:Option<String>,query:String,selected:usize,entries:Vec<AppEntry>,state:Option<DesktopState>,
     icons:crate::app_icons::IconCache,error:Option<String>,files:Files,found:Found,
     providers:commands::Worker,catalog:commands::Catalog,catalog_asked:bool,
@@ -45,7 +46,7 @@ impl Default for Launcher {
     fn default()->Self {
         let home=std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(||PathBuf::from("/"));
         let roots=vec![home.join("Documents"),home.join("Downloads"),home.join("Desktop")];
-        Self {open:false,grid_navigation:false,pin_request:None,query:String::new(),selected:0,entries:Vec::new(),state:None,icons:Default::default(),error:None,files:Default::default(),found:Default::default(),providers:Default::default(),catalog:Default::default(),catalog_asked:false,clipboard:None,outcomes:Default::default(),folders:roots.iter().map(|p|p.display().to_string()).collect::<Vec<_>>().join("; "),roots,edit_folders:false,focus_query:true,changed:Instant::now(),submitted:false,searching:false,composing:false}
+        Self {open:false,grid_navigation:false,app_scan:None,app_scanned:None,pin_request:None,query:String::new(),selected:0,entries:Vec::new(),state:None,icons:Default::default(),error:None,files:Default::default(),found:Default::default(),providers:Default::default(),catalog:Default::default(),catalog_asked:false,clipboard:None,outcomes:Default::default(),folders:roots.iter().map(|p|p.display().to_string()).collect::<Vec<_>>().join("; "),roots,edit_folders:false,focus_query:true,changed:Instant::now(),submitted:false,searching:false,composing:false}
     }
 }
 impl Launcher {
@@ -58,7 +59,12 @@ impl Launcher {
     pub fn outcomes(&self)->Arc<Mutex<Vec<(String,String,bool)>>>{self.outcomes.clone()}
     pub fn take_outcomes(&mut self)->Vec<(String,String,bool)>{std::mem::take(&mut *self.outcomes.lock().unwrap_or_else(|e|e.into_inner()))}
     pub fn open(&mut self) {
-        self.entries=apps::scan(); self.icons.clear();self.query.clear();self.error=None;self.open=true;self.edit_folders=false;self.focus_query=true;
+        if self.app_scan.is_none() && self.app_scanned.is_none_or(|at|at.elapsed()>Duration::from_secs(30)) {
+            let (tx,rx)=mpsc::sync_channel(1);
+            std::thread::spawn(move||{let _=tx.send(apps::scan());});
+            self.app_scan=Some(rx);
+        }
+        self.query.clear();self.error=None;self.open=true;self.edit_folders=false;self.focus_query=true;
         if let Some(text)=des_common::input::config_path().and_then(|p|std::fs::read_to_string(p).ok()) {
             for line in text.lines() {
                 if let Some(("search_folders",value))=line.split_once('=').map(|(k,v)|(k.trim(),v.trim())) {
@@ -119,10 +125,13 @@ impl Launcher {
         label.wrap.overflow_character=Some('…');
         let label=ui.fonts(|fonts|fonts.layout_job(label));
         painter.galley(egui::pos2(rect.center().x-label.rect.center().x,rect.top()+74.0-label.rect.top()),label,ui::TEXT);
+        if item.kind=="APP" && matches!(&item.action,Action::Command(des_common::ipc::Command::Activate(_))) {
+            painter.circle_filled(egui::pos2(rect.center().x,rect.bottom()-7.0),2.0,theme.main);
+        }
         if item.kind!="APP"{painter.text(rect.right_top()+vec2(-6.0,5.0),Align2::RIGHT_TOP,item.kind,ui::mono(9.0),ui::LABEL);}
         response.clone().on_hover_text(format!("{}\n{} · {}",item.label,item.kind,item.detail)).on_hover_cursor(egui::CursorIcon::PointingHand);
         if response.clicked(){chosen=Some(item.action.clone());if let Action::Copy(text)=&item.action{ui.ctx().copy_text(text.clone());}}
-        if let Some(id)=&item.pin{response.context_menu(|ui|{if ui.button("Pin to dock").clicked(){self.pin_request=Some(id.clone());ui.close_menu();}});}
+        if let Some(id)=&item.pin{response.context_menu(|ui|{if ui.button("Pin application").clicked(){self.pin_request=Some(id.clone());ui.close_menu();}});}
         if let Some((id,pinned))=item.clip{response.context_menu(|ui|{
             if ui.button(if pinned{"Unpin"}else{"Pin"}).clicked(){chosen=Some(Action::ClipPin(id,!pinned));ui.close_menu();}
             if ui.button("Remove").clicked(){chosen=Some(Action::ClipRemove(id));ui.close_menu();}
@@ -147,6 +156,13 @@ impl Launcher {
             lateral && !self.edit_folders && i.consume_key(Modifiers::NONE,Key::ArrowRight),
             i.consume_key(Modifiers::NONE,Key::Enter),i.consume_key(Modifiers::NONE,Key::Escape)))};
         if escape {self.open=false;return None;}
+        if let Some(scan)=&self.app_scan {
+            match scan.try_recv() {
+                Ok(entries)=>{self.entries=entries;self.app_scan=None;self.app_scanned=Some(Instant::now());},
+                Err(mpsc::TryRecvError::Disconnected)=>{self.app_scan=None;self.app_scanned=Some(Instant::now());},
+                Err(mpsc::TryRecvError::Empty)=>ui.ctx().request_repaint_after(Duration::from_millis(50)),
+            }
+        }
         self.pump_files(ui.ctx());
         self.pump_catalog(ui.ctx());
         let margin=(rect.width()*0.06).clamp(12.0,72.0);
@@ -193,7 +209,8 @@ impl Launcher {
                 };
                 if let Some(note)=note{ui::text(ui,note,ui::mono(11.0),ui::SECONDARY);}
             }
-            let status=if self.query.trim().chars().count()<2{None}else if self.searching || !self.submitted {Some("Searching files…")}else if self.found.truncated{Some("Refine search to see more files")}else if self.found.errors>0{Some("Some search folders are unavailable")}else{None};
+            let browse_count=format!("{} applications",items.iter().filter(|item|item.kind=="APP").count());
+            let status=if self.query.trim().is_empty() && self.app_scan.is_some(){Some("Loading applications…")}else if self.query.trim().is_empty(){Some(browse_count.as_str())}else if self.query.trim().chars().count()<2{None}else if self.searching || !self.submitted {Some("Searching files…")}else if self.found.truncated{Some("Refine search to see more files")}else if self.found.errors>0{Some("Some search folders are unavailable")}else{None};
             let (status_rect,_)=ui.allocate_exact_size(vec2(ui.available_width(),16.0),Sense::hover());
             if let Some(status)=status{ui.painter().text(status_rect.left_center(),Align2::LEFT_CENTER,status,ui::mono(11.0),ui::SECONDARY);}
             let columns=grid_columns((ui.available_width()-ui.spacing().scroll.allocated_width()).max(1.0));
@@ -206,7 +223,7 @@ impl Launcher {
             self.selected=self.selected.min(items.len().saturating_sub(1));
             if enter && !self.edit_folders{chosen=items.get(self.selected).map(|i|i.action.clone());}
             if let Some(Action::Copy(text))=&chosen{ui.ctx().copy_text(text.clone());}
-            if items.is_empty(){ui::text(ui,if self.query.trim().is_empty(){"No applications found."}else{"No matches. Try another search."},ui::mono(13.0),ui::SECONDARY);}
+            if items.is_empty() && self.app_scan.is_none(){ui::text(ui,if self.query.trim().is_empty(){"No applications found."}else{"No matches. Try another search."},ui::mono(13.0),ui::SECONDARY);}
             let mut scroll=ScrollArea::vertical().auto_shrink([false,false]);
             if navigating{scroll=scroll.vertical_scroll_offset(((self.selected/columns) as f32*(TILE_HEIGHT+ui.spacing().item_spacing.y)-ui.available_height()*0.5).max(0.0));}
             scroll.show_rows(ui,TILE_HEIGHT,items.len().div_ceil(columns),|ui,range|{

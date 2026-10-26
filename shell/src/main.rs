@@ -10,6 +10,7 @@ mod companion;
 mod config;
 mod control;
 mod desktop;
+mod devices;
 mod geo;
 mod health;
 mod globe;
@@ -197,6 +198,7 @@ struct App {
     /// Whether the saved panel choice has been sent to the compositor yet.
     panels_synced: bool,
     frame_synced: bool,
+    keyboard_reserved: Option<u16>,
     shortcuts_synced: bool,
     /// Places for the globe, kept current in the background.
     geo: geo::Geo,
@@ -410,6 +412,7 @@ impl App {
             symbols,
             panels_synced: false,
             frame_synced: false,
+            keyboard_reserved: None,
             shortcuts_synced: false,
             screenshot,
             started: Instant::now(),

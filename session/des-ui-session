@@ -12,7 +12,20 @@ export XDG_CURRENT_DESKTOP=des-ui
 export XCURSOR_THEME="${XCURSOR_THEME:-DEs-UI}"
 export XCURSOR_SIZE="${XCURSOR_SIZE:-24}"
 # libXcursor's compiled search path may omit /usr/local/share/icons.
-export XCURSOR_PATH="${XCURSOR_PATH:-$HOME/.icons:/usr/local/share/icons:/usr/share/icons:/usr/share/pixmaps}"
+if [ -z "${XCURSOR_PATH:-}" ]; then
+    case "${XDG_DATA_HOME:-}" in
+        /*) cursor_data_home=$XDG_DATA_HOME ;;
+        *) cursor_data_home=$HOME/.local/share ;;
+    esac
+    cursor_search="$HOME/.icons:$cursor_data_home/icons"
+    cursor_old_ifs=$IFS
+    IFS=:
+    for cursor_data_root in ${XDG_DATA_DIRS:-/usr/local/share:/usr/share}; do
+        case "$cursor_data_root" in /*) cursor_search="$cursor_search:$cursor_data_root/icons" ;; esac
+    done
+    IFS=$cursor_old_ifs
+    export XCURSOR_PATH="$cursor_search:/usr/share/pixmaps"
+fi
 if [ "$XCURSOR_THEME" = DEs-UI ]; then
     case "${XDG_CACHE_HOME:-}" in
         /*) cursor_cache_root=$XDG_CACHE_HOME ;;

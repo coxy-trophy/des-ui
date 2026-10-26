@@ -6,7 +6,7 @@
 
 use crate::theme::Theme;
 use crate::ui;
-use eframe::egui::{self, Align2, Event, Id, Key, Modifiers, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
+use eframe::egui::{self, Event, Id, Key, Modifiers, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 
 /// Height of one key, and of one row; tall enough for a fingertip.
 pub const KEY: f32 = 44.0;
@@ -51,7 +51,7 @@ const fn c(plain: char, shifted: char) -> Cap {
 }
 
 const LETTERS: [&[Cap]; ROWS] = [
-    &[c('1', '!'), c('2', '@'), c('3', '#'), c('4', '$'), c('5', '%'), c('6', '^'), c('7', '&'), c('8', '*'), c('9', '('), c('0', ')'), Cap::Named(Key::Backspace, "⌫")],
+    &[c('1', '!'), c('2', '@'), c('3', '#'), c('4', '$'), c('5', '%'), c('6', '^'), c('7', '&'), c('8', '*'), c('9', '('), c('0', ')'), Cap::Named(Key::Backspace, "BKSP")],
     &[Cap::Named(Key::Tab, "TAB"), c('q', 'Q'), c('w', 'W'), c('e', 'E'), c('r', 'R'), c('t', 'T'), c('y', 'Y'), c('u', 'U'), c('i', 'I'), c('o', 'O'), c('p', 'P')],
     &[Cap::Named(Key::Escape, "ESC"), c('a', 'A'), c('s', 'S'), c('d', 'D'), c('f', 'F'), c('g', 'G'), c('h', 'H'), c('j', 'J'), c('k', 'K'), c('l', 'L'), Cap::Named(Key::Enter, "ENTER")],
     &[Cap::Shift, c('z', 'Z'), c('x', 'X'), c('c', 'C'), c('v', 'V'), c('b', 'B'), c('n', 'N'), c('m', 'M'), c(',', '<'), c('.', '>'), c('/', '?'), Cap::Named(Key::ArrowUp, "↑")],
@@ -59,7 +59,7 @@ const LETTERS: [&[Cap]; ROWS] = [
 ];
 
 const SYMBOLS: [&[Cap]; ROWS] = [
-    &[c('1', '!'), c('2', '@'), c('3', '#'), c('4', '$'), c('5', '%'), c('6', '^'), c('7', '&'), c('8', '*'), c('9', '('), c('0', ')'), Cap::Named(Key::Backspace, "⌫")],
+    &[c('1', '!'), c('2', '@'), c('3', '#'), c('4', '$'), c('5', '%'), c('6', '^'), c('7', '&'), c('8', '*'), c('9', '('), c('0', ')'), Cap::Named(Key::Backspace, "BKSP")],
     &[Cap::Named(Key::Tab, "TAB"), c('`', '~'), c('-', '_'), c('=', '+'), c('[', '{'), c(']', '}'), c('\\', '|'), c(';', ':'), c('\'', '"'), c('<', '<'), c('>', '>')],
     &[Cap::Named(Key::Escape, "ESC"), c('!', '!'), c('@', '@'), c('#', '#'), c('$', '$'), c('%', '%'), c('^', '^'), c('&', '&'), c('*', '*'), c('|', '|'), Cap::Named(Key::Enter, "ENTER")],
     &[Cap::Shift, c('(', '('), c(')', ')'), c('{', '{'), c('}', '}'), c('"', '"'), c('~', '~'), c('_', '_'), c('+', '+'), c('?', '?'), c(':', ':'), Cap::Named(Key::ArrowUp, "↑")],
@@ -85,10 +85,38 @@ impl Default for Osk {
     }
 }
 
+/// Fit every row to the actual card, including narrow framed workspaces.
+fn key_layout(rect: Rect, rows: [&[Cap]; ROWS]) -> Vec<(usize, usize, Cap, Rect)> {
+    let inset = MARGIN.min(rect.width()/8.0).min(rect.height()/8.0);
+    let inner = rect.shrink(inset);
+    let gap = GAP.min(inner.width()/40.0).min(inner.height()/12.0);
+    let key_height = ((inner.height()-(ROWS-1) as f32*gap)/ROWS as f32).clamp(1.0,KEY);
+    let unit = rows.iter().map(|row| {
+        let spans: f32 = row.iter().map(|cap|cap.span()).sum();
+        (inner.width()-(row.len()-1) as f32*gap)/spans
+    }).fold(KEY*2.0,f32::min).max(1.0);
+    let mut keys = Vec::new();
+    for (r,row) in rows.iter().enumerate() {
+        let width: f32 = row.iter().map(|cap|cap.span()*unit).sum::<f32>()+(row.len()-1) as f32*gap;
+        let mut x = inner.center().x-width/2.0;
+        for (k,&cap) in row.iter().enumerate() {
+            let key = Rect::from_min_size(pos2(x,inner.top()+r as f32*(key_height+gap)),vec2(cap.span()*unit,key_height));
+            x += key.width()+gap;
+            keys.push((r,k,cap,key));
+        }
+    }
+    keys
+}
+
 impl Osk {
     /// The room it takes at the foot of the shell, the same whatever is latched; 0 shut.
     pub fn height(&self) -> f32 {
         if self.open { ROWS as f32 * KEY + (ROWS - 1) as f32 * GAP + 2.0 * MARGIN } else { 0.0 }
+    }
+
+    /// Keep a usable workspace above the keyboard on shorter displays.
+    pub fn height_for(&self, viewport_height: f32) -> f32 {
+        self.height().min((viewport_height * 0.4).max(0.0))
     }
 
     fn modifiers(&self) -> Modifiers {
@@ -145,46 +173,43 @@ impl Osk {
             return;
         }
         let painter = ui.painter_at(rect);
-        crate::material::paint(ui.ctx(), &painter, rect, 0.0, crate::material::Role::Panel);
+        crate::material::paint(ui.ctx(), &painter, rect, des_common::frame::RADIUS, crate::material::Role::Panel);
         painter.hline(rect.x_range(), rect.top(), Stroke::new(1.0, ui::LINE));
         let rows = if self.layer == Layer::Letters { LETTERS } else { SYMBOLS };
-        let inner = rect.shrink(MARGIN);
-        let widest = rows.iter().map(|row| row.iter().map(|cap| cap.span()).sum::<f32>()).fold(0.0, f32::max);
-        let unit = ((inner.width() - (widest - 1.0) * GAP) / widest).clamp(KEY * 0.8, KEY * 2.0);
         let mut pressed = None;
-        for (r, row) in rows.iter().enumerate() {
-            let width: f32 = row.iter().map(|cap| cap.span() * unit).sum::<f32>() + (row.len() as f32 - 1.0) * GAP;
-            let mut x = inner.center().x - width / 2.0;
-            let y = inner.top() + r as f32 * (KEY + GAP);
-            for (k, &cap) in row.iter().enumerate() {
-                let key_rect = Rect::from_min_size(pos2(x, y), vec2(cap.span() * unit, KEY));
-                x += key_rect.width() + GAP;
-                // Not focusable: touching a key must not take the keyboard from the field.
-                let response = ui.interact(key_rect, ui.id().with(("osk", r, k)), Sense::CLICK);
-                let lit = match cap {
-                    Cap::Shift => self.shift,
-                    Cap::Ctrl => self.ctrl,
-                    Cap::Alt => self.alt,
-                    Cap::Layer => self.layer == Layer::Symbols,
-                    _ => false,
-                };
-                let (fill, ink) = if lit {
-                    (theme.main, ui::GROUND)
-                } else if response.is_pointer_button_down_on() {
-                    (theme.tint(), ui::TEXT)
-                } else {
-                    (ui::GROUND, ui::TEXT)
-                };
-                painter.rect_filled(key_rect, 0.0, fill);
-                let edge = if response.hovered() { ui::SECONDARY } else { ui::LINE_STRONG };
-                painter.rect_stroke(key_rect, 0.0, Stroke::new(1.0, edge), StrokeKind::Inside);
-                let label = self.label(cap);
-                let font = if label.chars().count() > 1 { ui::display(12.0) } else { ui::mono(17.0) };
-                painter.text(key_rect.center(), Align2::CENTER_CENTER, &label, font, ink);
-                response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, lit, self.spoken(cap)));
-                if response.clicked() {
-                    pressed = Some(cap);
-                }
+        for (r,k,cap,key_rect) in key_layout(rect, rows) {
+            let key_height = key_rect.height();
+            // Not focusable: touching a key must not take the keyboard from the field.
+            let response = ui.interact(key_rect, ui.id().with(("osk", r, k)), Sense::CLICK);
+            let lit = match cap {
+                Cap::Shift => self.shift,
+                Cap::Ctrl => self.ctrl,
+                Cap::Alt => self.alt,
+                Cap::Layer => self.layer == Layer::Symbols,
+                _ => false,
+            };
+            let (fill, ink) = if lit {
+                (theme.main, ui::GROUND)
+            } else if response.is_pointer_button_down_on() {
+                (theme.tint(), ui::TEXT)
+            } else {
+                (ui::GROUND, ui::TEXT)
+            };
+            painter.rect_filled(key_rect, ui::CONTROL_RADIUS, fill);
+            let edge = if response.hovered() { ui::SECONDARY } else { ui::LINE_STRONG };
+            painter.rect_stroke(key_rect, ui::CONTROL_RADIUS, Stroke::new(1.0, edge), StrokeKind::Inside);
+            let label = self.label(cap);
+            let mut font = if label.chars().count() > 1 { ui::display(12.0_f32.min(key_height * 0.45)) } else { ui::mono(17.0_f32.min(key_height * 0.45)) };
+            let mut galley = painter.layout_no_wrap(label.clone(), font.clone(), ink);
+            let available = (key_rect.width()-4.0_f32.min(key_rect.width()*0.2)).max(1.0);
+            if galley.size().x > available {
+                font.size *= available/galley.size().x;
+                galley = painter.layout_no_wrap(label, font, ink);
+            }
+            painter.galley(key_rect.center()-galley.size()/2.0, galley, ink);
+            response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, lit, self.spoken(cap)));
+            if response.clicked() {
+                pressed = Some(cap);
             }
         }
         if let Some(cap) = pressed {
@@ -272,6 +297,18 @@ mod tests {
         // Pressing a latch twice lets it go.
         osk.press(Cap::Shift);
         assert!(!osk.shift && osk.ctrl && osk.alt);
+    }
+
+    #[test]
+    fn keys_fit_their_card_at_small_and_wide_frame_sizes() {
+        for size in [vec2(64.0,66.0),vec2(280.0,160.0),vec2(640.0,252.0),vec2(1280.0,252.0)] {
+            let rect = Rect::from_min_size(pos2(20.0,400.0),size);
+            for rows in [LETTERS,SYMBOLS] {
+                let keys = key_layout(rect,rows);
+                assert_eq!(keys.len(),rows.iter().map(|row|row.len()).sum::<usize>());
+                for (_,_,_,key) in keys { assert!(rect.contains_rect(key), "{key:?} outside {rect:?}"); }
+            }
+        }
     }
 
     #[test]

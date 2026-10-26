@@ -15,31 +15,31 @@ fn names() -> Vec<(CursorIcon, &'static [&'static str])> {
     use CursorIcon::*;
     vec![
         (Default, &["default", "left_ptr", "arrow", "top_left_arrow", "left-arrow"]),
-        (Pointer, &["pointer", "hand", "hand2", "pointing_hand"]),
+        (Pointer, &["pointer", "hand", "hand2", "pointing_hand", "e29285e634086352946a0e7090d73106", "9d800788f1b08800ae810202380a0822"]),
         (Text, &["text", "xterm", "ibeam"]),
         (VerticalText, &["vertical-text"]),
         (Grab, &["grab", "hand1", "openhand"]),
         (Grabbing, &["grabbing", "closedhand"]),
         (Wait, &["wait", "watch"]),
-        (Progress, &["progress", "left_ptr_watch", "half-busy"]),
-        (NotAllowed, &["not-allowed", "forbidden", "crossed_circle", "circle", "X_cursor"]),
+        (Progress, &["progress", "left_ptr_watch", "half-busy", "08e8e1c95fe2fc01f976f1e063a24ccd", "3ecb610c1bf2410f44200f48c40d3599"]),
+        (NotAllowed, &["not-allowed", "forbidden", "crossed_circle", "circle", "X_cursor", "pirate", "03b6e0fcb3499374a867c041f52298f0"]),
         (NoDrop, &["no-drop", "dnd-no-drop"]),
-        (Copy, &["copy", "dnd-copy"]),
-        (Move, &["move", "fleur", "all-scroll", "all-resize", "size_all", "dnd-move"]),
-        (Alias, &["alias", "dnd-link", "link"]),
+        (Copy, &["copy", "dnd-copy", "1081e37283d90000800003c07f3ef6bf", "6407b0e94181790501fd1e167b474872"]),
+        (Move, &["move", "fleur", "all-scroll", "all-resize", "size_all", "dnd-move", "4498f0e0c1937ffe01fd06f973665830", "9081237383d90e509aa00f00170e968f"]),
+        (Alias, &["alias", "dnd-link", "link", "3085a0e285430894940527032f8b26df", "640fb0e74195791501fd1ed57b41487f"]),
         (Crosshair, &["crosshair", "cross", "cross_reverse", "diamond_cross", "tcross"]),
         (Cell, &["cell", "plus"]),
         (ZoomIn, &["zoom-in"]),
         (ZoomOut, &["zoom-out"]),
-        (Help, &["help", "question_arrow", "whats_this"]),
+        (Help, &["help", "question_arrow", "whats_this", "left_ptr_help", "d9ce0ab605698f320427677b458ad60b", "5c6cd98b3f3ebcb1f9c7f1c204630408"]),
         (ContextMenu, &["context-menu"]),
         (DndAsk, &["dnd-ask"]),
-        (EwResize, &["ew-resize", "sb_h_double_arrow", "h_double_arrow", "size_hor"]),
-        (NsResize, &["ns-resize", "sb_v_double_arrow", "v_double_arrow", "size_ver"]),
+        (EwResize, &["ew-resize", "sb_h_double_arrow", "h_double_arrow", "size_hor", "028006030e0e7ebffc7f7070c0600140", "14fef782d02440884392942c11205230"]),
+        (NsResize, &["ns-resize", "sb_v_double_arrow", "v_double_arrow", "size_ver", "double_arrow", "00008160000006810000408080010102", "2870a09082c103050810ffdffffe0204"]),
         (ColResize, &["col-resize", "split_h"]),
         (RowResize, &["row-resize", "split_v"]),
-        (NwseResize, &["nwse-resize", "bd_double_arrow", "size_fdiag"]),
-        (NeswResize, &["nesw-resize", "fd_double_arrow", "size_bdiag"]),
+        (NwseResize, &["nwse-resize", "bd_double_arrow", "size_fdiag", "c7088f0f3e6c8088236ef8e1e3e70000"]),
+        (NeswResize, &["nesw-resize", "fd_double_arrow", "size_bdiag", "fcf1c3c7cd4491d801f1e1c78f100000"]),
         (NResize, &["n-resize", "top_side"]),
         (NeResize, &["ne-resize", "top_right_corner"]),
         (EResize, &["e-resize", "right_side"]),
@@ -49,6 +49,15 @@ fn names() -> Vec<(CursorIcon, &'static [&'static str])> {
         (WResize, &["w-resize", "left_side"]),
         (NwResize, &["nw-resize", "top_left_corner"]),
     ]
+}
+
+/// Smithay clears Xwayland's environment. Pass only cursor lookup inputs;
+/// unrelated session variables and credentials must not enter that server.
+pub fn client_environment()->Vec<(std::ffi::OsString,std::ffi::OsString)> {
+    cursor_environment_from(std::env::vars_os())
+}
+fn cursor_environment_from(variables:impl IntoIterator<Item=(std::ffi::OsString,std::ffi::OsString)>)->Vec<(std::ffi::OsString,std::ffi::OsString)> {
+    variables.into_iter().filter(|(name,_)|matches!(name.to_str(),Some("XCURSOR_THEME"|"XCURSOR_SIZE"|"XCURSOR_PATH"|"HOME"|"XDG_DATA_HOME"|"XDG_DATA_DIRS"))).collect()
 }
 
 fn word(bytes: &mut Vec<u8>, value: u32) { bytes.extend_from_slice(&value.to_le_bytes()); }
@@ -497,6 +506,23 @@ mod tests {
         assert_eq!(bytes.len(), expected_position);
     }
 
+    #[test]
+    fn xwayland_environment_keeps_cursor_preferences_and_lookup_roots_only() {
+        let variables=[("XCURSOR_THEME","UserTheme"),("XCURSOR_SIZE","40"),("XCURSOR_PATH","/private/icons"),("HOME","/home/person"),("XDG_DATA_HOME","/data"),("XDG_DATA_DIRS","/system/data:/other/data"),("DISPLAY",":42"),("SESSION_SECRET","private"),("GTK_THEME","unrelated")];
+        let passed=cursor_environment_from(variables.into_iter().map(|(key,value)|(key.into(),value.into())));
+        assert_eq!(passed.len(),6);
+        for (key,value) in &variables[..6] {assert!(passed.contains(&((*key).into(),(*value).into())),"missing {key}");}
+        assert!(passed.iter().all(|(key,_)|key!="DISPLAY" && key!="SESSION_SECRET" && key!="GTK_THEME"));
+    }
+    #[test]
+    fn legacy_hashed_aliases_resolve_to_the_correct_semantic_artwork() {
+        let mappings=names();
+        for (icon,alias) in [(CursorIcon::Pointer,"e29285e634086352946a0e7090d73106"),(CursorIcon::Progress,"08e8e1c95fe2fc01f976f1e063a24ccd"),(CursorIcon::Copy,"1081e37283d90000800003c07f3ef6bf"),(CursorIcon::Alias,"3085a0e285430894940527032f8b26df"),(CursorIcon::EwResize,"14fef782d02440884392942c11205230"),(CursorIcon::NsResize,"2870a09082c103050810ffdffffe0204"),(CursorIcon::NwseResize,"c7088f0f3e6c8088236ef8e1e3e70000"),(CursorIcon::NeswResize,"fcf1c3c7cd4491d801f1e1c78f100000")] {
+            assert!(mappings.iter().any(|(mapped,aliases)|*mapped==icon && aliases.contains(&alias)),"incorrect semantic alias {alias}");
+        }
+        let all:Vec<_>=mappings.iter().flat_map(|(_,aliases)|aliases.iter()).collect();
+        let unique:std::collections::HashSet<_>=all.iter().copied().collect();assert_eq!(all.len(),unique.len(),"aliases cannot silently replace another cursor state");
+    }
     #[test]
     fn aliases_are_regular_files_with_matching_bytes_and_named_theme() {
         let export = Export::new();

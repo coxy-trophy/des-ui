@@ -1061,6 +1061,8 @@ pub enum Command {
     ToggleHands,
     /// Re-read the side panel behavior and rearrange application windows.
     ReloadFrame,
+    /// Center-column height reserved for the shell on-screen keyboard (0 closes).
+    KeyboardHeight(u16),
     /// Hide everything but the shell, which is showing the lock screen.
     Lock,
     /// The password was given: bring everything back.
@@ -1143,6 +1145,7 @@ impl Command {
             Command::ReloadInput => "reload-input\n".to_string(),
             Command::ToggleHands => "hands-toggle\n".to_string(),
             Command::ReloadFrame => "reload-frame\n".to_string(),
+            Command::KeyboardHeight(height) => format!("keyboard-height {height}\n"),
             Command::Lock => "lock\n".to_string(),
             Command::Unlock => "unlock\n".to_string(),
             Command::DockKeyboard { screen, active } => format!("dock-keyboard {screen} {}\n", *active as u8),
@@ -1188,6 +1191,10 @@ impl Command {
     }
 
     pub fn decode(line: &str) -> Option<Command> {
+        if let Some(rest) = line.strip_prefix("keyboard-height ") {
+            let height = rest.trim_end().parse::<u16>().ok().filter(|height| *height <= 1024)?;
+            return Some(Command::KeyboardHeight(height));
+        }
         if let Some(rest) = line.strip_prefix("app-windows ") {
             let mut words = rest.split_whitespace();
             let screen = words.next()?.parse::<usize>().ok().filter(|n| *n < 32)?;
@@ -1346,6 +1353,17 @@ mod tests {
             strip: None,
             workspaces: (0..WORKSPACES).map(|w| OverviewWorkspace { workspace: w, area: (48 + w as i32 * 400, 48, 376, 900), current: w == 2 }).collect(),
             thumbs: vec![OverviewThumb { app: 3, area: (60, 100, 300, 200) }, OverviewThumb { app: 0, area: (460, 100, 300, 170) }],
+        }
+    }
+
+    #[test]
+    fn keyboard_reservation_round_trips_and_rejects_unbounded_requests() {
+        for height in [0, 192, 252, 1024] {
+            let command = Command::KeyboardHeight(height);
+            assert_eq!(Command::decode(command.encode().trim()), Some(command));
+        }
+        for line in ["keyboard-height -1", "keyboard-height 1025", "keyboard-height 44 extra"] {
+            assert!(Command::decode(line).is_none());
         }
     }
 

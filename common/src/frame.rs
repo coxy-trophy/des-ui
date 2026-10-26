@@ -14,10 +14,14 @@ pub struct Layout {
     pub left: Option<Rect>,
     pub right: Option<Rect>,
     pub bottom: Option<Rect>,
+    pub keyboard: Option<Rect>,
 }
 
 impl Layout {
     pub fn new(width: f32, height: f32, panels: Panels, behavior: PanelBehavior) -> Self {
+        Self::with_keyboard(width, height, panels, behavior, 0.0)
+    }
+    pub fn with_keyboard(width: f32, height: f32, panels: Panels, behavior: PanelBehavior, keyboard_height: f32) -> Self {
         let width=width.max(1.0); let height=height.max(STATUS_HEIGHT+1.0);
         let edge=GAP.min(width/8.0).min((height-STATUS_HEIGHT)/8.0);
         let occupied=|open| if open {crate::side_width(width).min(width*0.4)}
@@ -26,12 +30,18 @@ impl Layout {
         let x=if left>0.0 {left+edge/2.0}else{edge};
         let end=if right>0.0 {width-right-edge/2.0}else{width-edge};
         let floor=(height-STATUS_HEIGHT-edge).max(edge+1.0);
-        let bottom=panels.bottom.then(|| {
-            let available=(floor-edge-TOP_BAR_HEIGHT-edge).max(2.0);
-            let size=(crate::bottom_height(height)-edge*1.5).max(1.0).min(available*0.45);
-            Rect{x,y:floor-size,width:(end-x).max(1.0),height:size}
+        let keyboard_height = if keyboard_height.is_finite() { keyboard_height.max(0.0) } else { 0.0 };
+        let keyboard = (keyboard_height > 0.0).then(|| {
+            let size = keyboard_height.min(((floor-edge-TOP_BAR_HEIGHT-32.0).max(2.0)*0.55).max(1.0));
+            Rect { x, y: floor-size, width: (end-x).max(1.0), height: size }
         });
-        let center_end=bottom.map_or(floor,|rect|rect.y-edge);
+        let content_floor = keyboard.map_or(floor, |rect| rect.y-edge);
+        let bottom=panels.bottom.then(|| {
+            let available=(content_floor-edge-TOP_BAR_HEIGHT-edge).max(2.0);
+            let size=(crate::bottom_height(height)-edge*1.5).max(1.0).min(available*0.45);
+            Rect{x,y:content_floor-size,width:(end-x).max(1.0),height:size}
+        });
+        let center_end=bottom.map_or(content_floor,|rect|rect.y-edge);
         let center=Rect{x,y:edge,width:(end-x).max(1.0),height:(center_end-edge).max(1.0)};
         let rim=RIM.min(center.width/4.0).min(center.height/4.0);
         let header_height=TOP_BAR_HEIGHT.min((center.height-rim-1.0).max(1.0));
@@ -40,7 +50,7 @@ impl Layout {
         let header=Rect{x:workspace.x,y:center.y+rim,width:workspace.width,
             height:(workspace.y-center.y-2.0*rim).max(1.0)};
         let side=|start: f32,end: f32|Rect{x:start,y:edge,width:(end-start).max(1.0),height:(floor-edge).max(1.0)};
-        Self {center,workspace,header,bottom,
+        Self {center,workspace,header,bottom,keyboard,
             left:(left>0.0).then(||side(edge,center.x-edge)),
             right:(right>0.0).then(||side(center.x+center.width+edge,width-edge))}
     }
@@ -52,6 +62,25 @@ mod tests {
     use crate::{Panels, PanelBehavior, Rect, STATUS_HEIGHT};
     fn right(rect: Rect) -> f32 { rect.x + rect.width }
     fn bottom(rect: Rect) -> f32 { rect.y + rect.height }
+    #[test]
+    fn keyboard_reserves_only_the_center_and_never_overlaps_native_workspace() {
+        for (width, height) in [(1920.0,1080.0),(1280.0,720.0),(640.0,480.0),(320.0,240.0)] {
+            for bits in 0..8 {
+                let panels = Panels::from_bits(bits).unwrap();
+                let plain = Layout::new(width,height,panels,PanelBehavior::Collapse);
+                let keys = Layout::with_keyboard(width,height,panels,PanelBehavior::Collapse,252.0);
+                assert_eq!(plain.left, keys.left);
+                assert_eq!(plain.right, keys.right);
+                let keyboard = keys.keyboard.unwrap();
+                assert_eq!(keyboard.x, keys.center.x);
+                assert_eq!(keyboard.width, keys.center.width);
+                assert!(bottom(keys.workspace) + GAP <= keyboard.y);
+                if let Some(files) = keys.bottom { assert!(bottom(files) + GAP <= keyboard.y + 0.01); }
+                assert!(bottom(keyboard) <= height-STATUS_HEIGHT-GAP+0.01);
+                assert!(keys.workspace.height >= 1.0);
+            }
+        }
+    }
     #[test]
     fn default_frame_has_eight_pixel_channels_and_an_inset_app() {
         let layout = Layout::new(1920.0, 1080.0, Panels::default(), PanelBehavior::Collapse);

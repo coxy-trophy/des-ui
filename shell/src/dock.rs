@@ -85,16 +85,19 @@ pub struct Dock {
     motion: Motion,
     menu_open: bool,
     selection: usize,
+    selection_key: Option<String>,
     revealed_selection: Option<(usize,Option<usize>,u32)>,
     coverage: Option<Rect>,
     search: String,
     expanded: HashSet<String>,
     selected_window: Option<usize>,
     display: usize,
+    page: usize,
+    composing: bool,
 }
 impl Default for Dock {
     fn default() -> Self {
-        Self { entries:Vec::new(), scan:None, scanned:None, icons:IconCache::new(), motion:Motion::default(), menu_open:false, selection:0, revealed_selection:None, coverage:None, search:String::new(), expanded:HashSet::new(), selected_window:None, display:0 }
+        Self { entries:Vec::new(), scan:None, scanned:None, icons:IconCache::new(), motion:Motion::default(), menu_open:false, selection:0, selection_key:None, revealed_selection:None, coverage:None, search:String::new(), expanded:HashSet::new(), selected_window:None, display:0, page:0, composing:false }
     }
 }
 impl Dock {
@@ -110,7 +113,7 @@ impl Dock {
         ctx.input_mut(|input| {
             let mut keys=Vec::new();
             input.events.retain(|event| {
-                if matches!(event,egui::Event::Key { .. }|egui::Event::Text(_)|egui::Event::Paste(_)|egui::Event::Copy|egui::Event::Cut) {
+                if matches!(event,egui::Event::Ime(_)|egui::Event::Key { .. }|egui::Event::Text(_)|egui::Event::Paste(_)|egui::Event::Copy|egui::Event::Cut) {
                     keys.push(event.clone()); false
                 } else { true }
             });
@@ -121,7 +124,7 @@ impl Dock {
     fn refresh(&mut self, ctx:&egui::Context) {
         if let Some(scan) = &self.scan {
             match scan.try_recv() {
-                Ok(entries) => { self.entries=entries; self.scan=None; self.scanned=Some(Instant::now()); self.icons.clear(); }
+                Ok(entries) => { self.entries=entries; self.scan=None; self.scanned=Some(Instant::now()); }
                 Err(mpsc::TryRecvError::Disconnected) => { self.scan=None; self.scanned=Some(Instant::now()); }
                 Err(mpsc::TryRecvError::Empty) => {}
             }
@@ -140,17 +143,22 @@ impl Dock {
         let empty=DesktopState::default(); let state=state.unwrap_or(&empty);
         let mut all=items_on(&self.entries,pins,state,if display==0 {None}else{Some(display)});
         all.sort_by_key(|item|item.windows.is_empty());
-        let query=self.search.trim().to_lowercase();
+        let mut query=self.search.trim().to_lowercase();
         all.retain(|item|query.is_empty() || item.label.to_lowercase().contains(&query) || item.windows.iter().any(|&index|state.apps[index].title.to_lowercase().contains(&query)));
         let body=ui.available_rect_before_wrap(); let id=egui::Id::new(("app-panel",display));
         let mut output=Output::default(); let mut popup_area:Option<Rect>=None;
         let mut menu_open=false; let mut key_action=None;
+        if let Some(selected)=self.selection_key.as_ref().filter(|_|self.motion.keyboard) {
+            if let Some(index)=all.iter().position(|item|item_key(item)==*selected){self.selection=index;}
+        }
         self.selection=self.selection.min(all.len().saturating_sub(1));
         let popup_owns_keys=ctx.memory(|memory|memory.any_popup_open());
         if popup_owns_keys && ctx.input_mut(|input|input.consume_key(Modifiers::NONE,Key::Escape)) {
             ctx.memory_mut(|memory|memory.close_popup());
         }
-        if self.motion.keyboard && !popup_owns_keys {
+        let mut ime_frame=self.composing;
+        for event in ctx.input(|input|input.events.clone()) {if let egui::Event::Ime(ime)=event{ime_frame=true;self.composing=matches!(ime,egui::ImeEvent::Enabled|egui::ImeEvent::Preedit(_));}}
+        if self.motion.keyboard && !popup_owns_keys && !ime_frame {
             let (up,down,right,left,enter,escape)=ctx.input_mut(|i|(
                 i.consume_key(Modifiers::NONE,Key::ArrowUp),i.consume_key(Modifiers::NONE,Key::ArrowDown),
                 i.consume_key(Modifiers::NONE,Key::ArrowRight),i.consume_key(Modifiers::NONE,Key::ArrowLeft),
@@ -179,37 +187,64 @@ impl Dock {
                 if ui.small_button(">_").on_hover_text("Terminal").clicked(){output.action=Some(Action::Command(Command::Terminal));}
             });
         });
-        let search=ui.add(egui::TextEdit::singleline(&mut self.search).id(id.with("search")).hint_text("Find app or window").desired_width(ui.available_width()));
-        if search.changed(){self.selection=0;self.selected_window=None;}
+        let search_before=self.search.clone();
+        let search=ui.horizontal(|ui| {
+            let search=ui.add_sized(vec2((ui.available_width()-32.0).max(20.0),ui::CONTROL_HEIGHT),egui::TextEdit::singleline(&mut self.search).id(id.with("search")).hint_text("Find app or window"));
+            let clear=ui.add_enabled(!self.search.is_empty(),egui::Button::new("×")).on_hover_text("Clear search");
+            clear.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,!self.search.is_empty(),"Clear search"));
+            if clear.clicked(){self.search.clear();self.page=0;self.selection=0;self.selected_window=None;search.request_focus();}
+            search
+        }).inner;
+        if self.search!=search_before {
+            self.selection=0;self.selection_key=None;self.selected_window=None;self.page=0;
+            query=self.search.trim().to_lowercase();
+            all=items_on(&self.entries,pins,state,if display==0{None}else{Some(display)});
+            all.sort_by_key(|item|item.windows.is_empty());
+            all.retain(|item|query.is_empty() || item.label.to_lowercase().contains(&query) || item.windows.iter().any(|&index|state.apps[index].title.to_lowercase().contains(&query)));
+        }
         if search.has_focus(){self.motion.keyboard=true;}
         ui.add_space(5.0);
-        let mut closed_header=false;
+        let running=all.iter().filter(|item|!item.windows.is_empty()).count();
+        ui::text(ui,&format!("{} running · {} pinned",running,all.iter().filter(|item|item.id.as_ref().is_some_and(|id|pins.contains(id))).count()),ui::display(10.0),ui::SECONDARY);
         let reveal=self.motion.keyboard && self.revealed_selection!=Some((self.selection,self.selected_window,body.width().to_bits()));
-        egui::ScrollArea::vertical().id_salt(id.with("rows")).max_height((ui.available_height()-30.0).max(40.0)).auto_shrink([false,false]).animated(animate).show(ui,|ui| {
-            if all.is_empty(){ui.label(if query.is_empty(){"No open apps or pinned applications"}else{"No matching apps or windows"});}
-            for (n,item) in all.iter().enumerate() {
-                if item.windows.is_empty() && !closed_header {ui.add_space(10.0);ui::text(ui,"Pinned",ui::display(11.0),ui::SECONDARY);closed_header=true;}
+        let mut rows=Vec::new();
+        for (n,item) in all.iter().enumerate() {
+            rows.push((n,None));
+            if self.expanded.contains(&item_key(item)) {rows.extend((0..item.windows.len()).map(|window|(n,Some(window))));}
+        }
+        let capacity=page_capacity(ui.available_height(),ui.spacing().item_spacing.y);
+        let pages=rows.len().div_ceil(capacity.max(1)).max(1);
+        if reveal {if let Some(position)=rows.iter().position(|&(n,window)|n==self.selection && window==self.selected_window){self.page=position/capacity.max(1);}}
+        self.page=self.page.min(pages-1);
+        if all.is_empty(){ui.label(if query.is_empty(){"No open apps or pinned applications"}else{"No matching apps or windows"});}
+        let start=self.page*capacity;
+        for &(n,visible_window) in rows.iter().skip(start).take(capacity) {
+            let item=&all[n];
+            if visible_window.is_none() {
                 let (rect,response)=ui.allocate_exact_size(vec2(ui.available_width(),52.0),Sense::click());
                 // Stable response IDs allow assistive clients and tests to identify app rows.
                 let response=ui.interact(rect,id.with(("app",n)),Sense::click()).union(response);
                 response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,ui.is_enabled(),&item.label));
+                if response.gained_focus(){self.selection=n;self.selected_window=None;self.motion.keyboard=true;}
                 let active=state.focus.is_some_and(|focus|item.windows.contains(&focus));
                 let selected=self.motion.keyboard && self.selection==n;
-                if response.hovered() || selected {ui.painter().rect_filled(rect,4.0,theme.tint());}
+                if response.hovered() || response.has_focus() || selected {ui.painter().rect_filled(rect,4.0,theme.tint());}
+                if response.has_focus() || selected {ui.painter().rect_stroke(rect,ui::CONTROL_RADIUS,egui::Stroke::new(1.0,theme.main),egui::StrokeKind::Inside);}
                 if active {ui.painter().rect_filled(Rect::from_min_size(rect.left_top(),vec2(2.5,rect.height())),1.0,theme.main);}
                 let icon=Rect::from_min_size(rect.min+vec2(10.0,10.0),vec2(32.0,32.0));
                 self.icons.paint(ui,icon,item.entry.and_then(|i|self.entries[i].icon.as_deref()));
                 let label_rect=Rect::from_min_max(rect.min+vec2(51.0,7.0),rect.max-vec2(22.0,20.0));
                 let mut child=ui.new_child(egui::UiBuilder::new().max_rect(label_rect));
                 child.add(egui::Label::new(egui::RichText::new(&item.label).size(13.0).color(ui::TEXT)).truncate());
-                let detail=group_detail(item,state,display);
+                let detail=format!("{}{}",if item.id.as_ref().is_some_and(|id|pins.contains(id)){"Pinned · "}else{""},group_detail(item,state,display));
+                response.clone().on_hover_text(format!("{}\n{}",item.label,detail)).on_hover_cursor(egui::CursorIcon::PointingHand);
                 let galley=ui.painter().layout_no_wrap(detail,ui::display(10.0),ui::SECONDARY);
                 ui.painter().with_clip_rect(rect.shrink(4.0)).galley(rect.min+vec2(51.0,30.0),galley,ui::SECONDARY);
                 if item.windows.len()>1 {ui.painter().text(rect.right_center()-vec2(11.0,0.0),Align2::CENTER_CENTER,if self.expanded.contains(&item_key(item)){"⌄"}else{"›"},ui::display(15.0),ui::SECONDARY);}
                 if item.windows.iter().any(|&w|state.apps[w].urgent){ui.painter().circle_filled(rect.right_top()+vec2(-9.0,9.0),3.0,theme.main.gamma_multiply(attention_alpha(ctx.input(|i|i.time),animate)));if animate{ctx.request_repaint_after(Duration::from_millis(50));}}
-                if reveal && selected {ui.scroll_to_rect(rect,Some(egui::Align::Center));}
+
                 if response.clicked() {
-                    self.selection=n;
+                    self.selection=n;self.selected_window=None;
                     if item.windows.len()>1 {let key=item_key(item);if !self.expanded.remove(&key){self.expanded.insert(key);}}
                     else {output.action=Some(activation(display,item,&self.entries,state));}
                 }
@@ -228,8 +263,9 @@ impl Dock {
                     if !item.windows.is_empty() && ui.button("Show window controls").clicked(){self.expanded.insert(item_key(item));ui.close_menu();}
                     if !item.windows.is_empty() && ui.button("Preview windows").clicked(){output.action=Some(activation(display,item,&self.entries,state));ui.close_menu();}
                 }){menu_open=true;popup_area=Some(popup_area.map_or(menu.response.rect,|r|r.union(menu.response.rect)));}
-                if self.expanded.contains(&item_key(item)) {
-                    for (window_n,&index) in item.windows.iter().enumerate() {
+            }
+                if let Some(window_n)=visible_window {
+                    if let Some(&index)=item.windows.get(window_n) {
                         let app=&state.apps[index];
                         ui.horizontal(|ui| {
                             ui.add_space(14.0);
@@ -237,7 +273,7 @@ impl Dock {
                             let response=ui.add_sized(vec2(available,32.0),egui::Button::new(egui::RichText::new(format!("{} · W{}{}",app.title,app.workspace+1,if app.screen!=display{format!(" · D{}",app.screen+1)}else{String::new()})).size(11.0)).truncate().frame(false));
                             if self.motion.keyboard && self.selection==n && self.selected_window==Some(window_n) {
                                 ui.painter().rect_stroke(response.rect,3.0,egui::Stroke::new(1.0,theme.main),egui::StrokeKind::Inside);
-                                if reveal {ui.scroll_to_rect(response.rect,Some(egui::Align::Center));}
+
                             }
                             if response.clicked(){output.action=Some(Action::Command(Command::Activate(index)));}
                             if ui.small_button("×").on_hover_text("Close window").clicked(){output.action=Some(Action::Command(Command::Close(index)));}
@@ -251,11 +287,32 @@ impl Dock {
                         });
                     }
                 }
-            }
+        }
+        // Paging owns overflow: footer actions remain inside the side panel.
+        let mut requested_page=None;
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center),|ui| {
+            let previous=ui.add_enabled(self.page>0,egui::Button::new("‹")).on_hover_text("Previous applications");
+            previous.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,self.page>0,"Previous applications"));
+            if previous.clicked(){requested_page=Some(self.page-1);}
+            ui::text(ui,&format!("{}/{}",self.page+1,pages),ui::mono(10.0),ui::SECONDARY);
+            let next=ui.add_enabled(self.page+1<pages,egui::Button::new("›")).on_hover_text("Next applications");
+            next.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,self.page+1<pages,"Next applications"));
+            if next.clicked(){requested_page=Some(self.page+1);}
+            if ui.small_button("All windows").clicked(){output.action=Some(Action::Command(Command::Overview));}
         });
-        if ui.small_button("All windows").clicked(){output.action=Some(Action::Command(Command::Overview));}
+        if let Some(page)=requested_page {
+            self.page=page;
+            if let Some(&(app,window))=rows.get(page*capacity) {
+                self.selection=app;self.selected_window=window;
+                self.selection_key=Some(item_key(&all[app]));
+            }
+            // Never dispatch a selection from the page that the user just left.
+            key_action=None;
+            if self.motion.keyboard {search.request_focus();}
+        }
         if key_action.is_some(){output.action=key_action;}
         self.revealed_selection=Some((self.selection,self.selected_window,body.width().to_bits()));
+        self.selection_key=all.get(self.selection).map(item_key);
         self.menu_open=menu_open;
         if let Some(Action::Command(Command::AppWindows(_,ids)))=&output.action {
             let capable=ctx.data(|data|data.get_temp::<bool>(egui::Id::new("window-shelf-capable"))).unwrap_or(false);
@@ -272,6 +329,10 @@ impl Dock {
         output
     }
 }
+
+/// Each application needs 52px plus native spacing; window rows are shorter.
+/// The footer keeps its own 36px reservation even with hundreds of windows.
+fn page_capacity(height:f32,spacing:f32)->usize {((height-36.0).max(0.0)/(52.0+spacing)).floor() as usize}
 
 fn item_key(item:&Item)->String {item.id.clone().unwrap_or_else(||format!("{}:{:?}",item.label,item.windows))}
 fn group_detail(item:&Item,state:&DesktopState,display:usize)->String {
@@ -389,6 +450,58 @@ mod right_panel_tests {
     use des_common::ipc::{AppInfo,Place};
     fn window(id:&str,title:&str)->AppInfo {AppInfo{app_id:id.into(),title:title.into(),screen:0,workspace:0,place:Place::Main,pinned:false,urgent:false}}
     #[test]
+    fn pages_fit_short_panels_and_keep_footer_reachable() {
+        for width in [192.0,240.0,340.0] {for height in [240.0,320.0,480.0] {
+            let ctx=egui::Context::default();ui::install_fonts(&ctx,None,None);
+            let mut dock=Dock::default();dock.scanned=Some(Instant::now());
+            let pins=(0..100).map(|n|format!("app-{n}.desktop")).collect::<Vec<_>>();
+            let screen=Rect::from_min_size(pos2(0.0,0.0),vec2(width,height));
+            let _=ctx.run(egui::RawInput{screen_rect:Some(screen),..Default::default()},|ctx|{
+                egui::CentralPanel::default().show(ctx,|ui|{
+                    dock.panel_on(0,ui,None,&pins,&Theme::load("signal"),false);
+                    assert!(ui.min_rect().bottom()<=screen.bottom(),"footer exceeded {width}×{height}: {:?}",ui.min_rect());
+                    assert!(ui.min_rect().right()<=screen.right(),"footer exceeded narrow panel");
+                });
+            });
+            assert!(ctx.read_response(egui::Id::new(("app-panel",0usize)).with(("app",99usize))).is_none(),"off-page apps should not be rendered");
+        }}
+    }
+    #[test]
+    fn next_page_then_enter_activates_the_visible_app_or_expanded_window() {
+        fn frame(dock:&mut Dock,ctx:&egui::Context,state:&DesktopState,events:Vec<egui::Event>)->(Output,egui::FullOutput) {
+            let mut picked=Output::default();
+            let rendered=ctx.run(egui::RawInput{screen_rect:Some(Rect::from_min_size(pos2(0.0,0.0),vec2(240.0,320.0))),events,..Default::default()},|ctx|{
+                egui::CentralPanel::default().show(ctx,|ui|{picked=dock.panel_on(0,ui,Some(state),&[],&Theme::load("signal"),false);});
+            });
+            (picked,rendered)
+        }
+        for expanded in [false,true] {
+            let ctx=egui::Context::default();ui::install_fonts(&ctx,None,None);ctx.enable_accesskit();
+            let mut dock=Dock::default();dock.scanned=Some(Instant::now());dock.reveal_keyboard();
+            let state=DesktopState{apps:(0..20).map(|n|window(&if expanded{"browser".into()}else{format!("app-{n}")},&format!("Window {n}"))).collect(),..Default::default()};
+            if expanded {dock.expanded.insert(item_key(&items_on(&[],&[],&state,None)[0]));}
+            ctx.memory_mut(|memory|memory.request_focus(egui::Id::new(("app-panel",0usize)).with("search")));
+            let (_,rendered)=frame(&mut dock,&ctx,&state,vec![]);
+            let tree=rendered.platform_output.accesskit_update.expect("accessibility tree");
+            let bounds=tree.nodes.iter().find_map(|(_,node)|(node.label()==Some("Next applications")).then(||node.bounds()).flatten()).expect("next page button");
+            let point=pos2(((bounds.x0+bounds.x1)*0.5) as f32,((bounds.y0+bounds.y1)*0.5) as f32);
+            frame(&mut dock,&ctx,&state,vec![egui::Event::PointerMoved(point),egui::Event::PointerButton{pos:point,button:egui::PointerButton::Primary,pressed:true,modifiers:Modifiers::NONE}]);
+            frame(&mut dock,&ctx,&state,vec![egui::Event::PointerButton{pos:point,button:egui::PointerButton::Primary,pressed:false,modifiers:Modifiers::NONE}]);
+            assert_eq!(dock.page,1,"Next must change the visible page");
+            let destination=if expanded {dock.selected_window.expect("page starts with an expanded window")} else {dock.selection};
+            assert!(destination>0,"selection must leave the old page");
+            let enter=egui::Event::Key{key:Key::Enter,physical_key:None,pressed:true,repeat:false,modifiers:Modifiers::NONE};
+            let (picked,_)=frame(&mut dock,&ctx,&state,vec![enter]);
+            assert!(matches!(picked.action,Some(Action::Command(Command::Activate(index))) if index==destination),"Enter must activate the destination page selection");
+        }
+    }
+    #[test]
+    fn page_budget_reserves_footer_and_scales_with_height() {
+        assert_eq!(page_capacity(35.0,8.0),0);
+        assert_eq!(page_capacity(156.0,8.0),2);
+        for height in [100.0,200.0,400.0,800.0] {assert!(page_capacity(height,8.0) as f32*60.0+36.0<=height);}
+    }
+    #[test]
     fn native_rows_fit_narrow_and_wide_panels_without_idle_overlay() {
         for width in [192.0, 240.0, 340.0] {
             let ctx=egui::Context::default(); ui::install_fonts(&ctx,None,None);
@@ -453,7 +566,7 @@ mod right_panel_tests {
         });
     }
     #[test]
-    fn long_vertical_list_scrolls_keyboard_selection_into_panel() {
+    fn long_vertical_list_pages_keyboard_selection_into_panel() {
         let ctx=egui::Context::default();ui::install_fonts(&ctx,None,None);
         let mut dock=Dock::default();dock.scanned=Some(Instant::now());dock.reveal_keyboard();dock.selection=127;
         let pins=(0..128).map(|n|format!("app-{n}.desktop")).collect::<Vec<_>>();

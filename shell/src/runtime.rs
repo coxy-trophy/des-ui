@@ -18,6 +18,9 @@ impl eframe::App for App {
         self.osd.observe(osd::Kind::Volume, self.mon.volume(), quiet, now);
         self.osd.observe(osd::Kind::Brightness, self.mon.brightness, quiet, now);
         self.widgets.pump();
+        for message in self.settings.poll_devices(ctx) {
+            self.notices.post("Devices", &message, false);
+        }
         // While the terminal in use is in an ssh session, the panels show that machine.
         let focused = self.focus_tab();
         self.remote.follow_tab(self.tabs.get(focused), ctx);
@@ -107,7 +110,11 @@ impl eframe::App for App {
             }
             // Bring the frame in line with the saved choice of panels: once at the
             // start, and again whenever that choice is changed in the settings.
-            if !desktop.connected() { self.frame_synced = false; self.shortcuts_synced = false; }
+            if !desktop.connected() { self.frame_synced = false; self.shortcuts_synced = false; self.keyboard_reserved = None; }
+            let height = if self.lock.locked { 0 } else { self.osk.height_for(ctx.screen_rect().height()).round() as u16 };
+            if desktop.connected() && self.keyboard_reserved != Some(height) && desktop.send(Command::KeyboardHeight(height)).is_ok() {
+                self.keyboard_reserved = Some(height);
+            }
             if !self.shortcuts_synced && desktop.connected() {
                 self.shortcuts_synced = desktop.send(Command::ReloadInput).is_ok();
             }
@@ -313,13 +320,13 @@ impl eframe::App for App {
         let mut command = None;
 
         // The compositor places native windows in this same inset workspace.
-        let osk_height = self.osk.height();
-        let frame_layout = des_common::frame::Layout::new(screen.width(), (screen.height()-osk_height).max(1.0), open, self.config.side_panel_behavior);
+        let osk_height = self.osk.height_for(screen.height()).round();
+        let frame_layout = des_common::frame::Layout::with_keyboard(screen.width(), screen.height(), open, self.config.side_panel_behavior, osk_height);
         let on_screen = |rect: des_common::Rect| Rect::from_min_size(screen.min+vec2(rect.x,rect.y),vec2(rect.width,rect.height));
         let workspace = on_screen(frame_layout.workspace);
         let center = on_screen(frame_layout.center);
         let status_top = screen.bottom() - des_common::STATUS_HEIGHT;
-        let keys_top = status_top - osk_height;
+        let keys_top = frame_layout.keyboard.map(|rect| on_screen(rect).top()).unwrap_or(status_top);
         let mut dock_keys = self.dock.reserve_keyboard(ctx);
         let mut apps_output = dock::Output::default();
         ctx.data_mut(|data| data.insert_temp(egui::Id::new("window-shelf-capable"), self.desktop.as_ref().is_some_and(|d| d.connected() && d.window_shelf)));
@@ -332,8 +339,8 @@ impl eframe::App for App {
                 material::paint(ctx, ui.painter(), screen, 0.0, material::Role::Background);
                 material::paint(ctx, ui.painter(), center, des_common::frame::RADIUS, material::Role::Panel);
                 let status = Rect::from_min_max(pos2(screen.left(), status_top), screen.max);
-                if osk_height > 0.0 {
-                    self.osk.show(ui, &theme, Rect::from_min_max(pos2(screen.left(), keys_top), pos2(screen.right(), status_top)));
+                if let Some(rect) = frame_layout.keyboard {
+                    self.osk.show(ui, &theme, on_screen(rect));
                 }
                 let clicks = region(ui, status, vec2(24.0, 0.0), Layout::left_to_right(Align::Center), |ui| {
                     panels::status(ui, &theme, &self.mon, state.as_ref(), open, overlay, self.notices.count(), self.capture.recording.map(|since| since.elapsed()), self.desktop.as_ref().map_or(des_common::ipc::Hands::Off, |desktop| desktop.hands), Some(&self.tray), self.osk.open, self.quick.open)
@@ -395,10 +402,11 @@ impl eframe::App for App {
                             if self.dock.captures_keyboard() {let _=shortcuts::take_modal_input(ctx,true);}
                             return false;
                         }
+                        let music_height = self.music.preferred_panel_height();
                         let music = &mut self.music;
                         let world_was_open = self.world.expanded;
                         let mut wanted = false;
-                        panels::right(ui, &theme, &self.mon, state.as_ref(), &mut self.world, rotating, &places, &self.widgets, |ui| {
+                        panels::right(ui, &theme, &self.mon, state.as_ref(), &mut self.world, rotating, &places, &self.widgets, music_height, |ui| {
                             wanted = music.panel(ui, &theme);
                         });
                         if !world_was_open && self.world.expanded {
@@ -681,7 +689,7 @@ impl eframe::App for App {
         // Subtle rounded outlines belong to the same shared panel rectangles.
         let lines = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("frame-lines")));
         let line = Stroke::new(1.0, ui::LINE);
-        powerup::frame_lines(&lines, screen, workspace, keys_top, open,
+        powerup::frame_lines(&lines, screen, workspace, status_top, osk_height, open,
             self.config.side_panel_behavior == des_common::PanelBehavior::Collapse, line, &stage);
 
         if open.right {self.apps_panel_pending=false;}

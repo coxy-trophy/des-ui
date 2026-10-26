@@ -269,17 +269,17 @@ impl Explorer {
         } else { eframe::egui::CursorIcon::Grab });
         response
     }
-    pub fn panel(&mut self, ui: &mut Ui, theme: &Theme, size: f32, geo: &Snapshot, rotating: bool) {
+    pub fn panel(&mut self, ui: &mut Ui, theme: &Theme, size: f32, geo: &Snapshot, _rotating: bool) {
         if self.expanded {
             ui::text(ui, "Explorer open in workspace", ui::mono(11.0), ui::LABEL);
             return;
         }
-        self.canvas(ui, theme, size, geo);
-        self.controls(ui, theme, geo, rotating, false);
-        if let Some(place) = &self.selected {
-            ui::text(ui, &place.label, ui::mono(11.0), ui::TEXT);
-            ui::text(ui, &format!("{:.2}°, {:.2}°", place.lat, place.lon), ui::mono(10.0), ui::LABEL);
-        }
+        let response = self.canvas(ui, theme, size, geo);
+        if response.double_clicked() { self.open(); }
+        // A compact globe is an ambient instrument: interacting pauses it only
+        // while the pointer/touch is there. Manual pause remains in the explorer.
+        if !response.hovered() && !response.dragged() { self.paused = false; }
+        response.on_hover_text("Drag to rotate · scroll to zoom · double-click to explore");
     }
     pub fn workspace(&mut self, ui: &mut Ui, theme: &Theme, geo: &Snapshot, rotating: bool, lookups: bool) {
         use eframe::egui::{ScrollArea, TextEdit};
@@ -372,6 +372,25 @@ mod tests {
         assert_eq!(explorer.zoom, 1.0);
         assert!(explorer.paused);
         assert!(explorer.selected.is_none());
+    }
+
+    #[test]
+    fn compact_globe_resumes_after_the_pointer_leaves() {
+        use eframe::egui::{CentralPanel, Context, Event, RawInput, Rect};
+        let ctx = Context::default();
+        ui::install_fonts(&ctx, None, None);
+        let mut explorer = Explorer::default();
+        let theme = Theme::load("signal");
+        explorer.tick(1.0, true, None);
+        explorer.turn(20.0, 0.0);
+        assert!(explorer.paused);
+        let _ = ctx.run(RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(400.0, 500.0))), events: vec![Event::PointerGone], ..Default::default() }, |ctx| {
+            CentralPanel::default().show(ctx, |ui| explorer.panel(ui, &theme, 180.0, &Snapshot::default(), true));
+        });
+        assert!(!explorer.paused);
+        let before = explorer.yaw;
+        explorer.tick(2.0, true, None);
+        assert_ne!(before, explorer.yaw);
     }
 
     #[test]

@@ -46,23 +46,25 @@ pub struct Running {
     held: Vec<u32>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 struct HandSettings {
     speed: f32,
     pinch_sensitivity: f32,
     scroll_speed: f32,
     drag_lock: bool,
+    camera: Option<des_common::hands::CameraSelection>,
 }
 
 impl From<&des_common::input::InputSettings> for HandSettings {
     fn from(input: &des_common::input::InputSettings) -> Self {
         Self { speed: input.hand_speed, pinch_sensitivity: input.hand_pinch_sensitivity,
-            scroll_speed: input.hand_scroll_speed, drag_lock: input.hand_drag_lock }
+            scroll_speed: input.hand_scroll_speed, drag_lock: input.hand_drag_lock,
+            camera: des_common::hands::CameraSelection::load().ok().flatten() }
     }
 }
 
 impl HandSettings {
-    fn args(self) -> Vec<String> {
+    fn args(&self) -> Vec<String> {
         vec!["--serve".into(), "--speed".into(), self.speed.to_string(),
             "--pinch-sensitivity".into(), self.pinch_sensitivity.to_string(),
             "--scroll-speed".into(), self.scroll_speed.to_string(),
@@ -140,8 +142,17 @@ impl DesComp {
 
     fn start_hands(&mut self) {
         let settings = HandSettings::from(&self.input_settings);
+        let camera = match des_common::hands::camera_path() {
+            Ok(path) => path,
+            Err(error) => {
+                tracing::warn!("cannot use selected hand camera: {error}");
+                self.tell_hands(Hands::Failed);
+                return;
+            }
+        };
         let spawned = Command::new(program())
             .args(settings.args())
+            .arg("--camera").arg(camera)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

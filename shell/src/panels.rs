@@ -24,7 +24,7 @@ const SECTION_GAP: f32 = 22.0;
 
 /// What the left column keeps for the process list and the companion, so that the
 /// optional instrument sections above them never crowd them out.
-const LEFT_RESERVE: f32 = 3.0 * 27.0 + SECTION_GAP + 30.0 + 100.0;
+const LEFT_RESERVE: f32 = 3.0 * 27.0 + SECTION_GAP + 30.0;
 
 /// How many of the optional sections, in order and each of the given height, fit in
 /// `available` while leaving `reserve` for what must follow.
@@ -91,7 +91,51 @@ fn clock(ui: &mut Ui, theme: &Theme, size: f32) {
     ui.painter().galley(seconds_pos, seconds, theme.main);
 }
 
+/// Keep the companion's footer independent of telemetry flow and clipping.
 pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon, pet: &mut crate::pet::Pet, widgets: &crate::widgets::Widgets) {
+    let rect = ui.max_rect();
+    let footer = pet.room().min(rect.height());
+    let body = Rect::from_min_max(rect.min, pos2(rect.right(), (rect.bottom()-footer-if footer>0.0 {8.0}else{0.0}).max(rect.top()+1.0)));
+    let mut instruments = ui.new_child(eframe::egui::UiBuilder::new().id_salt("left-instruments").max_rect(body).layout(Layout::top_down(Align::Min)));
+    instruments.set_clip_rect(body.intersect(ui.clip_rect()));
+    if body.height() < 560.0 {
+        left_compact(&mut instruments, theme, mon);
+    } else {
+        left_instruments(&mut instruments, theme, mon, widgets);
+    }
+    if footer > 0.0 {
+        let area = Rect::from_min_max(pos2(rect.left(), rect.bottom()-footer), rect.max);
+        let mut companion = ui.new_child(eframe::egui::UiBuilder::new().id_salt("left-pet").max_rect(area).layout(Layout::top_down(Align::Min)));
+        companion.set_clip_rect(area.intersect(ui.clip_rect()));
+        pet.show(&mut companion);
+    }
+}
+
+fn left_compact(ui: &mut Ui, theme: &Theme, mon: &SysMon) {
+    ui.spacing_mut().item_spacing.y = 5.0;
+    clock(ui, theme, if ui.max_rect().height() < 300.0 {38.0}else{48.0});
+    ui::text(ui, &chrono::Local::now().format("%a %d %b %Y").to_string().to_uppercase(), ui::mono(10.0), ui::SECONDARY);
+    ui.add_space(8.0);
+    ui::section(ui, "SYSTEM", |ui| ui::meta(ui, &truncate(&mon.os, 18), ui::LABEL));
+    let cpu = mon.cpu_hist.back().copied().unwrap_or(0.0);
+    ui::section(ui, "PROCESSOR", |ui| ui::meta(ui, &format!("{cpu:.0}%"), theme.main));
+    ui::bar_grid(ui, theme, &mon.cores, 100.0, 18.0, |i, usage| format!("Core {}: {usage:.0}%", i+1));
+    ui.add_space(8.0);
+    ui::section(ui, "MEMORY", |ui| ui::meta(ui, &format!("{:.1}/{:.1} GiB", mon.mem_used as f64/GIB, mon.mem_total as f64/GIB), ui::TEXT));
+    ui::bar(ui, theme, 8.0, mon.mem_used as f32/mon.mem_total.max(1) as f32, 0.0);
+    if ui.available_height() >= 56.0 {
+        ui.add_space(8.0);
+        ui::section(ui, "PROCESSES", |_| {});
+        for process in &mon.top {
+            if ui.available_height() < 23.0 { break; }
+            let (row,_) = ui.allocate_exact_size(vec2(ui.available_width(),23.0),Sense::hover());
+            ui.painter().text(row.left_center(),Align2::LEFT_CENTER,truncate(&process.name,14),ui::mono(11.0),ui::TEXT);
+            ui.painter().text(row.right_center(),Align2::RIGHT_CENTER,format!("{:.0}%",process.cpu),ui::mono(11.0),ui::SECONDARY);
+        }
+    }
+}
+
+fn left_instruments(ui: &mut Ui, theme: &Theme, mon: &SysMon, widgets: &crate::widgets::Widgets) {
     // At the start of a session the column comes on with the rest of the frame.
     let stage = powerup::stage(ui.ctx());
     stage.apply(ui, Part::Left);
@@ -220,13 +264,15 @@ pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon, pet: &mut crate::pet::Pet,
         }
     }
 
-    crate::widgets::show(ui, theme, widgets, des_common::Panel::Left);
+    if widget_height > 0.0 && ui.available_height() > widget_height + LEFT_RESERVE {
+        crate::widgets::show(ui, theme, widgets, des_common::Panel::Left);
+    }
 
     ui.add_space(SECTION_GAP);
     ui::section(ui, "PROCESSES", |ui| ui::meta(ui, "CPU · MEM", ui::LABEL));
     ui.spacing_mut().item_spacing.y = 0.0;
     // The list stops short of the companion's strip, so the animal always has its room.
-    let floor = ui.max_rect().bottom() - pet.room();
+    let floor = ui.max_rect().bottom();
     for process in &mon.top {
         let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 27.0), Sense::hover());
         if rect.bottom() > floor {
@@ -245,7 +291,6 @@ pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon, pet: &mut crate::pet::Pet,
         painter.text(rect.right_center(), Align2::RIGHT_CENTER, human_bytes(process.mem as f64), ui::mono(12.0), ui::SECONDARY);
         painter.hline(rect.x_range(), rect.bottom(), Stroke::new(1.0, ui::TRACK));
     }
-    pet.show(ui);
 }
 
 /// What each display is showing, for the right column.
@@ -270,15 +315,16 @@ fn display_tiles(ui: &mut Ui, theme: &Theme, desktop: &DesktopState) {
     };
     let draw = |ui: &mut Ui, screen: usize| {
         let active = screen == focused_screen;
-        ui::tile(ui, theme, active, |ui| {
-            let label = if screen == 0 {
-                "1 · MAIN".to_string()
-            } else {
-                format!("{}", screen + 1)
-            };
-            ui::tracked(ui, &label, ui::display(10.0), if active { theme.main } else { ui::LABEL }, 2.0);
-            ui::text(ui, &truncate(&describe(screen), 15), ui::mono(12.0), ui::TEXT);
-        });
+        let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 54.0), Sense::hover());
+        crate::material::paint(ui.ctx(), ui.painter(), rect, ui::CONTROL_RADIUS, crate::material::Role::Panel);
+        let painter = ui.painter_at(rect);
+        painter.rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, if active { theme.main } else { ui::LINE }), StrokeKind::Inside);
+        let label = if screen == 0 { "1 · MAIN".to_string() } else { format!("{}", screen + 1) };
+        painter.text(rect.min + vec2(12.0, 10.0), Align2::LEFT_TOP, label, ui::display(10.0), if active { theme.main } else { ui::LABEL });
+        let full = describe(screen);
+        let fit = ((rect.width() - 24.0).max(0.0) / 7.5) as usize;
+        painter.text(rect.min + vec2(12.0, 29.0), Align2::LEFT_TOP, truncate(&full, fit), ui::mono(12.0), ui::TEXT);
+        response.on_hover_text(full);
     };
     for pair in (0..desktop.screens).collect::<Vec<_>>().chunks(2) {
         match pair {
@@ -297,8 +343,101 @@ fn display_tiles(ui: &mut Ui, theme: &Theme, desktop: &DesktopState) {
     }
 }
 
-/// The right column. `desktop` is absent when the shell
-/// runs as an ordinary window.
+/// Footer headings have explicit geometry: a horizontal egui layout otherwise
+/// inherits the global 30px interaction height before adding section spacing.
+fn right_heading(ui: &mut Ui, title: &str, meta: &str) {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
+    let painter = ui.painter_at(rect);
+    let title = ui::galley(ui, title, ui::display_bold(13.0), ui::SECONDARY, 0.8);
+    let meta = ui::galley(ui, meta, ui::mono(10.0), ui::LABEL, 0.0);
+    painter.galley(rect.left_center() - vec2(0.0, title.size().y / 2.0), title.clone(), ui::SECONDARY);
+    painter.galley(rect.right_center() - vec2(meta.size().x, meta.size().y / 2.0), meta.clone(), ui::LABEL);
+    let start = rect.left() + title.size().x + 10.0;
+    let end = rect.right() - meta.size().x - 10.0;
+    if end > start { painter.hline(start..=end, rect.center().y, Stroke::new(1.0, ui::LINE)); }
+}
+
+fn right_levels(ui: &mut Ui, theme: &Theme, readings: [(&str, Option<u8>); 3], remote: bool, battery_health: Option<u8>, charging: bool) {
+    let area = ui.max_rect();
+    let levels = readings.iter().filter(|(_, value)| value.is_some()).count();
+    let full_height = 28.0 + levels as f32 * 23.0 + if remote { 18.0 } else { 0.0 };
+    let compact = area.height() < full_height;
+    if compact {
+        if remote && area.height() >= 34.0 {
+            ui.painter().text(area.left_top(), Align2::LEFT_TOP, "LOCAL", ui::mono(10.0), ui::LABEL);
+        }
+    } else {
+        right_heading(ui, "CONTROLS", if remote { "LOCAL" } else { "" });
+    }
+    let values: Vec<_> = readings.into_iter().filter_map(|(label, value)| value.map(|value| (label, value))).collect();
+    let width = area.width() / values.len().max(1) as f32;
+    let row_top = if compact { area.top() + if remote && area.height() >= 34.0 { 18.0 } else { 0.0 } } else { area.top() + 28.0 };
+    for (index, (label, value)) in values.into_iter().enumerate() {
+        let row = if compact {
+            Rect::from_min_size(pos2(area.left() + index as f32 * width, row_top), vec2(width, 16.0))
+        } else {
+            Rect::from_min_size(pos2(area.left(), row_top + index as f32 * 23.0), vec2(area.width(), 16.0))
+        };
+        let response = ui.interact(row, ui.id().with(label), Sense::hover());
+        let hint = match (label, battery_health) {
+            ("BATTERY", Some(health)) => format!("BATTERY: {value}% · holds {health}% of its original capacity"),
+            _ => format!("{label}: {value}%"),
+        };
+        response.on_hover_text(if remote { format!("Local {hint}") } else { hint });
+        let painter = ui.painter_at(row);
+        let symbol = match label { "VOLUME" if value == 0 => Icon::Muted, "VOLUME" => Icon::Volume, "BRIGHTNESS" => Icon::Brightness, _ if charging => Icon::Charging, _ => Icon::Battery };
+        let icon_size = if compact { 12.0 } else { 16.0 };
+        ui::paint_icon(&painter, Rect::from_center_size(row.left_center() + vec2(icon_size / 2.0, 0.0), vec2(icon_size, icon_size)), symbol, ui::LABEL, false);
+        if compact {
+            painter.text(row.left_center() + vec2(16.0, 0.0), Align2::LEFT_CENTER, format!("{value}%"), ui::mono(10.0), ui::TEXT);
+        } else {
+            painter.text(row.right_center(), Align2::RIGHT_CENTER, format!("{value}%"), ui::mono(12.0), ui::TEXT);
+            let track = Rect::from_min_max(pos2(row.left() + 30.0, row.center().y - 3.0), pos2((row.right() - 44.0).max(row.left() + 30.0), row.center().y + 3.0));
+            painter.rect_filled(track, 0.0, ui::TRACK);
+            let mut filled = track;
+            filled.set_width(track.width() * (value as f32 / 100.0).clamp(0.0, 1.0));
+            painter.rect_filled(filled, 0.0, theme.main);
+        }
+        // Record the actual painted rows as content geometry for parent sizing
+        // and the headless budget checks, even though no flow layout is needed.
+        ui.expand_to_include_rect(row);
+    }
+}
+
+/// Space assigned before rendering, so an optional instrument cannot move playback
+/// or local readings beyond the physical card.
+#[derive(Debug, Clone, Copy)]
+struct RightBudget {
+    instruments: f32,
+    displays: f32,
+    controls: f32,
+    music: f32,
+}
+
+fn right_budget(height: f32, music: f32, levels: usize, remote: bool, screens: usize) -> RightBudget {
+    let height = height.max(0.0);
+    let music = music.max(0.0).min(height);
+    let mut remaining = (height - music - if music > 0.0 { 8.0 } else { 0.0 }).max(0.0);
+    let requested_controls = if levels == 0 { 0.0 } else if height < 320.0 { 48.0 } else { 28.0 + levels as f32 * 23.0 + if remote { 18.0 } else { 0.0 } };
+    let controls = requested_controls.min(remaining);
+    remaining = (remaining - controls - if controls > 0.0 { 8.0 } else { 0.0 }).max(0.0);
+    let displays = if screens == 0 || remaining < 92.0 { 0.0 } else if screens <= 2 && remaining >= 300.0 { 90.0 } else { 32.0 };
+    remaining = (remaining - displays - if displays > 0.0 { 8.0 } else { 0.0 }).max(0.0);
+    RightBudget { instruments: remaining, displays, controls, music }
+}
+
+/// Fixed regions paint and interact only inside their reservation. They never
+/// advance the enclosing column's cursor or expand its minimum rectangle.
+fn right_region(ui: &mut Ui, rect: Rect, id: &'static str, draw: impl FnOnce(&mut Ui)) {
+    if rect.height() <= 0.0 || rect.width() <= 0.0 { return; }
+    let mut child = ui.new_child(eframe::egui::UiBuilder::new().id_salt(id).max_rect(rect).layout(Layout::top_down(Align::Min)));
+    child.set_clip_rect(rect.intersect(ui.clip_rect()));
+    child.spacing_mut().item_spacing = vec2(8.0, 7.0);
+    draw(&mut child);
+}
+
+/// The right column. Its bottom reservations are independent of the globe and
+/// optional widgets. `desktop` is absent in an ordinary application window.
 pub fn right(
     ui: &mut Ui,
     theme: &Theme,
@@ -308,141 +447,160 @@ pub fn right(
     rotating: bool,
     geo: &Snapshot,
     widgets: &crate::widgets::Widgets,
+    music_height: f32,
     playing: impl FnOnce(&mut Ui),
 ) {
     let stage = powerup::stage(ui.ctx());
     stage.apply(ui, Part::Right);
-    ui.spacing_mut().item_spacing.y = 7.0;
-    let online = !mon.ip.is_empty();
-    ui::section(ui, "NETWORK", |ui| {
-        let (label, color) = if online {
-            ("ONLINE", theme.main)
-        } else {
-            ("OFFLINE", ui::CAUTION)
-        };
-        ui::meta(ui, label, color);
-        let (dot, _) = ui.allocate_exact_size(vec2(6.0, 6.0), Sense::hover());
-        ui.painter().rect_filled(dot, 0.0, color);
-    });
-    ui.horizontal(|ui| {
-        let iface = if mon.iface.is_empty() { "no interface" } else { &mon.iface };
-        ui::text(ui, iface, ui::mono(12.0), ui::LABEL);
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui::text(ui, if online { &mon.ip } else { "—" }, ui::mono(12.0), ui::TEXT);
+    let area = ui.available_rect_before_wrap();
+    let readings = [("VOLUME", mon.volume()), ("BRIGHTNESS", mon.brightness), ("BATTERY", mon.battery)];
+    let remote = mon.remote.as_ref().is_some_and(|remote| remote.live);
+    let levels = readings.iter().filter(|(_, value)| value.is_some()).count();
+    let budget = right_budget(area.height(), music_height, levels, remote, desktop.map_or(0, |desktop| desktop.screens));
+    let mut bottom = area.bottom();
+    if budget.music > 0.0 {
+        let rect = Rect::from_min_max(pos2(area.left(), bottom - budget.music), pos2(area.right(), bottom));
+        right_region(ui, rect, "right-playback", playing);
+        bottom = (rect.top() - 8.0).max(area.top());
+    }
+    if budget.controls > 0.0 {
+        let rect = Rect::from_min_max(pos2(area.left(), bottom - budget.controls), pos2(area.right(), bottom));
+        right_region(ui, rect, "right-local-controls", |ui| {
+            right_levels(ui, theme, readings, remote, mon.battery_health, mon.power.is_some_and(|power| power.plugged));
         });
+        bottom = (rect.top() - 8.0).max(area.top());
+    }
+    if budget.displays > 0.0 {
+        let rect = Rect::from_min_max(pos2(area.left(), bottom - budget.displays), pos2(area.right(), bottom));
+        right_region(ui, rect, "right-displays", |ui| {
+            if let Some(desktop) = desktop {
+                right_heading(ui, "DISPLAYS", &format!("{} CONNECTED", desktop.screens));
+                if budget.displays > 40.0 {
+                    display_tiles(ui, theme, desktop);
+                } else {
+                    let summary = (0..desktop.screens).map(|index| format!("Display {}", index + 1)).collect::<Vec<_>>().join(" · ");
+                    ui.interact(ui.min_rect(), ui.id().with("display-summary"), Sense::hover()).on_hover_text(summary);
+                }
+            }
+        });
+    }
+    let instruments = Rect::from_min_size(area.min, vec2(area.width(), budget.instruments));
+    right_region(ui, instruments, "right-instruments", |ui| {
+        let online = !mon.ip.is_empty();
+        ui::section(ui, "NETWORK", |ui| ui::meta(ui, if online { "ONLINE" } else { "OFFLINE" }, if online { theme.main } else { ui::CAUTION }));
+        if budget.instruments < 42.0 { return; }
+        ui.horizontal(|ui| {
+            ui::text(ui, if mon.iface.is_empty() { "no interface" } else { &mon.iface }, ui::mono(11.0), ui::LABEL);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui::text(ui, if online { &mon.ip } else { "—" }, ui::mono(11.0), ui::TEXT);
+            });
+        });
+        if budget.instruments < 76.0 { return; }
+        ui.horizontal(|ui| {
+            ui::icon(ui, Icon::Download, 13.0, theme.main);
+            ui::text(ui, &format!("{}/s", human_bytes(mon.rx_hist.back().copied().unwrap_or(0.0) as f64)), ui::mono(11.0), ui::TEXT);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui::text(ui, &format!("{}/s", human_bytes(mon.tx_hist.back().copied().unwrap_or(0.0) as f64)), ui::mono(11.0), ui::SECONDARY);
+                ui::icon(ui, Icon::Upload, 13.0, ui::SECONDARY);
+            });
+        }).response.on_hover_text(format!("Downloaded {} · uploaded {}", human_bytes(mon.rx_total as f64), human_bytes(mon.tx_total as f64)));
+        if budget.instruments >= 270.0 {
+            let peak = mon.rx_hist.iter().chain(mon.tx_hist.iter()).fold(1024.0_f32, |a, b| a.max(*b));
+            ui::waterfall(ui, &stage.swept_values(&mon.rx_hist), &stage.swept_values(&mon.tx_hist), peak, vec2(ui.available_width(), 40.0), theme.main, ui::SECONDARY);
+        }
+        let remaining = instruments.bottom() - ui.cursor().min.y;
+        if remaining < 90.0 { return; }
+        ui::section(ui, "WORLD VIEW", |ui| {
+            if !geo.links.is_empty() { ui::meta(ui, &format!("{} LINKS", geo.links.len()), ui::LABEL); }
+        });
+        // Optional readings get a bounded block only when there is enough room for
+        // all of them and a useful globe. Their output cannot move the footer.
+        let widget_count = widgets.on(des_common::Panel::Right).count();
+        let widget_height = widget_count as f32 * 100.0;
+        let remaining = instruments.bottom() - ui.cursor().min.y;
+        if widget_count > 0 && remaining >= widget_height + 224.0 {
+            let rect = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), widget_height));
+            right_region(ui, rect, "right-optional-widgets", |ui| crate::widgets::show(ui, theme, widgets, des_common::Panel::Right));
+            ui.add_space(widget_height + 8.0);
+        }
+        // Home and a possible selected destination stay within this allocation.
+        let remaining = instruments.bottom() - ui.cursor().min.y;
+        let size = (remaining - if geo.home.is_some() { 26.0 } else { 0.0 }).min(ui.available_width()).min(224.0).max(0.0);
+        if size >= 72.0 { world.panel(ui, theme, size, geo, rotating); }
+        if let Some(home) = &geo.home {
+            if instruments.bottom() - ui.cursor().min.y >= 18.0 {
+                let label = format!("{} · {}", home.label.to_uppercase(), if geo.home_is_set { "SET BY YOU" } else { "BY IP" });
+                ui::text(ui, &label, ui::mono(10.0), ui::SECONDARY).on_hover_text(&home.label);
+            }
+        }
     });
-    // Both graphs share a scale so their heights are comparable.
-    let peak = mon
-        .rx_hist
-        .iter()
-        .chain(mon.tx_hist.iter())
-        .fold(1024.0_f32, |a, b| a.max(*b));
-    let traffic = |ui: &mut Ui, symbol: Icon, total: u64, hist: &std::collections::VecDeque<f32>, color: eframe::egui::Color32| {
-        ui::tile(ui, theme, false, |ui| {
-            ui.horizontal(|ui| {
-                ui::icon(ui, symbol, 14.0, ui::LABEL);
-                // The running total, where the tile is wide enough for both.
-                if ui.available_width() > 78.0 {
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui::tracked(ui, &human_bytes(total as f64), ui::display(10.0), ui::LABEL, 1.0);
+}
+
+#[cfg(test)]
+mod right_budget_tests {
+    use super::*;
+
+    #[test]
+    fn actual_footer_paint_fits_at_narrow_widths() {
+        use eframe::egui;
+        let theme = Theme::parse(include_str!("../../themes/signal.json")).unwrap();
+        for width in [192.0, 292.0] {
+            for remote in [false, true] {
+                for levels in [2, 3] {
+                    let readings = [("VOLUME", if levels == 3 { Some(100) } else { None }), ("BRIGHTNESS", Some(79)), ("BATTERY", Some(87))];
+                    let height = right_budget(720.0, crate::music::PANEL_HEIGHT, levels, remote, 1).controls;
+                    let ctx = egui::Context::default();
+                    ui::install_fonts(&ctx, None, None);
+                    // Match the app's 30px minimum native interaction target. A
+                    // flow section inherited this height and clipped the last row.
+                    ctx.style_mut(|style| style.spacing.interact_size = vec2(30.0, 30.0));
+                    let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(width, height));
+                            let mut controls = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Min)));
+                            controls.spacing_mut().item_spacing = vec2(8.0, 7.0);
+                            right_levels(&mut controls, &theme, readings, remote, Some(92), false);
+                            assert!(controls.min_rect().bottom() <= rect.bottom(), "last local reading clipped: {:?} / {rect:?}", controls.min_rect());
+                            assert!(controls.min_rect().width() <= width);
+                            for screens in [1, 2] {
+                                let display_rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(width, 90.0));
+                                let mut displays = ui.new_child(egui::UiBuilder::new().max_rect(display_rect).layout(Layout::top_down(Align::Min)));
+                                displays.spacing_mut().item_spacing = vec2(8.0, 7.0);
+                                right_heading(&mut displays, "DISPLAYS", &format!("{screens} CONNECTED"));
+                                display_tiles(&mut displays, &theme, &DesktopState { screens, ..Default::default() });
+                                assert!(displays.min_rect().bottom() <= display_rect.bottom(), "display border clipped: {:?}", displays.min_rect());
+                                assert!(displays.min_rect().width() <= width + 0.5);
+                            }
+                        });
                     });
                 }
-            });
-            let rate = hist.back().copied().unwrap_or(0.0);
-            ui::text(ui, &format!("{}/s", human_bytes(rate as f64)), ui::mono(14.0), color);
-        });
-    };
-    let width = (ui.available_width() - 8.0) / 2.0;
-    ui.horizontal_top(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        ui.allocate_ui_with_layout(vec2(width, 0.0), Layout::top_down(Align::Min), |ui| {
-            traffic(ui, Icon::Download, mon.rx_total, &mon.rx_hist, theme.main)
-        });
-        ui.allocate_ui_with_layout(vec2(width, 0.0), Layout::top_down(Align::Min), |ui| {
-            traffic(ui, Icon::Upload, mon.tx_total, &mon.tx_hist, ui::SECONDARY)
-        });
-    });
-    // What comes in rises from the line, what goes out hangs from it.
-    ui::waterfall(ui, &stage.swept_values(&mon.rx_hist), &stage.swept_values(&mon.tx_hist), peak, vec2(ui.available_width(), 48.0), theme.main, ui::SECONDARY);
-
-    ui.add_space(SECTION_GAP);
-    ui::section(ui, "WORLD VIEW", |ui| {
-        if !geo.links.is_empty() {
-            let plural = if geo.links.len() == 1 { "" } else { "S" };
-            ui::meta(ui, &format!("{} LINK{plural}", geo.links.len()), ui::LABEL);
-        }
-    });
-    crate::widgets::show(ui, theme, widgets, des_common::Panel::Right);
-    world.panel(ui, theme, (ui.available_width() * 0.82).min(224.0), geo, rotating);
-    if let Some(home) = &geo.home {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            let (dot, _) = ui.allocate_exact_size(vec2(6.0, 6.0), Sense::hover());
-            ui.painter().rect_filled(dot, 0.0, ui::TEXT);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                // Says how this position is known, since one of the ways is a guess.
-                ui::meta(ui, if geo.home_is_set { "SET BY YOU" } else { "BY IP" }, ui::LABEL);
-                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                    ui::text(ui, &home.label.to_uppercase(), ui::mono(11.0), ui::SECONDARY);
-                });
-            });
-        });
-    }
-
-    playing(ui);
-
-    if let Some(desktop) = desktop {
-        ui.add_space(SECTION_GAP);
-        ui::section(ui, "DISPLAYS", |ui| {
-            ui::meta(ui, &format!("{} CONNECTED", desktop.screens), ui::LABEL)
-        });
-        display_tiles(ui, theme, desktop);
-    }
-
-    let readings = [
-        ("VOLUME", mon.volume()),
-        ("BRIGHTNESS", mon.brightness),
-        ("BATTERY", mon.battery),
-    ];
-    if readings.iter().any(|(_, value)| value.is_some()) {
-        ui.add_space(SECTION_GAP);
-        // While another machine fills the panels, these stay this one's; say so quietly.
-        if mon.remote.as_ref().is_some_and(|remote| remote.live) {
-            ui::meta(ui, "LOCAL", ui::LABEL);
-        }
-        ui::section(ui, "CONTROLS", |_| {});
-        for (label, value) in readings {
-            if let Some(value) = value {
-                // These are levels, not loads: a full battery is not a warning.
-                let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 16.0), Sense::hover());
-                let hint = match (label, mon.battery_health) {
-                    ("BATTERY", Some(health)) => format!("{label}: {value}% · holds {health}% of what it did when new"),
-                    _ => format!("{label}: {value}%"),
-                };
-                response.on_hover_text(hint);
-                let painter = ui.painter();
-                let symbol = match label {
-                    "VOLUME" if value == 0 => Icon::Muted,
-                    "VOLUME" => Icon::Volume,
-                    "BRIGHTNESS" => Icon::Brightness,
-                    _ if mon.power.is_some_and(|power| power.plugged) => Icon::Charging,
-                    _ => Icon::Battery,
-                };
-                ui::paint_icon(painter, Rect::from_center_size(rect.left_center() + vec2(8.0, 0.0), vec2(16.0,16.0)), symbol, ui::LABEL, false);
-                painter.text(rect.right_center(), Align2::RIGHT_CENTER, value.to_string(), ui::mono(12.0), ui::TEXT);
-                let track = Rect::from_min_max(
-                    pos2(rect.left() + 30.0, rect.center().y - 3.0),
-                    pos2(rect.right() - 40.0, rect.center().y + 3.0),
-                );
-                painter.rect_filled(track, 0.0, ui::TRACK);
-                let mut filled = track;
-                filled.set_width(track.width() * (value as f32 / 100.0).min(1.0));
-                painter.rect_filled(filled, 0.0, theme.main);
             }
         }
     }
 
-
+    #[test]
+    fn right_regions_fit_even_with_playback_and_many_displays() {
+        for height in [0.0, 180.0, 240.0, 320.0, 480.0, 720.0, 1080.0] {
+            for music in [0.0, crate::music::PANEL_HEIGHT] {
+                for screens in [0, 1, 2, 8] {
+                    let budget = right_budget(height, music, 3, true, screens);
+                    let gaps = [budget.music, budget.controls, budget.displays].iter().filter(|height| **height > 0.0).count() as f32 * 8.0;
+                    assert!(budget.instruments + budget.displays + budget.controls + budget.music <= height + 0.01);
+                    if height == 240.0 && music > 0.0 {
+                        assert_eq!(budget.controls, 48.0);
+                        assert!(budget.instruments >= 40.0, "short panels keep network and local readings");
+                    }
+                    if height >= 320.0 {
+                        assert_eq!(budget.music, music);
+                        assert_eq!(budget.controls, 115.0);
+                        assert!(budget.instruments >= 40.0);
+                        assert!(budget.instruments + budget.displays + budget.controls + budget.music + gaps <= height + 0.01);
+                    }
+                    if screens > 2 { assert!(budget.displays <= 32.0); }
+                }
+            }
+        }
+    }
 }
 
 /// The strip along the bottom edge: what has the keyboard, the panel switches, and
@@ -1185,6 +1343,35 @@ mod rail_interaction_tests {
                 });
                 assert_eq!(clicked, phase == 2, "{panel:?}, phase {phase}");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod left_footer_tests {
+    use super::*;
+    #[test]
+    fn pet_is_painted_inside_its_reserved_footer_on_short_and_tall_panels() {
+        for height in [260.0, 480.0, 960.0] {
+            let ctx = eframe::egui::Context::default();
+            ui::install_fonts(&ctx,None,None);
+            let theme = Theme::load("signal");
+            let mon = SysMon::new();
+            let widgets = crate::widgets::Widgets::new(ctx.clone());
+            let mut pet = crate::pet::Pet::new("crab");
+            let area = Rect::from_min_size(pos2(20.0,20.0),vec2(192.0,height));
+            let footer = Rect::from_min_max(pos2(area.left(),area.bottom()-pet.room()),area.max);
+            let output = ctx.run(eframe::egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0,0.0),vec2(400.0,height+40.0))), ..Default::default() }, |ctx| {
+                eframe::egui::CentralPanel::default().show(ctx,|ui| {
+                    let mut column = ui.new_child(eframe::egui::UiBuilder::new().max_rect(area));
+                    column.set_clip_rect(area);
+                    left(&mut column,&theme,&mon,&mut pet,&widgets);
+                });
+            });
+            assert!(output.shapes.iter().any(|shape| match &shape.shape {
+                eframe::egui::Shape::Mesh(mesh) => mesh.vertices.len()==4 && mesh.vertices.iter().all(|vertex|footer.contains(vertex.pos)),
+                _ => false,
+            }), "pet missing from reserved footer at {height}px");
         }
     }
 }

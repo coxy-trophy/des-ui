@@ -60,10 +60,16 @@ while True:
             # A killed grandchild may remain a zombie until the host init reaps it;
             # either absence or Z proves it cannot keep the display/session alive.
             stat = Path('/proc') / str(pid) / 'stat'
+            def terminated():
+                try:
+                    return stat.read_text().split()[2] == 'Z'
+                except FileNotFoundError:
+                    # Reaping between exists() and read_text() is successful cleanup.
+                    return True
             deadline = time.monotonic() + 1
-            while stat.exists() and stat.read_text().split()[2] != 'Z' and time.monotonic() < deadline:
+            while not terminated() and time.monotonic() < deadline:
                 time.sleep(0.01)
-            self.assertTrue(not stat.exists() or stat.read_text().split()[2] == 'Z')
+            self.assertTrue(terminated())
 
     def test_rejects_unsafe_or_incomplete_acknowledgements(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -138,6 +144,16 @@ case "$XCURSOR_PATH" in "$XDG_CACHE_HOME/des-ui/cursor-theme:"*) ;; *) exit 9;; 
 exit 0
 '''
         self.assertEqual(self.attempt(source), (0, False, False))
+
+    def test_cursor_defaults_search_xdg_user_and_system_data_icons(self):
+        source = '''
+case "$XCURSOR_PATH" in *:/personal/data/icons:/system/data/icons:/extra/data/icons:*) ;; *) exit 9;; esac
+case "$XCURSOR_PATH" in *relative/icons*) exit 9;; esac
+exit 0
+'''
+        self.assertEqual(self.attempt(source, cursor_env={
+            'XDG_DATA_HOME': '/personal/data', 'XDG_DATA_DIRS': '/system/data:relative:/extra/data',
+        }), (0, False, False))
 
     def test_explicit_cursor_preferences_are_preserved(self):
         source = '''

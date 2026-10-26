@@ -270,6 +270,11 @@ pub(super) fn raster_at(boundary: &Boundary, shape: Shape, density: f32, detail_
     raster_custom(boundary,shape,density,CURSOR_BASE_SIZE,DEFAULT_CURSOR_COLOR,detail_alpha)
 }
 
+// One quiet, displaced shadow defines a filled cursor on matching backgrounds;
+// it never changes the opaque body or encloses it in a contrast stroke.
+const SHADOW_OFFSET:[f32;2]=[0.8,1.2];
+const SHADOW_ALPHA:f32=128.0;
+
 pub(super) fn raster_custom(boundary: &Boundary, shape: Shape, density: f32, size: u32, color: [u8;3], detail_alpha: f32) -> Vec<u8> {
     let coverage=Coverage::new(boundary);
     let factor=size as f32/CURSOR_BASE_SIZE as f32;
@@ -278,28 +283,35 @@ pub(super) fn raster_custom(boundary: &Boundary, shape: Shape, density: f32, siz
     let mut pixels=vec![0;side*side*4];
     let logical=boundary.map(|point|logical_point(point,size));
     let min_x=(logical.iter().map(|p|p[0]).fold(f32::INFINITY,f32::min).max(0.0)*density).floor() as usize;
-    let max_x=((logical.iter().map(|p|p[0]).fold(0.0,f32::max)*density).ceil() as usize).min(side);
+    let max_x=(((logical.iter().map(|p|p[0]).fold(0.0,f32::max)+SHADOW_OFFSET[0]*factor)*density).ceil() as usize).min(side);
     let min_y=(logical.iter().map(|p|p[1]).fold(f32::INFINITY,f32::min).max(0.0)*density).floor() as usize;
-    let max_y=((logical.iter().map(|p|p[1]).fold(0.0,f32::max)*density).ceil() as usize).min(side);
+    let max_y=(((logical.iter().map(|p|p[1]).fold(0.0,f32::max)+SHADOW_OFFSET[1]*factor)*density).ceil() as usize).min(side);
     let dark_fill=0.2126*color[0] as f32+0.7152*color[1] as f32+0.0722*(color[2] as f32)<128.0;
     let contrast=if dark_fill {[247.0,246.0,242.0]}else{[29.0,31.0,33.0]};
     for y in min_y..max_y {
         let sample_y=[((y as f32+0.25)/density-hotspot)/factor+16.0,((y as f32+0.75)/density-hotspot)/factor+16.0];
         let crossings=[coverage.scanline(sample_y[0]),coverage.scanline(sample_y[1])];
+        let shadow_crossings=[coverage.scanline(sample_y[0]-SHADOW_OFFSET[1]),coverage.scanline(sample_y[1]-SHADOW_OFFSET[1])];
         for x in min_x..max_x {
             let mut sum=[0.0;4];
             for (sx,row) in [(0.25,0_usize),(0.75,0),(0.25,1),(0.75,1)] {
                 let p=[((x as f32+sx)/density-hotspot)/factor+16.0,sample_y[row]];
-                if let Some(distance)=inside_distance(p,&coverage,&crossings[row]) {
-                    // A dark fill gets a light keyline plus a restrained dark
-                    // outer hint. The two edges retain contrast on either ground.
-                    let outer=dark_fill&&distance<0.15*0.15;
-                    let ink=if distance<if dark_fill {0.95*0.95}else{0.85*0.85} {1.0}else if detail(p,shape){detail_alpha}else{0.0};
+                if inside_distance(p,&coverage,&crossings[row]).is_some() {
+                    // The silhouette stays filled right to its edge. Only semantic
+                    // marks (copy, forbidden, zoom…) use contrasting interior ink.
+                    let ink=if detail(p,shape){detail_alpha}else{0.0};
                     for channel in 0..3 {
                         let body=color[2-channel] as f32;
-                        sum[channel]+=if outer {[29.0,31.0,33.0][2-channel]}else{body+(contrast[2-channel]-body)*ink};
+                        sum[channel]+=body+(contrast[2-channel]-body)*ink;
                     }
                     sum[3]+=255.0;
+                } else if inside_distance([p[0]-SHADOW_OFFSET[0],p[1]-SHADOW_OFFSET[1]],&coverage,&shadow_crossings[row]).is_some() {
+                    // A translucent offset shadow gives light fills definition on
+                    // white without enclosing the pointer in a dark outline. Dark
+                    // fills receive a quiet light shadow on dark backgrounds.
+                    let alpha=SHADOW_ALPHA;
+                    for channel in 0..3 {sum[channel]+=contrast[2-channel]*alpha/255.0;}
+                    sum[3]+=alpha;
                 }
             }
             let at=(y*side+x)*4;
@@ -339,9 +351,9 @@ fn reference_raster(boundary: &Boundary, shape: Shape, density: f32, size: u32, 
     let mut pixels=vec![0;side*side*4];
     let logical=boundary.map(|point|logical_point(point,size));
     let min_x=(logical.iter().map(|p|p[0]).fold(f32::INFINITY,f32::min).max(0.0)*density).floor() as usize;
-    let max_x=((logical.iter().map(|p|p[0]).fold(0.0,f32::max)*density).ceil() as usize).min(side);
+    let max_x=(((logical.iter().map(|p|p[0]).fold(0.0,f32::max)+SHADOW_OFFSET[0]*factor)*density).ceil() as usize).min(side);
     let min_y=(logical.iter().map(|p|p[1]).fold(f32::INFINITY,f32::min).max(0.0)*density).floor() as usize;
-    let max_y=((logical.iter().map(|p|p[1]).fold(0.0,f32::max)*density).ceil() as usize).min(side);
+    let max_y=(((logical.iter().map(|p|p[1]).fold(0.0,f32::max)+SHADOW_OFFSET[1]*factor)*density).ceil() as usize).min(side);
     let dark_fill=0.2126*color[0] as f32+0.7152*color[1] as f32+0.0722*(color[2] as f32)<128.0;
     let contrast=if dark_fill {[247.0,246.0,242.0]}else{[29.0,31.0,33.0]};
     for y in min_y..max_y {
@@ -349,16 +361,17 @@ fn reference_raster(boundary: &Boundary, shape: Shape, density: f32, size: u32, 
             let mut sum=[0.0;4];
             for (sx,sy) in [(0.25,0.25),(0.75,0.25),(0.25,0.75),(0.75,0.75)] {
                 let p=[((x as f32+sx)/density-hotspot)/factor+16.0,((y as f32+sy)/density-hotspot)/factor+16.0];
-                if let Some(distance)=reference_inside_distance(p,boundary) {
-                    // A dark fill gets a light keyline plus a restrained dark
-                    // outer hint. The two edges retain contrast on either ground.
-                    let outer=dark_fill&&distance<0.15*0.15;
-                    let ink=if distance<if dark_fill {0.95*0.95}else{0.85*0.85} {1.0}else if detail(p,shape){detail_alpha}else{0.0};
+                if reference_inside_distance(p,boundary).is_some() {
+                    let ink=if detail(p,shape){detail_alpha}else{0.0};
                     for channel in 0..3 {
                         let body=color[2-channel] as f32;
-                        sum[channel]+=if outer {[29.0,31.0,33.0][2-channel]}else{body+(contrast[2-channel]-body)*ink};
+                        sum[channel]+=body+(contrast[2-channel]-body)*ink;
                     }
                     sum[3]+=255.0;
+                } else if reference_inside_distance([p[0]-SHADOW_OFFSET[0],p[1]-SHADOW_OFFSET[1]],boundary).is_some() {
+                    let alpha=SHADOW_ALPHA;
+                    for channel in 0..3 {sum[channel]+=contrast[2-channel]*alpha/255.0;}
+                    sum[3]+=alpha;
                 }
             }
             let at=(y*side+x)*4;
@@ -367,6 +380,32 @@ fn reference_raster(boundary: &Boundary, shape: Shape, density: f32, size: u32, 
     }
     pixels
 }
+
+    #[test]
+    fn fully_covered_shadow_defines_filled_cursors_on_matching_backgrounds() {
+        // Inspect shadow-only pixels, not a handful of antialiased body pixels:
+        // the actual composited definition must survive a matching light/dark UI.
+        for shape in [Shape::Arrow,Shape::Beam,Shape::ResizeHorizontal,Shape::Grab] {
+            for density in [1.0,2.0] {
+                for (fill,background) in [([247,246,242],[250,249,246]),([19,23,29],[24,27,32])] {
+                    let pixels=raster_custom(&boundary(shape,0.0),shape,density,24,fill,1.0);
+                    let shadow_bgr=if fill[0]>128 {[33_u8,31,29]}else{[242_u8,246,247]};
+                    let expected=shadow_bgr.map(|channel|(channel as f32*SHADOW_ALPHA/255.0).round() as u8);
+                    let shadow:Vec<_>=pixels.chunks_exact(4).filter(|pixel|pixel[3]==SHADOW_ALPHA as u8 && pixel[..3]==expected).collect();
+                    assert!(shadow.len()>=(2.0*density*density) as usize,"no fully covered shadow at {shape:?}/{density}");
+                    for pixel in shadow {
+                        let delta=(0..3).map(|channel| {
+                            let ground=background[channel] as f32;
+                            let composite=pixel[2-channel] as f32+ground*(1.0-pixel[3] as f32/255.0);
+                            (composite-ground).abs()*[0.2126,0.7152,0.0722][channel]
+                        }).sum::<f32>();
+                        assert!(delta>=75.0,"shadow loses definition: {shape:?}/{density} on {background:?}: {delta}");
+                    }
+                    assert!(pixels.chunks_exact(4).filter(|pixel|pixel[3]==255).all(|pixel|pixel[..3]==[fill[2],fill[1],fill[0]]),"shadow must never add an opaque outline");
+                }
+            }
+        }
+    }
 
     #[test]
     fn precomputed_edges_preserve_reference_raster_bytes_and_report_cost() {
