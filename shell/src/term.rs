@@ -762,7 +762,7 @@ impl TermTab {
                         ui.close_menu();
                     }
                     if ui.add_enabled(candidate.is_some(), egui::Button::new("Insert command at prompt"))
-                        .on_hover_text("Requires an empty local shell prompt; the command will not run automatically").clicked() {
+                        .on_hover_text("Requires a retained single-line ASCII command and an empty local shell prompt; it will not run automatically").clicked() {
                         if let Some(command) = candidate {
                             if self.has_empty_shell_prompt() && input.and_then(|start| self.retained_command(start, from)).as_deref() == Some(command.as_str()) {
                                 self.input(command.as_bytes());
