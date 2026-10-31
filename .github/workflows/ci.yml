@@ -21,7 +21,7 @@ jobs:
       - name: Install native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libudev-dev libinput-dev libgbm-dev libseat-dev libxkbcommon-dev libssl-dev libwayland-dev libclang-dev tmux
+          sudo apt-get install -y pkg-config libudev-dev libinput-dev libgbm-dev libseat-dev libxkbcommon-dev libssl-dev libwayland-dev libclang-dev tmux python3-websocket
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Verify scripts, tests and programs
