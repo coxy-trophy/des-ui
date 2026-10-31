@@ -37,15 +37,6 @@ impl Block {
         self.end.map(|(_, status)| status)
     }
 
-    /// The row that carries the exit status: the last line of output, or the
-    /// prompt's own line when the command printed nothing.
-    pub fn badge_line(&self) -> Option<u64> {
-        let (end, _) = self.end?;
-        Some(match self.output {
-            Some(start) if end > start => end - 1,
-            _ => self.prompt,
-        })
-    }
 }
 
 pub(super) struct Blocks {
@@ -475,7 +466,6 @@ mod tests {
         assert_eq!(blocks.prompt_after(4), None);
         assert_eq!(blocks.last_output(), Some((3, 4)));
         assert_eq!(blocks.covering(3).unwrap().prompt, 2);
-        assert_eq!(blocks.at_prompt(0).unwrap().badge_line(), Some(1));
         assert_eq!(blocks.top_line(parser.screen()), 3);
         assert_eq!(blocks.offset_for(2), 1);
         assert_eq!(blocks.offset_for(4), 0);
