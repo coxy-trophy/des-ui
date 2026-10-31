@@ -366,6 +366,25 @@ impl TermTab {
         self.history_text(from, to)
     }
 
+    /// Recent command prompt lines retained in this tab, newest first. This is
+    /// derived from the existing in-memory scrollback, never persisted separately.
+    pub fn recent_commands(&mut self) -> Vec<(u64, String, Option<i32>)> {
+        let entries: Vec<_> = self.blocks.iter().rev().filter_map(|block| {
+            block.output.map(|end| (block.prompt, end, block.status()))
+        }).take(12).collect();
+        entries.into_iter().filter_map(|(start, end, status)| {
+            self.history_text(start, end.min(start.saturating_add(4)))
+                .map(|text| (start, text.trim().replace('\n', " "), status))
+        }).collect()
+    }
+
+    pub fn jump_to_command(&mut self, line: u64) {
+        let offset = self.blocks.offset_for(line);
+        self.parser.screen_mut().set_scrollback(offset);
+        self.selection = None;
+        self.block_selection = None;
+    }
+
     /// Puts the last command's output on the clipboard; how many lines, when there was one.
     pub fn copy_last_output_to_clipboard(&mut self) -> Option<usize> {
         let text = self.copy_last_output()?;
@@ -1423,6 +1442,19 @@ mod tests {
         frame(&mut tab, &ctx, rect, vec![key(Key::ArrowUp, Modifiers::SHIFT)], true, 0.0);
         assert_eq!(&*written.lock().unwrap(), b"\x1b[1;2A");
         assert_eq!(tab.parser.screen().scrollback(), 0, "typing returns to the live grid");
+    }
+
+    #[test]
+    fn recent_commands_use_retained_scrollback_and_jump_without_running() {
+        let (mut tab, _ctx, _rect) = blocks_frame_setup();
+        tab.blocks.feed(&mut tab.parser, b"\x1b]133;A\x07$ first\r\n\x1b]133;C\x07alpha\r\n\x1b]133;D;0\x07\x1b]133;A\x07$ second\r\n\x1b]133;C\x07beta\r\n\x1b]133;D;2\x07\x1b]133;A\x07$ ");
+        let entries = tab.recent_commands();
+        assert_eq!(entries.len(), 2);
+        assert!(entries[0].1.contains("second"));
+        assert_eq!(entries[0].2, Some(2));
+        assert!(entries[1].1.contains("first"));
+        tab.jump_to_command(entries[1].0);
+        assert!(top_row(&tab).starts_with("$ first"));
     }
 
     #[test]
