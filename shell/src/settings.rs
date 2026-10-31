@@ -712,6 +712,9 @@ impl Settings {
         ui.add_space(22.0);
 
         heading(ui, "BEHAVIOUR", "");
+        if switch_row(ui, theme, "Command suggestions", "Local suggestions at verified bash and zsh prompts; Tab or Enter inserts without running", config.terminal_completions) {
+            changes.push(Change::Set("terminal_completions", config.terminal_completions.then(|| "off".to_string())));
+        }
         if switch_row(ui, theme, "Animate tab selection", "A brief underline transition; respects Reduce motion and desktop animation settings", config.terminal_tab_animation) {
             changes.push(Change::Set("terminal_tab_animation", config.terminal_tab_animation.then(|| "off".to_string())));
         }

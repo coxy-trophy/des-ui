@@ -72,6 +72,7 @@ pub struct TermTab {
     input_this_frame: bool,
     completion_dismissed: Option<String>,
     completion_index: usize,
+    completions_enabled: bool,
     /// Anchor and head of the mouse selection, as (row, col) cells of the visible grid.
     selection: Option<((u16, u16), (u16, u16))>,
     links_to_open: Vec<String>,
@@ -212,6 +213,7 @@ impl TermTab {
             input_this_frame: false,
             completion_dismissed: None,
             completion_index: 0,
+            completions_enabled: true,
             selection: None,
             links_to_open: Vec::new(),
             exited: false,
@@ -310,6 +312,7 @@ impl TermTab {
     /// Offer completions only on a verified, single-line shell prompt. Never
     /// inspect or intercept input while a child program owns the terminal.
     fn completion_query(&self) -> Option<String> {
+        if !self.completions_enabled { return None; }
         let screen = self.parser.screen();
         if screen.alternate_screen() || screen.scrollback() != 0 || self.search.open { return None; }
         let (line, start) = self.blocks.active_input()?;
@@ -334,6 +337,8 @@ impl TermTab {
         if !matches!(name.trim(), "bash" | "zsh") { return None; }
         Some(input)
     }
+
+    pub fn set_completions(&mut self, enabled: bool) { self.completions_enabled = enabled; }
 
     /// Name of the program currently in the foreground of this terminal.
     pub fn foreground_process(&self) -> Option<String> {
@@ -1574,6 +1579,31 @@ mod tests {
         assert_eq!(tab.selected_text().as_deref(), Some("alpha\nbeta\n"));
         tab.input(b"x");
         assert_eq!(tab.block_selection, None);
+    }
+
+    #[test]
+    fn bash_completion_inserts_without_executing_and_respects_opt_out() {
+        if !Path::new("/usr/bin/bash").exists() { return; }
+        let home = tempfile::tempdir().unwrap();
+        let integration_dir = home.path().join("integration");
+        std::fs::create_dir(&integration_dir).unwrap();
+        integration::install(&integration_dir).unwrap();
+        let mut command = CommandBuilder::new("/usr/bin/bash");
+        integration::for_shell("bash", &integration_dir).apply(&mut command);
+        command.cwd(home.path()); command.env("HOME", home.path());
+        command.env_remove("DES_UI_PERSISTENT_TERMINAL"); command.env_remove("TMUX");
+        let ctx = egui::Context::default();
+        let mut tab = TermTab::spawn_with(command, ctx.clone(), 100).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while tab.blocks.active_input().is_none() { tab.pump(); assert!(Instant::now() < deadline); std::thread::sleep(Duration::from_millis(20)); }
+        tab.write(b"git ch");
+        loop { tab.pump(); if tab.completion_query().as_deref() == Some("git ch") { break; } assert!(Instant::now() < deadline, "{:?}", tab.parser.screen().contents()); std::thread::sleep(Duration::from_millis(20)); }
+        tab.set_completions(false);
+        assert!(tab.completion_query().is_none());
+        tab.set_completions(true);
+        tab.handle_events(&[Event::Key { key: Key::Tab, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }], false, false, &ctx);
+        loop { tab.pump(); if tab.parser.screen().contents().contains("git checkout") { break; } assert!(Instant::now() < deadline); std::thread::sleep(Duration::from_millis(20)); }
+        assert!(tab.blocks.active_input().is_some(), "completion must not execute the command");
     }
 
     #[test]

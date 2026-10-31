@@ -149,8 +149,10 @@ impl eframe::App for App {
         if let Some(screen)=apps_requested {self.focus_apps(screen);}
         if shortcut_requested && !self.polkit.active() { self.toggle_shortcut_reference(); }
         for tab in &mut self.tabs {
+            tab.set_completions(self.config.terminal_completions);
             tab.pump();
         }
+        self.scratchpad.set_completions(self.config.terminal_completions);
         self.scratchpad.pump();
         // Tabs whose shell has exited go; the ones in view keep their places, and a
         // split whose pane lost its tab becomes whole again.

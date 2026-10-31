@@ -64,15 +64,20 @@ pub struct Scratchpad {
     progress: f32,
     last: Option<Instant>,
     tab: Option<TermTab>,
+    completions_enabled: bool,
 }
 
 impl Default for Scratchpad {
     fn default() -> Self {
-        Scratchpad { open: false, progress: 0.0, last: None, tab: None }
+        Scratchpad { open: false, progress: 0.0, last: None, tab: None, completions_enabled: true }
     }
 }
 
 impl Scratchpad {
+    pub fn set_completions(&mut self, enabled: bool) {
+        self.completions_enabled = enabled;
+        if let Some(tab) = &mut self.tab { tab.set_completions(enabled); }
+    }
     /// Reconnect a hidden scratchpad; showing it remains an explicit user action.
     pub fn restore_tab(&mut self, tab: TermTab) { self.tab = Some(tab); self.close_now(); }
     pub fn persistent_id(&self) -> Option<&str> { self.tab.as_ref().and_then(|tab| tab.persistent_id.as_deref()) }
@@ -137,7 +142,7 @@ impl Scratchpad {
         if self.tab.is_none() {
             let (shell, home, scrollback, keep) = spawn;
             match TermTab::spawn_managed(shell, home, ctx.clone(), scrollback, keep, crate::term::SessionRole::Scratchpad) {
-                Ok(tab) => self.tab = Some(tab),
+                Ok(mut tab) => { tab.set_completions(self.completions_enabled); self.tab = Some(tab); },
                 Err(error) => {
                     eprintln!("des-ui: no scratchpad terminal: {error}");
                     self.close_now();

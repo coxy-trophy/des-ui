@@ -45,6 +45,8 @@ pub struct Config {
     pub cursor_blink: bool,
     /// Animate terminal tab selection when desktop motion is enabled.
     pub terminal_tab_animation: bool,
+    /// Offer local suggestions at verified shell prompts.
+    pub terminal_completions: bool,
     pub bold_bright: bool,
     pub copy_on_select: bool,
     /// Lines kept above the screen, for new tabs.
@@ -102,6 +104,7 @@ impl Default for Config {
             cursor: CursorShape::Block,
             cursor_blink: false,
             terminal_tab_animation: true,
+            terminal_completions: true,
             bold_bright: true,
             copy_on_select: false,
             scrollback: 5000,
@@ -182,6 +185,7 @@ impl Config {
                 }
                 "cursor_blink" => config.cursor_blink = value == "on",
                 "terminal_tab_animation" => config.terminal_tab_animation = value != "off",
+                "terminal_completions" => config.terminal_completions = value != "off",
                 "bold_bright" => config.bold_bright = value != "off",
                 "copy_on_select" => config.copy_on_select = value == "on",
                 "scrollback" => {
@@ -514,6 +518,8 @@ mod tests {
         assert!(Config::parse("").terminal_tab_animation);
         assert!(!Config::parse("terminal_tab_animation = off").terminal_tab_animation);
         assert!(Config::parse("terminal_tab_animation = on").terminal_tab_animation);
+        assert!(Config::parse("").terminal_completions);
+        assert!(!Config::parse("terminal_completions = off").terminal_completions);
         assert!(Config::parse("dock_animation = off\nanimate = on").animate);
     }
 
