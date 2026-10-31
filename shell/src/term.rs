@@ -319,15 +319,19 @@ impl TermTab {
             .is_some_and(|name| matches!(name.trim(), "bash" | "zsh"))
     }
 
-    fn has_empty_shell_prompt(&self) -> bool {
-        let screen = self.parser.screen();
-        if screen.alternate_screen() || screen.scrollback() != 0 || self.search.open { return false; }
+    fn has_empty_shell_prompt(&mut self) -> bool {
+        if self.parser.screen().alternate_screen() || self.search.open { return false; }
         let Some((line, start)) = self.blocks.active_input() else { return false; };
+        let scrolled = self.blocks.scrolled;
+        let screen = self.parser.screen_mut();
+        let saved = screen.scrollback();
+        screen.set_scrollback(0);
         let (row, col) = screen.cursor_position();
         let (_, cols) = screen.size();
-        self.blocks.cursor_line(screen) == line && col == start
-            && !(col..cols).any(|column| screen.cell(row, column).is_some_and(|cell| cell.has_contents() && cell.contents() != " "))
-            && self.foreground_is_shell()
+        let empty = scrolled + u64::from(row) == line && col == start
+            && !(col..cols).any(|column| screen.cell(row, column).is_some_and(|cell| cell.has_contents() && cell.contents() != " "));
+        screen.set_scrollback(saved);
+        empty && self.foreground_is_shell()
     }
 
     /// Offer completions only on a verified, single-line shell prompt. Never

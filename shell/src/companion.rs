@@ -100,7 +100,10 @@ impl Companion {
         if remaining < 64 { self.open(ctx); self.error = "Draft is full; clear space before adding terminal output.".into(); return; }
         if !self.input.is_empty() { self.input.push_str("\n\n"); }
         self.input.push_str("Explain this terminal output:\n\n");
-        self.input.extend(output.chars().take(remaining.saturating_sub(40)));
+        let limit = remaining.saturating_sub(64);
+        let mut chars = output.chars();
+        self.input.extend(chars.by_ref().take(limit));
+        if chars.next().is_some() { self.input.push_str("\n\n[Output truncated]"); }
         self.open(ctx);
     }
     /// Companion configuration is owned by Settings, never the conversation overlay.
