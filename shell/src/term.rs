@@ -312,6 +312,24 @@ impl TermTab {
         }
     }
 
+    fn foreground_is_shell(&self) -> bool {
+        let Some(shell_pid) = self.pane_pid.or_else(|| self.child.process_id()) else { return false; };
+        if self.foreground_pid() != Some(shell_pid) { return false; }
+        std::fs::read_to_string(format!("/proc/{shell_pid}/comm")).ok()
+            .is_some_and(|name| matches!(name.trim(), "bash" | "zsh"))
+    }
+
+    fn has_empty_shell_prompt(&self) -> bool {
+        let screen = self.parser.screen();
+        if screen.alternate_screen() || screen.scrollback() != 0 || self.search.open { return false; }
+        let Some((line, start)) = self.blocks.active_input() else { return false; };
+        let (row, col) = screen.cursor_position();
+        let (_, cols) = screen.size();
+        self.blocks.cursor_line(screen) == line && col == start
+            && !(col..cols).any(|column| screen.cell(row, column).is_some_and(|cell| cell.has_contents() && cell.contents() != " "))
+            && self.foreground_is_shell()
+    }
+
     /// Offer completions only on a verified, single-line shell prompt. Never
     /// inspect or intercept input while a child program owns the terminal.
     fn completion_query(&self) -> Option<String> {
@@ -334,10 +352,7 @@ impl TermTab {
         if (col..cols).any(|column| screen.cell(row, column).is_some_and(|cell| cell.has_contents() && cell.contents() != " ")) { return None; }
         if completion::suggestions(&input).is_empty() { return None; }
         if self.completion_dismissed.as_deref() == Some(input.as_str()) { return None; }
-        let shell_pid = self.pane_pid.or_else(|| self.child.process_id())?;
-        if self.foreground_pid()? != shell_pid { return None; }
-        let name = std::fs::read_to_string(format!("/proc/{shell_pid}/comm")).ok()?;
-        if !matches!(name.trim(), "bash" | "zsh") { return None; }
+        if !self.foreground_is_shell() { return None; }
         Some(input)
     }
 
@@ -415,6 +430,37 @@ impl TermTab {
         let lines = text.lines().count();
         self.ctx.copy_text(text);
         Some(lines)
+    }
+
+    /// Recover only a fully retained, single-line ASCII command. Ambiguous
+    /// wrapped or non-ASCII input is never offered for insertion.
+    fn retained_command(&mut self, start: (u64, u16), output: u64) -> Option<String> {
+        if output != start.0.saturating_add(1) { return None; }
+        let scrolled = self.blocks.scrolled;
+        let screen = self.parser.screen_mut();
+        let saved = screen.scrollback();
+        let retained = blocks::history_len(screen) as u64;
+        if start.0 < scrolled.saturating_sub(retained) { return None; }
+        screen.set_scrollback(usize::try_from(scrolled.saturating_sub(start.0)).ok()?);
+        let top = scrolled.saturating_sub(screen.scrollback() as u64);
+        let row = start.0.checked_sub(top).and_then(|row| u16::try_from(row).ok());
+        let result = row.and_then(|row| {
+            let (rows, cols) = screen.size();
+            if row >= rows || start.1 >= cols || screen.row_wrapped(row) { return None; }
+            let mut text = String::new();
+            for col in start.1..cols {
+                let cell = screen.cell(row, col)?;
+                if cell.is_wide_continuation() { return None; }
+                let value = cell.contents();
+                if value.is_empty() { text.push(' '); }
+                else if value.len() == 1 && value.is_ascii() && !value.as_bytes()[0].is_ascii_control() { text.push_str(value); }
+                else { return None; }
+            }
+            let text = text.trim_end().to_string();
+            (!text.is_empty()).then_some(text)
+        });
+        screen.set_scrollback(saved);
+        result
     }
 
     /// The text of these absolute lines, as far as the history still holds them;
@@ -692,13 +738,16 @@ impl TermTab {
                 let line = self.blocks.top_line(self.parser.screen()) + u64::from(row);
                 self.blocks.at_prompt(line).or_else(|| self.blocks.covering(line))
                     .filter(|block| block.end.is_some())
-                    .and_then(Block::output_lines)
+                    .and_then(|block| block.output_lines().map(|(from, to)| (from, to, block.input)))
             });
             ui.data_mut(|data| data.insert_temp(command_menu, range));
         }
         if !self.parser.screen().alternate_screen() {
-            let range = ui.data(|data| data.get_temp::<Option<(u64, u64)>>(command_menu).flatten());
-            if let Some((from, to)) = range {
+            let range = ui.data(|data| data.get_temp::<Option<(u64, u64, Option<(u64, u16)>)>>(command_menu).flatten());
+            if let Some((from, to, input)) = range {
+                let candidate = if (response.context_menu_opened() || response.secondary_clicked()) && self.has_empty_shell_prompt() {
+                    input.and_then(|start| self.retained_command(start, from))
+                } else { None };
                 response.context_menu(|ui| {
                     if ui.button("Copy command output").clicked() {
                         if let Some(text) = self.history_text(from, to) { ui.ctx().copy_text(text); }
@@ -706,6 +755,15 @@ impl TermTab {
                     }
                     if ui.button("Explain output in Chat…").on_hover_text("Prepare a draft for review; nothing is sent automatically").clicked() {
                         self.explain_output = self.history_text(from, to);
+                        ui.close_menu();
+                    }
+                    if ui.add_enabled(candidate.is_some(), egui::Button::new("Insert command at prompt"))
+                        .on_hover_text("Requires an empty local shell prompt; the command will not run automatically").clicked() {
+                        if let Some(command) = candidate {
+                            if self.has_empty_shell_prompt() && input.and_then(|start| self.retained_command(start, from)).as_deref() == Some(command.as_str()) {
+                                self.input(command.as_bytes());
+                            }
+                        }
                         ui.close_menu();
                     }
                 });
@@ -1552,6 +1610,17 @@ mod tests {
     }
 
     #[test]
+    fn retained_command_requires_a_single_unwrapped_ascii_line() {
+        let (mut tab, _ctx, _rect) = blocks_frame_setup();
+        tab.blocks.feed(&mut tab.parser, b"\x1b]133;A\x07$ \x1b]133;B\x07git status\r\n\x1b]133;C\x07result\r\n\x1b]133;D;0\x07\x1b]133;A\x07$ ");
+        assert_eq!(tab.retained_command((0, 2), 1).as_deref(), Some("git status"));
+        assert_eq!(tab.retained_command((0, 2), 2), None);
+        let (mut tab, _ctx, _rect) = blocks_frame_setup();
+        tab.blocks.feed(&mut tab.parser, "\u{1b}]133;A\u{7}$ \u{1b}]133;B\u{7}echo é\r\n\u{1b}]133;C\u{7}out\r\n\u{1b}]133;D;0\u{7}".as_bytes());
+        assert_eq!(tab.retained_command((0, 2), 1), None);
+    }
+
+    #[test]
     fn contextual_output_targets_the_completed_command_under_pointer() {
         let (mut tab, ctx, rect) = blocks_frame_setup();
         tab.blocks.feed(&mut tab.parser, b"\x1b]133;A\x07$ cmd\r\n\x1b]133;C\x07result\r\n\x1b]133;D;0\x07\x1b]133;A\x07$ ");
@@ -1560,8 +1629,8 @@ mod tests {
             frame(&mut tab, &ctx, rect, vec![Event::PointerMoved(pos), Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed, modifiers: Modifiers::NONE }], true, 0.0);
         }
         let id = egui::Id::new("test-terminal").with("command-output-menu");
-        let range = ctx.data(|data| data.get_temp::<Option<(u64, u64)>>(id).flatten());
-        assert_eq!(range, Some((1, 2)));
+        let range = ctx.data(|data| data.get_temp::<Option<(u64, u64, Option<(u64, u16)>)>>(id).flatten());
+        assert_eq!(range, Some((1, 2, None)));
         assert_eq!(tab.history_text(1, 2).as_deref(), Some("result\n"));
     }
 

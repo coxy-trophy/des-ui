@@ -21,7 +21,7 @@ const OSC_133: &[u8] = b"\x1b]133;";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Block {
     pub prompt: u64,
-    input: Option<(u64, u16)>,
+    pub input: Option<(u64, u16)>,
     pub output: Option<u64>,
     pub end: Option<(u64, i32)>,
 }
