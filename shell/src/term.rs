@@ -508,8 +508,13 @@ impl TermTab {
         }
         let app_cursor = self.parser.screen().application_cursor();
         let bracketed = self.parser.screen().bracketed_paste();
-        if events.len() == 1 {
-            if let Event::Key { key, pressed: true, modifiers, .. } = &events[0] {
+        // Mouse motion and key releases may share a frame with the completion
+        // key. Other typing must still reach the shell in its original order.
+        let mut actionable = events.iter().filter(|event| matches!(event,
+            Event::Text(_) | Event::Paste(_) | Event::Ime(_) | Event::Copy | Event::Cut |
+            Event::Key { pressed: true, .. }));
+        if let (Some(event), None) = (actionable.next(), actionable.next()) {
+            if let Event::Key { key, pressed: true, modifiers, .. } = event {
                 if *modifiers == Modifiers::NONE {
                     if let Some(query) = self.completion_query() {
                         let suggestions = completion::suggestions(&query);
