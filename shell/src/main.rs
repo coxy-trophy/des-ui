@@ -1239,7 +1239,7 @@ impl App {
 
         // Reserve the right-hand controls first; tabs can scroll in their own clipped area.
         let available = ui.available_rect_before_wrap();
-        let controls_width: f32 = if state.is_some() { 302.0 } else { 36.0 };
+        let controls_width: f32 = if state.is_some() { 342.0 } else { 76.0 };
         let right_width = controls_width.min((available.width() * 0.6).max(0.0));
         let gap = 4.0_f32.min((available.width() - right_width).max(0.0));
         let right_rect = Rect::from_min_max(pos2(available.right() - right_width, available.top()), available.max);
@@ -1256,6 +1256,13 @@ impl App {
                 ui.set_min_width(controls_width);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
+            let available = self.tabs.len() < MAX_TABS;
+            let hint = if available { "New terminal tab" } else { "Maximum of 9 terminal tabs" };
+            if ui.add_enabled(available, egui::Button::new(egui::RichText::new("+").font(ui::mono(16.0))).min_size(vec2(32.0, ui::CONTROL_HEIGHT))).on_hover_text(hint).clicked() {
+                actions.open_tab = true;
+                self.launcher.open = false;
+                actions.command = Some(Command::Terminal);
+            }
             let hint = if self.launcher.open { "Close applications (Esc)".into() } else { shortcuts::hint(ui.ctx(), "Applications", "desktop.launcher") };
             if ui::icon_button(ui, theme, Icon::Apps, 28.0, self.launcher.open).on_hover_text(hint).clicked() {
                 actions.toggle_launcher = true;
@@ -1350,17 +1357,6 @@ impl App {
                 actions.command = Some(Command::Terminal);
             }
         }
-        {
-            let available = self.tabs.len() < MAX_TABS;
-            let response = ui.add_enabled(available, egui::Button::new(egui::RichText::new("+").font(ui::mono(16.0))).min_size(vec2(32.0, ui::CONTROL_HEIGHT)));
-            let hint = if available { "New terminal tab" } else { "Maximum of 9 terminal tabs" };
-            if response.on_hover_text(hint).clicked() {
-                actions.open_tab = true;
-                self.launcher.open = false;
-                actions.command = Some(Command::Terminal);
-            }
-        }
-
         if ui::icon_button(ui, theme, Icon::Copy, 28.0, false).on_hover_text("Copy last command output").clicked() { self.copy_last_output(); }
         if ui::icon_button(ui,theme,Icon::Search,28.0,self.tabs[self.focus_tab()].searching()).on_hover_text(shortcuts::hint(ui.ctx(), "Find in terminal", "terminal.find")).clicked() { actions.find_terminal=true; actions.command=Some(Command::Terminal); }
 
