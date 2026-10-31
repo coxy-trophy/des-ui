@@ -615,6 +615,30 @@ impl TermTab {
                 }
             }
         }
+        // A contextual action uses only the recorded, completed command under
+        // the pointer. Full-screen terminal programs keep their own mouse input.
+        let command_menu = response.id.with("command-output-menu");
+        if response.secondary_clicked() && !self.parser.screen().alternate_screen() {
+            let range = pointer.filter(|p| rect.contains(*p)).and_then(|pos| {
+                let (row, _) = cell_at(pos);
+                let line = self.blocks.top_line(self.parser.screen()) + u64::from(row);
+                self.blocks.at_prompt(line).or_else(|| self.blocks.covering(line))
+                    .filter(|block| block.end.is_some())
+                    .and_then(Block::output_lines)
+            });
+            ui.data_mut(|data| data.insert_temp(command_menu, range));
+        }
+        if !self.parser.screen().alternate_screen() {
+            let range = ui.data(|data| data.get_temp::<Option<(u64, u64)>>(command_menu).flatten());
+            if let Some((from, to)) = range {
+                response.context_menu(|ui| {
+                    if ui.button("Copy command output").clicked() {
+                        if let Some(text) = self.history_text(from, to) { ui.ctx().copy_text(text); }
+                        ui.close_menu();
+                    }
+                });
+            }
+        }
         // Modifier-click opens links; ordinary dragging continues to select text.
         if response.hovered() {
             if let Some(pos) = ui.ctx().pointer_hover_pos().filter(|p| rect.contains(*p)) {
@@ -1423,6 +1447,20 @@ mod tests {
         frame(&mut tab, &ctx, rect, vec![key(Key::ArrowUp, Modifiers::SHIFT)], true, 0.0);
         assert_eq!(&*written.lock().unwrap(), b"\x1b[1;2A");
         assert_eq!(tab.parser.screen().scrollback(), 0, "typing returns to the live grid");
+    }
+
+    #[test]
+    fn contextual_output_targets_the_completed_command_under_pointer() {
+        let (mut tab, ctx, rect) = blocks_frame_setup();
+        tab.blocks.feed(&mut tab.parser, b"\x1b]133;A\x07$ cmd\r\n\x1b]133;C\x07result\r\n\x1b]133;D;0\x07\x1b]133;A\x07$ ");
+        let pos = rect.min + Vec2::new(GUTTER + 20.0, 5.0);
+        for pressed in [true, false] {
+            frame(&mut tab, &ctx, rect, vec![Event::PointerMoved(pos), Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed, modifiers: Modifiers::NONE }], true, 0.0);
+        }
+        let id = egui::Id::new("test-terminal").with("command-output-menu");
+        let range = ctx.data(|data| data.get_temp::<Option<(u64, u64)>>(id).flatten());
+        assert_eq!(range, Some((1, 2)));
+        assert_eq!(tab.history_text(1, 2).as_deref(), Some("result\n"));
     }
 
     #[test]
