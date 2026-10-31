@@ -381,11 +381,18 @@ applications. Hold Shift to use local history. Typing returns to the live prompt
 
 The terminal knows where each command begins and ends. bash, zsh and fish get a
 small script sourced after your own files (it steps aside if another prompt
-integration is already there; `DES_UI_SHELL_INTEGRATION=0` turns it off). A bar in
-the gutter marks each prompt and a square its exit status, amber when it failed;
-hover it for the number. **Ctrl+Shift+Up** and **Down** walk between prompts, a
-click on a prompt's mark selects that command's output for Ctrl+Shift+C, and
-"Copy last command output" in the palette copies it outright.
+integration is already there; `DES_UI_SHELL_INTEGRATION=0` turns it off).
+**Ctrl+Shift+Up** and **Down** walk between prompts, and "Copy last command
+output" in the palette copies it. Right-click a completed command with retained output to copy its
+output, prepare a reviewable Chat draft, or insert a recoverable command at an
+empty local prompt without running it.
+
+At verified bash and zsh prompts, a small built-in local suggestion list offers
+common Git, Cargo, npm and Docker commands. Use arrows to choose, Tab or Enter to
+insert, and Escape to dismiss; no command is executed by accepting a suggestion.
+Suggestions are unavailable inside other programs and can be disabled in
+Settings → Terminal. Fish, remote prompts, multiline input and unrecognized
+commands continue to use the shell's own completion behavior.
 
 When the terminal in use is running `ssh`, the side panels follow it: the processor,
 memory, processes, network, disks and the globe's connections are that machine's,
