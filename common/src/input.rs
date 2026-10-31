@@ -82,9 +82,9 @@ impl Default for InputSettings {
 pub const CURSOR_BASE_SIZE: u32 = 24;
 /// The solid arrow in base-size logical pixels, relative to the pointer tip.
 /// Shared by the compositor renderer and Settings preview.
-pub const CURSOR_ARROW_POINTS: [[f32; 2]; 3] = [[0.0, 0.0], [13.0, 14.0], [4.0, 22.0]];
+pub const CURSOR_ARROW_POINTS: [[f32; 2]; 3] = [[0.0, 0.0], [15.0, 6.0], [6.0, 16.0]];
 pub const CURSOR_SIZE_RANGE: (u32, u32) = (16, 64);
-pub const DEFAULT_CURSOR_COLOR: [u8; 3] = [247, 246, 242];
+pub const DEFAULT_CURSOR_COLOR: [u8; 3] = [12, 16, 21];
 
 pub const REPEAT_DELAY_RANGE: (u32, u32) = (150, 800);
 pub const REPEAT_RATE_RANGE: (u32, u32) = (10, 60);

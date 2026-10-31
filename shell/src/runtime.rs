@@ -2,6 +2,10 @@
 
 use super::*;
 
+pub(crate) fn frame_lines_layer() -> egui::LayerId {
+    egui::LayerId::new(egui::Order::Middle, egui::Id::new("frame-lines"))
+}
+
 impl eframe::App for App {
     fn clear_color(&self, _visuals: &Visuals) -> [f32; 4] {
         ui::GROUND.to_normalized_gamma_f32()
@@ -61,7 +65,7 @@ impl eframe::App for App {
             companion_controls=std::mem::take(&mut desktop.companion_controls);
             companion_voice_requested=std::mem::take(&mut desktop.companion_voice_requested);
             companion_requested = std::mem::take(&mut desktop.companion_requested);
-            if !desktop.connected() || desktop.locked || desktop.lock_requested || !desktop.shots.is_empty() {self.companion.close();}
+            if !desktop.connected() || desktop.locked || desktop.lock_requested || desktop.shots.iter().any(|shot| !companion::Companion::accepts_capture(shot.request)) {self.companion.close();}
             else if desktop.launcher_requested || desktop.settings_requested || desktop.music_requested || desktop.notifications_requested || desktop.quick_requested || desktop.power_requested {self.companion.blur_text();}
             shortcut_requested = std::mem::take(&mut desktop.shortcuts_requested);
             if desktop.launcher_requested || desktop.settings_requested || desktop.music_requested || desktop.notifications_requested || desktop.quick_requested || desktop.power_requested { self.shortcut_reference.close(); }
@@ -138,7 +142,7 @@ impl eframe::App for App {
             }
         }
         if !self.lock.locked && !self.polkit.active() && !self.capture.marking() {
-            for action in companion_controls { self.companion.control(action); }
+            for action in companion_controls { self.companion.control_from_desktop(ctx, action); }
         }
         if companion_voice_requested {self.summon_voice(ctx);}
         if companion_requested { self.toggle_companion(ctx); }
@@ -195,10 +199,12 @@ impl eframe::App for App {
         self.agenda.pump(&mut self.notices);
         if let Some(desktop) = &mut self.desktop {
             for shot in std::mem::take(&mut desktop.shots) {
-                self.capture.take(shot);
+                if companion::Companion::accepts_capture(shot.request) { self.companion.receive_capture(ctx, shot); }
+                else { self.capture.take(shot); }
             }
             for (request, reason) in std::mem::take(&mut desktop.shot_failures) {
-                self.capture.failed(request, reason);
+                if companion::Companion::accepts_capture(request) { self.companion.capture_failed(request.unwrap(), &reason); }
+                else { self.capture.failed(request, reason); }
             }
             for state in std::mem::take(&mut desktop.recording_news) {
                 self.capture.recording_is(state, &mut self.notices);
@@ -343,7 +349,7 @@ impl eframe::App for App {
                     self.osk.show(ui, &theme, on_screen(rect));
                 }
                 let clicks = region(ui, status, vec2(24.0, 0.0), Layout::left_to_right(Align::Center), |ui| {
-                    panels::status(ui, &theme, &self.mon, state.as_ref(), open, overlay, self.notices.count(), self.capture.recording.map(|since| since.elapsed()), self.desktop.as_ref().map_or(des_common::ipc::Hands::Off, |desktop| desktop.hands), Some(&self.tray), self.osk.open, self.quick.open)
+                    panels::status(ui, &theme, &self.mon, state.as_ref(), open, if self.dock.captures_keyboard() { Some("APPS") } else { overlay }, self.notices.count(), self.capture.recording.map(|since| since.elapsed()), self.desktop.as_ref().map_or(des_common::ipc::Hands::Off, |desktop| desktop.hands), Some(&self.tray), self.osk.open, self.quick.open)
                 });
                 let (toggled, settings_clicked, music_clicked, notices_clicked, power_clicked, stop_clicked) =
                     (clicks.toggled, clicks.settings, clicks.music, clicks.notices, clicks.power, clicks.stop);
@@ -498,7 +504,7 @@ impl eframe::App for App {
                     mine.set_width(left.width);
                 }
                 let inner = mine.shrink2(vec2(24.0, 18.0));
-                let inner = Rect::from_min_max(inner.min, inner.max.max(inner.min));
+                let mut inner = Rect::from_min_max(inner.min, inner.max.max(inner.min));
 
                 if self.settings.open {
                     let changes = region(ui, mine, vec2(0.0, 0.0), Layout::top_down(Align::Min), |ui| {
@@ -593,6 +599,45 @@ impl eframe::App for App {
                 if skip_covered_terminal(state.as_ref(), &mut typed, |bytes| self.tabs[focused].input(bytes)) {
                     return;
                 }
+                // A compact session rail is only shown where it leaves useful
+                // terminal width; narrow workspaces retain the header tabs.
+                let rail_open = ui.data(|data| data.get_temp::<bool>(egui::Id::new("terminal-session-rail")).unwrap_or(true));
+                if rail_open && inner.width() >= 760.0 {
+                    let rail_width = 190.0;
+                    let rail = Rect::from_min_max(inner.min, pos2(inner.left() + rail_width, inner.bottom()));
+                    let mut selected = None;
+                    let mut create = false;
+                    let mut previous = false;
+                    let mut next = false;
+                    let mut copy = false;
+                    frame_region(ui, rail, vec2(10.0, 12.0), Layout::top_down(Align::Min), |ui| {
+                        egui::ScrollArea::vertical().id_salt("terminal-session-rail-content").show(ui, |ui| {
+                        ui.label(egui::RichText::new("SESSIONS").font(ui::display_bold(11.0)).color(ui::SECONDARY));
+                        ui.add_space(8.0);
+                        for (index, terminal) in self.tabs.iter().enumerate() {
+                            let kind = if terminal.persistent_id.is_some() { "live" } else { "temporary" };
+                            let label = format!("{:02}  {}  ·  {}", index + 1, if index == 0 { "main" } else { "term" }, kind);
+                            if ui.selectable_label(index == self.active, label).clicked() { selected = Some(index); }
+                        }
+                        ui.add_space(8.0);
+                        let available = self.tabs.len() < MAX_TABS;
+                        let hint = if available { "Open a terminal" } else { "Maximum of 9 terminal tabs" };
+                        create = ui.add_enabled(available, egui::Button::new(format!("＋  New terminal    {} / {}", self.tabs.len(), MAX_TABS))).on_hover_text(hint).clicked();
+                        ui.add_space(18.0);
+                        ui.label(egui::RichText::new("COMMANDS").font(ui::display_bold(11.0)).color(ui::SECONDARY));
+                        ui.horizontal_wrapped(|ui| {
+                            previous = ui.button("↑ Previous").on_hover_text("Jump to the previous command").clicked();
+                            next = ui.button("↓ Next").on_hover_text("Jump to the next command").clicked();
+                        });
+                        copy = ui.button("Copy last output").clicked();
+                        });
+                    });
+                    if let Some(index) = selected { self.show_tab(index); command = Some(Command::Terminal); }
+                    if create { self.new_tab(); command = Some(Command::Terminal); }
+                    if previous || next { let index = self.focus_tab(); self.tabs[index].jump_prompt(previous); }
+                    if copy { self.copy_last_output(); }
+                    inner.min.x = (rail.right() + 12.0).min(inner.right());
+                }
                 // One pane, or two with a gap and a rule between them.
                 let panes: Vec<(usize, Rect)> = match self.side {
                     None => vec![(self.active, inner)],
@@ -683,11 +728,11 @@ impl eframe::App for App {
         for action in self.quick.show(ctx, &theme, screen, keys_top, &readings) {
             self.quick_action(ctx, action);
         }
-        let quick_area = self.quick.open.then(|| quick::area(screen, keys_top));
+        let quick_area = self.quick.drawn_area();
 
 
         // Subtle rounded outlines belong to the same shared panel rectangles.
-        let lines = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("frame-lines")));
+        let lines = ctx.layer_painter(frame_lines_layer());
         let line = Stroke::new(1.0, ui::LINE);
         powerup::frame_lines(&lines, screen, workspace, status_top, osk_height, open,
             self.config.side_panel_behavior == des_common::PanelBehavior::Collapse, line, &stage);
@@ -796,9 +841,19 @@ impl eframe::App for App {
             self.settings.open_at(&self.config, "companion");
             self.send(Command::Terminal);
         }
-        let overlay_area = if self.shortcut_reference.open {Some(screen)} else {chat_area.or(quick_area).or(scratch)}.map(scratchpad::area);
+        if self.companion.take_capture_request() {
+            let id = self.companion.begin_capture();
+            if self.lock.locked || self.lock.preparing() || self.desktop.as_ref().is_some_and(|desktop| desktop.locked || desktop.lock_requested) || self.capture.marking() {
+                self.companion.capture_failed(id, "Screen capture is unavailable right now.");
+            } else if let Some(desktop) = self.desktop.as_mut() {
+                if desktop.send(Command::ShotRequest { id, mode: des_common::ipc::ShotMode::Screen }).is_err() {
+                    self.companion.capture_failed(id, "Could not request a screen capture.");
+                }
+            } else { self.companion.capture_failed(id, "Screen capture requires the DEs-UI compositor."); }
+        }
+        let overlay_area = if self.shortcut_reference.open {Some(screen)} else {quick_area.or(chat_area).or(scratch)}.map(scratchpad::area);
         if scratchpad::changed(&mut self.overlay_area, overlay_area) {
-            self.send(Command::CompanionChat(self.companion.open && chat_area.is_some()));
+            self.send(Command::CompanionChat(self.companion.open && chat_area.is_some() && quick_area.is_none()));
             self.send(Command::Overlay(overlay_area));
         }
         // Last, so that it is above everything else.

@@ -93,7 +93,7 @@ pub struct Browser {
     mode: Mode, filter: String, hidden: bool, history: Vec<PathBuf>, history_at: usize,
     worker: Option<Worker>, generation: u64, pending: Option<(PathBuf, Navigation)>,
     loading: bool, loaded: bool, error: Option<String>, limited: bool, in_trash: bool,
-    clipboard: Option<Clipboard>, operation_progress: Option<u64>, dialog: Option<OperationDialog>, menu_open: bool, labels: std::collections::HashMap<PathBuf, String>,
+    clipboard: Option<Clipboard>, operation_progress: Option<u64>, dialog: Option<OperationDialog>, menu_open: bool, paste_chord_handled: bool, labels: std::collections::HashMap<PathBuf, String>,
 }
 pub fn home() -> PathBuf { std::env::var_os("HOME").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| PathBuf::from("/")) }
 fn image_path(path: &Path) -> bool { matches!(path.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg") }
@@ -109,7 +109,7 @@ impl Browser {
         Self { path_text: path.to_string_lossy().into_owned(), history: vec![path.clone()], path, entries: Vec::new(), selected: None,
             mode, filter: String::new(), hidden: false, history_at: 0, worker: None, generation: 0, pending: None,
             loading: false, loaded: false, error: None, limited: false, in_trash: false,
-            clipboard: None, operation_progress: None, dialog: None, menu_open: false, labels: Default::default() }
+            clipboard: None, operation_progress: None, dialog: None, menu_open: false, paste_chord_handled: false, labels: Default::default() }
     }
     fn navigate(&mut self, ctx: &egui::Context, path: PathBuf, navigation: Navigation) {
         if !path.is_absolute() { self.error = Some("Use an absolute folder path".into()); return; }
@@ -199,6 +199,7 @@ impl Browser {
             self.menu_open = menu_drawn || menu.response.clicked();
             menu.response.on_hover_text(if self.in_trash { "Restore selected item" } else { "Rename · Copy · Cut · Trash" });
         });
+        if !ui.input(|input| input.modifiers.ctrl || input.modifiers.command) { self.paste_chord_handled = false; }
         if keyboard && !typing && !busy && self.dialog.is_none() && !self.menu_open {
             if !self.in_trash {
                 // Native integrations translate clipboard chords into semantic
@@ -207,7 +208,11 @@ impl Browser {
                 ui.input_mut(|input| input.events.retain(|event| match event {
                     egui::Event::Copy => { copy = true; false },
                     egui::Event::Cut => { cut = true; false },
-                    egui::Event::Paste(_) => { paste = true; false },
+                    egui::Event::Paste(_) => { paste = true; self.paste_chord_handled = true; false },
+                    egui::Event::Key { key: Key::V, pressed: false, modifiers, .. } if modifiers.ctrl || modifiers.command => {
+                        if !self.paste_chord_handled { paste = true; }
+                        self.paste_chord_handled = false; false
+                    },
                     _ => true,
                 }));
                 copy |= ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::C));
@@ -255,7 +260,8 @@ impl Browser {
             match &dialog.kind {
                 DialogKind::Trash(source) => { ui.label(format!("Move “{}” to Trash?", source.file_name().unwrap_or_default().to_string_lossy())); ui.label("You can restore it from Trash."); },
                 _ => {
-                    let field = ui.add_enabled(!dialog.pending, egui::TextEdit::singleline(&mut dialog.name).char_limit(255).desired_width(ui.available_width()).hint_text("Name"));
+                    let width = ui.available_width();
+                    let field = ui.add_enabled_ui(!dialog.pending, |ui| ui.add_sized(egui::vec2(width, ui::CONTROL_HEIGHT), egui::TextEdit::singleline(&mut dialog.name).vertical_align(egui::Align::Center).char_limit(255).hint_text("Name"))).inner;
                     field.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "File or folder name"));
                     if !dialog.focused { field.request_focus(); dialog.focused = true; }
                     submit = !dialog.pending && (field.has_focus() || field.lost_focus()) && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter));
@@ -317,12 +323,12 @@ impl Browser {
                 if let Some(trash) = crate::file_ops::trash_files() { if ui.selectable_label(self.in_trash, "Trash").clicked() { target = Some((trash, Navigation::New)); } }
             }
         });
-        let path_field = ui.add(egui::TextEdit::singleline(&mut self.path_text).font(ui::mono(12.0)).char_limit(4096).desired_width(ui.available_width()).hint_text("Folder path"));
+        let path_field = ui.add_sized(egui::vec2(ui.available_width(), ui::CONTROL_HEIGHT), egui::TextEdit::singleline(&mut self.path_text).vertical_align(egui::Align::Center).font(ui::mono(12.0)).char_limit(4096).hint_text("Folder path"));
         path_field.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Folder path"));
         if controls_active && (path_field.has_focus() || path_field.lost_focus()) && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)) { target = Some((if self.path_text == self.path.to_string_lossy() { self.path.clone() } else { PathBuf::from(&self.path_text) }, Navigation::New)); }
         let search_field = ui.horizontal(|ui| {
             let clear_width = 48.0 + ui.spacing().item_spacing.x;
-            let field = ui.add(egui::TextEdit::singleline(&mut self.filter).char_limit(256).desired_width((ui.available_width() - clear_width).max(48.0)).hint_text("Search this folder"));
+            let field = ui.add_sized(egui::vec2((ui.available_width() - clear_width).max(48.0), ui::CONTROL_HEIGHT), egui::TextEdit::singleline(&mut self.filter).vertical_align(egui::Align::Center).char_limit(256).hint_text("Search this folder"));
             if ui.add_enabled(!self.filter.is_empty(), egui::Button::new("Clear")).clicked() { self.filter.clear(); field.request_focus(); }
             field
         }).inner;
@@ -559,6 +565,30 @@ mod interaction_tests {
         render(&mut browser, &ctx, Vec::new(), 700.0);
         let action = render(&mut browser, &ctx, vec![egui::Event::Paste("unrelated system clipboard text".into())], 700.0).1;
         assert!(matches!(action, Some(Event::Operate(crate::file_ops::Operation::Copy { source, .. })) if source == PathBuf::from("/tmp/source.txt")));
+    }
+
+    #[test]
+    fn paste_shortcut_works_when_the_system_clipboard_has_no_text() {
+        let ctx = egui::Context::default(); crate::ui::install_fonts(&ctx, None, None);
+        let mut browser = Browser::new("/tmp/destination".into(), Mode::Browse); browser.loaded = true;
+        browser.configure_operations(Some(Clipboard { source: "/tmp/source.txt".into(), cut: false }), None);
+        render(&mut browser, &ctx, Vec::new(), 700.0);
+        let mut action = None;
+        let _ = ctx.run(egui::RawInput { modifiers: Modifiers::CTRL, events: vec![egui::Event::Key { key: Key::V, physical_key: Some(Key::V), pressed: false, repeat: false, modifiers: Modifiers::CTRL }], ..Default::default() }, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| action = browser.show(ui));
+        });
+        assert!(matches!(action, Some(Event::Operate(crate::file_ops::Operation::Copy { source, .. })) if source == PathBuf::from("/tmp/source.txt")));
+    }
+
+    #[test]
+    fn clipboard_paste_event_and_key_release_do_not_paste_twice() {
+        let ctx = egui::Context::default(); crate::ui::install_fonts(&ctx, None, None);
+        let mut browser = Browser::new("/tmp/destination".into(), Mode::Browse); browser.loaded = true;
+        browser.configure_operations(Some(Clipboard { source: "/tmp/source.txt".into(), cut: false }), None);
+        render(&mut browser, &ctx, Vec::new(), 700.0);
+        let mut run = |events| { let mut action = None; let _ = ctx.run(egui::RawInput { modifiers: Modifiers::CTRL, events, ..Default::default() }, |ctx| { egui::CentralPanel::default().show(ctx, |ui| action = browser.show(ui)); }); action };
+        assert!(matches!(run(vec![egui::Event::Paste("text".into())]), Some(Event::Operate(_))));
+        assert!(run(vec![egui::Event::Key { key: Key::V, physical_key: Some(Key::V), pressed: false, repeat: false, modifiers: Modifiers::CTRL }]).is_none());
     }
 
     #[test]

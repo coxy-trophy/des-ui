@@ -1,8 +1,9 @@
 //! Private, bounded JSON worker bridge. No credentials enter desktop configuration.
 use eframe::egui::{self, RichText};
 use serde_json::{Value, json};
-use std::{io::{BufRead, BufReader, Write}, path::PathBuf, process::{Child, Command, Stdio}, sync::{mpsc::{self, Receiver, SyncSender}, Arc, atomic::{AtomicBool, Ordering}}};
+use std::{io::{BufRead, BufReader, Read, Write}, path::PathBuf, process::{Child, Command, Stdio}, sync::{mpsc::{self, Receiver, SyncSender}, Arc, atomic::{AtomicBool, Ordering}}};
 use crate::{theme::Theme, ui};
+use base64::Engine as _;
 /// Finite thought lifetime with cubic easing; no movement when reduced motion is enabled.
 fn thought_motion(age: f32, animate: bool) -> Option<(f32,f32)> {
     if !age.is_finite() || age>=15.0 {return None;}
@@ -44,11 +45,49 @@ fn worker_path() -> Option<PathBuf> {
 #[derive(Default)]
 pub struct Companion {
     pub open: bool, pub chat_selected: bool, pub panel_requested: bool, pub settings_requested: bool, bridge: Option<Bridge>, next_id: u64, snapshot: Value, voice: Value,
-    input: String, key: String, show_key: bool, model: String, identity: String, memory: String,
+    input: String, key: String, show_key: bool, model: String, identity: String, memory: String, memory_edit: Option<(i64, String)>, memory_edit_saving: Option<(i64, String)>,
     worker_ready: bool, pending_voice: bool, keep_requested: bool, voice_requested: bool, voice_notice: Option<(String,std::time::Instant)>, voice_screen: usize, cursor_signal: Option<(bool,Option<(i32,i32,i32,i32)>,std::time::Instant)>, voice_anchor: Option<egui::Pos2>, voice_caption: String, remember_key: Option<bool>,
+    capture_requested: bool, capture_pending: Option<u64>, capture_sequence: u64, attachment: Option<ScreenAttachment>, voice_screen_pending: bool,
     error: String, focus: Option<egui::Id>, focus_input: bool, confirm: Option<&'static str>, identity_dirty: bool, social_at: Option<std::time::Instant>, bubble_anchor: Option<egui::Pos2>, bubble: Option<(String,std::time::Instant)>,
+    social_probe_started: bool, social_probe: Option<Receiver<bool>>,
 }
+struct ScreenAttachment { jpeg: String, texture: egui::TextureHandle }
+
 impl Companion {
+    pub fn take_capture_request(&mut self) -> bool { std::mem::take(&mut self.capture_requested) }
+    pub fn begin_capture(&mut self) -> u64 {
+        self.capture_sequence = self.capture_sequence.wrapping_add(1) & (u64::MAX >> 1);
+        let id = (1u64 << 63) | self.capture_sequence;
+        self.capture_pending = Some(id);
+        id
+    }
+    pub fn capture_failed(&mut self, id: u64, message: &str) {
+        if self.capture_pending == Some(id) { self.capture_pending = None; self.error = message.into(); }
+    }
+    pub fn accepts_capture(id: Option<u64>) -> bool { id.is_some_and(|id| id & (1u64 << 63) != 0) }
+    pub fn receive_capture(&mut self, ctx: &egui::Context, shot: crate::capture::Shot) {
+        let pending = shot.request == self.capture_pending && self.capture_pending.is_some();
+        if pending { self.capture_pending = None; }
+        let path = std::path::Path::new(&shot.path);
+        let result = if pending { (|| -> Result<ScreenAttachment, String> {
+            let size = (shot.width as usize).checked_mul(shot.height as usize).and_then(|v| v.checked_mul(4)).ok_or("Screenshot is too large")?;
+            if size == 0 || size > 64 * 1024 * 1024 { return Err("Screenshot is too large".into()); }
+            let file = std::fs::File::open(path).map_err(|_| "Could not read screenshot")?;
+            let mut data = Vec::with_capacity(size);
+            std::io::Read::take(file, size as u64 + 1).read_to_end(&mut data).map_err(|_| "Could not read screenshot")?;
+            if data.len() != size { return Err("Screenshot is incomplete".into()); }
+            let image = image::RgbaImage::from_raw(shot.width, shot.height, data).ok_or("Screenshot is invalid")?;
+            let resized = image::DynamicImage::ImageRgba8(image).resize(1280, 1280, image::imageops::FilterType::Triangle).to_rgb8();
+            let mut bytes = Vec::new();
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 75).encode_image(&resized).map_err(|_| "Could not prepare screenshot")?;
+            if bytes.len() > 1_500_000 { return Err("Screenshot is too large to attach".into()); }
+            let preview = image::imageops::thumbnail(&resized, 160, 90);
+            let texture = ctx.load_texture("companion-screen-preview", egui::ColorImage::from_rgb([preview.width() as usize, preview.height() as usize], preview.as_raw()), egui::TextureOptions::LINEAR);
+            Ok(ScreenAttachment { jpeg: base64::engine::general_purpose::STANDARD.encode(bytes), texture })
+        })() } else { Err(String::new()) };
+        let _ = std::fs::remove_file(path);
+        if pending { match result { Ok(image) => { self.attachment = Some(image); self.error.clear(); }, Err(message) => self.error = message } }
+    }
     pub fn open(&mut self, ctx: &egui::Context) {
         self.open=true; self.focus=ctx.memory(|m|m.focused()); self.focus_input=true;
         self.chat_selected=true;self.panel_requested=true;
@@ -57,6 +96,7 @@ impl Companion {
     }
     /// Companion configuration is owned by Settings, never the conversation overlay.
     pub fn settings_ui(&mut self, ui: &mut egui::Ui, _theme: &Theme) {
+        if self.bridge.is_none() && self.error.is_empty() { self.connect(ui.ctx()); self.send(json!({"type":"status"})); }
         ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
         if self.model.is_empty() { self.model=self.snapshot["model"].as_str().unwrap_or("gpt-5.6-luna").into(); }
         ui.label(RichText::new("CONNECTION").font(ui::display_bold(13.0)));
@@ -94,8 +134,30 @@ impl Companion {
                     ui.label("Identity journal");if ui.add(egui::TextEdit::multiline(&mut self.identity).desired_rows(3).desired_width(ui.available_width())).changed(){self.identity_dirty=true;}if ui.button("Save identity").clicked(){self.send(json!({"type":"identity","text":self.identity}));self.identity_dirty=false;}
                     let identities=self.snapshot["identities"].as_array().cloned().unwrap_or_default();
                     ui.collapsing("Previous identity versions",|ui|{for identity in identities {ui.horizontal_wrapped(|ui|{ui.label(identity["text"].as_str().unwrap_or(""));if ui.button("Restore version").clicked(){self.send(json!({"type":"restore_identity","version":identity["id"]}));self.identity=identity["text"].as_str().unwrap_or("").into();}});}});
+                    ui.label("Saved memories can be included in AI requests.");
                     ui.label("Remember an approved fact or preference");ui.add(egui::TextEdit::singleline(&mut self.memory).desired_width(ui.available_width()));if ui.button("Remember").clicked()&&!self.memory.trim().is_empty(){self.send(json!({"type":"remember","text":self.memory}));self.memory.clear();}
-                    let memories=self.snapshot["memories"].as_array().cloned().unwrap_or_default();for memory in memories {ui.horizontal_wrapped(|ui|{ui.label(memory["text"].as_str().unwrap_or(""));if ui.button("Forget").clicked(){self.send(json!({"type":"forget","memory_id":memory["id"]}));}});}
+                    let memories=self.snapshot["memories"].as_array().cloned().unwrap_or_default();
+                    if memories.is_empty() { ui.label(RichText::new("No saved memories.").color(ui::SECONDARY)); }
+                    for memory in memories {
+                        let Some(id)=memory["id"].as_i64() else { continue };
+                        if self.memory_edit.as_ref().is_some_and(|(editing,_)|*editing==id) {
+                            let mut save=false;let mut cancel=false;
+                            let saving=self.memory_edit_saving.is_some();
+                            if let Some((_,draft))=&mut self.memory_edit {
+                                let width=ui.available_width();
+                                ui.add_enabled_ui(!saving, |ui| ui.add_sized(egui::vec2(width, ui::CONTROL_HEIGHT), egui::TextEdit::singleline(draft).char_limit(1000).hint_text("Memory")));
+                                ui.horizontal_wrapped(|ui| { save=ui.add_enabled(!saving && !draft.trim().is_empty(),egui::Button::new(if saving {"Saving…"} else {"Save memory"})).clicked(); cancel=ui.add_enabled(!saving,egui::Button::new("Cancel")).clicked(); });
+                            }
+                            if save { if let Some((id,draft))=self.memory_edit.clone() { self.send(json!({"type":"edit_memory","memory_id":id,"text":draft})); if self.bridge.is_some() {self.memory_edit_saving=Some((id,draft.trim().to_owned()));} } }
+                            else if cancel { self.memory_edit=None; }
+                        } else {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(memory["text"].as_str().unwrap_or(""));
+                                if ui.button("Edit").clicked() { self.memory_edit=Some((id,memory["text"].as_str().unwrap_or("").to_owned())); }
+                                if ui.button("Forget").clicked() { self.send(json!({"type":"forget","memory_id":id})); }
+                            });
+                        }
+                    }
                     for (label,command) in [("Clear conversation","clear"),("Reset identity","reset_identity")] {if ui.button(label).clicked(){self.confirm=Some(command)}}
                     if let Some(command)=self.confirm {ui.label("This removes the selected local history. Continue?");ui.horizontal(|ui|{if ui.button("Confirm removal").clicked(){self.send(json!({"type":command}));self.confirm=None;}if ui.button("Cancel").clicked(){self.confirm=None;}});}
 
@@ -109,6 +171,7 @@ impl Companion {
     }
 
     fn reset_connection_state(&mut self) {
+        self.memory_edit_saving=None;self.voice_screen_pending=false;
         self.voice=json!({"state":"off","muted":false});
         self.worker_ready=false;self.keep_requested=false;self.voice_requested=false;self.pending_voice=false;self.voice_caption.clear();
         if !self.snapshot.is_object() {self.snapshot=json!({});}
@@ -130,11 +193,18 @@ impl Companion {
     pub fn control(&mut self, action: des_common::ipc::CompanionAction) {
         use des_common::ipc::CompanionAction;
         match action {
-            CompanionAction::Keep=>{if self.pending_voice || self.voice_requested {self.keep_requested=true;}else{self.send(json!({"type":"voice_keep"}));}},
-            CompanionAction::Mute=>{let muted=self.voice["muted"].as_bool().unwrap_or(false);self.send(json!({"type":"voice_mute","muted":!muted}));},
-            CompanionAction::Stop=>{self.pending_voice=false;self.voice_requested=false;self.keep_requested=false;self.send(json!({"type":"voice_stop"}));},
-            CompanionAction::Quiet=>{self.bubble=None;self.send(json!({"type":"configure","social":false}));},
+            CompanionAction::Keep=>{if self.pending_voice || self.voice_requested {self.keep_requested=true;}else if self.bridge.is_some(){self.send(json!({"type":"voice_keep"}));}},
+            CompanionAction::Mute=>{if self.bridge.is_some(){let muted=self.voice["muted"].as_bool().unwrap_or(false);self.send(json!({"type":"voice_mute","muted":!muted}));}},
+            CompanionAction::Stop=>{self.pending_voice=false;self.voice_requested=false;self.keep_requested=false;if self.bridge.is_some(){self.send(json!({"type":"voice_stop"}));}},
+            CompanionAction::Quiet=>{self.bubble=None;if self.bridge.is_some(){self.send(json!({"type":"configure","social":false}));}},
         }
+    }
+
+    pub fn control_from_desktop(&mut self, ctx: &egui::Context, action: des_common::ipc::CompanionAction) {
+        if matches!(action, des_common::ipc::CompanionAction::Quiet) && self.bridge.is_none() {
+            self.connect(ctx);
+        }
+        self.control(action);
     }
 
     pub fn start_voice(&mut self, ctx: &egui::Context) {
@@ -148,6 +218,7 @@ impl Companion {
     pub fn close(&mut self) {
         let active=self.open || self.voice_active();
         self.pending_voice=false;self.voice_requested=false;self.keep_requested=false;
+        self.capture_requested=false;self.capture_pending=None;self.attachment=None;self.voice_screen_pending=false;
         if active && self.bridge.is_some(){self.send(json!({"type":"voice_stop"}));self.send(json!({"type":"cancel"}));}
         self.blur_text();
     }
@@ -158,20 +229,23 @@ impl Companion {
     pub fn pump(&mut self, ctx: &egui::Context) {
         let events:Vec<_>=self.bridge.as_ref().map(|b|b.rx.try_iter().collect()).unwrap_or_default();
         for event in events { match event["type"].as_str().or(event["event"].as_str()) {
-            Some("state")=>{ self.worker_ready=true;let state=event.get("snapshot").cloned().unwrap_or(event); if self.model.is_empty() {self.model=state["model"].as_str().unwrap_or("gpt-5.6-luna").into();} if !self.identity_dirty{self.identity=state["identity"].as_str().unwrap_or("").into();} self.snapshot=state; },
+            Some("state")=>{ self.worker_ready=true;let state=event.get("snapshot").cloned().unwrap_or(event); if self.memory_edit_saving.as_ref().is_some_and(|(id,draft)|state["memories"].as_array().is_some_and(|memories|memories.iter().any(|memory|memory["id"].as_i64()==Some(*id) && memory["text"].as_str()==Some(draft.as_str())))) {self.memory_edit_saving=None;self.memory_edit=None;} if self.model.is_empty() {self.model=state["model"].as_str().unwrap_or("gpt-5.6-luna").into();} if !self.identity_dirty{self.identity=state["identity"].as_str().unwrap_or("").into();} self.snapshot=state; },
             Some("voice")=>{
                 self.pending_voice=false;self.voice_requested=false;
                 if event["state"].as_str()==Some("stopped") {
+                    self.voice_screen_pending=false;
                     if let Some(message)=event["message"].as_str().filter(|m|!m.is_empty()) {self.voice_notice=Some((message.into(),std::time::Instant::now()));}
-                    else if event["reason"].as_str()==Some("deadline") {self.voice_notice=Some(("Five-minute limit reached. Resume voice when ready.".into(),std::time::Instant::now()));}
+                    else if event["reason"].as_str()==Some("deadline") {self.voice_notice=Some(("Voice session or daily limit reached. Check your voice allowance to continue.".into(),std::time::Instant::now()));}
                 }
                 let ready=matches!(event["state"].as_str(),Some("listening"|"speaking"));
                 self.voice=event;
                 if ready && self.keep_requested {self.keep_requested=false;self.send(json!({"type":"voice_keep"}));}
             },
+            Some("voice_screen_queued")=>{ self.voice_screen_pending=false;self.attachment=None;self.voice_notice=Some(("Screen queued for the voice backend.".into(),std::time::Instant::now())); },
             Some("transcript")=>{if event["role"].as_str()==Some("assistant"){if event["is_new"].as_bool()==Some(true){self.voice_caption.clear();}self.voice_caption.push_str(event["text"].as_str().unwrap_or(""));self.voice_caption=self.voice_caption.chars().rev().take(1000).collect::<String>().chars().rev().collect();}let role=event["role"].as_str().unwrap_or("assistant");let delta=event["text"].as_str().unwrap_or("");if let Some(messages)=self.snapshot["messages"].as_array_mut(){if event["is_new"].as_bool()==Some(false) && messages.last().is_some_and(|m|m["role"]==role){let last=messages.last_mut().unwrap();let text=last["text"].as_str().unwrap_or("").to_owned()+delta;last["text"]=json!(text.chars().take(16000).collect::<String>());}else if messages.len()<200{messages.push(json!({"role":role,"text":delta}));}}},
             Some("reply") if event["proactive"].as_bool()==Some(true) && !self.open => {self.bubble_anchor=Some(ctx.input(|i|i.pointer.hover_pos()).unwrap_or(ctx.screen_rect().center()));self.bubble=Some((event["text"].as_str().unwrap_or("").chars().take(240).collect(),std::time::Instant::now()));},
             Some("error")=>{
+                self.memory_edit_saving=None;self.voice_screen_pending=false;
                 let voice_error=self.voice_requested || self.pending_voice;
                 self.pending_voice=false;self.voice_requested=false;self.snapshot["busy"]=json!(false);
                 self.error=event["message"].as_str().unwrap_or("Companion request failed.").into();
@@ -186,9 +260,26 @@ impl Companion {
         if !self.open { if let Some(id)=self.focus.take(){ctx.memory_mut(|m|m.request_focus(id));} }
     }
     pub fn social_tick(&mut self, ctx: &egui::Context, suppressed: bool, theme: &Theme, animate: bool) -> Option<egui::Rect> {
-        if self.bridge.is_none() && self.error.is_empty() {
-            self.connect(ctx);
-            self.send(json!({"type":"status"}));
+        if !self.social_probe_started && self.bridge.is_none() && self.error.is_empty() {
+            self.social_probe_started = true;
+            let (sender, receiver) = mpsc::channel();
+            self.social_probe = Some(receiver);
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                let enabled = worker_path().and_then(|path| Command::new("python3").arg(path).arg("--social-probe")
+                    .env_remove("OPENAI_API_KEY").stdin(Stdio::null()).stderr(Stdio::null()).output().ok())
+                    .filter(|output| output.status.success())
+                    .map_or(true, |output| match output.stdout.as_slice() { b"no\n" => false, _ => true });
+                let _ = sender.send(enabled);
+                ctx.request_repaint();
+            });
+        }
+        if let Some(enabled) = self.social_probe.as_ref().and_then(|probe| probe.try_recv().ok()) {
+            self.social_probe = None;
+            if enabled && self.bridge.is_none() && self.error.is_empty() {
+                self.connect(ctx);
+                self.send(json!({"type":"status"}));
+            }
         }
         if suppressed || self.open { self.bubble=None; return None; }
         let now=std::time::Instant::now();
@@ -214,7 +305,8 @@ impl Companion {
             .order(egui::Order::Foreground).fixed_pos(pos).show(ctx,|ui|{
                 ui.set_opacity(alpha);
                 let surface=crate::material::surface(ui,
-                    egui::Frame::NONE.inner_margin(16).corner_radius(20),
+                    egui::Frame::NONE.inner_margin(16).corner_radius(ui::SURFACE_RADIUS)
+                        .stroke(egui::Stroke::new(1.0,ui::LINE_STRONG)),
                     crate::material::Role::Floating,|ui|{
                         ui.set_width(width);
                         ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
@@ -227,12 +319,12 @@ impl Companion {
                         ui.label(RichText::new(text).font(ui::display(15.0)).color(ui::TEXT));
                         ui.add_space(10.0);
                         ui.horizontal(|ui|{
-                            talk=ui.button("Talk").clicked();
-                            quiet=ui.small_button("Quiet").clicked();
+                            talk=ui::button(ui,theme,"TALK",None,false).clicked();
+                            quiet=ui::button(ui,theme,"QUIET",None,false).clicked();
                         });
                     });
                 let rect=surface.response.rect;
-                ui.painter().rect_stroke(rect,20,egui::Stroke::new(1.0,theme.main.gamma_multiply(0.18)),egui::StrokeKind::Inside);
+                ui.painter().rect_stroke(rect,ui::SURFACE_RADIUS,egui::Stroke::new(1.0,theme.main.gamma_multiply(0.18)),egui::StrokeKind::Inside);
                 for (distance,radius) in [(7.0,4.0),(16.0,2.5)] {
                     let center=egui::pos2(rect.left()-distance,rect.top()+12.0-distance*0.5+rise);
                     ui.painter().circle_filled(center,radius,ui::PANEL);
@@ -269,7 +361,7 @@ impl Companion {
         let active=self.voice_active();
         let ready=self.snapshot["enabled"].as_bool().unwrap_or(false)
             && self.snapshot["configured"].as_bool().unwrap_or(false) && !busy && !active;
-        let message_height=(height-44.0).max(16.0);
+        let message_height=(height-104.0).max(16.0);
         egui::ScrollArea::vertical().id_salt("companion-chat-history")
             .max_height(message_height).min_scrolled_height(message_height)
             .auto_shrink([false,false]).stick_to_bottom(true).show(ui,|ui|{
@@ -283,7 +375,11 @@ impl Companion {
                     ui.horizontal_top(|ui|{
                         ui.add_sized(egui::vec2(64.0,18.0),egui::Label::new(RichText::new(if user{"YOU"}else{"COMPANION"})
                             .font(ui::display_bold(10.0)).color(if user{ui::SECONDARY}else{theme.main})));
-                        ui.add(egui::Label::new(message["text"].as_str().unwrap_or("")).wrap());
+                        let text = message["text"].as_str().unwrap_or("");
+                        ui.vertical(|ui| {
+                            ui.add(egui::Label::new(text).wrap());
+                            if !user && !text.is_empty() && ui.small_button("Copy reply").clicked() { ui.ctx().copy_text(text.to_owned()); }
+                        });
                     });
                 }
                 if busy { ui.horizontal(|ui|{ui.spinner();ui.label("Thinking…");}); }
@@ -295,22 +391,53 @@ impl Companion {
                 }
             });
         ui.add_space(4.0);
+        let mut remove_attachment = false;
+        let mut share_screen = false;
+        ui.horizontal(|ui| {
+            if self.attachment.is_none() && ui.add_enabled(self.capture_pending.is_none() && !self.voice_screen_pending, egui::Button::new("Attach screen").min_size(egui::vec2(104.0, 30.0))).on_hover_text("Capture the screen for review; it is only sent after you choose to share it").clicked() {
+                self.capture_requested = true;
+            }
+            if self.capture_pending.is_some() { ui.label("Capturing…"); }
+            if let Some(attachment) = &self.attachment {
+                ui.add(egui::Image::new(&attachment.texture).max_size(egui::vec2(48.0, 28.0)))
+                    .on_hover_ui(|ui| { ui.label("Will send to OpenAI with your message"); ui.add(egui::Image::new(&attachment.texture).max_size(egui::vec2(320.0, 180.0))); });
+                if active {
+                    let label=if self.voice_screen_pending {"Queuing…"} else {"Share with voice"};
+                    if ui.add_enabled(!self.voice_screen_pending,egui::Button::new(label)).on_hover_text("Send this preview to OpenAI for the current voice conversation").clicked() {
+                        share_screen = true;
+                    }
+                }
+                if ui.add_enabled(!self.voice_screen_pending,egui::Button::new("Remove")).on_hover_text("Discard screen attachment").clicked() { remove_attachment = true; }
+                ui.add(egui::Label::new(if active {"Share with voice sends to OpenAI"} else {"Will send to OpenAI with your message"}).truncate());
+            }
+            if busy && ui.button("Stop reply").clicked() { self.send(json!({"type":"cancel"})); }
+        });
+        if remove_attachment { self.attachment = None; }
+        if share_screen {
+            if let Some(image)=self.attachment.as_ref().map(|attachment|attachment.jpeg.clone()) {
+                self.send(json!({"type":"voice_share_screen","image":image}));
+                if self.bridge.is_some() {self.voice_screen_pending=true;}
+            }
+        }
         let mut send_clicked=false;
-        let mut enter=false;
+        let input_id=egui::Id::new("companion-chat-input");
+        let enter=ui.memory(|memory| memory.has_focus(input_id)) && !escaped
+            && ui.input_mut(|input| input.modifiers.matches_exact(egui::Modifiers::NONE) && input.consume_key(egui::Modifiers::NONE,egui::Key::Enter));
         ui.horizontal(|ui|{
-            let edit=ui.add_sized(egui::vec2((width-70.0).max(1.0),30.0),
-                egui::TextEdit::singleline(&mut self.input).id(egui::Id::new("companion-chat-input"))
-                    .char_limit(8000).hint_text(if active{"Voice conversation active"}else{"Message…"}));
+            let edit=ui.add_sized(egui::vec2((width-70.0).max(1.0),56.0),
+                egui::TextEdit::multiline(&mut self.input).id(input_id).desired_rows(2)
+                    .char_limit(8000).hint_text(if active{"Voice conversation active"}else{"Message…  Shift+Enter for a new line"}));
             if self.focus_input {edit.request_focus();self.focus_input=false;}
             if edit.has_focus() && !escaped {self.open=true;}
-            enter=(edit.has_focus() || edit.lost_focus()) && ui.input_mut(|i|i.consume_key(egui::Modifiers::NONE,egui::Key::Enter));
-            send_clicked=ui.add_enabled(ready&&!self.input.trim().is_empty(),egui::Button::new("Send").min_size(egui::vec2(56.0,30.0))).clicked();
+            send_clicked=ui.add_enabled(ready&&!self.input.trim().is_empty(),egui::Button::new("Send").min_size(egui::vec2(56.0,56.0))).clicked();
         });
         if enter {self.focus_input=true;}
         if ready && (send_clicked || enter) && !self.input.trim().is_empty() {
             let text=self.input.clone();
-            self.send(json!({"type":"send","text":text}));
-            if self.bridge.is_some(){self.input.clear();self.snapshot["busy"]=json!(true);}
+            let mut command=json!({"type":"send","text":text});
+            if let Some(attachment) = &self.attachment { command["image"] = json!(attachment.jpeg); }
+            self.send(command);
+            if self.bridge.is_some(){self.input.clear();self.attachment=None;self.snapshot["busy"]=json!(true);}
         }
         if !self.open { ui.memory_mut(|m|{if m.focused()==Some(egui::Id::new("companion-chat-input")){m.surrender_focus(egui::Id::new("companion-chat-input"));}}); }
     }
@@ -338,28 +465,44 @@ impl Companion {
         if self.voice_notice.as_ref().is_some_and(|(_,at)|at.elapsed().as_secs_f32()>=6.0){self.voice_notice=None;}
         if (!active && self.voice_notice.is_none()) || self.voice_screen!=0{return None;}
         let screen=ctx.screen_rect();
-        let width=(screen.width()-64.0).clamp(1.0,280.0);
+        let width=(screen.width()-64.0).clamp(1.0,310.0);
         let anchor=self.voice_anchor.get_or_insert_with(||ctx.input(|i|i.pointer.hover_pos()).unwrap_or(screen.center()));
         let pos=egui::pos2((anchor.x+24.0).clamp(screen.left()+16.0,(screen.right()-width-48.0).max(screen.left()+16.0)),
-            (anchor.y+24.0).clamp(screen.top()+16.0,(screen.bottom()-158.0).max(screen.top()+16.0)));
+            (anchor.y+24.0).clamp(screen.top()+16.0,(screen.bottom()-190.0).max(screen.top()+16.0)));
         let speaking=self.speaking();
+        let muted=self.voice["muted"].as_bool()==Some(true);
         let phase=ctx.input(|i|i.time) as f32;
         let pulse=if speaking && animate {0.5+0.5*(phase*std::f32::consts::TAU*0.9).sin()}else{0.0};
-        let caption=self.voice_caption.chars().rev().take(200).collect::<String>().chars().rev().collect::<String>();
+        let caption=self.voice_caption.chars().rev().take(180).collect::<String>().chars().rev().collect::<String>();
+        let status=if !active {"VOICE ENDED"} else if speaking {"SPEAKING"} else if self.pending_voice || self.voice_requested {"CONNECTING"} else if muted {"MICROPHONE MUTED"} else {"LISTENING"};
         let response=egui::Area::new(egui::Id::new("companion-voice-thought"))
             .order(egui::Order::Tooltip).fixed_pos(pos).interactable(false).show(ctx,|ui|{
-                crate::material::surface(ui,egui::Frame::NONE.inner_margin(14).corner_radius(18),crate::material::Role::Floating,|ui|{
+                crate::material::surface(ui,egui::Frame::NONE.inner_margin(16).corner_radius(ui::SURFACE_RADIUS)
+                    .stroke(egui::Stroke::new(1.0,ui::LINE_STRONG)),crate::material::Role::Floating,|ui|{
                     ui.set_width(width);ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
                     ui.horizontal(|ui|{
                         let (rect,_)=ui.allocate_exact_size(egui::vec2(12.0,12.0),egui::Sense::hover());
-                        ui.painter().circle_filled(rect.center(),3.0+1.4*pulse,theme.main);
-                        ui.label(RichText::new(if !active{"Voice"}else if speaking{"Speaking"}else if self.pending_voice || self.voice_requested{"Connecting"}else if self.voice["muted"].as_bool()==Some(true){"Microphone muted"}else{"Listening"})
-                            .font(ui::display_bold(12.0)).color(theme.main));
-                        let remaining=self.voice["remaining"].as_u64().unwrap_or(300);
-                        if active {ui.label(RichText::new(format!("{}:{:02}",remaining/60,remaining%60)).color(ui::SECONDARY));}
+                        ui.painter().circle_filled(rect.center(),3.0+1.4*pulse,if muted {ui::CAUTION}else{theme.main});
+                        ui.label(RichText::new(status).font(ui::display_bold(11.0)).color(if muted {ui::CAUTION}else{theme.main}));
+                        if active {
+                            let remaining=self.voice["remaining"].as_u64().unwrap_or(300);
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
+                                ui.label(RichText::new(format!("{}:{:02}",remaining/60,remaining%60)).font(ui::mono(11.0)).color(ui::SECONDARY));
+                            });
+                        }
                     });
-                    if speaking && !caption.is_empty(){ui.add_space(4.0);ui.label(caption);}
-                    if !active {if let Some((message,_))=&self.voice_notice {ui.label(message);}}
+                    ui.add_space(6.0);
+                    if speaking && !caption.is_empty() {
+                        ui.label(RichText::new(caption).font(ui::display(14.0)).color(ui::TEXT));
+                    } else if !active {
+                        if let Some((message,_))=&self.voice_notice { ui.label(RichText::new(message).font(ui::display(13.0)).color(ui::TEXT)); }
+                    } else {
+                        let hint=if muted {"Resume the microphone from Chat."} else if self.pending_voice || self.voice_requested {"Starting your voice conversation…"} else {"Speak naturally. Voice controls are in Chat."};
+                        ui.label(RichText::new(hint).font(ui::display(12.0)).color(ui::SECONDARY));
+                    }
+                    if active { if let Some((message,_))=&self.voice_notice {
+                        ui.label(RichText::new(message).font(ui::display(11.0)).color(ui::SECONDARY));
+                    } }
                 });
             });
         if speaking && animate {ctx.request_repaint_after(std::time::Duration::from_millis(33));}
@@ -372,6 +515,82 @@ impl Companion {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn disabled_social_probe_does_not_start_companion_worker() {
+        let (send, receive) = mpsc::channel();
+        send.send(false).unwrap();
+        let mut companion = Companion { social_probe_started:true, social_probe:Some(receive), ..Default::default() };
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| { companion.social_tick(ctx, false, &Theme::load("signal"), false); });
+        assert!(companion.bridge.is_none());
+        assert!(companion.social_probe.is_none());
+    }
+    #[test]
+    fn attachment_keeps_the_composer_visible_in_a_short_panel() {
+        let ctx=egui::Context::default(); ui::install_fonts(&ctx,None,None);
+        let texture=ctx.load_texture("fixture",egui::ColorImage::new([2,2],egui::Color32::WHITE),egui::TextureOptions::LINEAR);
+        let mut companion=Companion {attachment:Some(ScreenAttachment{jpeg:String::new(),texture}),..Default::default()};
+        let screen=egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(800.0,140.0));
+        let mut input_rect=None;
+        for _ in 0..2 { let _=ctx.run(egui::RawInput {screen_rect:Some(screen),..Default::default()},|ctx| {
+            egui::CentralPanel::default().show(ctx,|ui|companion.panel_ui(ui,&Theme::load("signal")));
+            input_rect=ctx.read_response(egui::Id::new("companion-chat-input")).map(|response|response.rect);
+        }); }
+        let rect=input_rect.expect("chat input");
+        assert!(rect.bottom() <= screen.bottom(), "composer below short panel: {rect:?}");
+    }
+
+    #[test]
+    fn voice_card_stays_on_screen_and_does_not_take_keyboard_focus() {
+        let ctx=egui::Context::default(); ui::install_fonts(&ctx,None,None);
+        let focus=egui::Id::new("unrelated-input");
+        let mut companion=Companion::default();
+        companion.voice=json!({"state":"speaking","remaining":125,"muted":false});
+        companion.voice_caption="A short spoken explanation".into();
+        companion.voice_anchor=Some(egui::pos2(1270.0,790.0));
+        let screen=egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1280.0,800.0));
+        let mut rect=None; let mut text=String::new();
+        for frame in 0..2 {
+            if frame == 1 { ctx.memory_mut(|memory|memory.request_focus(focus)); }
+            let _=ctx.run(egui::RawInput {screen_rect:Some(screen),..Default::default()},|ctx|{
+                egui::CentralPanel::default().show(ctx,|ui|{ui.add(egui::TextEdit::singleline(&mut text).id(focus));});
+                rect=companion.voice_bubble(ctx,&Theme::load("signal"),false);
+            });
+        }
+        let rect=rect.expect("active voice card");
+        assert!(screen.contains_rect(rect), "card must fit the screen: {rect:?}");
+        assert_eq!(ctx.memory(|memory|memory.focused()),Some(focus));
+    }
+
+    #[test]
+    fn screen_attachment_is_previewed_and_stale_captures_are_discarded() {
+        let ctx = egui::Context::default();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shot.rgba");
+        let mut companion = Companion::default();
+        let id = companion.begin_capture();
+        std::fs::write(&path, [255u8, 0, 0, 255, 0, 255, 0, 255]).unwrap();
+        companion.receive_capture(&ctx, crate::capture::Shot { request: Some(id), mode: des_common::ipc::ShotMode::Screen, width: 2, height: 1, window: None, path: path.display().to_string() });
+        assert!(!path.exists());
+        let encoded = &companion.attachment.as_ref().unwrap().jpeg;
+        assert!(base64::engine::general_purpose::STANDARD.decode(encoded).unwrap().starts_with(&[0xff, 0xd8, 0xff]));
+        companion.close();
+        assert!(companion.attachment.is_none());
+        std::fs::write(&path, [0u8; 8]).unwrap();
+        companion.receive_capture(&ctx, crate::capture::Shot { request: Some(id), mode: des_common::ipc::ShotMode::Screen, width: 2, height: 1, window: None, path: path.display().to_string() });
+        assert!(companion.attachment.is_none());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn invalid_screen_capture_is_removed_and_never_attached() {
+        let ctx = egui::Context::default(); let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken.rgba"); std::fs::write(&path, [0u8; 4]).unwrap();
+        let mut companion = Companion::default(); let id = companion.begin_capture();
+        companion.receive_capture(&ctx, crate::capture::Shot { request: Some(id), mode: des_common::ipc::ShotMode::Screen, width: 2, height: 2, window: None, path: path.display().to_string() });
+        assert!(companion.attachment.is_none()); assert!(!companion.error.is_empty()); assert!(!path.exists());
+    }
+
     #[test]
     fn companion_starts_disabled_and_closing_does_not_start_worker() {
         let mut companion=Companion::default();
@@ -519,6 +738,20 @@ mod panel_flow_tests {
         assert!(!commands.try_iter().any(|c|c["type"]=="voice_start"),"Stop must revoke the earlier voice request");
         assert!(!companion.voice_active());
     }
+    #[test]
+    fn shift_enter_inserts_a_newline_without_sending() {
+        let (bridge,commands,_events)=fake_bridge();
+        let ctx=egui::Context::default();ui::install_fonts(&ctx,None,None);
+        let mut companion=Companion {bridge:Some(bridge),open:true,chat_selected:true,focus_input:true,snapshot:json!({"enabled":true,"configured":true}),..Default::default()};
+        let screen=egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(800.0,240.0));
+        let run=|input, companion:&mut Companion| { let _=ctx.run(input,|ctx| {egui::CentralPanel::default().show(ctx,|ui|companion.panel_ui(ui,&Theme::load("signal")));}); };
+        run(egui::RawInput {screen_rect:Some(screen),..Default::default()},&mut companion);
+        run(egui::RawInput {screen_rect:Some(screen),events:vec![egui::Event::Text("hello".into())],..Default::default()},&mut companion);
+        run(egui::RawInput {screen_rect:Some(screen),modifiers:egui::Modifiers::SHIFT,events:vec![egui::Event::Key {key:egui::Key::Enter,physical_key:None,pressed:true,repeat:false,modifiers:egui::Modifiers::SHIFT}],..Default::default()},&mut companion);
+        assert_eq!(companion.input,"hello\n");
+        assert!(!commands.try_iter().any(|item|item["type"]=="send"));
+    }
+
     #[test]
     fn enter_sends_the_chat_draft_and_consumes_the_key() {
         let (bridge,commands,_events)=fake_bridge();

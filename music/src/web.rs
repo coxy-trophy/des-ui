@@ -32,25 +32,26 @@ async fn call(session: &Session, method: Method, path: &str) -> Result<Value, St
 
 /// Asks the Web API for something, or tells it something, with `body` as what is told.
 pub async fn send(session: &Session, method: Method, path: &str, body: Option<Value>) -> Result<Value, String> {
-    let token = crate::web_token().await?;
-    let mut request = Request::builder()
-        .method(method)
-        .uri(format!("{API}{path}"))
-        .header("Authorization", format!("Bearer {token}"));
-    let body = match body {
-        Some(body) => {
-            request = request.header("Content-Type", "application/json");
-            Bytes::from(body.to_string())
-        }
-        None => Bytes::new(),
+    let (content_type, body) = match body {
+        Some(body) => ("application/json", Bytes::from(body.to_string())),
+        None => ("application/json", Bytes::new()),
     };
-    let request = request.header("Content-Length", body.len()).body(body).map_err(|e| e.to_string())?;
+    send_raw(session, method, path, content_type, body).await
+}
+
+pub async fn send_raw(session: &Session, method: Method, path: &str, content_type: &str, body: Bytes) -> Result<Value, String> {
+    let token = crate::web_token().await?;
+    let request = Request::builder().method(method).uri(format!("{API}{path}"))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", content_type).header("Content-Length", body.len())
+        .body(body).map_err(|e| e.to_string())?;
     let response = session
         .http_client()
         .request(request)
         .await
         .map_err(|e| format!("Spotify could not be reached: {e}"))?;
     let status = response.status();
+    let retry_after = response.headers().get("Retry-After").and_then(|v|v.to_str().ok()).unwrap_or("a short while").to_string();
     let body = response
         .into_body()
         .collect()
@@ -59,8 +60,9 @@ pub async fn send(session: &Session, method: Method, path: &str, body: Option<Va
         .to_bytes();
     let value: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
     if !status.is_success() {
+        if status.as_u16() == 429 { return Err(format!("Spotify rate limit: try again after {retry_after} seconds.")); }
         let detail = value["error"]["message"].as_str().unwrap_or("no reason given");
-        return Err(format!("Spotify refused ({}): {detail}", status.as_u16()));
+        return Err(format!("Spotify refused ({}): {detail}{}", status.as_u16(), if matches!(status.as_u16(),401|403) {". Reconnect the library to approve permissions; Spotify may also restrict this feature for your app or account."}else{""}));
     }
     Ok(value)
 }
@@ -88,17 +90,17 @@ fn large_cover(images: &Value) -> Option<&str> {
 /// What is playing, on whichever device, as the Web API tells it: the state, and the
 /// id of the device. `None` when nothing is.
 pub async fn player(session: &Session) -> Result<Option<(crate::protocol::State, String)>, String> {
-    let found = get(session, "/me/player?additional_types=track").await?;
+    let found = get(session, "/me/player?additional_types=track,episode").await?;
     let Some(device) = found["device"]["id"].as_str() else {
         return Ok(None);
     };
     let item = &found["item"];
-    let track = item["uri"].as_str().filter(|uri| uri.starts_with("spotify:track:")).map(|uri| {
+    let track = item["uri"].as_str().filter(|uri| uri.starts_with("spotify:track:") || uri.starts_with("spotify:episode:")).map(|uri| {
         let artists: Vec<&str> = item["artists"].as_array().into_iter().flatten().filter_map(|artist| artist["name"].as_str()).collect();
         crate::protocol::Track {
             uri: uri.to_string(),
             name: item["name"].as_str().unwrap_or("Untitled").to_string(),
-            artists: artists.join(", "),
+            artists: if artists.is_empty(){item["show"]["name"].as_str().unwrap_or_default().to_string()}else{artists.join(", ")},
             album: item["album"]["name"].as_str().unwrap_or_default().to_string(),
             duration_ms: item["duration_ms"].as_u64().unwrap_or(0) as u32,
             cover: large_cover(&item["album"]["images"]).map(str::to_string),
@@ -191,24 +193,23 @@ pub async fn lyrics(session: &Session, uri: &str) -> String {
 
 /// Whether a track is among the liked songs.
 pub async fn is_liked(session: &Session, uri: &str) -> Option<bool> {
-    let id = uri.strip_prefix("spotify:track:")?;
-    get(session, &format!("/me/tracks/contains?ids={}", encode(id))).await.ok()?[0].as_bool()
+    if !crate::features::content_uri(uri) {return None;}
+    get(session, &crate::features::library_path(uri,true)).await.ok()?[0].as_bool()
 }
 
 /// Puts a track among the liked songs, or takes it out.
 pub async fn set_liked(session: &Session, uri: &str, on: bool) -> Result<(), String> {
-    let id = uri.strip_prefix("spotify:track:").ok_or("only tracks can be liked")?;
+    if !crate::features::content_uri(uri) {return Err("Only Spotify content can be saved".into());}
     let method = if on { Method::PUT } else { Method::DELETE };
-    send(session, method, &format!("/me/tracks?ids={}", encode(id)), None).await.map(|_| ())
+    send(session, method, &crate::features::library_path(uri,false), None).await.map(|_| ())
 }
 
 /// One row for the player from a track as the Web API describes it.
 pub fn track_item(track: &Value) -> Option<Value> {
     let uri = track["uri"].as_str()?;
-    // Podcasts and local files come through the same lists; only tracks are shown.
-    if !uri.starts_with("spotify:track:") {
-        return None;
-    }
+    // Preserve podcast episodes; local files do not have remotely playable IDs.
+    if uri.starts_with("spotify:episode:") {return crate::features::media_item(track,"episode");}
+    if !uri.starts_with("spotify:track:") {return None;}
     let artists: Vec<&str> = track["artists"]
         .as_array()
         .map(|artists| artists.iter().filter_map(|artist| artist["name"].as_str()).collect())
@@ -291,29 +292,40 @@ pub fn wrapped_tracks(page: &Value) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-pub async fn search(session: &Session, query: &str) -> String {
+pub async fn search(session: &Session, query: &str, offset: u32) -> String {
     // Ten is the most a personal app may ask for at a time.
-    let path = format!("/search?q={}&type=track,album,artist,playlist&limit=10", encode(query));
+    let path = format!("/search?q={}&type=track,album,artist,playlist,show,episode,audiobook&limit=10&offset={offset}", encode(query));
     match get(session, &path).await {
         Ok(found) => {
             let list = |key: &str| found[key]["items"].as_array().cloned().unwrap_or_default();
             let mut items: Vec<Value> = list("tracks").iter().filter_map(track_item).collect();
-            items.extend(list("artists").iter().take(4).filter_map(artist_item));
+            items.extend(list("artists").iter().filter_map(artist_item));
             items.extend(list("albums").iter().filter_map(album_item));
             items.extend(list("playlists").iter().filter_map(playlist_item));
-            list_line("search", query, items, None)
+            for (key,kind) in [("shows","show"),("episodes","episode"),("audiobooks","audiobook")] {
+                items.extend(list(key).iter().filter_map(|item|crate::features::media_item(item,kind)));
+            }
+            let more=offset<990 && ["tracks","artists","albums","playlists","shows","episodes","audiobooks"].iter().any(|key|has_more(&found[key]));
+            let mut response:Value=serde_json::from_str(&page_line("search",query,items,None,offset,more)).unwrap();
+            response["next_offset"]=json!(offset+10);
+            format!("{response}\n")
         }
-        Err(why) => list_line("search", query, Vec::new(), Some(why)),
+        Err(why) => page_line("search", query, Vec::new(), Some(why),offset,false),
     }
 }
 
 /// Every playlist in the library, however many pages that takes (within reason).
 pub async fn playlists(session: &Session) -> String {
+    let owner=get(session,"/me").await.ok().and_then(|v|v["id"].as_str().map(str::to_string));
     let mut items = Vec::new();
     for page_number in 0..20 {
         match get(session, &format!("/me/playlists?limit=50&offset={}", page_number * 50)).await {
             Ok(page) => {
-                items.extend(page["items"].as_array().into_iter().flatten().filter_map(playlist_item));
+                items.extend(page["items"].as_array().into_iter().flatten().filter_map(|p| {
+                    let mut item=playlist_item(p)?;
+                    item["editable"]=json!(owner.as_deref().is_some_and(|id|p["owner"]["id"].as_str()==Some(id))||p["collaborative"]==true);
+                    Some(item)
+                }));
                 if !has_more(&page) {
                     break;
                 }
@@ -326,16 +338,44 @@ pub async fn playlists(session: &Session) -> String {
     list_line("playlists", "", items, None)
 }
 
-pub async fn tracks(session: &Session, playlist: &str, offset: u32) -> String {
+pub async fn tracks(session: &Session, playlist: &str, offset: u32, expected: Option<&str>) -> String {
+    match playlist_page(session,playlist,offset,expected).await {
+        Ok(line)=>line,Err(error)=>page_line("tracks",playlist,vec![],Some(error),offset,false),
+    }
+}
+
+fn stable_snapshot(expected: Option<&str>, before: &str, after: &str) -> Result<(),String> {
+    if before.is_empty() || before!=after || expected.is_some_and(|value|value!=before) {
+        return Err("This playlist changed while it was loading. Refresh it before editing or loading more.".into());
+    }
+    Ok(())
+}
+
+async fn playlist_page(session: &Session, playlist: &str, offset: u32, expected: Option<&str>) -> Result<String,String> {
     let id = encode(playlist);
+    let version=get(session,&format!("/playlists/{id}?fields=snapshot_id")).await?;
+    let before=version["snapshot_id"].as_str().unwrap_or_default();
+    if expected.is_some_and(|value|value!=before){stable_snapshot(expected,before,before)?;}
     // The address was renamed in 2026; fall back to the old one for older accounts.
     let mut page = get(session, &format!("/playlists/{id}/items?limit=100&offset={offset}")).await;
-    if page.is_err() {
+    if page.as_ref().err().is_some_and(|e|e.contains("(404)")||e.contains("(405)")) {
         page = get(session, &format!("/playlists/{id}/tracks?limit=100&offset={offset}")).await;
     }
     match page {
-        Ok(page) => page_line("tracks", playlist, wrapped_tracks(&page), None, offset, has_more(&page)),
-        Err(why) => page_line("tracks", playlist, Vec::new(), Some(why), offset, false),
+        Ok(page) => {
+            let after=get(session,&format!("/playlists/{id}?fields=snapshot_id")).await?;
+            stable_snapshot(expected,before,after["snapshot_id"].as_str().unwrap_or_default())?;
+            let mut items=Vec::new();
+            for (position,entry) in page["items"].as_array().into_iter().flatten().enumerate() {
+                let raw=if entry["item"].is_object(){&entry["item"]}else{&entry["track"]};
+                if let Some(mut item)=track_item(raw) {item["position"]=json!(offset+position as u32);items.push(item);}
+            }
+            let mut response:Value=serde_json::from_str(&paged_response("tracks",playlist,items,&page,offset)).unwrap();
+            response["next_offset"]=json!(offset+page["items"].as_array().map_or(0,Vec::len) as u32);
+            response["snapshot"]=json!(before);
+            Ok(format!("{response}\n"))
+        },
+        Err(why) => Err(why),
     }
 }
 
@@ -344,7 +384,7 @@ pub async fn albums(session: &Session, offset: u32) -> String {
     match get(session, &format!("/me/albums?limit=50&offset={offset}")).await {
         Ok(page) => {
             let items = page["items"].as_array().into_iter().flatten().filter_map(|entry| album_item(&entry["album"])).collect();
-            page_line("albums", "", items, None, offset, has_more(&page))
+            paged_response("albums", "", items, &page, offset)
         }
         Err(why) => page_line("albums", "", Vec::new(), Some(why), offset, false),
     }
@@ -366,12 +406,14 @@ pub async fn album(session: &Session, id: &str) -> String {
     let mut items: Vec<Value> = found["tracks"]["items"].as_array().into_iter().flatten().filter_map(fill).collect();
     // A long album comes in several pages.
     let mut more = has_more(&found["tracks"]);
-    while more && items.len() < 500 {
-        match get(session, &format!("/albums/{id}/tracks?limit=50&offset={}", items.len())).await {
+    let mut offset=found["tracks"]["items"].as_array().map_or(0,Vec::len);
+    while more && offset < 500 {
+        match get(session, &format!("/albums/{id}/tracks?limit=50&offset={offset}")).await {
             Ok(page) => {
-                let before = items.len();
+                let count=page["items"].as_array().map_or(0,Vec::len);
+                offset+=count;
                 items.extend(page["items"].as_array().into_iter().flatten().filter_map(fill));
-                more = has_more(&page) && items.len() > before;
+                more = has_more(&page) && count>0;
             }
             Err(_) => break,
         }
@@ -434,9 +476,15 @@ pub async fn enqueue(session: &Session, track: &str) -> String {
     }
 }
 
+/// Advance by API entries, including unavailable items omitted from the UI.
+fn paged_response(kind: &str, key: &str, items: Vec<Value>, page: &Value, offset: u32) -> String {
+    let count=page["items"].as_array().map_or(0,Vec::len) as u32;
+    format!("{}\n",json!({"type":"list","kind":kind,"key":key,"items":items,"error":null,"offset":offset,"more":has_more(page)&&count>0,"next_offset":offset+count}))
+}
+
 pub async fn liked(session: &Session, offset: u32) -> String {
     match get(session, &format!("/me/tracks?limit=50&offset={offset}")).await {
-        Ok(page) => page_line("liked", "", wrapped_tracks(&page), None, offset, has_more(&page)),
+        Ok(page) => paged_response("liked", "", wrapped_tracks(&page), &page, offset),
         Err(why) => page_line("liked", "", Vec::new(), Some(why), offset, false),
     }
 }
@@ -444,6 +492,21 @@ pub async fn liked(session: &Session, offset: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pagination_counts_unavailable_items_instead_of_skipping_them() {
+        let response:Value=serde_json::from_str(&paged_response("liked","",vec![],&json!({"items":[null,null],"next":"page2"}),50)).unwrap();
+        assert_eq!(response["next_offset"],52);assert_eq!(response["more"],true);
+    }
+
+    #[test]
+    fn playlist_snapshot_must_match_displayed_rows_and_pagination() {
+        assert!(stable_snapshot(None,"a","a").is_ok());
+        assert!(stable_snapshot(Some("a"),"a","a").is_ok());
+        assert!(stable_snapshot(None,"a","b").is_err());
+        assert!(stable_snapshot(Some("a"),"b","b").is_err());
+        assert!(stable_snapshot(None,"","").is_err());
+    }
 
     #[test]
     fn encodes_for_addresses() {
@@ -459,7 +522,7 @@ mod tests {
         let item = track_item(&track).unwrap();
         assert_eq!(item["artists"], "Miles Davis, John Coltrane");
         assert_eq!(item["album"], "Kind of Blue");
-        assert_eq!(track_item(&json!({"uri": "spotify:episode:9", "name": "A podcast"})), None);
+        assert_eq!(track_item(&json!({"uri": "spotify:episode:9", "name": "A podcast"})).unwrap()["kind"], "episode");
 
         let new_shape = json!({"items": [{"item": track.clone()}, {"item": null}]});
         let old_shape = json!({"items": [{"track": track.clone()}, {"track": {"uri": "spotify:local:x"}}]});

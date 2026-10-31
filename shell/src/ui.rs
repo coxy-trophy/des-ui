@@ -320,7 +320,8 @@ pub fn button(ui: &mut Ui, theme: &Theme, label: &str, hint: Option<&str>, engag
 
 /// An on/off switch. Returns its response; a click means "flip it".
 pub fn toggle(ui: &mut Ui, theme: &Theme, on: bool) -> Response {
-    let (rect, response) = ui.allocate_exact_size(vec2(40.0, 20.0), Sense::click());
+    let (hit_rect, response) = ui.allocate_exact_size(vec2(40.0, CONTROL_HEIGHT), Sense::click());
+    let rect = Rect::from_center_size(hit_rect.center(), vec2(40.0, 20.0));
     let painter = control_painter(ui);
     let line = if on { theme.main } else if response.hovered() { SECONDARY } else { LINE_STRONG };
     painter.rect_filled(rect, 10.0, if on { theme.tint() } else { GROUND });
@@ -337,10 +338,22 @@ pub fn toggle(ui: &mut Ui, theme: &Theme, on: bool) -> Response {
 
 /// A slider over 0..=1. Returns the new value while it is being dragged or clicked.
 pub fn slider(ui: &mut Ui, theme: &Theme, width: f32, value: f32, name: &str) -> Option<f32> {
-    let (rect, response) = ui.allocate_exact_size(vec2(width, CONTROL_HEIGHT), Sense::click_and_drag());
+    slider_sized(ui, theme, width, value, name, CONTROL_HEIGHT)
+}
+
+/// A larger slider for primary controls, with the same keyboard and focus behavior.
+pub fn prominent_slider(ui: &mut Ui, theme: &Theme, width: f32, value: f32, name: &str) -> Option<f32> {
+    slider_sized(ui, theme, width, value, name, 42.0)
+}
+
+fn slider_sized(ui: &mut Ui, theme: &Theme, width: f32, value: f32, name: &str, height: f32) -> Option<f32> {
+    let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click_and_drag());
+    if response.clicked() || response.drag_started() { response.request_focus(); }
+    let track_half_height = if height > CONTROL_HEIGHT { 4.0 } else { 3.0 };
+    let inset = if height > CONTROL_HEIGHT { 7.0 } else { 5.0 };
     let track = Rect::from_min_max(
-        pos2(rect.left() + 5.0, rect.center().y - 3.0),
-        pos2(rect.right() - 5.0, rect.center().y + 3.0),
+        pos2(rect.left() + inset, rect.center().y - track_half_height),
+        pos2(rect.right() - inset, rect.center().y + track_half_height),
     );
     let mut picked = response
         .interact_pointer_pos()
@@ -366,7 +379,8 @@ pub fn slider(ui: &mut Ui, theme: &Theme, width: f32, value: f32, name: &str) ->
     let mut filled = track;
     filled.set_width(track.width() * value);
     painter.rect_filled(filled, 3.0, theme.main);
-    let knob = Rect::from_center_size(pos2(filled.right(), rect.center().y), vec2(10.0, 18.0));
+    let knob_size = if height > CONTROL_HEIGHT { vec2(14.0, 24.0) } else { vec2(10.0, 18.0) };
+    let knob = Rect::from_center_size(pos2(filled.right(), rect.center().y), knob_size);
     let ink = if response.hovered() || response.dragged() { TEXT } else { theme.main };
     painter.rect_filled(knob, 4.0, GROUND);
     painter.rect_stroke(knob, 4.0, Stroke::new(1.5, ink), StrokeKind::Inside);
@@ -454,6 +468,30 @@ impl Icon {
             LayoutKind::Master => Icon::LayoutMaster,
         }
     }
+}
+
+/// Left-aligned list action with the same height and focus treatment as controls.
+pub fn list_button(ui: &mut Ui, theme: &Theme, label: &str, width: f32) -> Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(width, CONTROL_HEIGHT), Sense::click());
+    let painter = control_painter(ui);
+    if response.hovered() || response.has_focus() { painter.rect_filled(rect, CONTROL_RADIUS, TRACK); }
+    focus_outline(&painter, &response, theme);
+    let text = egui::RichText::new(label).font(display(12.0)).color(TEXT);
+    ui.put(rect.shrink2(vec2(6.0, 0.0)), egui::Label::new(text).truncate().halign(Align::Min));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label));
+    response.on_hover_text(label)
+}
+
+/// Clearable field with a full-height clear target and stable focus identity.
+pub fn search_field(ui: &mut Ui, theme: &Theme, value: &mut String, id: egui::Id, hint: &str) -> Response {
+    ui.horizontal(|ui| {
+        let width = (ui.available_width() - CONTROL_HEIGHT - ui.spacing().item_spacing.x).max(20.0);
+        let response = ui.add_sized(vec2(width, CONTROL_HEIGHT), egui::TextEdit::singleline(value).id(id).hint_text(hint).vertical_align(Align::Center));
+        let clear = ui.add_enabled_ui(!value.is_empty(), |ui| icon_button(ui, theme, Icon::Close, CONTROL_HEIGHT, false)).inner.on_hover_text("Clear search");
+        clear.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, !value.is_empty(), "Clear search"));
+        if clear.clicked() { value.clear(); response.request_focus(); }
+        response
+    }).inner
 }
 
 /// A small square button drawn with lines. `lit` draws it in the accent.
@@ -826,6 +864,26 @@ mod tests {
         let _ = ctx.run(input, |ctx| { egui::CentralPanel::default().show(ctx, |ui| {
             assert_eq!(slider(ui, &theme, 150.0, 0.5, "Test level"), None);
             assert!(ui.input(|i| i.key_pressed(egui::Key::ArrowLeft)), "unfocused control must leave terminal/navigation keys alone");
+        }); });
+    }
+
+    #[test]
+    fn clicking_slider_gives_it_keyboard_focus() {
+        let ctx = egui::Context::default(); install_fonts(&ctx, None, None);
+        let theme = Theme::load("signal"); let mut bounds = Rect::NOTHING;
+        let _ = ctx.run(Default::default(), |ctx| { egui::CentralPanel::default().show(ctx, |ui| {
+            let start = ui.cursor().min; slider(ui, &theme, 150.0, 0.5, "Volume");
+            bounds = Rect::from_min_size(start, vec2(150.0, CONTROL_HEIGHT));
+        }); });
+        let at = bounds.center();
+        for pressed in [true, false] {
+            let _ = ctx.run(egui::RawInput { events: vec![egui::Event::PointerMoved(at), egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }], ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| { slider(ui, &theme, 150.0, 0.5, "Volume"); });
+            });
+        }
+        let input = egui::RawInput { events: vec![egui::Event::Key { key: egui::Key::End, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }], ..Default::default() };
+        let _ = ctx.run(input, |ctx| { egui::CentralPanel::default().show(ctx, |ui| {
+            assert_eq!(slider(ui, &theme, 150.0, 0.5, "Volume"), Some(1.0));
         }); });
     }
 

@@ -348,7 +348,8 @@ mod tests {
                 let pixels = art::raster(&art::boundary(shape, 0.0), shape, scale, 1.0);
                 let side = art::SIDE * scale;
                 assert!(connected(&pixels, side), "disconnected {shape:?} at {scale}");
-                assert!(pixels.chunks_exact(4).any(|p| p[3] == 255 && p[0] > 230), "no light fill {shape:?}");
+                let fill=des_common::input::DEFAULT_CURSOR_COLOR;
+                assert!(pixels.chunks_exact(4).any(|p| p[3] == 255 && p[..3] == [fill[2],fill[1],fill[0]]), "no solid fill {shape:?}");
                 assert!(pixels.chunks_exact(4).any(|p| p[3]>0 && p[3]<200), "no antialiased shadow {shape:?}");
                 assert!(pixels.chunks_exact(4).all(|p| p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3]), "not premultiplied");
                 for edge in 0..side {
@@ -387,7 +388,7 @@ mod tests {
 
     #[test]
     fn insertion_needle_keeps_a_light_core_along_the_stem_at_one_x() {
-        let pixels=art::raster(&art::boundary(Shape::Beam,0.0),Shape::Beam,1,1.0);
+        let pixels=art::raster_custom(&art::boundary(Shape::Beam,0.0),Shape::Beam,1.0,24,[247,246,242],1.0);
         for y in 9..22 {
             assert!((14..19).any(|x| { let at=(y*art::SIDE+x)*4; pixels[at+3]==255 && pixels[at]>230 }), "dark-only insertion stem at row {y}");
         }

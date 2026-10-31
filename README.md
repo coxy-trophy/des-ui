@@ -540,6 +540,29 @@ and a click on any line goes to it. `UP NEXT` shows what is queued, and `+ QUEUE
 track under the pointer adds it. While something plays, the right column shows it
 too, and the keyboard's play, next and previous keys work from anywhere.
 
+The visible **Music** volume slider controls des-music independently of the desktop
+output volume; both the compact panel and full player show its percentage.
+
+**Browse library** adds Recently played, Top tracks/artists (4 weeks, 6 months or
+approximately 1 year), Followed artists, Podcasts, Saved episodes and Audiobooks.
+Open a podcast to browse and play its episodes. Open an audiobook to browse chapters;
+chapter playback opens Spotify because the native playback backend does not support it.
+Search includes these content types and loads additional results as you scroll.
+
+**Library actions → New playlist** creates a playlist. **Edit playlist** on a playlist
+you own changes its name, description and visibility. Collaborators can edit items,
+but are not offered owner-only playlist settings. Choose a cover
+through the native Files picker and upload it separately. Right-click a track or episode
+to add it to a playlist; in an editable playlist, the menu also removes matching items
+(all occurrences of that URI) or moves an item up/down. The displayed rows and further pages are checked against the same snapshot before
+edits are offered. Failed playlist saves and cover uploads preserve the draft.
+Save/remove and follow/unfollow are available on collection pages and row menus.
+
+After upgrading, use **Library actions → Reconnect / approve features** once to grant
+the added permissions. Spotify may still restrict content by app mode, account or region;
+permission failures and rate limits remain visible. This does not enable restricted
+recommendations, audio analysis, related artists or editorial-playlist access.
+
 It needs Spotify Premium, and two things done once, both from the music view:
 
 1. **Sign in** (or `des-music login`), on Spotify's own page in your browser.

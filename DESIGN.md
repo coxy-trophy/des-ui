@@ -38,6 +38,12 @@ Solid matte surfaces remain the default. Settings → Appearance can add a priva
 ## Shapes
 Controls share a restrained 6px corner radius; content-sized floating surfaces use 10px and the dock 12px. Workspace boundaries, terminal cells, monitor diagrams and image artwork retain their semantic geometry. ui.rs owns SPACE (8px), CONTROL_HEIGHT (30px), CONTROL_RADIUS and SURFACE_RADIUS; main.rs::apply_style adapts these to native egui controls. No screen should invent another routine button style.
 
+Terminal tab selection uses a short expanding underline when terminal tab animation and desktop animation are enabled. Reduce motion or disabling either animation setting makes it immediate. The terminal settings retain the existing font, size, line height, cursor, copy and scrollback controls.
+
+The terminal workbench adds a dismissible session rail in sufficiently wide terminal workspaces; narrow workspaces keep the header tabs. The rail uses actual terminal sessions and command navigation, keeps the nine-session limit visible, and must not cover graphical applications or consume space in their workspace. History, file and job drawers and contextual completion from the concept are separate work and must not be represented by sample data in the desktop.
+
+The default pointer is a compact dark triangle with a soft blue halo, inspired by the supplied reference. The click hotspot stays at its tip; semantic cursor shapes and user-selected size and colour remain available. The compositor renderer and exported Xcursor theme share the same artwork.
+
 ## Components
 The application launcher uses an icon grid in the workspace: 48px installed icons, centered two-line names, matte square selection tiles, and responsive columns. Blank search shows applications only; typed queries retain the universal palette providers, with small result-kind labels for non-apps. Descriptions and paths stay in hover details and accessibility labels. Settings owns Health and Session controls. Terminal find is a compact pane-local bar that wraps controls on narrow panes. All use shared ui.rs typefaces and palette; native egui widgets inherit apply_style. ScrollArea owns bounded result/log scrolling; no new document or browser scrollbar system is introduced. The behavioral owners and state contracts are in UX-CONTRACT.md.
 

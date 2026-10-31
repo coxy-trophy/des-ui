@@ -197,3 +197,31 @@ Settings uses five category groups and one search catalog for names, description
 Display reconnect revalidates advertised modes and physical dimensions before reusing outputs, while keeping valid current configurations. Mirrored outputs preserve primary client scale ownership instead of arbitrary output iteration; independent-output movement follows overlap. Cursor export forwards a strict theme/size/path/HOME/XDG allowlist into Xwayland, honors explicit alternate themes and custom cursor surfaces, and includes standard legacy aliases. No live monitor reconfiguration or application restart is implied by source verification.
 
 System panel spacing: Network and World View use only their painted height. Displays and local Controls follow immediately with an 8px section gap; unused height must not stretch the globe reservation into a blank middle band. Playback retains its protected bottom allocation, and the same height budget still prevents clipping on short panels.
+
+
+## Spotify library extensions
+
+The music service owns Spotify requests; the shell sends validated JSON commands.
+Library writes and saved checks use URI-based `/me/library` endpoints. The music
+volume is independent of system output volume and is visible in both players.
+Browse library owns history, top items/ranges, followed artists and spoken content;
+Library actions owns refresh, permission approval and playlist creation. Collection
+pages expose save/follow and permitted playlist editing. Row context menus own
+playlist insertion/removal/reordering. Removal matches all occurrences of the URI;
+reordering preserves raw playlist positions even when unavailable entries are hidden.
+Cover selection reuses native Files; encoding is a bounded JPEG before upload.
+Mutations invalidate subscribers' cached lists only after Spotify confirms success.
+Pagination uses API offsets/cursors, not the number of displayed rows. Chapter
+playback opens Spotify; it must not claim native audiobook playback. New OAuth
+permissions need explicit approval on Spotify's page. Restricted Spotify endpoints
+remain unavailable. Native preview fixtures must never start a music service or use
+account credentials.
+
+Spotify bug-review refinements: playlist pages retain their own snapshot IDs;
+version changes during/between fetches require refresh rather than mixing positions.
+Visible row moves use neighbours' raw positions. Playlist details/privacy editing
+belongs to owners; collaborators retain item editing. Empty filtered pages retain
+Load more, and in-flight requests are keyed by server offset. Refresh invalidates
+saved/permission caches. Form submissions carry distinct operation IDs, retain drafts
+on errors and recover after missing confirmations. Canonical Spotify URLs own chapter
+opening (chapters can use episode URIs); launch failures are surfaced in the music UI.

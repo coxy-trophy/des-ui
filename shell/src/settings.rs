@@ -712,6 +712,9 @@ impl Settings {
         ui.add_space(22.0);
 
         heading(ui, "BEHAVIOUR", "");
+        if switch_row(ui, theme, "Animate tab selection", "A brief underline transition; respects Reduce motion and desktop animation settings", config.terminal_tab_animation) {
+            changes.push(Change::Set("terminal_tab_animation", config.terminal_tab_animation.then(|| "off".to_string())));
+        }
         if switch_row(ui, theme, "Copy on select", "Selected text goes to the clipboard at once, without Ctrl+Shift+C", config.copy_on_select) {
             changes.push(Change::Set("copy_on_select", (!config.copy_on_select).then(|| "on".to_string())));
         }

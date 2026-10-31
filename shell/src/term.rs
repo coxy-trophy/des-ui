@@ -682,12 +682,10 @@ impl TermTab {
             }
         }
 
-        // The marks in the gutter: a bar at each prompt, a square where a command
-        // ended, in the caution colour when it failed; and a chosen output.
+        // Keep command history and output selection without drawing gutter marks.
         let retained = blocks::history_len(self.parser.screen_mut()) as u64;
         self.blocks.prune(self.blocks.scrolled.saturating_sub(retained));
         let top = self.blocks.top_line(self.parser.screen());
-        let visible = |line: u64| (line >= top && line < top + u64::from(rows)).then(|| (line - top) as f32 * ch);
         if let Some((from, to)) = self.block_selection {
             for line in from.max(top)..to.min(top + u64::from(rows)) {
                 let min = Pos2::new(rect.min.x, rect.min.y + (line - top) as f32 * ch);
@@ -696,19 +694,6 @@ impl TermTab {
         }
         let gutter_painter = ui.painter_at(gutter);
         crate::material::paint(ui.ctx(), &gutter_painter, gutter, 0.0, crate::material::Role::Terminal);
-        for block in self.blocks.iter() {
-            let failed = block.status().is_some_and(|status| status != 0);
-            if let Some(y) = visible(block.prompt) {
-                let color = if failed { crate::ui::CAUTION } else { theme.main };
-                let bar = Rect::from_min_size(Pos2::new(gutter.min.x + 2.0, gutter.min.y + y + 2.0), Vec2::new(2.0, (ch - 4.0).max(2.0)));
-                gutter_painter.rect_filled(bar, 0.0, color);
-            }
-            if let Some(y) = block.badge_line().and_then(visible) {
-                let color = if failed { crate::ui::CAUTION } else { crate::ui::LABEL };
-                let badge = Rect::from_center_size(Pos2::new(gutter.min.x + 7.0, gutter.min.y + y + ch / 2.0), Vec2::splat(4.0));
-                gutter_painter.rect_filled(badge, 0.0, color);
-            }
-        }
 
         if self.search.open {
             if let Some(found) = self.search.matches.get(self.search.current) {

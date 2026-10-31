@@ -183,18 +183,11 @@ impl Dock {
         ui.horizontal(|ui| {
             ui::text(ui,"Open apps",ui::display_bold(15.0),ui::TEXT);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui| {
-                if ui.small_button("Apps").on_hover_text("Applications launcher").clicked(){output.action=Some(Action::Launcher);}
-                if ui.small_button(">_").on_hover_text("Terminal").clicked(){output.action=Some(Action::Command(Command::Terminal));}
+                if ui::button(ui,theme,"Apps",None,false).on_hover_text("Applications launcher").clicked(){output.action=Some(Action::Launcher);}
             });
         });
         let search_before=self.search.clone();
-        let search=ui.horizontal(|ui| {
-            let search=ui.add_sized(vec2((ui.available_width()-32.0).max(20.0),ui::CONTROL_HEIGHT),egui::TextEdit::singleline(&mut self.search).id(id.with("search")).hint_text("Find app or window"));
-            let clear=ui.add_enabled(!self.search.is_empty(),egui::Button::new("×")).on_hover_text("Clear search");
-            clear.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,!self.search.is_empty(),"Clear search"));
-            if clear.clicked(){self.search.clear();self.page=0;self.selection=0;self.selected_window=None;search.request_focus();}
-            search
-        }).inner;
+        let search=ui::search_field(ui,theme,&mut self.search,id.with("search"),"Find app or window");
         if self.search!=search_before {
             self.selection=0;self.selection_key=None;self.selected_window=None;self.page=0;
             query=self.search.trim().to_lowercase();
@@ -205,7 +198,7 @@ impl Dock {
         if search.has_focus(){self.motion.keyboard=true;}
         ui.add_space(5.0);
         let running=all.iter().filter(|item|!item.windows.is_empty()).count();
-        ui::text(ui,&format!("{} running · {} pinned",running,all.iter().filter(|item|item.id.as_ref().is_some_and(|id|pins.contains(id))).count()),ui::display(10.0),ui::SECONDARY);
+        ui::text(ui,&format!("{} running · {} pinned",running,all.iter().filter(|item|item.id.as_ref().is_some_and(|id|pins.contains(id))).count()),ui::display(11.0),ui::SECONDARY);
         let reveal=self.motion.keyboard && self.revealed_selection!=Some((self.selection,self.selected_window,body.width().to_bits()));
         let mut rows=Vec::new();
         for (n,item) in all.iter().enumerate() {
@@ -269,14 +262,14 @@ impl Dock {
                         let app=&state.apps[index];
                         ui.horizontal(|ui| {
                             ui.add_space(14.0);
-                            let available=(ui.available_width()-30.0).max(10.0);
-                            let response=ui.add_sized(vec2(available,32.0),egui::Button::new(egui::RichText::new(format!("{} · W{}{}",app.title,app.workspace+1,if app.screen!=display{format!(" · D{}",app.screen+1)}else{String::new()})).size(11.0)).truncate().frame(false));
+                            let available=(ui.available_width()-ui::CONTROL_HEIGHT-ui.spacing().item_spacing.x).max(10.0);
+                            let response=ui::list_button(ui,theme,&format!("{} · W{}{}",app.title,app.workspace+1,if app.screen!=display{format!(" · D{}",app.screen+1)}else{String::new()}),available);
                             if self.motion.keyboard && self.selection==n && self.selected_window==Some(window_n) {
                                 ui.painter().rect_stroke(response.rect,3.0,egui::Stroke::new(1.0,theme.main),egui::StrokeKind::Inside);
 
                             }
                             if response.clicked(){output.action=Some(Action::Command(Command::Activate(index)));}
-                            if ui.small_button("×").on_hover_text("Close window").clicked(){output.action=Some(Action::Command(Command::Close(index)));}
+                            if ui::icon_button(ui,theme,ui::Icon::Close,ui::CONTROL_HEIGHT,false).on_hover_text("Close window").clicked(){output.action=Some(Action::Command(Command::Close(index)));}
                             if let Some(menu)=response.context_menu(|ui| {
                                 if ui.button("Activate").clicked(){output.action=Some(Action::Command(Command::Activate(index)));ui.close_menu();}
                                 for workspace in 0..des_common::ipc::WORKSPACES {if ui.button(format!("Move to workspace {}",workspace+1)).clicked(){output.action=Some(Action::Command(Command::SendTo(index,workspace)));ui.close_menu();}}
@@ -290,15 +283,18 @@ impl Dock {
         }
         // Paging owns overflow: footer actions remain inside the side panel.
         let mut requested_page=None;
-        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center),|ui| {
-            let previous=ui.add_enabled(self.page>0,egui::Button::new("‹")).on_hover_text("Previous applications");
+        ui.horizontal(|ui| {
+            let previous=ui.add_enabled_ui(self.page>0,|ui|ui::button(ui,theme,"‹",None,false)).inner.on_hover_text("Previous applications");
             previous.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,self.page>0,"Previous applications"));
             if previous.clicked(){requested_page=Some(self.page-1);}
             ui::text(ui,&format!("{}/{}",self.page+1,pages),ui::mono(10.0),ui::SECONDARY);
-            let next=ui.add_enabled(self.page+1<pages,egui::Button::new("›")).on_hover_text("Next applications");
+            let next=ui.add_enabled_ui(self.page+1<pages,|ui|ui::button(ui,theme,"›",None,false)).inner.on_hover_text("Next applications");
             next.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,self.page+1<pages,"Next applications"));
             if next.clicked(){requested_page=Some(self.page+1);}
-            if ui.small_button("All windows").clicked(){output.action=Some(Action::Command(Command::Overview));}
+        });
+        ui.horizontal(|ui| {
+            if ui::button(ui,theme,"Terminal",None,false).clicked(){output.action=Some(Action::Command(Command::Terminal));}
+            if ui::button(ui,theme,"Overview",None,false).on_hover_text("Show all windows").clicked(){output.action=Some(Action::Command(Command::Overview));}
         });
         if let Some(page)=requested_page {
             self.page=page;
@@ -331,8 +327,8 @@ impl Dock {
 }
 
 /// Each application needs 52px plus native spacing; window rows are shorter.
-/// The footer keeps its own 36px reservation even with hundreds of windows.
-fn page_capacity(height:f32,spacing:f32)->usize {((height-36.0).max(0.0)/(52.0+spacing)).floor() as usize}
+/// The footer keeps its own 74px reservation even with hundreds of windows.
+fn page_capacity(height:f32,spacing:f32)->usize {((height-74.0).max(0.0)/(52.0+spacing)).floor() as usize}
 
 fn item_key(item:&Item)->String {item.id.clone().unwrap_or_else(||format!("{}:{:?}",item.label,item.windows))}
 fn group_detail(item:&Item,state:&DesktopState,display:usize)->String {
@@ -467,6 +463,27 @@ mod right_panel_tests {
         }}
     }
     #[test]
+    fn expanded_window_controls_fit_and_keep_shared_hit_targets() {
+        for width in [192.0, 240.0, 300.0, 340.0] {
+            let ctx=egui::Context::default(); ui::install_fonts(&ctx,None,None); ctx.enable_accesskit();
+            let mut dock=Dock::default(); dock.scanned=Some(Instant::now());
+            let state=DesktopState{apps:vec![window("browser","A long browser window title that must truncate"),window("browser","Second window")],..Default::default()};
+            dock.expanded.insert(item_key(&items_on(&[],&[],&state,None)[0]));
+            let screen=Rect::from_min_size(pos2(0.0,0.0),vec2(width,600.0));
+            let rendered=ctx.run(egui::RawInput{screen_rect:Some(screen),..Default::default()},|ctx|{
+                egui::CentralPanel::default().show(ctx,|ui|{
+                    dock.panel_on(0,ui,Some(&state),&[],&Theme::load("signal"),false);
+                    assert!(ui.min_rect().right()<=screen.right(),"expanded controls overflow at {width}");
+                });
+            });
+            let tree=rendered.platform_output.accesskit_update.unwrap();
+            let close=tree.nodes.iter().filter_map(|(_,node)|(node.label()==Some("Close")).then(||node.bounds()).flatten()).collect::<Vec<_>>();
+            assert_eq!(close.len(),2);
+            for bounds in close {assert_eq!(bounds.x1-bounds.x0,ui::CONTROL_HEIGHT as f64);assert_eq!(bounds.y1-bounds.y0,ui::CONTROL_HEIGHT as f64);}
+        }
+    }
+
+    #[test]
     fn next_page_then_enter_activates_the_visible_app_or_expanded_window() {
         fn frame(dock:&mut Dock,ctx:&egui::Context,state:&DesktopState,events:Vec<egui::Event>)->(Output,egui::FullOutput) {
             let mut picked=Output::default();
@@ -498,8 +515,8 @@ mod right_panel_tests {
     #[test]
     fn page_budget_reserves_footer_and_scales_with_height() {
         assert_eq!(page_capacity(35.0,8.0),0);
-        assert_eq!(page_capacity(156.0,8.0),2);
-        for height in [100.0,200.0,400.0,800.0] {assert!(page_capacity(height,8.0) as f32*60.0+36.0<=height);}
+        assert_eq!(page_capacity(194.0,8.0),2);
+        for height in [100.0,200.0,400.0,800.0] {assert!(page_capacity(height,8.0) as f32*60.0+74.0<=height);}
     }
     #[test]
     fn native_rows_fit_narrow_and_wide_panels_without_idle_overlay() {

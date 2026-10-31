@@ -13,7 +13,7 @@ use eframe::egui::{
     StrokeKind, TextEdit, TextureHandle, Ui, UiBuilder, pos2, vec2,
 };
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
@@ -93,6 +93,10 @@ pub enum Kind {
     Artist,
     /// Something that can play: this machine, a phone, a speaker.
     Device,
+    Show,
+    Episode,
+    Audiobook,
+    Chapter,
 }
 
 /// A row in a list: a track, or a playlist, album or artist to open.
@@ -116,6 +120,9 @@ pub struct Item {
     /// For a device: whether it is the one playing, and whether it is this machine.
     pub active: bool,
     pub here: bool,
+    pub position: Option<u32>,
+    pub editable: bool,
+    pub external_url: String,
 }
 
 pub fn parse_items(value: &Value) -> Vec<Item> {
@@ -130,6 +137,10 @@ pub fn parse_items(value: &Value) -> Vec<Item> {
                         Some("album") => Kind::Album,
                         Some("artist") => Kind::Artist,
                         Some("device") => Kind::Device,
+                        Some("show") => Kind::Show,
+                        Some("episode") => Kind::Episode,
+                        Some("audiobook") => Kind::Audiobook,
+                        Some("chapter") => Kind::Chapter,
                         _ => Kind::Track,
                     };
                     let text = |key: &str| item[key].as_str().unwrap_or_default().to_string();
@@ -146,6 +157,9 @@ pub fn parse_items(value: &Value) -> Vec<Item> {
                         cover: item["cover"].as_str().map(str::to_string),
                         active: item["active"] == true,
                         here: item["here"] == true,
+                        position: item["position"].as_u64().map(|n|n as u32),
+                        editable: item["editable"]==true,
+                        external_url: text("external_url"),
                     })
                 })
                 .collect()
@@ -212,6 +226,11 @@ struct Shared {
     lists: HashMap<String, (Vec<Item>, Option<String>)>,
     /// The lists, by the same names, that have more after what was received.
     more: std::collections::HashSet<String>,
+    next: HashMap<String, Value>,
+    snapshots: HashMap<String,String>,
+    edits: HashMap<String,Result<(),String>>,
+    saved: HashMap<String, bool>,
+    details: HashMap<String, Value>,
     /// The words last received.
     lyrics: Option<Lyrics>,
     /// What last went wrong with something asked of the service, and when.
@@ -222,6 +241,48 @@ struct Shared {
     refresh: bool,
     /// Set to call off a sign-in that is waiting on the browser.
     cancel: bool,
+}
+
+impl Shared {
+    fn receive_edit(&mut self, value: &Value) {
+        if let Some(operation)=value["operation"].as_str() {
+            let result=if value["type"]=="changed"{Ok(())}else{Err(value["text"].as_str().unwrap_or("Spotify did not confirm this edit.").to_string())};
+            if self.edits.len()>=64{self.edits.clear();}
+            self.edits.insert(operation.to_string(),result);
+        }
+    }
+    fn invalidate(&mut self) {
+        self.lists.clear(); self.more.clear(); self.next.clear(); self.snapshots.clear();
+        self.saved.clear(); self.details.clear(); self.refresh=true;
+    }
+
+    fn receive_list(&mut self, value: &Value) {
+                        let key = format!("{}:{}", value["kind"].as_str().unwrap_or_default(), value["key"].as_str().unwrap_or_default());
+                        let error = value["error"].as_str().map(str::to_string);
+                        let offset = value["offset"].as_u64().unwrap_or(0) as usize;
+                        let expected=self.next.get(&key).and_then(|v|v["offset"].as_u64()).unwrap_or(0) as usize;
+                        if offset>0 && offset!=expected {return;}
+                        if let Some(snapshot)=value["snapshot"].as_str() {self.snapshots.insert(key.clone(),snapshot.to_string());}
+                        else if offset==0 {self.snapshots.remove(&key);}
+                        if value["more"] == true {
+                            self.more.insert(key.clone());
+                            self.next.insert(key.clone(),json!({"offset":value["next_offset"].as_u64().unwrap_or(offset as u64+value["items"].as_array().map_or(0,Vec::len) as u64),"cursor":value["cursor"]}));
+                        } else {
+                            self.more.remove(&key);
+                            self.next.remove(&key);
+                        }
+                        match self.lists.get_mut(&key) {
+                            // A further part goes after what is there, if it is the part that follows.
+                            Some((items, why)) if offset > 0 => {
+                                if error.is_none() { items.extend(parse_items(value)); }
+                                else { *why=error; }
+                            }
+                            _ if offset > 0 => {}
+                            _ => {
+                                self.lists.insert(key, (parse_items(value), error));
+                            }
+                        }
+    }
 }
 
 /// The service's program: the one installed beside this one.
@@ -264,9 +325,7 @@ fn connection(shared: Arc<Mutex<Shared>>, commands: Receiver<String>, ctx: egui:
             }
             if signed_in {
                 let mut shared = shared.lock().unwrap();
-                shared.lists.clear();
-                shared.more.clear();
-                shared.refresh = true;
+                shared.invalidate();
             }
             // Connecting the library fails without undoing the sign-in itself.
             set(if signed_in || arguments[0] != "login" { Link::Starting } else { Link::NotSignedIn });
@@ -333,33 +392,20 @@ fn connection(shared: Arc<Mutex<Shared>>, commands: Receiver<String>, ctx: egui:
                     continue;
                 };
                 let mut shared = reading.lock().unwrap();
+                shared.receive_edit(&value);
                 match value["type"].as_str() {
                     Some("state") => shared.now = Now::parse(&value),
                     Some("lyrics") => shared.lyrics = Some(Lyrics::parse(&value)),
                     Some("problem") => {
                         shared.problem = value["text"].as_str().map(|text| (text.to_string(), Instant::now()));
                     }
+                    Some("changed") => {
+                        shared.invalidate();
+                    }
+                    Some("saved") => {if let (Some(uri),Some(saved))=(value["uri"].as_str(),value["saved"].as_bool()){shared.saved.insert(uri.to_string(),saved);}}
+                    Some("playlist_details") => {if let Some(id)=value["id"].as_str(){shared.details.insert(id.to_string(),value.clone());}}
                     Some("list") => {
-                        let key = format!("{}:{}", value["kind"].as_str().unwrap_or_default(), value["key"].as_str().unwrap_or_default());
-                        let error = value["error"].as_str().map(str::to_string);
-                        let offset = value["offset"].as_u64().unwrap_or(0) as usize;
-                        if value["more"] == true {
-                            shared.more.insert(key.clone());
-                        } else {
-                            shared.more.remove(&key);
-                        }
-                        match shared.lists.get_mut(&key) {
-                            // A further part goes after what is there, if it is the part that follows.
-                            Some((items, _)) if offset > 0 => {
-                                if items.len() == offset && error.is_none() {
-                                    items.extend(parse_items(&value));
-                                }
-                            }
-                            _ if offset > 0 => {}
-                            _ => {
-                                shared.lists.insert(key, (parse_items(&value), error));
-                            }
-                        }
+                        shared.receive_list(&value);
                     }
                     _ => {}
                 }
@@ -414,6 +460,7 @@ enum Source {
     /// The words of the track playing.
     Lyrics,
     Search(String),
+    Browse {kind: String, key: String, name: String, range: String},
 }
 
 impl Source {
@@ -429,6 +476,7 @@ impl Source {
             Source::Devices => "devices:".to_string(),
             Source::Lyrics => "lyrics:".to_string(),
             Source::Search(query) => format!("search:{query}"),
+            Source::Browse{kind,key,range,..}=>format!("{kind}:{}",if kind.starts_with("top_"){range}else{key}),
         }
     }
 
@@ -436,7 +484,7 @@ impl Source {
     /// come a part at a time.
     fn further(&self, offset: usize) -> Option<Value> {
         let mut request = match self {
-            Source::Liked | Source::Playlist { .. } | Source::Albums => self.request(),
+            Source::Liked | Source::Playlist { .. } | Source::Albums | Source::Search(_) | Source::Browse{..} => self.request(),
             _ => return None,
         };
         request["offset"] = json!(offset);
@@ -456,6 +504,7 @@ impl Source {
             // Asked for by track, as each begins.
             Source::Lyrics => json!({ "cmd": "state" }),
             Source::Search(query) => json!({ "cmd": "search", "q": query }),
+            Source::Browse{kind,key,range,..}=>json!({"cmd":"browse","kind":kind,"key":key,"range":range}),
         }
     }
 
@@ -464,7 +513,7 @@ impl Source {
         match self {
             Source::Liked => Some("liked".to_string()),
             Source::Playlist { uri, .. } | Source::Album { uri, .. } => Some(uri.clone()),
-            Source::Home | Source::Search(_) | Source::Queue | Source::Albums | Source::Artist { .. } | Source::Devices | Source::Lyrics => None,
+            _ => None,
         }
     }
 }
@@ -474,14 +523,24 @@ impl Source {
 struct Covers {
     wanted: Sender<String>,
     ready: Receiver<(String, Option<egui::ColorImage>)>,
+    pending_workers: Option<(Receiver<String>, Sender<(String, Option<egui::ColorImage>)>)>,
     /// Those asked for: `None` while on their way, and for good if they cannot be had.
     held: HashMap<String, Option<TextureHandle>>,
+    recent: VecDeque<String>,
 }
 
+// The disk cache can be revisited cheaply; GPU textures must not grow forever.
+const COVER_CACHE_LIMIT: usize = 128;
+
 impl Covers {
-    fn new(ctx: &egui::Context) -> Covers {
+    fn new(_ctx: &egui::Context) -> Covers {
         let (wanted, queue) = channel::<String>();
         let (done, ready) = channel();
+        Covers { wanted, ready, pending_workers: Some((queue, done)), held: HashMap::new(), recent: VecDeque::new() }
+    }
+
+    fn start_workers(&mut self, ctx: &egui::Context) {
+        let Some((queue, done)) = self.pending_workers.take() else { return; };
         let queue = Arc::new(Mutex::new(queue));
         for _ in 0..3 {
             let (queue, done, ctx) = (queue.clone(), done.clone(), ctx.clone());
@@ -497,23 +556,32 @@ impl Covers {
                 }
             });
         }
-        Covers { wanted, ready, held: HashMap::new() }
+    }
+
+    fn touch(&mut self, url: &str) {
+        self.recent.retain(|entry| entry != url);
+        self.recent.push_back(url.to_owned());
+        while self.recent.len() > COVER_CACHE_LIMIT {
+            if let Some(old) = self.recent.pop_front() { self.held.remove(&old); }
+        }
     }
 
     fn get(&mut self, ctx: &egui::Context, url: Option<&str>) -> Option<TextureHandle> {
         while let Ok((url, pixels)) = self.ready.try_recv() {
-            let texture = pixels.map(|pixels| ctx.load_texture(format!("cover-{url}"), pixels, egui::TextureOptions::LINEAR));
-            self.held.insert(url, texture);
-        }
-        let url = url?;
-        match self.held.get(url) {
-            Some(texture) => texture.clone(),
-            None => {
-                self.held.insert(url.to_string(), None);
-                let _ = self.wanted.send(url.to_string());
-                None
+            // A request may have been evicted while the worker was fetching it.
+            if self.held.contains_key(&url) {
+                let texture = pixels.map(|pixels| ctx.load_texture(format!("cover-{url}"), pixels, egui::TextureOptions::LINEAR));
+                self.held.insert(url, texture);
             }
         }
+        let url = url?;
+        if !self.held.contains_key(url) {
+            self.start_workers(ctx);
+            self.held.insert(url.to_string(), None);
+            let _ = self.wanted.send(url.to_string());
+        }
+        self.touch(url);
+        self.held.get(url).cloned().flatten()
     }
 }
 
@@ -596,12 +664,41 @@ fn control(ui: &mut Ui, theme: &Theme, which: Control, size: f32, lit: bool) -> 
     response
 }
 
+#[derive(Default)]
+struct PlaylistEditor { id: String, name: String, description: String, public: bool, cover_path: String, picker: Option<crate::files::Browser>, error: Option<String>, pending: Option<String>, pending_since: Option<Instant> }
+
+impl PlaylistEditor {
+    fn begin(&mut self, shared: &mut Shared, kind: &str, now: Instant) -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(1);
+        let request_id=NEXT.fetch_add(1,std::sync::atomic::Ordering::Relaxed);
+        let operation=format!("{kind}:{}:{request_id}",self.id);
+        shared.edits.remove(&operation);self.pending=Some(operation);self.pending_since=Some(now);self.error=None;
+        request_id
+    }
+    /// Close only after this submission succeeds; a failed draft stays editable.
+    fn finish_pending(&mut self, shared: &mut Shared, now: Instant) -> bool {
+        let Some(operation)=self.pending.as_ref() else{return false};
+        match shared.edits.remove(operation) {
+            Some(Ok(()))=>true,
+            Some(Err(error))=>{self.pending=None;self.pending_since=None;self.error=Some(error);false},
+            None if self.pending_since.is_some_and(|at|now.saturating_duration_since(at)>Duration::from_secs(35))=>{
+                self.pending=None;self.pending_since=None;
+                self.error=Some("Spotify did not confirm the change. Check the playlist before trying again.".into());false
+            }
+            None=>false,
+        }
+    }
+}
+
 pub struct Music {
     pub open: bool,
     shared: Arc<Mutex<Shared>>,
     commands: Sender<String>,
     source: Source,
     query: String,
+    browser_open: Option<Receiver<Result<(),String>>>,
+    editor: Option<PlaylistEditor>,
+    add_to: Option<String>,
     /// The track that was playing when the queue was last asked for.
     queue_as_of: Option<String>,
     /// The track last added to the queue, and when: to say so on its row for a moment.
@@ -637,6 +734,7 @@ impl Music {
             now: Now::default(),
             lists: HashMap::new(),
             more: std::collections::HashSet::new(),
+            next: HashMap::new(), snapshots: HashMap::new(), edits: HashMap::new(), saved: HashMap::new(), details: HashMap::new(),
             lyrics: None,
             problem: None,
             sign_in: None,
@@ -653,6 +751,7 @@ impl Music {
             commands,
             source: Source::Home,
             query: String::new(),
+            browser_open: None, editor: None, add_to: None,
             client_id: String::new(),
             queue_as_of: None,
             queued: None,
@@ -718,6 +817,24 @@ impl Music {
         }
     }
 
+    fn load_more(&mut self, source: &Source, loaded: usize) {
+        if let Some(mut request)=source.further(loaded) {
+            let token=self.page_token(source,loaded);
+            if self.asked_further.as_ref()==Some(&token){return;}
+            self.asked_further=Some(token);
+            if let Some(next)=self.shared.lock().unwrap().next.get(&source.key()) {
+                request["offset"]=next["offset"].clone(); request["cursor"]=next["cursor"].clone();
+            }
+            if let Some(snapshot)=self.shared.lock().unwrap().snapshots.get(&source.key()) {request["snapshot"]=json!(snapshot);}
+            self.send(request);
+        }
+    }
+
+    fn page_token(&self, source: &Source, loaded: usize) -> (String,usize) {
+        let offset=self.shared.lock().unwrap().next.get(&source.key()).and_then(|v|v["offset"].as_u64()).map_or(loaded,|n|n as usize);
+        (source.key(),offset)
+    }
+
     /// Draws a square for the cover: the picture, or a quiet placeholder.
     fn draw_cover(&mut self, ui: &mut Ui, size: f32, url: Option<&str>) {
         let texture = self.covers.get(ui.ctx(), url);
@@ -747,26 +864,27 @@ impl Music {
         let mut inner = ui.new_child(UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Min)));
         inner.set_clip_rect(rect.intersect(ui.clip_rect()));
         let ui = &mut inner;
-        ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+        ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
         ui::tracked(ui, if now.playing { "NOW PLAYING" } else { "PAUSED" }, ui::display_bold(10.0), ui::SECONDARY, 1.5);
         let mut open = false;
         ui.horizontal(|ui| {
-            self.draw_cover(ui, 48.0, track.cover.as_deref());
+            self.draw_cover(ui, 36.0, track.cover.as_deref());
             ui.vertical(|ui| {
                 let fit = (ui.available_width().max(0.0) / 8.0) as usize;
-                let title = ui.add(egui::Button::new(egui::RichText::new(crate::panels::truncate(&track.name, fit)).font(ui::display_bold(13.0)).color(ui::TEXT)).frame(false));
+                let title = ui.add(egui::Label::new(egui::RichText::new(crate::panels::truncate(&track.name, fit)).font(ui::display_bold(13.0)).color(ui::TEXT)).truncate().sense(Sense::click()));
                 open = title.on_hover_text(format!("Open Music — {}", track.name)).clicked();
                 ui::text(ui, &crate::panels::truncate(&track.artists, fit), ui::display(11.0), ui::SECONDARY).on_hover_text(&track.artists);
             });
         });
         ui.horizontal(|ui| {
-            if control(ui, theme, Control::Previous, 28.0, false).clicked() { self.send(json!({ "cmd": "prev" })); }
-            if control(ui, theme, if now.playing { Control::Pause } else { Control::Play }, 28.0, true).clicked() { self.send(json!({ "cmd": "toggle" })); }
-            if control(ui, theme, Control::Next, 28.0, false).clicked() { self.send(json!({ "cmd": "next" })); }
+            if control(ui, theme, Control::Previous, ui::CONTROL_HEIGHT, false).clicked() { self.send(json!({ "cmd": "prev" })); }
+            if control(ui, theme, if now.playing { Control::Pause } else { Control::Play }, ui::CONTROL_HEIGHT, true).clicked() { self.send(json!({ "cmd": "toggle" })); }
+            if control(ui, theme, Control::Next, ui::CONTROL_HEIGHT, false).clicked() { self.send(json!({ "cmd": "next" })); }
             ui::text(ui, &clock(now.position_ms()), ui::mono(10.0), ui::SECONDARY);
         });
         let frac = now.position_ms() as f32 / track.duration_ms.max(1) as f32;
         ui::bar(ui, theme, 3.0, frac.min(CAUTION_FREE), 0.0);
+        self.volume_control(ui, theme, &now);
         if now.playing { ui.ctx().request_repaint_after(Duration::from_millis(500)); }
         open
     }
@@ -830,9 +948,20 @@ impl Music {
 
     /// The full view, in place of the terminal.
     pub fn show(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme) {
-        if ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape)) {
-            self.open = false;
-            return;
+        if let Some(receiver)=&self.browser_open {
+            match receiver.try_recv() {
+                Ok(result)=>{self.browser_open=None;if let Err(error)=result{self.shared.lock().unwrap().problem=Some((error,Instant::now()));}},
+                Err(std::sync::mpsc::TryRecvError::Disconnected)=>{self.browser_open=None;self.shared.lock().unwrap().problem=Some(("The browser launcher stopped without an answer.".into(),Instant::now()));},
+                Err(std::sync::mpsc::TryRecvError::Empty)=>{},
+            }
+        }
+        if self.editor.is_none() && self.add_to.is_none() && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape)) {
+            if ui.memory(|memory| memory.any_popup_open()) {
+                ui.memory_mut(|memory| memory.close_popup());
+            } else {
+                self.open = false;
+                return;
+            }
         }
         let (link, now) = {
             let shared = self.shared.lock().unwrap();
@@ -877,6 +1006,7 @@ impl Music {
                 }
             }
         });
+        self.playlist_dialogs(ui.ctx(),theme);
     }
 
     /// Shown in place of the library until it is connected: what to do, and where
@@ -913,6 +1043,94 @@ impl Music {
         }
     }
 
+    fn browse_menu(&mut self, ui: &mut Ui) {
+        ui.menu_button("Browse library", |ui| {
+            for (name,kind) in [("Recently played","recent"),("Top tracks","top_tracks"),("Top artists","top_artists"),("Followed artists","following"),("Podcasts","shows"),("Saved episodes","episodes"),("Audiobooks","audiobooks")] {
+                if ui.button(name).clicked() {self.go(Source::Browse{kind:kind.into(),key:String::new(),name:name.into(),range:"medium_term".into()},false);ui.close_menu();}
+            }
+        });
+    }
+
+    fn library_actions(&mut self, ui: &mut Ui, theme: &Theme, source: &Source) {
+        ui.horizontal_wrapped(|ui| {
+            self.browse_menu(ui);
+            ui.menu_button("Library actions", |ui| {
+                if ui.button("New playlist").clicked(){self.editor=Some(PlaylistEditor::default());ui.close_menu();}
+                if ui.button("Refresh").clicked(){self.asked.clear();self.asked_further=None;self.shared.lock().unwrap().invalidate();ui.close_menu();}
+                if ui.button("Reconnect / approve features").clicked(){self.sign_in(vec!["library".into()]);ui.close_menu();}
+            });
+            let uri=match source {Source::Playlist{uri,..}|Source::Album{uri,..}=>Some(uri.clone()),Source::Artist{id,..}=>Some(format!("spotify:artist:{id}")),Source::Browse{kind,key,..} if kind=="show"||kind=="audiobook"=>Some(format!("spotify:{kind}:{key}")),_=>None};
+            if let Some(uri)=uri {
+                self.want(format!("saved:{uri}"),json!({"cmd":"library","uri":uri}));
+                let saved=self.shared.lock().unwrap().saved.get(&uri).copied();
+                let label=if uri.starts_with("spotify:artist:"){if saved==Some(true){"Unfollow"}else{"Follow"}}else if saved==Some(true){"Remove from library"}else{"Save to library"};
+                if ui.add_enabled_ui(saved.is_some(),|ui|ui::button(ui,theme,label,None,saved==Some(true))).inner.clicked(){self.send(json!({"cmd":"library","uri":uri,"save":saved!=Some(true)}));}
+            }
+            if let Source::Playlist{id,..}=source {
+                self.want(format!("details:{id}"),json!({"cmd":"playlist_details","id":id}));
+                let details=self.shared.lock().unwrap().details.get(id).cloned();
+                if ui.add_enabled_ui(details.as_ref().is_some_and(|v|v["owner"]==true),|ui|ui::button(ui,theme,"Edit playlist",None,false)).inner.clicked(){
+                    let v=details.unwrap();self.editor=Some(PlaylistEditor{id:id.clone(),name:v["name"].as_str().unwrap_or_default().into(),description:v["description"].as_str().unwrap_or_default().into(),public:v["public"].as_bool().unwrap_or(false),..Default::default()});
+                }
+            }
+        });
+        if let Source::Browse{kind,key,name,range}=source {
+            if kind.starts_with("top_") {
+                ui.horizontal_wrapped(|ui| {for (label,value) in [("4 weeks","short_term"),("6 months","medium_term"),("1 year","long_term")] {
+                    if ui.selectable_label(range==value,label).clicked(){self.go(Source::Browse{kind:kind.clone(),key:key.clone(),name:name.clone(),range:value.into()},false);}
+                }});
+            }
+        }
+    }
+
+    fn playlist_dialogs(&mut self, ctx: &egui::Context, theme: &Theme) {
+        if let Some(uri)=self.add_to.clone() {
+            let playlists=self.shared.lock().unwrap().lists.get("playlists:").cloned();
+            let mut close=false;
+            let modal=egui::Modal::new(egui::Id::new("music-add-to-playlist")).show(ctx,|ui| {
+                ui.set_width((ctx.screen_rect().width()-64.0).clamp(200.0,420.0));
+                ui::text(ui,"Add to playlist",ui::display_bold(18.0),ui::TEXT);
+                ScrollArea::vertical().max_height(360.0).show(ui,|ui| {
+                    match &playlists {
+                        Some((items,None))=>{if !items.iter().any(|p|p.editable){ui.label("No editable playlists. Create one through Library actions first.");}for playlist in items.iter().filter(|p|p.editable) {if ui.button(&playlist.name).clicked(){self.send(json!({"cmd":"playlist_item","id":playlist.id,"uri":uri,"remove":false}));close=true;}}},
+                        Some((_,Some(why)))=>{ui.label(why);},_=>{ui.label("Loading playlists…");}
+                    }
+                });
+                if ui::button(ui,theme,"Cancel",None,false).clicked(){close=true;}
+            });
+            if close||modal.should_close(){self.add_to=None;}
+        }
+        let Some(mut editor)=self.editor.take() else{return};
+        if editor.finish_pending(&mut self.shared.lock().unwrap(),Instant::now()){return;}
+        let mut close=false;
+        let modal=egui::Modal::new(egui::Id::new("music-playlist-editor")).show(ctx,|ui| {
+            ui.set_width((ctx.screen_rect().width()-64.0).clamp(200.0,480.0));
+            if let Some(picker)=editor.picker.as_mut() {
+                ui.set_height((ctx.screen_rect().height()-120.0).clamp(180.0,480.0));
+                match picker.show(ui) {Some(crate::files::Event::Choose(path))=>{editor.cover_path=path.to_string_lossy().into_owned();editor.picker=None;},Some(crate::files::Event::Close)=>editor.picker=None,_=>{}}
+                return;
+            }
+            ui::text(ui,if editor.id.is_empty(){"New playlist"}else{"Edit playlist"},ui::display_bold(18.0),ui::TEXT);
+            ui.add_enabled_ui(editor.pending.is_none(),|ui| {
+            ui.label("Name");ui.add_sized(vec2(ui.available_width(),ui::CONTROL_HEIGHT),TextEdit::singleline(&mut editor.name).char_limit(200));
+            ui.label("Description");ui.add_sized(vec2(ui.available_width(),72.0),TextEdit::multiline(&mut editor.description).char_limit(300));
+            ui.checkbox(&mut editor.public,"Public playlist");
+            });
+            ui.horizontal(|ui| {
+                if ui.add_enabled(editor.pending.is_none() && !editor.name.trim().is_empty(),egui::Button::new("Save playlist")).clicked(){let request_id=editor.begin(&mut self.shared.lock().unwrap(),"playlist_save",Instant::now());self.send(json!({"cmd":"playlist_save","id":editor.id,"name":editor.name.trim(),"description":editor.description,"public":editor.public,"request_id":request_id}));}
+                if ui::button(ui,theme,if editor.pending.is_some(){"Close"}else{"Cancel"},None,false).clicked(){close=true;}
+            });
+            if !editor.id.is_empty() {
+                ui.separator();
+                if ui.add_enabled_ui(editor.pending.is_none(),|ui|ui::button(ui,theme,"Choose cover image",None,false)).inner.clicked(){editor.picker=Some(crate::files::Browser::new(crate::files::home().join("Pictures"),crate::files::Mode::ImagePicker));}
+                if !editor.cover_path.is_empty(){ui.label(&editor.cover_path);if ui.add_enabled_ui(editor.pending.is_none(),|ui|ui::button(ui,theme,"Upload cover",None,false)).inner.clicked(){match playlist_cover(&editor.cover_path){Ok(jpeg)=>{let request_id=editor.begin(&mut self.shared.lock().unwrap(),"playlist_cover",Instant::now());self.send(json!({"cmd":"playlist_cover","id":editor.id,"jpeg":jpeg,"request_id":request_id}));},Err(error)=>{editor.error=Some(error);}}}}
+            }
+            if editor.pending.is_some(){ui.label("Waiting for Spotify to confirm…");ctx.request_repaint_after(Duration::from_secs(1));}
+            if let Some(error)=&editor.error{ui.colored_label(ui::CAUTION,error);}
+        });
+        if !close && !modal.should_close(){self.editor=Some(editor);}
+    }
+
     fn library(&mut self, ui: &mut Ui, theme: &Theme, now: &Now) {
         if std::mem::take(&mut self.shared.lock().unwrap().refresh) {
             self.asked.clear();
@@ -946,7 +1164,7 @@ impl Music {
             )
         };
 
-        let transport_height = if ui.available_width() < 480.0 { 210.0 } else { 164.0 };
+        let transport_height = if ui.available_width() < 480.0 { 246.0 } else { 200.0 };
         let problem_height = if problem.is_some() { 40.0 } else { 0.0 };
         let body_height = (ui.available_height() - transport_height - 12.0 - problem_height).max(80.0);
         let unconnected = matches!(&playlists, Some((_, Some(why))) if why.starts_with("Your library is not connected"));
@@ -989,7 +1207,7 @@ impl Music {
                 if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !self.query.trim().is_empty() {
                     self.go(Source::Search(self.query.trim().to_string()), false);
                 }
-                if !self.query.is_empty() && ui.put(Rect::from_min_size(field.right_top() - vec2(44.0, 0.0), vec2(44.0, 36.0)), egui::Button::new("Clear")).on_hover_text("Clear search").clicked() {
+                if !self.query.is_empty() && ui.put(Rect::from_min_size(field.right_top() - vec2(44.0, 0.0), vec2(44.0, 36.0)), egui::Button::new("Clear").wrap_mode(egui::TextWrapMode::Extend)).on_hover_text("Clear search").clicked() {
                     self.query.clear();
                     self.go(Source::Home, false);
                     edit.request_focus();
@@ -1055,6 +1273,7 @@ impl Music {
                     Source::Devices => "PLAY ON".to_string(),
                     Source::Lyrics => "LYRICS".to_string(),
                     Source::Search(query) => format!("RESULTS FOR “{}”", query.to_uppercase()),
+                    Source::Browse{name,..}=>name.to_uppercase(),
                 };
                 let mut back = false;
                 ui::section(ui, &crate::panels::truncate(&title, 48), |ui| {
@@ -1072,6 +1291,7 @@ impl Music {
                     }
                     return;
                 }
+                self.library_actions(ui,theme,&source);
                 if source == Source::Lyrics {
                     self.lyrics(ui, theme, now);
                     return;
@@ -1091,10 +1311,16 @@ impl Music {
                         ui::text(ui, &why, ui::display(12.0), ui::CAUTION);
                         if ui::button(ui, theme, "TRY AGAIN", None, false).clicked() {
                             self.asked.retain(|key| key != &source.key());
+                            self.asked_further=None;
                             self.shared.lock().unwrap().lists.remove(&source.key());
                         }
                     }
                     Some((items, None)) if items.is_empty() => {
+                        if more {
+                            ui::text(ui,"No available items on this page.",ui::display(12.0),ui::SECONDARY);
+                            if ui::button(ui,theme,"LOAD MORE",None,false).clicked(){self.load_more(&source,items.len());}
+                            return;
+                        }
                         let empty = match source {
                             Source::Queue => "Nothing is waiting to play.",
                             Source::Devices => "No device is online. Open Spotify on one and it shows up here.",
@@ -1114,7 +1340,7 @@ impl Music {
                         }
                     }
                     Some((items, None)) if matches!(source, Source::Home | Source::Albums | Source::Artist { .. }) => {
-                        ScrollArea::vertical().max_height((body_height - 48.0).max(24.0)).id_salt(source.key()).auto_shrink([false, false]).show(ui, |ui| {
+                        ScrollArea::vertical().max_height((body_height - 132.0).max(24.0)).id_salt(source.key()).auto_shrink([false, false]).show(ui, |ui| {
                             if source == Source::Home {
                                 ui::text(ui, "Made yours", ui::display_bold(26.0), ui::TEXT);
                                 ui::text(ui, "Your playlists, saved albums and favourite songs.", ui::display(13.0), ui::SECONDARY);
@@ -1129,13 +1355,13 @@ impl Music {
                             }
                             self.collection_cards(ui, theme, &items);
                             if more && ui::button(ui, theme, "LOAD MORE", None, false).clicked() {
-                                if let Some(request) = source.further(items.len()) { self.send(request); }
+                                self.load_more(&source,items.len());
                             }
                         });
                     }
                     Some((items, None)) => {
                         let playing = now.track.as_ref().map(|track| track.uri.as_str());
-                        ScrollArea::vertical().max_height((body_height - 48.0).max(24.0)).id_salt(source.key()).auto_shrink([false, false]).show(ui, |ui| {
+                        ScrollArea::vertical().max_height((body_height - 132.0).max(24.0)).id_salt(source.key()).auto_shrink([false, false]).show(ui, |ui| {
                             ui.spacing_mut().item_spacing.y = 0.0;
                             let in_queue = source == Source::Queue;
                             for (index, item) in items.iter().enumerate() {
@@ -1145,7 +1371,22 @@ impl Music {
                                 // Only the rows in view have their pictures fetched.
                                 let place = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), ROW));
                                 let cover = if ui.is_rect_visible(place) { self.covers.get(ui.ctx(), item.cover.as_deref()) } else { None };
-                                let picked = ui.push_id(index, |ui| track_row(ui, theme, item, cover.as_ref(), lit, !in_queue, just_queued)).inner;
+                                let picked = ui.push_id(index, |ui| track_row(ui, theme, item, cover.as_ref(), lit, !in_queue, just_queued, matches!(&source,Source::Playlist{id,..} if self.shared.lock().unwrap().details.get(id).is_some_and(|v|v["editable"]==true)), playlist_move_target(&items,index,true).is_some(), playlist_move_target(&items,index,false).is_some())).inner;
+                                match picked {
+                                    Picked::Save|Picked::RemoveSaved=>self.send(json!({"cmd":"library","uri":item.uri,"save":picked==Picked::Save})),
+                                    Picked::AddToPlaylist=>self.add_to=Some(item.uri.clone()),
+                                    Picked::RemoveFromPlaylist|Picked::MoveUp|Picked::MoveDown=>{
+                                        if let Source::Playlist{id,..}=&source {
+                                            let snapshot=self.shared.lock().unwrap().snapshots.get(&source.key()).cloned();
+                                            if let (Some(position),Some(snapshot))=(item.position,snapshot) {
+                                                if picked==Picked::RemoveFromPlaylist {self.send(json!({"cmd":"playlist_item","id":id,"uri":item.uri,"position":position,"remove":true,"snapshot":snapshot}));}
+                                                else if let Some(before)=playlist_move_target(&items,index,picked==Picked::MoveUp) {
+                                                    self.send(json!({"cmd":"playlist_reorder","id":id,"from":position,"before":before,"snapshot":snapshot}));
+                                                }
+                                            }
+                                        }
+                                    },_=>{}
+                                }
                                 if picked == Picked::Queue {
                                     self.queued = Some((item.uri.clone(), Instant::now()));
                                     self.send(json!({ "cmd": "enqueue", "track": item.uri }));
@@ -1167,15 +1408,17 @@ impl Music {
                                 let named = (item.id.clone(), item.name.clone(), item.uri.clone());
                                 match item.kind {
                                     // Spotify offers no way to jump into the queue but one step at a time.
-                                    Kind::Track if in_queue => {
+                                    Kind::Track | Kind::Episode if in_queue => {
                                         for _ in 0..=index {
                                             self.send(json!({ "cmd": "next" }));
                                         }
                                     }
-                                    Kind::Track => self.send(json!({ "cmd": "play", "context": source.context(), "track": item.uri })),
+                                    Kind::Track | Kind::Episode => self.send(json!({ "cmd": "play", "context": source.context(), "track": item.uri })),
                                     Kind::Playlist => self.go(Source::Playlist { id: named.0, name: named.1, uri: named.2 }, true),
                                     Kind::Album => self.go(Source::Album { id: named.0, name: named.1, uri: named.2 }, true),
                                     Kind::Artist => self.go(Source::Artist { id: named.0, name: named.1 }, true),
+                                    Kind::Show|Kind::Audiobook=>self.go(Source::Browse{kind:if item.kind==Kind::Show{"show"}else{"audiobook"}.into(),key:item.id.clone(),name:item.name.clone(),range:"medium_term".into()},true),
+                                    Kind::Chapter=>{if self.browser_open.is_none(){if let Some(url)=spotify_item_url(item){self.browser_open=Some(crate::apps::open_url(url,ui.ctx().clone()));}else{self.shared.lock().unwrap().problem=Some(("Spotify did not provide a valid chapter link.".into(),Instant::now()));}}}
                                     Kind::Device => {
                                         if !item.active {
                                             self.send(json!({ "cmd": "transfer", "device": item.id }));
@@ -1187,10 +1430,10 @@ impl Music {
                             if more {
                                 let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::hover());
                                 ui.painter().text(rect.left_center() + vec2(26.0, 0.0), Align2::LEFT_CENTER, "Loading more…", ui::display(12.0), ui::LABEL);
-                                let wanted = (source.key(), items.len());
+                                let wanted = self.page_token(&source,items.len());
                                 if ui.is_rect_visible(rect) && self.asked_further.as_ref() != Some(&wanted) {
                                     if let Some(request) = source.further(items.len()) {
-                                        self.send(request);
+                                        let _=request; self.load_more(&source,items.len());
                                         self.asked_further = Some(wanted);
                                     }
                                 }
@@ -1344,6 +1587,20 @@ impl Music {
         }
     }
 
+    /// Music's software volume is independent of the desktop output volume.
+    /// Keep it visible in both players so a quiet source is easy to identify.
+    fn volume_control(&self, ui: &mut Ui, theme: &Theme, now: &Now) {
+        ui.horizontal(|ui| {
+            ui::text(ui, "Music", ui::display(12.0), ui::SECONDARY)
+                .on_hover_text("des-music volume; separate from system volume");
+            let width = (ui.available_width() - 44.0 - ui.spacing().item_spacing.x).max(20.0);
+            if let Some(to) = ui::slider(ui, theme, width, now.volume as f32 / 100.0, "Music volume") {
+                self.send(json!({ "cmd": "volume", "percent": (to * 100.0).round() as u8 }));
+            }
+            ui::text(ui, &format!("{}%", now.volume), ui::mono(11.0), ui::TEXT);
+        });
+    }
+
     /// The strip along the bottom of the view: the track, the controls, the position.
     fn transport(&mut self, ui: &mut Ui, theme: &Theme, now: &Now, height: f32) {
         let (strip, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
@@ -1392,13 +1649,28 @@ impl Music {
             ui.menu_button(egui::RichText::new("MORE").font(ui::display(11.0)), |ui| {
                 if ui.button("Lyrics").clicked() { self.go(Source::Lyrics, true); self.lyrics_at = None; ui.close_menu(); }
                 if ui.button("Devices").clicked() { self.go(Source::Devices, true); self.devices_asked = None; ui.close_menu(); }
-                ui::text(ui, "Volume", ui::display(12.0), ui::TEXT);
-                if let Some(to) = ui::slider(ui, theme, 130.0, now.volume as f32 / 100.0, "Volume") { self.send(json!({ "cmd": "volume", "percent": (to * 100.0).round() as u8 })); }
+
             });
         });
+        self.volume_control(ui, theme, now);
         if now.playing { ui.ctx().request_repaint_after(Duration::from_millis(500)); }
     }
 
+}
+
+/// Read only the explicitly selected image; encode a bounded JPEG for Spotify.
+fn playlist_cover(path: &str) -> Result<String,String> {
+    use base64::Engine;
+    let file=std::fs::File::from(rustix::fs::open(path,rustix::fs::OFlags::RDONLY|rustix::fs::OFlags::NONBLOCK|rustix::fs::OFlags::CLOEXEC,rustix::fs::Mode::empty()).map_err(|e|e.to_string())?);
+    let metadata=file.metadata().map_err(|e|e.to_string())?;
+    if !metadata.is_file() || metadata.len()>20*1024*1024{return Err("Choose an image smaller than 20 MB.".into());}
+    let mut reader=image::ImageReader::new(std::io::BufReader::new(file)).with_guessed_format().map_err(|e|e.to_string())?;
+    let mut limits=image::Limits::default();limits.max_image_width=Some(8192);limits.max_image_height=Some(8192);limits.max_alloc=Some(128*1024*1024);reader.limits(limits);
+    let image=reader.decode().map_err(|e|format!("Cannot read image: {e}"))?.thumbnail(512,512).to_rgb8();
+    let mut jpeg=Vec::new();image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg,80).encode_image(&image).map_err(|e|e.to_string())?;
+    let encoded=base64::engine::general_purpose::STANDARD.encode(jpeg);
+    if encoded.len()>256*1024{return Err("This cover is too detailed; choose a simpler or smaller image.".into());}
+    Ok(encoded)
 }
 
 /// Finite right-panel playback reservation, including its internal spacing.
@@ -1434,6 +1706,12 @@ enum Picked {
     Album,
     /// Who a track is by.
     Artist,
+    Save,
+    RemoveSaved,
+    AddToPlaylist,
+    RemoveFromPlaylist,
+    MoveUp,
+    MoveDown,
 }
 
 /// What a row says in its second column: who a track is by, or what else the row is.
@@ -1447,20 +1725,54 @@ fn described(item: &Item) -> String {
         Kind::Artist => "artist".to_string(),
         Kind::Device if item.here => format!("this machine · {}", item.by.to_lowercase()),
         Kind::Device => item.by.to_lowercase(),
+        Kind::Show=>"podcast".into(), Kind::Episode=>format!("episode · {}",item.by),
+        Kind::Audiobook=>format!("audiobook · {}",item.by),Kind::Chapter=>"chapter".into(),
     }
 }
 
 /// How tall a row of a list is.
 const ROW: f32 = 44.0;
 
+/// Chapters can use episode URIs. Prefer Spotify's canonical link, not a guessed chapter path.
+fn spotify_item_url(item: &Item) -> Option<String> {
+    if item.external_url.starts_with("https://open.spotify.com/") && item.external_url.len()<16*1024 && !item.external_url.chars().any(|c|c.is_whitespace()||c.is_control()) {
+        return Some(item.external_url.clone());
+    }
+    let parts:Vec<_>=item.uri.split(':').collect();
+    if parts.len()==3 && parts[0]=="spotify" && matches!(parts[1],"track"|"episode"|"audiobook"|"chapter") && !parts[2].is_empty() && parts[2].bytes().all(|b|b.is_ascii_alphanumeric()) {
+        Some(format!("https://open.spotify.com/{}/{}",parts[1],parts[2]))
+    }else{None}
+}
+
+/// Use visible neighbours' original positions; hidden entries need not be adjacent.
+fn playlist_move_target(items: &[Item], index: usize, up: bool) -> Option<u32> {
+    items.get(index)?.position?;
+    if up {items.get(index.checked_sub(1)?)?.position}
+    else {items.get(index+1)?.position?.checked_add(1)}
+}
+
 /// A track, or a playlist, album or artist to open. `queueable` rows carry a way to add
 /// them to what plays next, and say `queued` for a moment after.
-fn track_row(ui: &mut Ui, theme: &Theme, item: &Item, cover: Option<&TextureHandle>, playing: bool, queueable: bool, queued: bool) -> Picked {
+fn track_row(ui: &mut Ui, theme: &Theme, item: &Item, cover: Option<&TextureHandle>, playing: bool, queueable: bool, queued: bool, playlist: bool, move_up: bool, move_down: bool) -> Picked {
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), format!("{} — {}", item.name, described(item))));
+    let mut menu_pick=None;
+    response.context_menu(|ui| {
+        if !matches!(item.kind,Kind::Device|Kind::Chapter) {
+            if ui.button("Save / follow").clicked(){menu_pick=Some(Picked::Save);ui.close_menu();}
+            if ui.button("Remove / unfollow").clicked(){menu_pick=Some(Picked::RemoveSaved);ui.close_menu();}
+        }
+        if matches!(item.kind,Kind::Track|Kind::Episode) && ui.button("Add to playlist…").clicked(){menu_pick=Some(Picked::AddToPlaylist);ui.close_menu();}
+        if playlist && item.position.is_some() {
+            if ui.button("Remove matching items from playlist").clicked(){menu_pick=Some(Picked::RemoveFromPlaylist);ui.close_menu();}
+            if ui.add_enabled(move_up,egui::Button::new("Move up")).clicked(){menu_pick=Some(Picked::MoveUp);ui.close_menu();}
+            if ui.add_enabled(move_down,egui::Button::new("Move down")).clicked(){menu_pick=Some(Picked::MoveDown);ui.close_menu();}
+        }
+    });
+    if let Some(picked)=menu_pick{return picked;}
     // Under the pointer, the row offers to queue the track where its length is.
     let mut add = None;
-    let track = item.kind == Kind::Track;
+    let track = matches!(item.kind, Kind::Track | Kind::Episode);
     if queueable && track && (queued || response.has_focus() || ui.memory(|memory| memory.has_focus(ui.id().with("queue"))) || ui.rect_contains_pointer(rect)) {
         let spot = Rect::from_min_max(pos2(rect.right() - 92.0, rect.top()), rect.right_bottom());
         let adding = ui.interact(spot, ui.id().with("queue"), Sense::click());
@@ -1549,7 +1861,8 @@ fn track_row(ui: &mut Ui, theme: &Theme, item: &Item, cover: Option<&TextureHand
         return if response.clicked() { Picked::Row } else { Picked::Nothing };
     }
     let end = match item.kind {
-        Kind::Track => clock(item.duration_ms),
+        Kind::Track | Kind::Episode => clock(item.duration_ms),
+        Kind::Chapter=>"SPOTIFY ↗".into(),
         Kind::Device if item.active => "PLAYING".to_string(),
         Kind::Device => "SWITCH TO".to_string(),
         _ => "OPEN".to_string(),
@@ -1562,6 +1875,37 @@ fn track_row(ui: &mut Ui, theme: &Theme, item: &Item, cover: Option<&TextureHand
 mod tests {
     use super::*;
 
+    #[test]
+    fn cover_workers_start_only_after_an_artwork_request() {
+        let ctx = egui::Context::default();
+        let mut covers = Covers::new(&ctx);
+        assert!(covers.pending_workers.is_some());
+        covers.get(&ctx, None);
+        assert!(covers.pending_workers.is_some());
+        covers.get(&ctx, Some("fixture-without-network"));
+        assert!(covers.pending_workers.is_none());
+    }
+
+    #[test]
+    fn cover_cache_evicts_least_recently_used_and_ignores_stale_results() {
+        let (wanted, _requests) = channel();
+        let (done, ready) = channel();
+        let mut covers = Covers { wanted, ready, pending_workers: None, held: HashMap::new(), recent: VecDeque::new() };
+        let ctx = egui::Context::default();
+        for index in 0..COVER_CACHE_LIMIT {
+            covers.get(&ctx, Some(&format!("cover-{index}")));
+        }
+        covers.get(&ctx, Some("cover-0"));
+        covers.get(&ctx, Some("extra"));
+        assert_eq!(covers.held.len(), COVER_CACHE_LIMIT);
+        assert!(covers.held.contains_key("cover-0"));
+        assert!(!covers.held.contains_key("cover-1"));
+        done.send(("cover-1".into(), Some(egui::ColorImage::new([1, 1], egui::Color32::WHITE)))).unwrap();
+        covers.get(&ctx, None);
+        assert!(!covers.held.contains_key("cover-1"));
+        assert_eq!(covers.held.len(), COVER_CACHE_LIMIT);
+    }
+
     /// UI fixtures never start the service, fetch artwork, or touch a Spotify account.
     fn fixture(now: Now) -> Music {
         let (commands, _) = channel();
@@ -1571,12 +1915,29 @@ mod tests {
             open: true,
             shared: Arc::new(Mutex::new(Shared {
                 link: Link::Connected, now, lists: HashMap::from([("playlists:".into(), (Vec::new(), None))]),
-                more: Default::default(), lyrics: None, problem: None, sign_in: None, refresh: false, cancel: false,
+                more: Default::default(), next: HashMap::new(), snapshots: HashMap::new(), edits: HashMap::new(), saved: HashMap::new(), details: HashMap::new(), lyrics: None, problem: None, sign_in: None, refresh: false, cancel: false,
             })),
-            commands, source: Source::Home, query: String::new(), client_id: String::new(),
+            commands, source: Source::Home, query: String::new(), browser_open: None, editor: None, add_to: None, client_id: String::new(),
             queue_as_of: None, queued: None, asked: Vec::new(), asked_further: None, trail: Vec::new(),
-            covers: Covers { wanted, ready, held: HashMap::new() }, devices_asked: None, lyrics_asked: None, lyrics_at: None,
+            covers: Covers { wanted, ready, pending_workers: None, held: HashMap::new(), recent: VecDeque::new() }, devices_asked: None, lyrics_asked: None, lyrics_at: None,
         }
+    }
+
+    #[test]
+    fn escape_closes_an_open_popup_before_closing_music() {
+        let ctx = egui::Context::default(); ui::install_fonts(&ctx, None, None);
+        let theme = Theme::load("signal"); let mut music = fixture(Now::parse(&json!({})));
+        ctx.memory_mut(|memory| memory.open_popup(egui::Id::new("test-music-popup")));
+        let key = || egui::Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE };
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(900.0, 700.0));
+        let _ = ctx.run(egui::RawInput { screen_rect: Some(screen), events: vec![key()], ..Default::default() }, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| music.show(ui, screen, &theme));
+        });
+        assert!(music.open); assert!(!ctx.memory(|memory| memory.any_popup_open()));
+        let _ = ctx.run(egui::RawInput { screen_rect: Some(screen), events: vec![key()], ..Default::default() }, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| music.show(ui, screen, &theme));
+        });
+        assert!(!music.open);
     }
 
     #[test]
@@ -1592,8 +1953,9 @@ mod tests {
                 assert_eq!(music.preferred_panel_height(), PANEL_HEIGHT);
                 let ctx = egui::Context::default();
                 ui::install_fonts(&ctx, None, None);
+                ctx.enable_accesskit();
                 let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(width, 600.0));
-                let _ = ctx.run(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ctx| {
+                let rendered = ctx.run(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ctx| {
                     egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                         // CentralPanel expands its min_rect to the whole screen before
                         // our callback. Measure a fresh content child, as the real
@@ -1605,6 +1967,12 @@ mod tests {
                         assert!(probe.min_rect().bottom() - start.y <= PANEL_HEIGHT + 0.5, "panel exceeded its reservation: {:?}", probe.min_rect());
                     });
                 });
+                let tree = rendered.platform_output.accesskit_update.expect("music accessibility tree");
+                let bounds = tree.nodes.iter().find_map(|(_, node)|
+                    (node.label() == Some("Music volume")).then(|| node.bounds()).flatten())
+                    .expect("music volume stays visible outside menus");
+                assert!(bounds.x0 >= 0.0 && bounds.x1 <= width as f64);
+                assert!(bounds.y1 <= PANEL_HEIGHT as f64, "volume must fit the reserved panel");
             }
         }
         let mut empty = fixture(Now::default());
@@ -1674,4 +2042,138 @@ mod tests {
         assert_eq!(Source::Search("x".into()).context(), None);
         assert_eq!(Source::Playlist { id: "p".into(), name: "n".into(), uri: "spotify:playlist:p".into() }.key(), "tracks:p");
     }
+
+    #[test]
+    fn search_pages_use_server_offsets_and_ignore_duplicate_pages() {
+        let music=fixture(Now::default());let mut shared=music.shared.lock().unwrap();
+        let item=|id:&str|json!({"kind":"track","uri":format!("spotify:track:{id}"),"name":id});
+        shared.receive_list(&json!({"kind":"search","key":"sample","items":[item("a"),item("b")],"offset":0,"more":true,"next_offset":10}));
+        shared.receive_list(&json!({"kind":"search","key":"sample","items":[item("c")],"offset":10,"more":true,"next_offset":20}));
+        shared.receive_list(&json!({"kind":"search","key":"sample","items":[item("c")],"offset":10,"more":true,"next_offset":20}));
+        assert_eq!(shared.lists["search:sample"].0.len(),3);
+        assert_eq!(shared.next["search:sample"]["offset"],20);
+        shared.receive_list(&json!({"kind":"search","key":"sample","items":[],"offset":20,"error":"Spotify rate limit","more":false}));
+        assert_eq!(shared.lists["search:sample"].0.len(),3);
+        assert!(shared.lists["search:sample"].1.is_some());
+    }
+
+    #[test]
+    fn new_destinations_preserve_spoken_content_and_range_identity() {
+        let rows=parse_items(&json!({"items":[{"kind":"episode","uri":"spotify:episode:a"},{"kind":"audiobook","uri":"spotify:audiobook:b"},{"kind":"chapter","uri":"spotify:chapter:c"}]}));
+        assert_eq!(rows.iter().map(|r|r.kind).collect::<Vec<_>>(),vec![Kind::Episode,Kind::Audiobook,Kind::Chapter]);
+        let source=Source::Browse{kind:"top_tracks".into(),key:String::new(),name:"Top tracks".into(),range:"short_term".into()};
+        assert_eq!(source.key(),"top_tracks:short_term");assert_eq!(source.request()["range"],"short_term");assert!(source.further(50).is_some());
+    }
+
+    #[test]
+    fn cover_upload_converts_png_to_bounded_jpeg() {
+        use base64::Engine;
+        let directory=tempfile::tempdir().unwrap();let path=directory.path().join("cover.png");
+        image::RgbImage::from_pixel(800,400,image::Rgb([40,100,180])).save(&path).unwrap();
+        let encoded=playlist_cover(path.to_str().unwrap()).unwrap();assert!(encoded.len()<=256*1024);
+        let bytes=base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
+        assert_eq!(image::guess_format(&bytes).unwrap(),image::ImageFormat::Jpeg);
+        let decoded=image::load_from_memory(&bytes).unwrap();assert_eq!((decoded.width(),decoded.height()),(512,256));
+        assert!(playlist_cover(directory.path().to_str().unwrap()).is_err());
+    }
+
+
+    #[test]
+    fn unavailable_pages_advance_using_server_offsets_and_preserve_snapshot() {
+        let mut music=fixture(Now::default());let source=Source::Playlist{id:"abc".into(),name:"Playlist".into(),uri:"spotify:playlist:abc".into()};
+        let (commands,received)=channel();music.commands=commands;
+        music.shared.lock().unwrap().receive_list(&json!({"kind":"tracks","key":"abc","items":[],"offset":0,"more":true,"next_offset":100,"snapshot":"version1"}));
+        let first=music.page_token(&source,0);assert_eq!(first.1,100);
+        music.load_more(&source,0);
+        let request:Value=serde_json::from_str(&received.recv().unwrap()).unwrap();assert_eq!(request["offset"],100);assert_eq!(request["snapshot"],"version1");
+        music.load_more(&source,0);assert!(received.try_recv().is_err(),"an in-flight page must not be requested twice");
+        music.shared.lock().unwrap().receive_list(&json!({"kind":"tracks","key":"abc","items":[],"offset":100,"more":true,"next_offset":200,"snapshot":"version1"}));
+        assert_ne!(first,music.page_token(&source,0));
+    }
+
+    #[test]
+    fn empty_filtered_page_keeps_load_more_visible() {
+        let mut music=fixture(Now::default());music.source=Source::Liked;
+        music.shared.lock().unwrap().receive_list(&json!({"kind":"liked","key":"","items":[],"offset":0,"more":true,"next_offset":50}));
+        let ctx=egui::Context::default();ui::install_fonts(&ctx,None,None);ctx.enable_accesskit();
+        let output=ctx.run(egui::RawInput{screen_rect:Some(Rect::from_min_size(pos2(0.0,0.0),vec2(1000.0,800.0))),..Default::default()},|ctx|{
+            egui::CentralPanel::default().show(ctx,|ui|{music.library(ui,&Theme::load("signal"),&Now::default());});
+        });
+        let tree=output.platform_output.accesskit_update.unwrap();
+        assert!(tree.nodes.iter().any(|(_,node)|node.label()==Some("LOAD MORE")),"filtered pages must not hide later available entries");
+    }
+
+    #[test]
+    fn chapter_links_follow_spotify_episode_identity_and_canonical_urls() {
+        let items=parse_items(&json!({"items":[{"kind":"chapter","uri":"spotify:episode:abc","external_url":"https://open.spotify.com/episode/canonical"},{"kind":"chapter","uri":"spotify:episode:def","external_url":"https://open.spotify.com.evil.test/steal"}]}));
+        assert_eq!(spotify_item_url(&items[0]).as_deref(),Some("https://open.spotify.com/episode/canonical"));
+        assert_eq!(spotify_item_url(&items[1]).as_deref(),Some("https://open.spotify.com/episode/def"));
+    }
+
+    #[test]
+    fn reorder_targets_visible_neighbours_across_unavailable_items() {
+        let items=parse_items(&json!({"items":[{"uri":"spotify:track:a","position":2},{"uri":"spotify:track:b","position":5},{"uri":"spotify:track:c","position":9}]}));
+        assert_eq!(playlist_move_target(&items,1,true),Some(2));assert_eq!(playlist_move_target(&items,1,false),Some(10));
+        assert_eq!(playlist_move_target(&items,0,true),None);assert_eq!(playlist_move_target(&items,2,false),None);
+    }
+
+    #[test]
+    fn failed_and_timed_out_edits_preserve_draft_and_ignore_other_submissions() {
+        let music=fixture(Now::default());let mut shared=music.shared.lock().unwrap();
+        let now=Instant::now();let mut editor=PlaylistEditor{name:"Keep my draft".into(),..Default::default()};
+        editor.begin(&mut shared,"playlist_save",now);let old=editor.pending.clone().unwrap();
+        shared.receive_edit(&json!({"type":"problem","operation":old,"text":"Permission denied"}));
+        assert!(!editor.finish_pending(&mut shared,now));assert_eq!(editor.name,"Keep my draft");assert_eq!(editor.error.as_deref(),Some("Permission denied"));assert!(editor.pending.is_none());
+        editor.begin(&mut shared,"playlist_save",now);let current=editor.pending.clone().unwrap();
+        shared.receive_edit(&json!({"type":"changed","operation":old}));assert!(!editor.finish_pending(&mut shared,now));assert!(editor.pending.is_some());
+        shared.receive_edit(&json!({"type":"changed","operation":current}));assert!(editor.finish_pending(&mut shared,now));
+        editor.begin(&mut shared,"playlist_save",now);assert!(!editor.finish_pending(&mut shared,now+Duration::from_secs(36)));assert!(editor.pending.is_none());assert_eq!(editor.name,"Keep my draft");
+    }
+
+    #[test]
+    fn refresh_clears_permissions_and_pagination_without_losing_edit_results() {
+        let music=fixture(Now::default());let mut shared=music.shared.lock().unwrap();
+        shared.saved.insert("spotify:album:a".into(),true);shared.details.insert("abc".into(),json!({"owner":true}));shared.snapshots.insert("tracks:abc".into(),"old".into());
+        shared.receive_edit(&json!({"type":"changed","operation":"playlist_save:abc:1"}));shared.invalidate();
+        assert!(shared.saved.is_empty()&&shared.details.is_empty()&&shared.snapshots.is_empty());assert_eq!(shared.edits["playlist_save:abc:1"],Ok(()));
+    }
+
+    #[test]
+    fn cover_picker_rejects_a_named_pipe_without_waiting_for_a_writer() {
+        let directory=tempfile::tempdir().unwrap();let path=directory.path().join("cover.png");
+        rustix::fs::mknodat(rustix::fs::CWD,&path,rustix::fs::FileType::Fifo,rustix::fs::Mode::RUSR|rustix::fs::Mode::WUSR,0).unwrap();
+        assert!(playlist_cover(path.to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    #[ignore = "renders isolated native fixtures under Xvfb; needs DESUI_MUSIC_PREVIEW"]
+    fn native_music_preview() {
+        use winit::platform::x11::EventLoopBuilderExtX11;
+        struct Preview { music: Music, frames: usize, output: PathBuf, mode: String }
+        impl eframe::App for Preview {
+            fn update(&mut self,ctx:&egui::Context,_:&mut eframe::Frame) {
+                for event in ctx.input(|i|i.events.clone()) {if let egui::Event::Screenshot{image,..}=event {
+                    let bytes:Vec<u8>=image.pixels.iter().flat_map(|p|p.to_array()).collect();
+                    image::save_buffer(&self.output,&bytes,image.size[0] as u32,image.size[1] as u32,image::ColorType::Rgba8).unwrap();
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }}
+                let theme=Theme::load("signal");
+                egui::CentralPanel::default().show(ctx,|ui| {
+                    if self.mode=="compact"{self.music.panel(ui,&theme);}else{let rect=ui.available_rect_before_wrap();self.music.show(ui,rect,&theme);}
+                });
+                self.frames+=1;
+                if self.frames==4 {ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));}
+                ctx.request_repaint();
+            }
+        }
+        let output=PathBuf::from(std::env::var("DESUI_MUSIC_PREVIEW").expect("preview output"));
+        let mode=std::env::var("DESUI_MUSIC_PREVIEW_MODE").unwrap_or_default();
+        let width=std::env::var("DESUI_MUSIC_PREVIEW_WIDTH").ok().and_then(|s|s.parse::<f32>().ok()).unwrap_or(1100.0);
+        let mut music=fixture(Now::parse(&json!({"volume":75,"playing":false,"track":{"uri":"spotify:track:fixture","name":"Sample track","artists":"Sample artist","duration_ms":240000}})));
+        if mode.starts_with("editor") {music.editor=Some(PlaylistEditor{name:"Evening favourites".into(),description:"A personal playlist".into(),..Default::default()});if mode=="editor-error"{music.editor.as_mut().unwrap().error=Some("Spotify refused this edit. Your draft is preserved; reconnect the library to approve permissions.".into());}else if mode=="editor-pending"{music.editor.as_mut().unwrap().begin(&mut music.shared.lock().unwrap(),"playlist_save",Instant::now());}}
+        else if mode!="compact" {music.source=Source::Browse{kind:"shows".into(),key:String::new(),name:"Podcasts".into(),range:"medium_term".into()};music.shared.lock().unwrap().lists.insert("shows:".into(),(parse_items(&json!({"items":[{"kind":"show","uri":"spotify:show:fixture","id":"fixture","name":"A sample podcast","artists":"Sample publisher"}]})),None));}
+        let options=eframe::NativeOptions{viewport:egui::ViewportBuilder::default().with_inner_size([width,800.0]),event_loop_builder:Some(Box::new(|builder|{builder.with_x11().with_any_thread(true);})),..Default::default()};
+        eframe::run_native("DEs-UI music fixture",options,Box::new(move |cc|{ui::install_fonts(&cc.egui_ctx,None,None);crate::apply_style(&cc.egui_ctx,&Theme::load("signal"));Ok(Box::new(Preview{music,frames:0,output,mode}))})).unwrap();
+    }
+
 }

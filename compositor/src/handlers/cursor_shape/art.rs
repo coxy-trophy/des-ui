@@ -275,6 +275,41 @@ pub(super) fn raster_at(boundary: &Boundary, shape: Shape, density: f32, detail_
 const SHADOW_OFFSET:[f32;2]=[0.8,1.2];
 const SHADOW_ALPHA:f32=128.0;
 
+// Blur the silhouette's alpha into a restrained blue halo, then composite the
+// original premultiplied cursor over it. The hotspot and canvas never move.
+fn add_halo(pixels: &mut [u8], side: usize, radius: usize) {
+    let radius = radius.max(1);
+    let alpha: Vec<f32> = pixels.chunks_exact(4).map(|p| p[3] as f32).collect();
+    let mut horizontal = vec![0.0; side * side];
+    let mut blurred = vec![0.0; side * side];
+    let divisor = (radius * 2 + 1) as f32;
+    for y in 0..side {
+        let mut sum: f32 = (0..=radius.min(side-1)).map(|x| alpha[y*side+x]).sum();
+        for x in 0..side {
+            horizontal[y*side+x] = sum / divisor;
+            if x >= radius { sum -= alpha[y*side+x-radius]; }
+            if x+radius+1 < side { sum += alpha[y*side+x+radius+1]; }
+        }
+    }
+    for x in 0..side {
+        let mut sum: f32 = (0..=radius.min(side-1)).map(|y| horizontal[y*side+x]).sum();
+        for y in 0..side {
+            blurred[y*side+x] = sum / divisor;
+            if y >= radius { sum -= horizontal[(y-radius)*side+x]; }
+            if y+radius+1 < side { sum += horizontal[(y+radius+1)*side+x]; }
+        }
+    }
+    for (pixel, glow) in pixels.chunks_exact_mut(4).zip(blurred) {
+        // Preserve the silhouette and contrast shadow exactly.
+        if pixel[3] != 0 { continue; }
+        let halo_alpha = glow * 0.28;
+        for (channel, blue) in [255.0, 176.0, 84.0].iter().enumerate() {
+            pixel[channel] = (pixel[channel] as f32 + blue * halo_alpha / 255.0).round().min(255.0) as u8;
+        }
+        pixel[3] = (pixel[3] as f32 + halo_alpha).round().min(255.0) as u8;
+    }
+}
+
 pub(super) fn raster_custom(boundary: &Boundary, shape: Shape, density: f32, size: u32, color: [u8;3], detail_alpha: f32) -> Vec<u8> {
     let coverage=Coverage::new(boundary);
     let factor=size as f32/CURSOR_BASE_SIZE as f32;
@@ -318,12 +353,19 @@ pub(super) fn raster_custom(boundary: &Boundary, shape: Shape, density: f32, siz
             for channel in 0..4 {pixels[at+channel]=(sum[channel]/4.0).round() as u8;}
         }
     }
+    add_halo(&mut pixels, side, (3.0 * density * factor).round() as usize);
     pixels
 }
 
 #[cfg(test)]
 mod raster_tests {
     use super::*;
+    #[test]
+    fn arrow_has_subtle_blue_halo_around_an_opaque_body() {
+        let pixels = raster_custom(&boundary(Shape::Arrow, 0.0), Shape::Arrow, 1.0, 24, [12, 16, 21], 1.0);
+        assert!(pixels.chunks_exact(4).any(|p| p[3] > 0 && p[3] < 64 && p[0] > p[2]), "missing blue halo");
+        assert!(pixels.chunks_exact(4).any(|p| p[3] == 255 && p[2] == 12 && p[1] == 16 && p[0] == 21));
+    }
 fn reference_segment_distance_squared(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
     let d = [b[0] - a[0], b[1] - a[1]];
     let t = (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / (d[0]*d[0] + d[1]*d[1]).max(1e-8)).clamp(0.0, 1.0);
@@ -378,6 +420,7 @@ fn reference_raster(boundary: &Boundary, shape: Shape, density: f32, size: u32, 
             for channel in 0..4 {pixels[at+channel]=(sum[channel]/4.0).round() as u8;}
         }
     }
+    add_halo(&mut pixels, side, (3.0 * density * factor).round() as usize);
     pixels
 }
 

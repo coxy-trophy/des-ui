@@ -29,9 +29,30 @@ fn log_paths(root: Option<PathBuf>) -> Vec<PathBuf> {
     ["session.log", "session-fallback.log", "apps.log"].into_iter().map(|name| root.join("des-ui").join(name)).collect()
 }
 
+// Remove terminal control sequences before redaction, so styling cannot split a secret label.
+fn strip_terminal_controls(text: &str) -> String {
+    let mut chars = text.chars().peekable();
+    let mut out = String::with_capacity(text.len());
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            match chars.next() {
+                Some('[') => { for c in chars.by_ref() { if ('@'..='~').contains(&c) { break; } } },
+                Some(']') | Some('P') | Some('X') | Some('^') | Some('_') => {
+                    while let Some(c) = chars.next() {
+                        if c == '\x07' { break; }
+                        if c == '\x1b' && chars.peek() == Some(&'\\') { chars.next(); break; }
+                    }
+                },
+                _ => {},
+            }
+        } else if !ch.is_control() || ch == '\n' || ch == '\t' { out.push(ch); }
+    }
+    out
+}
+
 fn sanitize_excerpt(bytes: &[u8]) -> String {
     let tail = &bytes[bytes.len().saturating_sub(MAX_BYTES)..];
-    let text = String::from_utf8_lossy(tail);
+    let text = strip_terminal_controls(&String::from_utf8_lossy(tail));
     let mut lines: Vec<_> = text.lines().rev().take(MAX_LINES).map(|line| {
         let lower = line.to_ascii_lowercase();
         if ["password", "passwd", "token", "secret", "authorization", "cookie", "private key", "api_key", "apikey", "credential"].iter().any(|word| lower.contains(word)) {
@@ -168,6 +189,11 @@ mod tests {
         assert!(!excerpt.contains("TOKEN=abc"));
         assert!(excerpt.contains("ordinary event"));
         assert!(excerpt.lines().count() <= MAX_LINES);
+    }
+    #[test]
+    fn excerpt_strips_ansi_and_redacts_obfuscated_labels() {
+        let text = sanitize_excerpt(b"\x1b[32mready\x1b[0m\npass\x1b[31mword=hunter2\n\x1b]0;title\x07plain\n");
+        assert_eq!(text, "ready\n[sensitive line omitted]\nplain");
     }
     #[test]
     fn rejects_relative_roots_and_non_regular_logs() {

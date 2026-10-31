@@ -1165,7 +1165,7 @@ struct Tab<'a> {
 }
 
 /// Draws a tab: a label, underlined in the accent when it is the one in view.
-fn tab(ui: &mut Ui, theme: &Theme, tab: Tab) -> Response {
+fn tab(ui: &mut Ui, theme: &Theme, tab: Tab, animate: bool) -> Response {
     let ink = if tab.selected { ui::TEXT } else { ui::SECONDARY };
     let quiet = if tab.selected { ui::SECONDARY } else { ui::LABEL };
     let name_font = if tab.selected { ui::display_bold(13.0) } else { ui::display(13.0) };
@@ -1219,8 +1219,10 @@ fn tab(ui: &mut Ui, theme: &Theme, tab: Tab) -> Response {
         painter.rect_stroke(frame, 0.0, Stroke::new(1.0, edge), StrokeKind::Inside);
         painter.galley(frame.min + vec2(5.0, 2.0), badge, badge_ink);
     }
-    if tab.selected {
-        let underline = Rect::from_min_max(pos2(rect.left() + 14.0, rect.bottom() - 3.0), pos2(rect.right() - 14.0, rect.bottom() - 1.0));
+    let progress = if animate { ui.ctx().animate_bool_with_time(response.id, tab.selected, 0.14) } else if tab.selected { 1.0 } else { 0.0 };
+    if progress > 0.0 {
+        let width = (rect.width() - 28.0).max(0.0) * progress;
+        let underline = Rect::from_center_size(pos2(rect.center().x, rect.bottom() - 2.0), vec2(width, 2.0));
         painter.rect_filled(underline, 0.0, theme.main);
     }
     response
@@ -1235,62 +1237,23 @@ impl App {
         let covered = state.and_then(|s| s.covering()).is_some();
         let terminal_in_use = !covered && !self.launcher.open && !self.settings.open && self.files_browser.is_none() && !self.music.open && !self.notices.open && !self.power_menu.open;
 
-        for i in 0..self.tabs.len() {
-            let process = self.tabs[i]
-                .foreground_process()
-                .unwrap_or_else(|| "shell".to_string());
-            let look = Tab {
-                number: Some(format!("{:02}", i + 1)),
-                name: if i == 0 { "main" } else { "term" },
-                detail: Some(&process),
-                badge: None,
-                selected: (i == self.active || Some(i) == self.side) && terminal_in_use,
-            };
-            let persistence = if self.tabs[i].persistent_id.is_some() {
-                "Live terminal: reconnects after a graphical-shell restart"
-            } else { "Temporary terminal: closes when the graphical shell restarts" };
-            if tab(ui, theme, look).on_hover_text(persistence).clicked() {
-                self.show_tab(i);
-                self.launcher.open = false;
-                self.settings.open = false; self.files_browser = None;
-                self.music.open = false;
-                self.notices.open = false;
-                self.power_menu.open = false;
-                actions.command = Some(Command::Terminal);
-            }
-        }
-        if self.tabs.len() < MAX_TABS {
-            let (rect, response) = ui.allocate_exact_size(vec2(32.0, ui.available_height()), Sense::click());
-            let ink = if response.hovered() { ui::TEXT } else { ui::SECONDARY };
-            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "+", ui::mono(16.0), ink);
-            if response.on_hover_text("New terminal tab").clicked() {
-                actions.open_tab = true;
-                self.launcher.open = false;
-                actions.command = Some(Command::Terminal);
-            }
-        }
-
-        if ui::icon_button(ui, theme, Icon::Copy, 28.0, false).on_hover_text("Copy last command output").clicked() { self.copy_last_output(); }
-        if ui::icon_button(ui,theme,Icon::Search,28.0,self.tabs[self.focus_tab()].searching()).on_hover_text(shortcuts::hint(ui.ctx(), "Find in terminal", "terminal.find")).clicked() { actions.find_terminal=true; actions.command=Some(Command::Terminal); }
-
-        let split_hint = if self.side.is_some() {
-            shortcuts::hint(ui.ctx(), "Make the terminal whole again", "shell.split_right")
-        } else {
-            format!("{}; {}", shortcuts::hint(ui.ctx(), "Split side by side", "shell.split_right"), shortcuts::hint(ui.ctx(), "Split above and below", "shell.split_down"))
-        };
-        if ui::icon_button(ui, theme, Icon::SplitPane, 28.0, self.side.is_some())
-            .on_hover_text(split_hint)
-            .clicked()
-        {
-            actions.split_terminal = true;
-            self.launcher.open = false;
-            self.settings.open = false; self.files_browser = None;
-            self.music.open = false;
-            self.notices.open = false;
-            self.power_menu.open = false;
-            actions.command = Some(Command::Terminal);
-        }
-
+        // Reserve the right-hand controls first; tabs can scroll in their own clipped area.
+        let available = ui.available_rect_before_wrap();
+        let controls_width: f32 = if state.is_some() { 302.0 } else { 36.0 };
+        let right_width = controls_width.min((available.width() * 0.6).max(0.0));
+        let gap = 4.0_f32.min((available.width() - right_width).max(0.0));
+        let right_rect = Rect::from_min_max(pos2(available.right() - right_width, available.top()), available.max);
+        let left_rect = Rect::from_min_max(available.min, pos2((right_rect.left() - gap).max(available.left()), available.bottom()));
+        let active_id = egui::Id::new("terminal-header-active");
+        let active_changed = ui.data_mut(|data| {
+            let changed = data.get_temp::<usize>(active_id) != Some(self.active);
+            data.insert_temp(active_id, self.active);
+            changed
+        });
+        ui.scope_builder(egui::UiBuilder::new().max_rect(right_rect), |ui| {
+            ui.set_clip_rect(ui.clip_rect().intersect(right_rect));
+            egui::ScrollArea::horizontal().id_salt("header-controls").auto_shrink([false, false]).show(ui, |ui| {
+                ui.set_min_width(controls_width);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             let hint = if self.launcher.open { "Close applications (Esc)".into() } else { shortcuts::hint(ui.ctx(), "Applications", "desktop.launcher") };
@@ -1354,6 +1317,78 @@ impl App {
                     }
                 }
             }
+        });
+            });
+        });
+        ui.scope_builder(egui::UiBuilder::new().max_rect(left_rect), |ui| {
+            ui.set_clip_rect(ui.clip_rect().intersect(left_rect));
+            egui::ScrollArea::horizontal().id_salt("terminal-tabs").auto_shrink([false, false]).show(ui, |ui| {
+                ui.horizontal(|ui| {
+        for i in 0..self.tabs.len() {
+            let process = self.tabs[i]
+                .foreground_process()
+                .unwrap_or_else(|| "shell".to_string());
+            let look = Tab {
+                number: Some(format!("{:02}", i + 1)),
+                name: if i == 0 { "main" } else { "term" },
+                detail: Some(&process),
+                badge: None,
+                selected: (i == self.active || Some(i) == self.side) && terminal_in_use,
+            };
+            let persistence = if self.tabs[i].persistent_id.is_some() {
+                "Live terminal: reconnects after a graphical-shell restart"
+            } else { "Temporary terminal: closes when the graphical shell restarts" };
+            let response = tab(ui, theme, look, self.config.terminal_tab_animation && self.config.animate && !self.config.appearance.reduce_motion).on_hover_text(persistence);
+            if response.gained_focus() || (active_changed && i == self.active) { response.scroll_to_me(None); }
+            if response.clicked() {
+                self.show_tab(i);
+                self.launcher.open = false;
+                self.settings.open = false; self.files_browser = None;
+                self.music.open = false;
+                self.notices.open = false;
+                self.power_menu.open = false;
+                actions.command = Some(Command::Terminal);
+            }
+        }
+        {
+            let available = self.tabs.len() < MAX_TABS;
+            let response = ui.add_enabled(available, egui::Button::new(egui::RichText::new("+").font(ui::mono(16.0))).min_size(vec2(32.0, ui::CONTROL_HEIGHT)));
+            let hint = if available { "New terminal tab" } else { "Maximum of 9 terminal tabs" };
+            if response.on_hover_text(hint).clicked() {
+                actions.open_tab = true;
+                self.launcher.open = false;
+                actions.command = Some(Command::Terminal);
+            }
+        }
+
+        let rail_id = egui::Id::new("terminal-session-rail");
+        let rail_open = ui.data(|data| data.get_temp::<bool>(rail_id).unwrap_or(true));
+        if ui::icon_button(ui, theme, Icon::PanelLeft, 28.0, rail_open).on_hover_text("Show or hide terminal sessions").clicked() {
+            ui.data_mut(|data| data.insert_temp(rail_id, !rail_open));
+        }
+        if ui::icon_button(ui, theme, Icon::Copy, 28.0, false).on_hover_text("Copy last command output").clicked() { self.copy_last_output(); }
+        if ui::icon_button(ui,theme,Icon::Search,28.0,self.tabs[self.focus_tab()].searching()).on_hover_text(shortcuts::hint(ui.ctx(), "Find in terminal", "terminal.find")).clicked() { actions.find_terminal=true; actions.command=Some(Command::Terminal); }
+
+        let split_hint = if self.side.is_some() {
+            shortcuts::hint(ui.ctx(), "Make the terminal whole again", "shell.split_right")
+        } else {
+            format!("{}; {}", shortcuts::hint(ui.ctx(), "Split side by side", "shell.split_right"), shortcuts::hint(ui.ctx(), "Split above and below", "shell.split_down"))
+        };
+        if ui::icon_button(ui, theme, Icon::SplitPane, 28.0, self.side.is_some())
+            .on_hover_text(split_hint)
+            .clicked()
+        {
+            actions.split_terminal = true;
+            self.launcher.open = false;
+            self.settings.open = false; self.files_browser = None;
+            self.music.open = false;
+            self.notices.open = false;
+            self.power_menu.open = false;
+            actions.command = Some(Command::Terminal);
+        }
+
+                });
+            });
         });
         actions
     }

@@ -72,8 +72,35 @@ class VoiceTests(unittest.TestCase):
         self.socket.event('session.output_audio.delta', delta=base64.b64encode(b'\x00\x00'*24000).decode())
         until(lambda: any(e['state'] == 'speaking' for e in self.events))
         self.now += 1.1
-        until(lambda: self.events[-1]['state'] == 'listening')
+        until(lambda: self.events and self.events[-1]['state'] == 'listening')
         self.assertFalse(self.audio[0].stopped)
+
+    def test_explicit_screen_shares_only_with_responses_backend(self):
+        self.ready()
+        self.assertFalse(any(event['type'] == 'response.item.create' for event in self.socket.sent))
+        self.voice.share_image('/9j/AA==')
+        until(lambda: any(event['type'] == 'response.create' for event in self.socket.sent))
+        events = [event for event in self.socket.sent if event['type'] in ('response.item.create', 'response.create')]
+        self.assertEqual([event['type'] for event in events], ['response.item.create', 'response.create'])
+        self.assertEqual(events[0]['item']['content'][1]['image_url'], 'data:image/jpeg;base64,/9j/AA==')
+        self.assertFalse(self.voice.session.image_pending)
+
+    def test_only_one_screen_can_be_queued_at_a_time(self):
+        self.ready()
+        with self.voice.session.lock:
+            self.voice.session.image_pending = True
+        with self.assertRaises(ValueError): self.voice.share_image('/9j/AA==')
+        self.assertFalse(any(event['type'] == 'response.item.create' for event in self.socket.sent))
+        with self.voice.session.lock:
+            self.voice.session.image_pending = False
+
+    def test_screen_sharing_requires_a_ready_and_open_session(self):
+        with self.assertRaises(ValueError): self.voice.share_image('/9j/AA==')
+        self.start()
+        with self.assertRaises(ValueError): self.voice.share_image('/9j/AA==')
+        self.voice.stop('user')
+        with self.assertRaises(ValueError): self.voice.share_image('/9j/AA==')
+        self.assertFalse(any(event['type'] == 'response.item.create' for event in self.socket.sent))
 
     def test_empty_audio_does_not_signal_speaking(self):
         self.ready()
@@ -112,17 +139,41 @@ class VoiceTests(unittest.TestCase):
         until(lambda: self.socket.closed)
         self.assertFalse(self.audio[0].played)
         self.assertFalse(self.words)
-        until(lambda: self.events[-1]['state'] == 'stopped')
+        until(lambda: self.events and self.events[-1]['state'] == 'stopped')
         self.assertTrue(self.events[-1]['finalized'])
         self.assertEqual(self.events[-1]['usage_seconds'], 15)
     def test_independent_watchdog_enforces_hard_cap_even_when_kept(self):
         self.ready()
         self.voice.keep()
         self.now += 300
+        time.sleep(.15)
+        self.assertFalse(self.audio[0].stopped)
+        self.now += 3300
         until(lambda: self.audio[0].stopped)
-        until(lambda: self.events[-1]['reason'] == 'deadline')
+        until(lambda: self.events and self.events[-1]['reason'] == 'deadline')
+    def test_voice_stays_open_through_silence_by_default(self):
+        self.ready()
+        self.now += 120
+        time.sleep(.15)
+        self.assertFalse(self.audio[0].stopped)
+        self.assertTrue(self.voice.session.kept)
+    def test_provider_expiry_explains_how_to_continue(self):
+        self.ready()
+        self.socket.event('session.closed', reason='expired', usage={'seconds':900})
+        until(lambda: self.events and self.events[-1]['state'] == 'stopped')
+        self.assertEqual(self.events[-1]['reason'], 'expired')
+        self.assertIn('Start voice again', self.events[-1]['message'])
+    def test_session_respects_a_short_remaining_daily_allowance(self):
+        self.voice.start([], 'Be kind', 'secret', 'gpt-5.6-luna', 60)
+        until(lambda: self.socket.sent)
+        self.socket.event('session.started', session={'id':'test'})
+        until(lambda: self.audio and self.audio[0].started)
+        self.now += 60
+        until(lambda: self.audio[0].stopped)
+        until(lambda: self.events and self.events[-1]['reason'] == 'deadline')
     def test_followup_waits_for_playback_duration_and_keep_disables_idle(self):
         self.ready()
+        self.voice.session.kept = False
         self.socket.event('session.output_audio.delta', delta=base64.b64encode(b'\x00\x00'*24000).decode())
         until(lambda: self.audio[0].played)
         self.now += 12
@@ -136,7 +187,7 @@ class VoiceTests(unittest.TestCase):
         self.socket.event('session.usage.updated', usage={'seconds':15})
         self.socket.event('error', error={'message':'secret'})
         until(lambda: self.audio[0].stopped)
-        until(lambda: self.events[-1]['reason'] == 'provider_error')
+        until(lambda: self.events and self.events[-1]['reason'] == 'provider_error')
         self.assertEqual(self.events[-1]['usage_seconds'], 15)
         self.assertNotIn('secret', json.dumps(self.events))
         self.assertFalse(self.events[-1]['finalized'])
@@ -145,7 +196,7 @@ class VoiceTests(unittest.TestCase):
         self.socket.event('error', error={'type':'invalid_request_error',
             'code':'responses_validation_failed', 'message':'private-api-key',
             'param':'private-provider-body'})
-        until(lambda: self.events[-1]['reason'] == 'provider_error')
+        until(lambda: self.events and self.events[-1]['reason'] == 'provider_error')
         self.assertIn('backend model', self.events[-1]['message'])
         self.assertNotIn('private-api-key', json.dumps(self.events))
         self.assertNotIn('private-provider-body', json.dumps(self.events))
@@ -158,7 +209,7 @@ class VoiceTests(unittest.TestCase):
         self.voice.audio_factory = lambda *args: audio
         self.start()
         self.socket.event('session.started', session={'id':'test'})
-        until(lambda: self.events[-1]['state'] == 'stopping')
+        until(lambda: self.events and self.events[-1]['state'] == 'stopping')
         self.assertTrue(audio.stopped)
         self.assertEqual(self.events[-1]['reason'], 'audio_error')
         self.assertIn('PipeWire', self.events[-1]['message'])
@@ -229,7 +280,7 @@ class VoiceTests(unittest.TestCase):
         self.ready()
         until(entered.is_set)
         try:
-            self.now += 300
+            self.now += 3600
             until(lambda: self.audio[0].stopped)
         finally:
             gate.set()
@@ -272,7 +323,7 @@ class VoiceTests(unittest.TestCase):
         until(entered.is_set)
         try:
             self.voice.keep()
-            self.now += 300
+            self.now += 3600
             until(lambda: self.audio[0].stopped)
         finally:
             gate.set()
@@ -288,7 +339,7 @@ class VoiceTests(unittest.TestCase):
         try:
             for _ in range(100): self.audio[0].capture(b'ab')
             until(lambda: self.audio[0].stopped)
-            until(lambda: self.events[-1]['reason'] == 'audio_overflow')
+            until(lambda: self.events and self.events[-1]['reason'] == 'audio_overflow')
             self.assertLessEqual(self.voice.session.outgoing.qsize(), 40)
         finally:
             gate.set()
@@ -306,7 +357,7 @@ class VoiceTests(unittest.TestCase):
                 else:
                     self.socket.event('session.closed', usage=usage, reason='expired')
                 until(lambda: self.voice.session.done.is_set())
-                until(lambda: self.events[-1]['state'] == 'stopped')
+                until(lambda: self.events and self.events[-1]['state'] == 'stopped')
                 self.assertFalse(self.events[-1]['finalized'])
                 self.assertEqual(self.events[-1]['usage_seconds'], 12)
 
@@ -338,7 +389,7 @@ class VoiceTests(unittest.TestCase):
         self.voice.stop('user')
         self.now += 3
         until(lambda: self.socket.closed)
-        until(lambda: self.events[-1]['state'] == 'stopped')
+        until(lambda: self.events and self.events[-1]['state'] == 'stopped')
         self.assertFalse(self.events[-1]['finalized'])
         self.assertEqual(self.events[-1]['state'], 'stopped')
 

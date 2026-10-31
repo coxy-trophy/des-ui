@@ -11,6 +11,7 @@ mod socket;
 mod service;
 use service::serve;
 mod web;
+mod features;
 
 use librespot_core::{
     authentication::Credentials, cache::Cache, config::SessionConfig, session::Session,
@@ -174,8 +175,15 @@ fn web_token_file() -> PathBuf {
 
 /// What the Web API is asked to allow: reading the user's library and liking tracks
 /// in it, reading and steering what plays on any device, and adding to what plays next.
-const LIBRARY_SCOPES: [&str; 7] = [
+const LIBRARY_SCOPES: [&str; 14] = [
     "user-library-modify",
+    "playlist-modify-public",
+    "playlist-modify-private",
+    "ugc-image-upload",
+    "user-read-recently-played",
+    "user-top-read",
+    "user-follow-read",
+    "user-follow-modify",
     "user-read-playback-state",
     "user-modify-playback-state",
     "user-read-private",

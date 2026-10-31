@@ -6,6 +6,7 @@ license = "MIT"
 description = "The DEs-UI shell: a sci-fi terminal desktop"
 
 [dependencies]
+base64 = "0.22"
 anyhow = "1.0.104"
 zbus = "5"
 async-channel = "2"
@@ -28,3 +29,6 @@ path = "src/main.rs"
 [[bin]]
 name = "des-ui-ctl"
 path = "src/bin/des-ui-ctl.rs"
+
+[dev-dependencies]
+winit = { version = "0.30", default-features = false, features = ["x11"] }

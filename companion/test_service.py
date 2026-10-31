@@ -43,6 +43,32 @@ class StoreTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 Store(link)
 
+    def test_edit_memory_preserves_identity_and_validates_limits(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = Store(Path(temp) / 'state')
+            store.remember('Old preference')
+            ident = store.memories()[0]['id']
+            store.edit_memory(ident, '  New preference  ')
+            self.assertEqual(store.memories(), [{'id': ident, 'text': 'New preference'}])
+            with self.assertRaises(ValueError): store.edit_memory(ident, ' ')
+            with self.assertRaises(ValueError): store.edit_memory(ident + 100, 'Missing')
+            with self.assertRaises(ValueError): store.edit_memory(ident, 'x' * 1001)
+            self.assertEqual(store.memories()[0]['text'], 'New preference')
+            store.close()
+
+    def test_edit_memory_preserves_global_size_limit_atomically(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = Store(Path(temp) / 'state')
+            for _ in range(31): store.remember('x' * 1000)
+            store.remember('a' * 999)
+            store.remember('z')
+            ident = store.memories()[-2]['id']
+            with self.assertRaises(ValueError): store.edit_memory(ident, 'b' * 1000)
+            self.assertEqual(store.memories()[-2]['text'], 'a' * 999)
+            store.edit_memory(ident, 'b' * 998)
+            self.assertEqual(store.memories()[-2]['text'], 'b' * 998)
+            store.close()
+
     def test_forget_and_clear_are_distinct_from_identity(self):
         with tempfile.TemporaryDirectory() as temp:
             store = Store(Path(temp) / 'state')
@@ -72,6 +98,16 @@ class ValidationTests(unittest.TestCase):
         self.assertNotIn('tools', body)
         self.assertEqual(body['input'][0]['content'], 'hello')
         self.assertTrue(body['text']['format']['strict'])
+
+    def test_image_is_attached_only_to_the_explicit_message(self):
+        body = Responses.body('model', 'instructions', [
+            {'role':'user', 'text':'earlier'},
+            {'role':'user', 'text':'What is this?', 'image':'/9j/AA=='},
+        ])
+        self.assertEqual(body['input'][0]['content'], 'earlier')
+        self.assertEqual(body['input'][1]['content'][0], {'type':'input_text','text':'What is this?'})
+        self.assertEqual(body['input'][1]['content'][1]['image_url'], 'data:image/jpeg;base64,/9j/AA==')
+        self.assertFalse(body['store'])
 
     def test_incomplete_and_refusal_are_not_identity_updates(self):
         for response in [{'status':'incomplete'}, {'status':'completed','output':[{'type':'message','content':[{'type':'refusal','refusal':'no'}]}]}]:
@@ -117,6 +153,36 @@ class ServiceTests(unittest.TestCase):
         self.service.snapshot()
         self.assertNotIn('private-value', json.dumps(self.events))
         self.assertNotIn(b'private-value', self.service.store.path.read_bytes())
+    def test_attached_image_is_not_saved_in_conversation_history(self):
+        self.command(type='configure',enabled=True)
+        self.command(type='send',text='What is this?', image='/9j/AA==')
+        self.assertTrue(self.provider.started.wait(1))
+        self.assertEqual(self.provider.calls[0][3][-1]['image'], '/9j/AA==')
+        self.assertNotIn('/9j/AA==', json.dumps(self.service.store.messages()))
+        self.assertNotIn(b'/9j/AA==', self.service.store.path.read_bytes())
+
+    def test_invalid_attachment_never_starts_provider_or_saves_message(self):
+        self.command(type='configure',enabled=True)
+        self.command(type='send',text='Look',image='not-base64')
+        self.assertEqual(self.provider.calls, [])
+        self.assertEqual(self.service.store.messages(), [])
+
+    def test_edit_memory_command_requires_an_existing_memory(self):
+        self.command(type='remember',text='Old')
+        ident = self.service.store.memories()[0]['id']
+        self.command(type='edit_memory',memory_id=ident,text='New')
+        self.assertEqual(self.service.store.memories(), [{'id':ident,'text':'New'}])
+        self.command(type='edit_memory',memory_id=ident+1,text='Other')
+        self.assertEqual(self.service.store.memories(), [{'id':ident,'text':'New'}])
+        self.assertTrue(any(event.get('type')=='error' for event in self.events))
+
+    def test_voice_screen_rejects_invalid_or_inactive_requests(self):
+        self.command(type='voice_share_screen',image='bad')
+        self.command(type='voice_share_screen',image='/9j/AA==')
+        self.assertFalse(any(e.get('type') == 'voice_screen_queued' for e in self.events))
+        self.assertEqual(self.service.store.messages(), [])
+        self.assertNotIn(b'/9j/AA==', self.service.store.path.read_bytes())
+
     def test_cancel_discards_late_reply_and_identity(self):
         self.command(type='configure',enabled=True)
         self.command(type='send',text='hello')
@@ -160,6 +226,9 @@ class FakeVoice:
     def __init__(self, emit, transcript):
         self.emit, self.transcript = emit, transcript
         self.stops = []
+        self.shared_images = []
+    def share_image(self, image):
+        self.shared_images.append(image)
     def start(self,*args):
         self.args = args
     def stop(self,reason):
@@ -180,6 +249,16 @@ class VoiceIntegrationTests(unittest.TestCase):
     def tearDown(self):
         self.service.close()
         self.temp.cleanup()
+    def test_explicit_voice_screen_is_queued_without_being_saved(self):
+        self.service.command({'type':'voice_start'})
+        self.assertEqual(self.service.voice.shared_images, [])
+        self.service.command({'type':'voice_share_screen', 'image':'/9j/AA=='})
+        self.assertEqual(self.service.voice.shared_images, ['/9j/AA=='])
+        self.assertTrue(any(event.get('type') == 'voice_screen_queued' for event in self.events))
+        self.assertNotIn(b'/9j/AA==', self.service.store.path.read_bytes())
+        self.service.command({'type':'voice_share_screen', 'image':'invalid'})
+        self.assertEqual(self.service.voice.shared_images, ['/9j/AA=='])
+
     def test_transcript_persisted_before_connection_ends_and_clear_rejects_late_deltas(self):
         self.service.command({'type':'voice_start'})
         voice = self.service.voice
@@ -194,7 +273,8 @@ class VoiceIntegrationTests(unittest.TestCase):
         self.assertIn('cancelled', voice.stops)
     def test_daily_allowance_reserved_and_final_usage_is_cumulative(self):
         self.service.command({'type':'voice_start'})
-        self.assertEqual(self.service.store.usage(),(1,300))
+        self.assertEqual(self.service.store.usage(),(1,900))
+        self.assertEqual(self.service.voice.args[-1], 900)
         self.service.voice.emit({'state':'listening','seconds':10})
         self.service.voice.emit({'state':'listening','seconds':15})
         self.service.voice.emit({'state':'stopped','finalized':True,'seconds':17})
@@ -206,8 +286,15 @@ class VoiceIntegrationTests(unittest.TestCase):
         old.emit({'state':'expired','finalized':False})
         self.service.pump()
         self.assertFalse(self.service.voice_active)
-        self.assertEqual(self.service.store.usage(),(1,300))
+        self.assertEqual(self.service.store.usage(),(1,900))
         self.assertIs(self.service.voice,old)
+
+    def test_remaining_allowance_below_five_minutes_can_be_used(self):
+        self.service.store.charge(voice=840)
+        self.service.command({'type':'voice_start'})
+        self.assertTrue(self.service.voice_active)
+        self.assertEqual(self.service.voice.args[-1], 60)
+        self.assertEqual(self.service.store.usage(), (1, 900))
 
 class ErrorBoundaryTests(unittest.TestCase):
     def test_arbitrary_provider_exception_cannot_echo_key(self):
@@ -227,6 +314,23 @@ class ErrorBoundaryTests(unittest.TestCase):
             service.close()
 
 class ProtocolTests(unittest.TestCase):
+    def test_social_probe_uses_saved_opt_in_without_starting_service(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as temp:
+            env = dict(os.environ, XDG_STATE_HOME=temp, DES_UI_COMPANION_DISABLE_KEYRING='1')
+            def probe():
+                return subprocess.run([sys.executable, str(Path(__file__).with_name('service.py')), '--social-probe'], env=env, capture_output=True, text=True, timeout=5)
+            self.assertEqual(probe().stdout, 'no\n')
+            store = Store(Path(temp)/'des-ui-companion')
+            store.save_settings({'enabled': True, 'social': True})
+            store.close()
+            result = probe()
+            self.assertEqual((result.returncode, result.stdout), (0, 'yes\n'))
+            store = Store(Path(temp)/'des-ui-companion')
+            store.save_settings({'enabled': False})
+            store.close()
+            self.assertEqual(probe().stdout, 'no\n')
+
     def test_worker_persists_user_state_and_never_emits_runtime_key(self):
         import subprocess
         with tempfile.TemporaryDirectory() as temp:

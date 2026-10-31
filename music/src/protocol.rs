@@ -75,10 +75,11 @@ pub enum Request {
     Shuffle(bool),
     /// Play a list (a playlist's address, or `liked`) from a track, or one track alone.
     Play { context: Option<String>, track: Option<String> },
-    Search(String),
+    Search { query: String, offset: u32 },
+    Feature(crate::features::Feature),
     Playlists,
     /// The tracks of the playlist with this id, from the one at `offset` on.
-    Tracks { playlist: String, offset: u32 },
+    Tracks { playlist: String, offset: u32, snapshot: Option<String> },
     /// The liked songs, from the one at `offset` on.
     Liked { offset: u32 },
     /// The albums saved to the library, from the one at `offset` on.
@@ -125,9 +126,9 @@ impl Request {
                 }
                 Request::Play { context, track }
             }
-            "search" => Request::Search(text("q").filter(|q| !q.trim().is_empty())?),
+            "search" => Request::Search { query: text("q").filter(|q| !q.trim().is_empty() && q.len()<=1000)?, offset:offset.min(990) },
             "playlists" => Request::Playlists,
-            "tracks" => Request::Tracks { playlist: text("playlist")?, offset },
+            "tracks" => Request::Tracks { playlist: id("playlist")?, offset, snapshot: match value.get("snapshot") {None|Some(Value::Null)=>None,Some(Value::String(s)) if !s.is_empty() && s.len()<=256=>Some(s.clone()),_=>return None} },
             "liked" => Request::Liked { offset },
             "albums" => Request::Albums { offset },
             "album" => Request::Album(id("album")?),
@@ -138,8 +139,8 @@ impl Request {
             "lyrics" => Request::Lyrics(text("track").filter(|uri| uri.starts_with("spotify:track:"))?),
             "devices" => Request::Devices,
             "transfer" => Request::Transfer(id("device")?),
-            "enqueue" => Request::Enqueue(text("track").filter(|uri| uri.starts_with("spotify:track:"))?),
-            _ => return None,
+            "enqueue" => Request::Enqueue(text("track").filter(|uri| crate::features::content_uri(uri) && (uri.starts_with("spotify:track:") || uri.starts_with("spotify:episode:")))?),
+            _ => Request::Feature(crate::features::Feature::parse(&value)?),
         })
     }
 }
@@ -180,9 +181,9 @@ mod tests {
             Request::parse(r#"{"cmd":"play","context":"spotify:playlist:abc","track":"spotify:track:x"}"#),
             Some(Request::Play { context: Some("spotify:playlist:abc".into()), track: Some("spotify:track:x".into()) })
         );
-        assert_eq!(Request::parse(r#"{"cmd":"search","q":"miles davis"}"#), Some(Request::Search("miles davis".into())));
-        assert_eq!(Request::parse(r#"{"cmd":"tracks","playlist":"abc"}"#), Some(Request::Tracks { playlist: "abc".into(), offset: 0 }));
-        assert_eq!(Request::parse(r#"{"cmd":"tracks","playlist":"abc","offset":200}"#), Some(Request::Tracks { playlist: "abc".into(), offset: 200 }));
+        assert_eq!(Request::parse(r#"{"cmd":"search","q":"miles davis"}"#), Some(Request::Search { query: "miles davis".into(), offset: 0 }));
+        assert_eq!(Request::parse(r#"{"cmd":"tracks","playlist":"abc"}"#), Some(Request::Tracks { playlist: "abc".into(), offset: 0, snapshot: None }));
+        assert_eq!(Request::parse(r#"{"cmd":"tracks","playlist":"abc","offset":200}"#), Some(Request::Tracks { playlist: "abc".into(), offset: 200, snapshot: None }));
         assert_eq!(Request::parse(r#"{"cmd":"liked","offset":50}"#), Some(Request::Liked { offset: 50 }));
         assert_eq!(Request::parse(r#"{"cmd":"albums"}"#), Some(Request::Albums { offset: 0 }));
         assert_eq!(Request::parse(r#"{"cmd":"album","album":"4aawyAB9vmqN3uQ7FjRGTy"}"#), Some(Request::Album("4aawyAB9vmqN3uQ7FjRGTy".into())));

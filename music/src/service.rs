@@ -269,6 +269,7 @@ impl Service {
                     Ok(()) => {
                         *self.liked.lock().unwrap() = (uri, Some(on));
                         self.publish();
+                        let _=self.updates.send(format!("{}\n",json!({"type":"changed"})));
                         None
                     }
                     Err(why) if ["401", "403", "scope"].iter().any(|sign| why.contains(sign)) => Some(protocol::problem_line(NO_LIKING)),
@@ -312,9 +313,18 @@ impl Service {
                 let _ = self.spirc.activate();
                 done(self.spirc.load(load))
             }
-            Request::Search(query) => Some(web::search(&self.session, &query).await),
+            Request::Search {query,offset} => Some(web::search(&self.session, &query, offset).await),
+            Request::Feature(request) => {
+                let library=if let crate::features::Feature::Library{uri,save:Some(save)}=&request{Some((uri.clone(),*save))}else{None};
+                let response=crate::features::handle(&self.session,request).await;
+                let changed=serde_json::from_str::<serde_json::Value>(&response).is_ok_and(|v|v["type"]=="changed");
+                if changed {
+                    if let Some((uri,save))=library {if self.snapshot().track.is_some_and(|track|track.uri==uri){*self.liked.lock().unwrap()=(uri,Some(save));self.publish();}}
+                    let _=self.updates.send(response);None
+                }else{Some(response)}
+            },
             Request::Playlists => Some(web::playlists(&self.session).await),
-            Request::Tracks { playlist, offset } => Some(web::tracks(&self.session, &playlist, offset).await),
+            Request::Tracks { playlist, offset, snapshot } => Some(web::tracks(&self.session, &playlist, offset, snapshot.as_deref()).await),
             Request::Liked { offset } => Some(web::liked(&self.session, offset).await),
             Request::Albums { offset } => Some(web::albums(&self.session, offset).await),
             Request::Album(id) => Some(web::album(&self.session, &id).await),

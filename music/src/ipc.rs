@@ -18,7 +18,8 @@ impl Clients {
         self.0.clone().try_acquire_owned().ok()
     }
 }
-const MAX_REQUEST_BYTES: usize = 16 * 1024;
+// Cover uploads carry up to 256 KiB of base64 plus JSON framing.
+const MAX_REQUEST_BYTES: usize = 272 * 1024;
 const READ_TIMEOUT: Duration = Duration::from_secs(60);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -108,7 +109,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_a_request_before_allocating_an_unbounded_line() {
-        let bytes = vec![b'x'; 16 * 1024 + 1];
+        let bytes = vec![b'x'; MAX_REQUEST_BYTES + 1];
         let mut reader = BufReader::new(bytes.as_slice());
         let error = read_request(&mut reader).await.unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);

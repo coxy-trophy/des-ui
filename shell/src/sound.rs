@@ -364,15 +364,19 @@ impl Sound {
 
     /// The outputs to choose among, compactly, for the quick settings.
     pub fn quick_outputs(&mut self, ui: &mut Ui, theme: &Theme) {
-        let (devices, stale) = {
+        let (devices, stale, tried) = {
             let state = self.shared.lock().unwrap();
-            (state.devices.clone(), state.read_at.is_none_or(|at| at.elapsed() > Duration::from_secs(3)))
+            (state.devices.clone(), state.read_at.is_none_or(|at| at.elapsed() > Duration::from_secs(3)), state.tried)
         };
         if stale {
             self.act(Vec::new());
         }
-        let Some(devices) = devices else { return };
-        if devices.outputs.len() + devices.elsewhere.len() < 2 {
+        let Some(devices) = devices else {
+            ui::text(ui, if tried { "Could not read output devices" } else { "Looking for output devices…" }, ui::display(12.0), ui::SECONDARY);
+            return;
+        };
+        if devices.outputs.is_empty() && devices.elsewhere.is_empty() {
+            ui::text(ui, "No output devices available", ui::display(12.0), ui::SECONDARY);
             return;
         }
         for node in devices.outputs.iter().take(4) {
