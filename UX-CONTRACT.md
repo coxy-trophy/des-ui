@@ -231,5 +231,7 @@ single-line bash or zsh prompt identified by shell integration and a matching
 foreground process. Full-screen programs, commands in progress, and unverified
 prompts retain their normal input. Tab or Enter inserts the chosen suffix without
 running it; Escape dismisses it, and the Terminal settings can turn it off.
-Right-clicking a completed command with retained output offers a local copy action.
-Neither feature sends terminal text to a network service or saves separate history.
+Right-clicking a completed command with retained output offers a local copy action
+and can prepare an explanation draft in Chat. The user reviews and sends that draft;
+opening it never submits terminal output automatically. Neither feature saves a
+separate terminal history.
