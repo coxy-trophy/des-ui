@@ -1598,6 +1598,9 @@ mod tests {
         while tab.blocks.active_input().is_none() { tab.pump(); assert!(Instant::now() < deadline); std::thread::sleep(Duration::from_millis(20)); }
         tab.write(b"git ch");
         loop { tab.pump(); if tab.completion_query().as_deref() == Some("git ch") { break; } assert!(Instant::now() < deadline, "{:?}", tab.parser.screen().contents()); std::thread::sleep(Duration::from_millis(20)); }
+        tab.parser.process(b"\x1b[?1049h");
+        assert!(tab.completion_query().is_none(), "full-screen applications must not show suggestions");
+        tab.parser.process(b"\x1b[?1049l");
         tab.set_completions(false);
         assert!(tab.completion_query().is_none());
         tab.set_completions(true);
