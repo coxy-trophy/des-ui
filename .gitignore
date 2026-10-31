@@ -12,3 +12,38 @@ __pycache__/
 
 # Private installed-machine captures, logs and session metadata
 /docs/validation/2026-10-26-machine/
+
+# Captures of the real desktop: private messages, contacts, accounts, networks
+/docs/validation/2026-10-27-desktop-uat/40-quick-on-shell-current.png
+/docs/validation/2026-10-27-desktop-uat/43-quick-open-confirmed.png
+/docs/validation/2026-10-27-desktop-uat/37-quick-over-shell-view.png
+/docs/validation/2026-10-27-desktop-uat/14-files-open.png
+/docs/validation/2026-10-27-desktop-uat/47-quick-empty-workspace.png
+/docs/validation/2026-10-27-desktop-uat/36-quick-settings-open.png
+/docs/validation/2026-10-27-desktop-uat/38-quick-volume-adjust.png
+/docs/validation/2026-10-27-desktop-uat/48-dnd-toggle.png
+/docs/validation/2026-10-27-desktop-uat/30-music-open.png
+/docs/validation/2026-10-27-desktop-uat/31-music-more-volume.png
+/docs/validation/2026-10-27-desktop-uat/32-music-volume-adjust.png
+/docs/validation/2026-10-27-desktop-uat/34-music-search-no-results.png
+/docs/validation/2026-10-27-desktop-uat/35-music-search-settled.png
+/docs/validation/2026-10-27-desktop-uat/28-apps-expanded.png
+/docs/validation/2026-10-27-desktop-uat/29-apps-clear.png
+/docs/validation/2026-10-27-desktop-uat/33-music-popup-escape.png
+/docs/validation/2026-10-27-desktop-uat/46-restore-output-through-settings.png
+/docs/validation/2026-10-27-desktop-uat/50-quick-owned-client.png
+/docs/validation/2026-10-27-desktop-uat/51-quick-workspace-repro.png
+/docs/validation/2026-10-27-desktop-uat/52-quick-dismiss-owned-client.png
+/docs/validation/2026-10-27-desktop-uat/56-fresh-fixtures.png
+/docs/validation/2026-10-27-desktop-uat/57-split-layout.png
+/docs/validation/2026-10-27-desktop-uat/58-columns-layout.png
+/docs/validation/2026-10-27-desktop-uat/59-master-layout.png
+/docs/validation/2026-10-27-desktop-uat/61-fullscreen-recovery.png
+/docs/validation/2026-10-27-desktop-uat/62-overview.png
+/docs/validation/2026-10-27-desktop-uat/actions.jsonl
+/docs/validation/2026-10-27-desktop-uat/baseline.json
+/docs/validation/2026-10-27-desktop-uat/continuation-baseline.json
+/docs/validation/2026-10-27-desktop-uat/final-state.json
+/docs/validation/2026-10-27-desktop-uat/__pycache__/desktop_qa.cpython-314.pyc
+/docs/validation/2026-10-27-desktop-uat/continuation-final-state.json
+/docs/validation/2026-10-27-desktop-uat/restart-baseline.json

@@ -1,0 +1,224 @@
+[
+  {
+    "id": "SET-01",
+    "status": "pass",
+    "result": "Health page opens and reports compositor/music connected",
+    "evidence": "01-settings-health.png"
+  },
+  {
+    "id": "SET-02",
+    "status": "pass",
+    "result": "Settings search volume opens Sound & screen",
+    "evidence": "02-settings-search-volume.png"
+  },
+  {
+    "id": "SET-03",
+    "status": "pass",
+    "result": "Unmatched settings query gives recovery guidance",
+    "evidence": "10-settings-no-results-focused.png"
+  },
+  {
+    "id": "SET-04",
+    "status": "pass",
+    "result": "Mouse output volume changed to 71%, verified with wpctl, then restored to 100%",
+    "evidence": "04-volume-click.png"
+  },
+  {
+    "id": "SET-05",
+    "status": "finding",
+    "result": "Clicked volume slider does not respond to End/Right",
+    "evidence": "07-volume-keyboard-immediate.png"
+  },
+  {
+    "id": "NAV-01",
+    "status": "pass",
+    "result": "Super+Space opens application launcher",
+    "evidence": "11-launcher-open.png"
+  },
+  {
+    "id": "NAV-02",
+    "status": "pass",
+    "result": "Unmatched launcher query gives empty state",
+    "evidence": "12-launcher-no-results.png"
+  },
+  {
+    "id": "NAV-03",
+    "status": "pass",
+    "result": "Files search result opens with Enter",
+    "evidence": "14-files-open.png"
+  },
+  {
+    "id": "FILES-01",
+    "status": "pass",
+    "result": "Typed absolute directory path navigates on Enter",
+    "evidence": "15-files-test-folder.png"
+  },
+  {
+    "id": "FILES-02",
+    "status": "pass",
+    "result": "Hidden files toggle exposes synthetic hidden file",
+    "evidence": "20-files-hidden-toggle.png"
+  },
+  {
+    "id": "FILES-03",
+    "status": "pass",
+    "result": "New folder created through dialog",
+    "evidence": "18-new-folder-created.png"
+  },
+  {
+    "id": "FILES-04",
+    "status": "pass",
+    "result": "Invalid path-like name rejected; draft/error retained and outside path absent",
+    "evidence": "19-new-folder-invalid-submit.png"
+  },
+  {
+    "id": "FILES-05",
+    "status": "pass",
+    "result": "Ctrl+C sets Files internal clipboard",
+    "evidence": "21-files-keyboard-copy-paste.png"
+  },
+  {
+    "id": "FILES-06",
+    "status": "finding",
+    "result": "Ctrl+V does not paste despite clipboard and enabled Paste button",
+    "evidence": "22-files-paste-shortcut-retry.png"
+  },
+  {
+    "id": "FILES-07",
+    "status": "pass",
+    "result": "Paste button copies exact fixture bytes",
+    "evidence": "23-files-paste-button.png"
+  },
+  {
+    "id": "FILES-08",
+    "status": "pass",
+    "result": "Existing destination refused without overwrite",
+    "evidence": "24-files-copy-conflict.png"
+  },
+  {
+    "id": "FILES-09",
+    "status": "pass",
+    "result": "F2 rename opens and Enter commits filename",
+    "evidence": "26-files-rename-enter.png"
+  },
+  {
+    "id": "FILES-10",
+    "status": "finding",
+    "result": "Path/search/name fields undersized relative to buttons",
+    "evidence": "16-new-folder-dialog.png"
+  },
+  {
+    "id": "APPS-01",
+    "status": "pass",
+    "result": "App search filters group correctly",
+    "evidence": "27-apps-search.png"
+  },
+  {
+    "id": "APPS-02",
+    "status": "pass",
+    "result": "Group expands into readable left-aligned window rows",
+    "evidence": "28-apps-expanded.png"
+  },
+  {
+    "id": "APPS-03",
+    "status": "pass",
+    "result": "Search clear restores app groups",
+    "evidence": "29-apps-clear.png"
+  },
+  {
+    "id": "APPS-04",
+    "status": "finding",
+    "result": "Status claims Files has keyboard while Apps search owns input",
+    "evidence": "27-apps-search.png"
+  },
+  {
+    "id": "MUSIC-01",
+    "status": "pass",
+    "result": "Player opens on existing paused track and lyrics",
+    "evidence": "30-music-open.png"
+  },
+  {
+    "id": "MUSIC-02",
+    "status": "finding",
+    "result": "More-menu volume extends below work area and click does not change level",
+    "evidence": "32-music-volume-adjust.png"
+  },
+  {
+    "id": "MUSIC-03",
+    "status": "finding",
+    "result": "Escape with More open closes whole player",
+    "evidence": "33-music-popup-escape.png"
+  },
+  {
+    "id": "MUSIC-04",
+    "status": "finding",
+    "result": "Search Clear label wraps across two lines",
+    "evidence": "34-music-search-no-results.png"
+  },
+  {
+    "id": "MUSIC-05",
+    "status": "inconclusive",
+    "result": "Gibberish query returned unrelated results; needs upstream/cache comparison",
+    "evidence": "35-music-search-settled.png"
+  },
+  {
+    "id": "HEALTH-01",
+    "status": "finding",
+    "result": "Recent logs display raw ANSI sequences",
+    "evidence": "01-settings-health.png"
+  },
+  {
+    "id": "QUICK-01",
+    "status": "finding",
+    "result": "Quick Settings is partly hidden behind native windows; user independently confirmed live overlap.",
+    "evidence": "51-quick-workspace-repro.png"
+  },
+  {
+    "id": "QUICK-02",
+    "status": "inconclusive",
+    "result": "DND toggle and notification suppression could not be verified reliably because of popup overlap.",
+    "evidence": "47-quick-empty-workspace.png"
+  },
+  {
+    "id": "NATIVE-01",
+    "status": "pass",
+    "result": "X11 entry typing and in-window copy/paste of synthetic text succeeded.",
+    "evidence": "54-x11-input-clipboard.png"
+  },
+  {
+    "id": "NATIVE-02",
+    "status": "pass",
+    "result": "Synthetic text copied from X11 entry pasted into Wayland entry.",
+    "evidence": "55-x11-to-wayland-clipboard.png"
+  },
+  {
+    "id": "LAYOUT-01",
+    "status": "pass",
+    "result": "Single mode shows focused owned window; second window hidden.",
+    "evidence": "56-fresh-fixtures.png"
+  },
+  {
+    "id": "LAYOUT-02",
+    "status": "pass",
+    "result": "Split button displays both owned windows at equal widths.",
+    "evidence": "57-split-layout.png"
+  },
+  {
+    "id": "LAYOUT-03",
+    "status": "pass",
+    "result": "Columns button displays two owned windows in columns.",
+    "evidence": "58-columns-layout.png"
+  },
+  {
+    "id": "LAYOUT-04",
+    "status": "pass",
+    "result": "Master button gives focused window larger share of workspace.",
+    "evidence": "59-master-layout.png"
+  },
+  {
+    "id": "LAYOUT-05",
+    "status": "pass",
+    "result": "Fullscreen removes shell panels and Super+F restores them while keeping both windows.",
+    "evidence": "61-fullscreen-recovery.png"
+  }
+]

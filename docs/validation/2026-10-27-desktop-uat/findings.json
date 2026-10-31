@@ -1,0 +1,110 @@
+[
+  {
+    "id": "F-01",
+    "severity": "P2",
+    "title": "Volume slider ignores keys after mouse focus",
+    "steps": "Sound & screen \u2192 click volume around 71% \u2192 press End, then repeat with Right.",
+    "actual": "The value and PipeWire level stayed at 71%. Mouse movement restored it to 100%.",
+    "expected": "Keyboard adjustment should work after the intended slider is focused. Tab-focused behavior needs a separate test.",
+    "evidence": [
+      "07-volume-keyboard-immediate.png",
+      "08-volume-arrow.png"
+    ]
+  },
+  {
+    "id": "F-02",
+    "severity": "P2",
+    "title": "Files fields have inconsistent, undersized geometry",
+    "steps": "Open Files; compare path/search fields and New folder/Rename name fields with nearby buttons.",
+    "actual": "Fields are visibly about 18\u201322px tall while buttons are about 30px.",
+    "expected": "Use comfortable shared control geometry; text-area exceptions should be intentional.",
+    "evidence": [
+      "15-files-test-folder.png",
+      "16-new-folder-dialog.png",
+      "25-files-rename-dialog.png"
+    ]
+  },
+  {
+    "id": "F-03",
+    "severity": "P2",
+    "title": "Files Ctrl+V fails while Paste button succeeds",
+    "steps": "Select disposable alpha.txt \u2192 Ctrl+C \u2192 navigate to another disposable directory \u2192 Ctrl+V. Retry Ctrl+V, then click Paste.",
+    "actual": "Internal clipboard status and Paste button become available; Ctrl+V leaves destination empty. Paste button creates an exact byte-for-byte copy.",
+    "expected": "Keyboard Paste should invoke the same operation as the button.",
+    "evidence": [
+      "21-files-keyboard-copy-paste.png",
+      "22-files-paste-shortcut-retry.png",
+      "23-files-paste-button.png"
+    ]
+  },
+  {
+    "id": "F-04",
+    "severity": "P3",
+    "title": "Keyboard-owner status is misleading",
+    "steps": "Leave Files open, click Apps search, type brave.",
+    "actual": "App list filters and the Files surface dims, but footer still says FILES HAS THE KEYBOARD.",
+    "expected": "Footer should identify the actual input owner or omit a misleading claim.",
+    "evidence": [
+      "27-apps-search.png"
+    ]
+  },
+  {
+    "id": "F-05",
+    "severity": "P2",
+    "title": "Installed Music volume popup spills below workspace",
+    "steps": "Open Music \u2192 More \u2192 click the volume slider near the bottom edge.",
+    "actual": "Slider appears below the main rounded workspace and clicking it did not change the service volume (100%).",
+    "expected": "Keep popup controls inside an interactive area. The new visible volume component exists in source but is not installed: retest after activation before another fix.",
+    "evidence": [
+      "31-music-more-volume.png",
+      "32-music-volume-adjust.png"
+    ]
+  },
+  {
+    "id": "F-06",
+    "severity": "P2",
+    "title": "Escape closes Music instead of only its popup",
+    "steps": "Open Music \u2192 More \u2192 press Escape once.",
+    "actual": "Entire player closes and the terminal is revealed. No subsequent keys were sent to that terminal.",
+    "expected": "Dismiss the active popup first; another Escape may close the player.",
+    "evidence": [
+      "31-music-more-volume.png",
+      "33-music-popup-escape.png"
+    ]
+  },
+  {
+    "id": "F-07",
+    "severity": "P3",
+    "title": "Music Clear button wraps its label",
+    "steps": "Type a non-empty search in the Music rail.",
+    "actual": "Clear displays as Cle / ar on two lines and increases the search row height.",
+    "expected": "Provide a usable consistent clear target without label wrapping.",
+    "evidence": [
+      "34-music-search-no-results.png",
+      "35-music-search-settled.png"
+    ]
+  },
+  {
+    "id": "F-08",
+    "severity": "P3",
+    "title": "Health logs expose raw ANSI formatting",
+    "steps": "Settings \u2192 System health \u2192 Recent logs.",
+    "actual": "ANSI escape fragments appear as visible text in log lines.",
+    "expected": "Strip or render terminal formatting in the diagnostic display.",
+    "evidence": [
+      "01-settings-health.png"
+    ]
+  },
+  {
+    "id": "F-09",
+    "severity": "P2",
+    "title": "Quick Settings is obscured by native windows",
+    "steps": "Open Quick Settings while a native window occupies the workspace.",
+    "actual": "Native client covers part of popup. User confirmed: Partly hidden behind the window.",
+    "expected": "Quick Settings should appear above native windows and remain usable.",
+    "evidence": [
+      "50-quick-owned-client.png",
+      "51-quick-workspace-repro.png"
+    ]
+  }
+]

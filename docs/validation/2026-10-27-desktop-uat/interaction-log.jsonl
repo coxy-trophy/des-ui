@@ -1,0 +1,393 @@
+{"time": 1793111244.6430814, "action": "shot", "args": ["01-settings-health"], "kwargs": {}}
+{"time": 1793111299.0702372, "action": "click", "args": [230, 134], "kwargs": {}}
+{"time": 1793111299.0707088, "action": "move", "args": [230, 134], "kwargs": {}}
+{"time": 1793111299.611663, "action": "text", "args": ["volume"], "kwargs": {}}
+{"time": 1793111299.6120331, "action": "key", "args": ["V"], "kwargs": {"delay": 0.025}}
+{"time": 1793111299.6730971, "action": "key", "args": ["O"], "kwargs": {"delay": 0.025}}
+{"time": 1793111299.734139, "action": "key", "args": ["L"], "kwargs": {"delay": 0.025}}
+{"time": 1793111299.7949028, "action": "key", "args": ["U"], "kwargs": {"delay": 0.025}}
+{"time": 1793111299.8557422, "action": "key", "args": ["M"], "kwargs": {"delay": 0.025}}
+{"time": 1793111299.916852, "action": "key", "args": ["E"], "kwargs": {"delay": 0.025}}
+{"time": 1793111299.978385, "action": "shot", "args": ["02-settings-search-volume"], "kwargs": {}}
+{"time": 1793111364.3593185, "action": "click", "args": [805, 214], "kwargs": {}}
+{"time": 1793111364.359428, "action": "move", "args": [805, 214], "kwargs": {}}
+{"time": 1793111364.9000404, "action": "shot", "args": ["03-sound-settings"], "kwargs": {}}
+{"time": 1793111385.4794538, "action": "click", "args": [647, 357], "kwargs": {}}
+{"time": 1793111385.4796333, "action": "move", "args": [647, 357], "kwargs": {}}
+{"time": 1793111386.0207622, "action": "shot", "args": ["04-volume-click"], "kwargs": {}}
+{"time": 1793111411.2382264, "action": "shot", "args": ["05-volume-settled"], "kwargs": {}}
+{"time": 1793111411.791443, "action": "key", "args": ["END"], "kwargs": {}}
+{"time": 1793111412.0476234, "action": "shot", "args": ["06-volume-keyboard-restore"], "kwargs": {}}
+{"time": 1793111431.5509064, "action": "click", "args": [647, 357], "kwargs": {}}
+{"time": 1793111431.5509944, "action": "move", "args": [647, 357], "kwargs": {}}
+{"time": 1793111432.091847, "action": "key", "args": ["END"], "kwargs": {}}
+{"time": 1793111432.3486319, "action": "shot", "args": ["07-volume-keyboard-immediate"], "kwargs": {}}
+{"time": 1793111463.3104131, "action": "click", "args": [647, 357], "kwargs": {}}
+{"time": 1793111463.3105013, "action": "move", "args": [647, 357], "kwargs": {}}
+{"time": 1793111463.8513474, "action": "key", "args": ["RIGHT"], "kwargs": {}}
+{"time": 1793111464.1074276, "action": "shot", "args": ["08-volume-arrow"], "kwargs": {}}
+{"time": 1793111464.7279098, "action": "click", "args": [731, 357], "kwargs": {}}
+{"time": 1793111464.728035, "action": "move", "args": [731, 357], "kwargs": {}}
+{"time": 1793111465.4270046, "action": "click", "args": [1536, 133], "kwargs": {}}
+{"time": 1793111465.4270926, "action": "move", "args": [1536, 133], "kwargs": {}}
+{"time": 1793111465.9694955, "action": "text", "args": ["zzzzdesui"], "kwargs": {}}
+{"time": 1793111465.9696805, "action": "key", "args": ["Z"], "kwargs": {"delay": 0.025}}
+{"time": 1793111466.0303202, "action": "key", "args": ["Z"], "kwargs": {"delay": 0.025}}
+{"time": 1793111466.091067, "action": "key", "args": ["Z"], "kwargs": {"delay": 0.025}}
+{"time": 1793111466.1517088, "action": "key", "args": ["Z"], "kwargs": {"delay": 0.025}}
+{"time": 1793111466.212609, "action": "key", "args": ["D"], "kwargs": {"delay": 0.025}}
+{"time": 1793111466.273711, "action": "key", "args": ["E"], "kwargs": {"delay": 0.025}}
+{"time": 1793111466.3343863, "action": "key", "args": ["S"], "kwargs": {"delay": 0.025}}
+{"time": 1793111466.3953083, "action": "key", "args": ["U"], "kwargs": {"delay": 0.025}}
+{"time": 1793111466.4567928, "action": "key", "args": ["I"], "kwargs": {"delay": 0.025}}
+{"time": 1793111466.5186298, "action": "shot", "args": ["09-settings-no-results"], "kwargs": {}}
+{"time": 1793111492.3004737, "action": "click", "args": [232, 133], "kwargs": {}}
+{"time": 1793111492.3005676, "action": "move", "args": [232, 133], "kwargs": {}}
+{"time": 1793111492.8414774, "action": "key", "args": ["LEFTCTRL", "A"], "kwargs": {}}
+{"time": 1793111493.0979595, "action": "text", "args": ["zzzzdesui"], "kwargs": {}}
+{"time": 1793111493.0982876, "action": "key", "args": ["Z"], "kwargs": {"delay": 0.025}}
+{"time": 1793111493.159347, "action": "key", "args": ["Z"], "kwargs": {"delay": 0.025}}
+{"time": 1793111493.220397, "action": "key", "args": ["Z"], "kwargs": {"delay": 0.025}}
+{"time": 1793111493.2814932, "action": "key", "args": ["Z"], "kwargs": {"delay": 0.025}}
+{"time": 1793111493.3425572, "action": "key", "args": ["D"], "kwargs": {"delay": 0.025}}
+{"time": 1793111493.4036465, "action": "key", "args": ["E"], "kwargs": {"delay": 0.025}}
+{"time": 1793111493.4645715, "action": "key", "args": ["S"], "kwargs": {"delay": 0.025}}
+{"time": 1793111493.5252569, "action": "key", "args": ["U"], "kwargs": {"delay": 0.025}}
+{"time": 1793111493.5861976, "action": "key", "args": ["I"], "kwargs": {"delay": 0.025}}
+{"time": 1793111493.6473427, "action": "shot", "args": ["10-settings-no-results-focused"], "kwargs": {}}
+{"time": 1793111517.0460055, "action": "key", "args": ["LEFTCTRL", "A"], "kwargs": {}}
+{"time": 1793111517.3016338, "action": "key", "args": ["BACKSPACE"], "kwargs": {}}
+{"time": 1793111517.5575345, "action": "key", "args": ["ESC"], "kwargs": {}}
+{"time": 1793111517.8136277, "action": "key", "args": ["LEFTMETA", "SPACE"], "kwargs": {}}
+{"time": 1793111518.0695958, "action": "shot", "args": ["11-launcher-open"], "kwargs": {}}
+{"time": 1793111537.5350957, "action": "text", "args": ["zzzzdesui"], "kwargs": {}}
+{"time": 1793111537.5351918, "action": "key", "args": ["Z"], "kwargs": {"delay": 0.025}}
+{"time": 1793111537.595737, "action": "key", "args": ["Z"], "kwargs": {"delay": 0.025}}
+{"time": 1793111537.6562202, "action": "key", "args": ["Z"], "kwargs": {"delay": 0.025}}
+{"time": 1793111537.716707, "action": "key", "args": ["Z"], "kwargs": {"delay": 0.025}}
+{"time": 1793111537.7778506, "action": "key", "args": ["D"], "kwargs": {"delay": 0.025}}
+{"time": 1793111537.8383884, "action": "key", "args": ["E"], "kwargs": {"delay": 0.025}}
+{"time": 1793111537.898879, "action": "key", "args": ["S"], "kwargs": {"delay": 0.025}}
+{"time": 1793111537.9594777, "action": "key", "args": ["U"], "kwargs": {"delay": 0.025}}
+{"time": 1793111538.0203621, "action": "key", "args": ["I"], "kwargs": {"delay": 0.025}}
+{"time": 1793111538.0812163, "action": "shot", "args": ["12-launcher-no-results"], "kwargs": {}}
+{"time": 1793111538.6295438, "action": "key", "args": ["LEFTCTRL", "A"], "kwargs": {}}
+{"time": 1793111538.8853378, "action": "text", "args": ["files"], "kwargs": {}}
+{"time": 1793111538.885512, "action": "key", "args": ["F"], "kwargs": {"delay": 0.025}}
+{"time": 1793111538.94607, "action": "key", "args": ["I"], "kwargs": {"delay": 0.025}}
+{"time": 1793111539.0068955, "action": "key", "args": ["L"], "kwargs": {"delay": 0.025}}
+{"time": 1793111539.0675073, "action": "key", "args": ["E"], "kwargs": {"delay": 0.025}}
+{"time": 1793111539.128588, "action": "key", "args": ["S"], "kwargs": {"delay": 0.025}}
+{"time": 1793111539.1896367, "action": "shot", "args": ["13-launcher-files"], "kwargs": {}}
+{"time": 1793111566.0016778, "action": "key", "args": ["ENTER"], "kwargs": {}}
+{"time": 1793111566.2576346, "action": "shot", "args": ["14-files-open"], "kwargs": {}}
+{"time": 1793111598.217941, "action": "click", "args": [445, 248], "kwargs": {}}
+{"time": 1793111598.218028, "action": "move", "args": [445, 248], "kwargs": {}}
+{"time": 1793111598.758746, "action": "key", "args": ["LEFTCTRL", "A"], "kwargs": {}}
+{"time": 1793111599.0146194, "action": "text", "args": ["/tmp/desui-user-test-20261027"], "kwargs": {}}
+{"time": 1793111599.0149186, "action": "key", "args": ["SLASH"], "kwargs": {"delay": 0.025}}
+{"time": 1793111599.0757403, "action": "key", "args": ["T"], "kwargs": {"delay": 0.025}}
+{"time": 1793111599.136748, "action": "key", "args": ["M"], "kwargs": {"delay": 0.025}}
+{"time": 1793111599.197329, "action": "key", "args": ["P"], "kwargs": {"delay": 0.025}}
+{"time": 1793111599.2579482, "action": "key", "args": ["SLASH"], "kwargs": {"delay": 0.025}}
+{"time": 1793111599.3186922, "action": "key", "args": ["D"], "kwargs": {"delay": 0.025}}
+{"time": 1793111599.3796818, "action": "key", "args": ["E"], "kwargs": {"delay": 0.025}}
+{"time": 1793111599.4406674, "action": "key", "args": ["S"], "kwargs": {"delay": 0.025}}
+{"time": 1793111599.5021758, "action": "key", "args": ["U"], "kwargs": {"delay": 0.025}}
+{"time": 1793111599.5637202, "action": "key", "args": ["I"], "kwargs": {"delay": 0.025}}
+{"time": 1793111599.6249006, "action": "key", "args": ["MINUS"], "kwargs": {"delay": 0.025}}
+{"time": 1793111599.6862888, "action": "key", "args": ["U"], "kwargs": {"delay": 0.025}}
+{"time": 1793111599.7471676, "action": "key", "args": ["S"], "kwargs": {"delay": 0.025}}
+{"time": 1793111599.8077776, "action": "key", "args": ["E"], "kwargs": {"delay": 0.025}}
+{"time": 1793111599.868779, "action": "key", "args": ["R"], "kwargs": {"delay": 0.025}}
+{"time": 1793111599.9299664, "action": "key", "args": ["MINUS"], "kwargs": {"delay": 0.025}}
+{"time": 1793111599.991121, "action": "key", "args": ["T"], "kwargs": {"delay": 0.025}}
+{"time": 1793111600.0521739, "action": "key", "args": ["E"], "kwargs": {"delay": 0.025}}
+{"time": 1793111600.1133301, "action": "key", "args": ["S"], "kwargs": {"delay": 0.025}}
+{"time": 1793111600.1750376, "action": "key", "args": ["T"], "kwargs": {"delay": 0.025}}
+{"time": 1793111600.2360811, "action": "key", "args": ["MINUS"], "kwargs": {"delay": 0.025}}
+{"time": 1793111600.2972796, "action": "key", "args": ["2"], "kwargs": {"delay": 0.025}}
+{"time": 1793111600.3594553, "action": "key", "args": ["0"], "kwargs": {"delay": 0.025}}
+{"time": 1793111600.4205146, "action": "key", "args": ["2"], "kwargs": {"delay": 0.025}}
+{"time": 1793111600.4816663, "action": "key", "args": ["6"], "kwargs": {"delay": 0.025}}
+{"time": 1793111600.5427215, "action": "key", "args": ["1"], "kwargs": {"delay": 0.025}}
+{"time": 1793111600.6034203, "action": "key", "args": ["0"], "kwargs": {"delay": 0.025}}
+{"time": 1793111600.663988, "action": "key", "args": ["2"], "kwargs": {"delay": 0.025}}
+{"time": 1793111600.7245314, "action": "key", "args": ["7"], "kwargs": {"delay": 0.025}}
+{"time": 1793111600.7855277, "action": "key", "args": ["ENTER"], "kwargs": {}}
+{"time": 1793111601.041872, "action": "shot", "args": ["15-files-test-folder"], "kwargs": {}}
+{"time": 1793111622.1328948, "action": "click", "args": [130, 357], "kwargs": {}}
+{"time": 1793111622.133004, "action": "move", "args": [130, 357], "kwargs": {}}
+{"time": 1793111622.673832, "action": "shot", "args": ["16-new-folder-dialog"], "kwargs": {}}
+{"time": 1793111653.6715853, "action": "text", "args": ["../bad"], "kwargs": {}}
+{"time": 1793111653.6716735, "action": "key", "args": ["DOT"], "kwargs": {"delay": 0.025}}
+{"time": 1793111653.7327383, "action": "key", "args": ["DOT"], "kwargs": {"delay": 0.025}}
+{"time": 1793111653.7938445, "action": "key", "args": ["SLASH"], "kwargs": {"delay": 0.025}}
+{"time": 1793111653.8549204, "action": "key", "args": ["B"], "kwargs": {"delay": 0.025}}
+{"time": 1793111653.9163709, "action": "key", "args": ["A"], "kwargs": {"delay": 0.025}}
+{"time": 1793111653.9772272, "action": "key", "args": ["D"], "kwargs": {"delay": 0.025}}
+{"time": 1793111654.0382135, "action": "shot", "args": ["17-new-folder-invalid"], "kwargs": {}}
+{"time": 1793111654.5250256, "action": "key", "args": ["LEFTCTRL", "A"], "kwargs": {}}
+{"time": 1793111654.7814507, "action": "text", "args": ["created-by-ui"], "kwargs": {}}
+{"time": 1793111654.781905, "action": "key", "args": ["C"], "kwargs": {"delay": 0.025}}
+{"time": 1793111654.8447542, "action": "key", "args": ["R"], "kwargs": {"delay": 0.025}}
+{"time": 1793111654.9084258, "action": "key", "args": ["E"], "kwargs": {"delay": 0.025}}
+{"time": 1793111654.969183, "action": "key", "args": ["A"], "kwargs": {"delay": 0.025}}
+{"time": 1793111655.0299265, "action": "key", "args": ["T"], "kwargs": {"delay": 0.025}}
+{"time": 1793111655.0906084, "action": "key", "args": ["E"], "kwargs": {"delay": 0.025}}
+{"time": 1793111655.151451, "action": "key", "args": ["D"], "kwargs": {"delay": 0.025}}
+{"time": 1793111655.2122896, "action": "key", "args": ["MINUS"], "kwargs": {"delay": 0.025}}
+{"time": 1793111655.2734163, "action": "key", "args": ["B"], "kwargs": {"delay": 0.025}}
+{"time": 1793111655.3344305, "action": "key", "args": ["Y"], "kwargs": {"delay": 0.025}}
+{"time": 1793111655.3950536, "action": "key", "args": ["MINUS"], "kwargs": {"delay": 0.025}}
+{"time": 1793111655.456213, "action": "key", "args": ["U"], "kwargs": {"delay": 0.025}}
+{"time": 1793111655.517232, "action": "key", "args": ["I"], "kwargs": {"delay": 0.025}}
+{"time": 1793111655.5785978, "action": "click", "args": [790, 580], "kwargs": {}}
+{"time": 1793111655.5790226, "action": "move", "args": [790, 580], "kwargs": {}}
+{"time": 1793111656.1202495, "action": "shot", "args": ["18-new-folder-created"], "kwargs": {}}
+{"time": 1793111692.1492627, "action": "click", "args": [130, 357], "kwargs": {}}
+{"time": 1793111692.1493893, "action": "move", "args": [130, 357], "kwargs": {}}
+{"time": 1793111692.690191, "action": "text", "args": ["../desui-escape-probe-20261027"], "kwargs": {}}
+{"time": 1793111692.6904988, "action": "key", "args": ["DOT"], "kwargs": {"delay": 0.025}}
+{"time": 1793111692.7512662, "action": "key", "args": ["DOT"], "kwargs": {"delay": 0.025}}
+{"time": 1793111692.8118336, "action": "key", "args": ["SLASH"], "kwargs": {"delay": 0.025}}
+{"time": 1793111692.8727403, "action": "key", "args": ["D"], "kwargs": {"delay": 0.025}}
+{"time": 1793111692.9337213, "action": "key", "args": ["E"], "kwargs": {"delay": 0.025}}
+{"time": 1793111692.9949188, "action": "key", "args": ["S"], "kwargs": {"delay": 0.025}}
+{"time": 1793111693.0563152, "action": "key", "args": ["U"], "kwargs": {"delay": 0.025}}
+{"time": 1793111693.1170747, "action": "key", "args": ["I"], "kwargs": {"delay": 0.025}}
+{"time": 1793111693.1779907, "action": "key", "args": ["MINUS"], "kwargs": {"delay": 0.025}}
+{"time": 1793111693.238902, "action": "key", "args": ["E"], "kwargs": {"delay": 0.025}}
+{"time": 1793111693.3005736, "action": "key", "args": ["S"], "kwargs": {"delay": 0.025}}
+{"time": 1793111693.361456, "action": "key", "args": ["C"], "kwargs": {"delay": 0.025}}
+{"time": 1793111693.422059, "action": "key", "args": ["A"], "kwargs": {"delay": 0.025}}
+{"time": 1793111693.483462, "action": "key", "args": ["P"], "kwargs": {"delay": 0.025}}
+{"time": 1793111693.5444834, "action": "key", "args": ["E"], "kwargs": {"delay": 0.025}}
+{"time": 1793111693.6057274, "action": "key", "args": ["MINUS"], "kwargs": {"delay": 0.025}}
+{"time": 1793111693.6668773, "action": "key", "args": ["P"], "kwargs": {"delay": 0.025}}
+{"time": 1793111693.727967, "action": "key", "args": ["R"], "kwargs": {"delay": 0.025}}
+{"time": 1793111693.7889874, "action": "key", "args": ["O"], "kwargs": {"delay": 0.025}}
+{"time": 1793111693.8499868, "action": "key", "args": ["B"], "kwargs": {"delay": 0.025}}
+{"time": 1793111693.9114416, "action": "key", "args": ["E"], "kwargs": {"delay": 0.025}}
+{"time": 1793111693.9724839, "action": "key", "args": ["MINUS"], "kwargs": {"delay": 0.025}}
+{"time": 1793111694.0332596, "action": "key", "args": ["2"], "kwargs": {"delay": 0.025}}
+{"time": 1793111694.0942838, "action": "key", "args": ["0"], "kwargs": {"delay": 0.025}}
+{"time": 1793111694.1551387, "action": "key", "args": ["2"], "kwargs": {"delay": 0.025}}
+{"time": 1793111694.2159123, "action": "key", "args": ["6"], "kwargs": {"delay": 0.025}}
+{"time": 1793111694.2773426, "action": "key", "args": ["1"], "kwargs": {"delay": 0.025}}
+{"time": 1793111694.338202, "action": "key", "args": ["0"], "kwargs": {"delay": 0.025}}
+{"time": 1793111694.3995314, "action": "key", "args": ["2"], "kwargs": {"delay": 0.025}}
+{"time": 1793111694.4616637, "action": "key", "args": ["7"], "kwargs": {"delay": 0.025}}
+{"time": 1793111694.5222661, "action": "click", "args": [790, 580], "kwargs": {}}
+{"time": 1793111694.522368, "action": "move", "args": [790, 580], "kwargs": {}}
+{"time": 1793111695.0633624, "action": "shot", "args": ["19-new-folder-invalid-submit"], "kwargs": {}}
+{"time": 1793111717.216275, "action": "key", "args": ["ESC"], "kwargs": {}}
+{"time": 1793111717.4720142, "action": "click", "args": [311, 170], "kwargs": {}}
+{"time": 1793111717.4721558, "action": "move", "args": [311, 170], "kwargs": {}}
+{"time": 1793111718.0129352, "action": "click", "args": [90, 319], "kwargs": {}}
+{"time": 1793111718.0130405, "action": "move", "args": [90, 319], "kwargs": {}}
+{"time": 1793111718.554184, "action": "shot", "args": ["20-files-hidden-toggle"], "kwargs": {}}
+{"time": 1793111768.9053574, "action": "click", "args": [738, 547], "kwargs": {}}
+{"time": 1793111768.905455, "action": "move", "args": [738, 547], "kwargs": {}}
+{"time": 1793111769.4466522, "action": "key", "args": ["LEFTCTRL", "C"], "kwargs": {}}
+{"time": 1793111769.702754, "action": "click", "args": [739, 471], "kwargs": {}}
+{"time": 1793111769.7030632, "action": "move", "args": [739, 471], "kwargs": {}}
+{"time": 1793111770.2438407, "action": "key", "args": ["ENTER"], "kwargs": {}}
+{"time": 1793111770.4996462, "action": "key", "args": ["LEFTCTRL", "V"], "kwargs": {}}
+{"time": 1793111770.755713, "action": "shot", "args": ["21-files-keyboard-copy-paste"], "kwargs": {}}
+{"time": 1793111799.0582514, "action": "key", "args": ["LEFTCTRL", "V"], "kwargs": {}}
+{"time": 1793111799.314434, "action": "shot", "args": ["22-files-paste-shortcut-retry"], "kwargs": {}}
+{"time": 1793111799.8182423, "action": "click", "args": [208, 357], "kwargs": {}}
+{"time": 1793111799.8184407, "action": "move", "args": [208, 357], "kwargs": {}}
+{"time": 1793111800.3598776, "action": "shot", "args": ["23-files-paste-button"], "kwargs": {}}
+{"time": 1793111856.3647408, "action": "click", "args": [208, 357], "kwargs": {}}
+{"time": 1793111856.3648705, "action": "move", "args": [208, 357], "kwargs": {}}
+{"time": 1793111856.9056494, "action": "shot", "args": ["24-files-copy-conflict"], "kwargs": {}}
+{"time": 1793111893.8952093, "action": "click", "args": [790, 482], "kwargs": {}}
+{"time": 1793111893.8953123, "action": "move", "args": [790, 482], "kwargs": {}}
+{"time": 1793111894.4360743, "action": "key", "args": ["F2"], "kwargs": {}}
+{"time": 1793111894.6919687, "action": "shot", "args": ["25-files-rename-dialog"], "kwargs": {}}
+{"time": 1793111916.498185, "action": "key", "args": ["LEFTCTRL", "A"], "kwargs": {}}
+{"time": 1793111916.7538006, "action": "text", "args": ["renamed.txt"], "kwargs": {}}
+{"time": 1793111916.7539065, "action": "key", "args": ["R"], "kwargs": {"delay": 0.025}}
+{"time": 1793111916.814517, "action": "key", "args": ["E"], "kwargs": {"delay": 0.025}}
+{"time": 1793111916.8754327, "action": "key", "args": ["N"], "kwargs": {"delay": 0.025}}
+{"time": 1793111916.936304, "action": "key", "args": ["A"], "kwargs": {"delay": 0.025}}
+{"time": 1793111916.9973037, "action": "key", "args": ["M"], "kwargs": {"delay": 0.025}}
+{"time": 1793111917.0584462, "action": "key", "args": ["E"], "kwargs": {"delay": 0.025}}
+{"time": 1793111917.119474, "action": "key", "args": ["D"], "kwargs": {"delay": 0.025}}
+{"time": 1793111917.1804984, "action": "key", "args": ["DOT"], "kwargs": {"delay": 0.025}}
+{"time": 1793111917.24162, "action": "key", "args": ["T"], "kwargs": {"delay": 0.025}}
+{"time": 1793111917.3029528, "action": "key", "args": ["X"], "kwargs": {"delay": 0.025}}
+{"time": 1793111917.3641262, "action": "key", "args": ["T"], "kwargs": {"delay": 0.025}}
+{"time": 1793111917.4251778, "action": "key", "args": ["ENTER"], "kwargs": {}}
+{"time": 1793111917.6810405, "action": "shot", "args": ["26-files-rename-enter"], "kwargs": {}}
+{"time": 1793111951.1244404, "action": "click", "args": [1745, 134], "kwargs": {}}
+{"time": 1793111951.1246328, "action": "move", "args": [1745, 134], "kwargs": {}}
+{"time": 1793111951.6651855, "action": "text", "args": ["brave"], "kwargs": {}}
+{"time": 1793111951.6653147, "action": "key", "args": ["B"], "kwargs": {"delay": 0.025}}
+{"time": 1793111951.7258127, "action": "key", "args": ["R"], "kwargs": {"delay": 0.025}}
+{"time": 1793111951.7863562, "action": "key", "args": ["A"], "kwargs": {"delay": 0.025}}
+{"time": 1793111951.8469324, "action": "key", "args": ["V"], "kwargs": {"delay": 0.025}}
+{"time": 1793111951.9076488, "action": "key", "args": ["E"], "kwargs": {"delay": 0.025}}
+{"time": 1793111951.968225, "action": "shot", "args": ["27-apps-search"], "kwargs": {}}
+{"time": 1793111993.6233528, "action": "click", "args": [1764, 211], "kwargs": {}}
+{"time": 1793111993.623514, "action": "move", "args": [1764, 211], "kwargs": {}}
+{"time": 1793111994.1642478, "action": "shot", "args": ["28-apps-expanded"], "kwargs": {}}
+{"time": 1793111994.685694, "action": "click", "args": [1872, 134], "kwargs": {}}
+{"time": 1793111994.6862288, "action": "move", "args": [1872, 134], "kwargs": {}}
+{"time": 1793111995.2272692, "action": "shot", "args": ["29-apps-clear"], "kwargs": {}}
+{"time": 1793112028.285323, "action": "key", "args": ["ESC"], "kwargs": {}}
+{"time": 1793112028.540947, "action": "click", "args": [147, 1065], "kwargs": {}}
+{"time": 1793112028.5410857, "action": "move", "args": [147, 1065], "kwargs": {}}
+{"time": 1793112029.0825133, "action": "shot", "args": ["30-music-open"], "kwargs": {}}
+{"time": 1793112070.4312413, "action": "click", "args": [392, 1013], "kwargs": {}}
+{"time": 1793112070.43133, "action": "move", "args": [392, 1013], "kwargs": {}}
+{"time": 1793112070.9720798, "action": "shot", "args": ["31-music-more-volume"], "kwargs": {}}
+{"time": 1793112107.9041178, "action": "click", "args": [450, 1058], "kwargs": {}}
+{"time": 1793112107.904224, "action": "move", "args": [450, 1058], "kwargs": {}}
+{"time": 1793112108.4454284, "action": "shot", "args": ["32-music-volume-adjust"], "kwargs": {}}
+{"time": 1793112170.9936686, "action": "key", "args": ["ESC"], "kwargs": {}}
+{"time": 1793112171.249147, "action": "shot", "args": ["33-music-popup-escape"], "kwargs": {}}
+{"time": 1793112218.1417472, "action": "click", "args": [147, 1065], "kwargs": {}}
+{"time": 1793112218.141889, "action": "move", "args": [147, 1065], "kwargs": {}}
+{"time": 1793112218.6826606, "action": "click", "args": [214, 152], "kwargs": {}}
+{"time": 1793112218.6829548, "action": "move", "args": [214, 152], "kwargs": {}}
+{"time": 1793112219.2238274, "action": "text", "args": ["zzzzdesuitest987654"], "kwargs": {}}
+{"time": 1793112219.224088, "action": "key", "args": ["Z"], "kwargs": {"delay": 0.025}}
+{"time": 1793112219.2862682, "action": "key", "args": ["Z"], "kwargs": {"delay": 0.025}}
+{"time": 1793112219.3470397, "action": "key", "args": ["Z"], "kwargs": {"delay": 0.025}}
+{"time": 1793112219.4078407, "action": "key", "args": ["Z"], "kwargs": {"delay": 0.025}}
+{"time": 1793112219.4685013, "action": "key", "args": ["D"], "kwargs": {"delay": 0.025}}
+{"time": 1793112219.529241, "action": "key", "args": ["E"], "kwargs": {"delay": 0.025}}
+{"time": 1793112219.5902967, "action": "key", "args": ["S"], "kwargs": {"delay": 0.025}}
+{"time": 1793112219.6517951, "action": "key", "args": ["U"], "kwargs": {"delay": 0.025}}
+{"time": 1793112219.7127483, "action": "key", "args": ["I"], "kwargs": {"delay": 0.025}}
+{"time": 1793112219.7733872, "action": "key", "args": ["T"], "kwargs": {"delay": 0.025}}
+{"time": 1793112219.834559, "action": "key", "args": ["E"], "kwargs": {"delay": 0.025}}
+{"time": 1793112219.8957396, "action": "key", "args": ["S"], "kwargs": {"delay": 0.025}}
+{"time": 1793112219.956883, "action": "key", "args": ["T"], "kwargs": {"delay": 0.025}}
+{"time": 1793112220.0178008, "action": "key", "args": ["9"], "kwargs": {"delay": 0.025}}
+{"time": 1793112220.0789812, "action": "key", "args": ["8"], "kwargs": {"delay": 0.025}}
+{"time": 1793112220.1399622, "action": "key", "args": ["7"], "kwargs": {"delay": 0.025}}
+{"time": 1793112220.2008693, "action": "key", "args": ["6"], "kwargs": {"delay": 0.025}}
+{"time": 1793112220.26163, "action": "key", "args": ["5"], "kwargs": {"delay": 0.025}}
+{"time": 1793112220.3226202, "action": "key", "args": ["4"], "kwargs": {"delay": 0.025}}
+{"time": 1793112220.3836768, "action": "key", "args": ["ENTER"], "kwargs": {}}
+{"time": 1793112220.6396008, "action": "shot", "args": ["34-music-search-no-results"], "kwargs": {}}
+{"time": 1793112310.973602, "action": "shot", "args": ["35-music-search-settled"], "kwargs": {}}
+{"time": 1793112311.460351, "action": "click", "args": [320, 154], "kwargs": {}}
+{"time": 1793112311.4605155, "action": "move", "args": [320, 154], "kwargs": {}}
+{"time": 1793112312.0021372, "action": "click", "args": [155, 337], "kwargs": {}}
+{"time": 1793112312.0025036, "action": "move", "args": [155, 337], "kwargs": {}}
+{"time": 1793112312.543315, "action": "click", "args": [1495, 95], "kwargs": {}}
+{"time": 1793112312.5436008, "action": "move", "args": [1495, 95], "kwargs": {}}
+{"time": 1793112313.0843554, "action": "click", "args": [1774, 274], "kwargs": {}}
+{"time": 1793112313.084492, "action": "move", "args": [1774, 274], "kwargs": {}}
+{"time": 1793112313.6253538, "action": "click", "args": [1753, 210], "kwargs": {}}
+{"time": 1793112313.6256287, "action": "move", "args": [1753, 210], "kwargs": {}}
+{"time": 1793113636.964516, "action": "click", "args": [1898, 1065], "kwargs": {}}
+{"time": 1793113636.9649768, "action": "move", "args": [1898, 1065], "kwargs": {}}
+{"time": 1793113637.5061975, "action": "shot", "args": ["36-quick-settings-open"], "kwargs": {}}
+{"time": 1793113690.5162575, "action": "shot", "args": ["37-quick-over-shell-view"], "kwargs": {}}
+{"time": 1793113776.0181634, "action": "click", "args": [1720, 618], "kwargs": {}}
+{"time": 1793113776.0182707, "action": "move", "args": [1720, 618], "kwargs": {}}
+{"time": 1793113776.5590963, "action": "shot", "args": ["38-quick-volume-adjust"], "kwargs": {}}
+{"time": 1793113887.649361, "action": "click", "args": [1839, 618], "kwargs": {}}
+{"time": 1793113887.6495168, "action": "move", "args": [1839, 618], "kwargs": {}}
+{"time": 1793113888.1905034, "action": "click", "args": [1870, 856], "kwargs": {}}
+{"time": 1793113888.190902, "action": "move", "args": [1870, 856], "kwargs": {}}
+{"time": 1793113888.7826402, "action": "shot", "args": ["39-quick-dnd-on"], "kwargs": {}}
+{"time": 1793113934.7984877, "action": "shot", "args": ["40-quick-on-shell-current"], "kwargs": {}}
+{"time": 1793114039.3006094, "action": "shot", "args": ["41-quick-controlled-native-overlap"], "kwargs": {}}
+{"time": 1793114039.8493655, "action": "click", "args": [1839, 618], "kwargs": {}}
+{"time": 1793114039.8497107, "action": "move", "args": [1839, 618], "kwargs": {}}
+{"time": 1793114040.3906617, "action": "click", "args": [1870, 856], "kwargs": {}}
+{"time": 1793114040.3907714, "action": "move", "args": [1870, 856], "kwargs": {}}
+{"time": 1793114040.9313893, "action": "shot", "args": ["42-quick-dnd-enabled"], "kwargs": {}}
+{"time": 1793114079.3146918, "action": "shot", "args": ["43-quick-open-confirmed"], "kwargs": {}}
+{"time": 1793114129.072493, "action": "click", "args": [1839, 618], "kwargs": {}}
+{"time": 1793114129.0725896, "action": "move", "args": [1839, 618], "kwargs": {}}
+{"time": 1793114129.613414, "action": "shot", "args": ["44-quick-volume-restore"], "kwargs": {}}
+{"time": 1793114201.7578592, "action": "move", "args": [1520, 83], "kwargs": {}}
+{"time": 1793114201.9383545, "action": "shot", "args": ["45-input-coordinate-check"], "kwargs": {}}
+{"time": 1793114254.781917, "action": "click", "args": [250, 133], "kwargs": {}}
+{"time": 1793114254.782152, "action": "move", "args": [250, 133], "kwargs": {}}
+{"time": 1793114255.3231828, "action": "text", "args": ["volume"], "kwargs": {}}
+{"time": 1793114255.3235402, "action": "key", "args": ["V"], "kwargs": {"delay": 0.025}}
+{"time": 1793114255.3847923, "action": "key", "args": ["O"], "kwargs": {"delay": 0.025}}
+{"time": 1793114255.446708, "action": "key", "args": ["L"], "kwargs": {"delay": 0.025}}
+{"time": 1793114255.5082388, "action": "key", "args": ["U"], "kwargs": {"delay": 0.025}}
+{"time": 1793114255.5700657, "action": "key", "args": ["M"], "kwargs": {"delay": 0.025}}
+{"time": 1793114255.6319165, "action": "key", "args": ["E"], "kwargs": {"delay": 0.025}}
+{"time": 1793114255.6935148, "action": "click", "args": [820, 214], "kwargs": {}}
+{"time": 1793114255.6941059, "action": "move", "args": [820, 214], "kwargs": {}}
+{"time": 1793114256.2350686, "action": "click", "args": [731, 357], "kwargs": {}}
+{"time": 1793114256.2355938, "action": "move", "args": [731, 357], "kwargs": {}}
+{"time": 1793114256.7769494, "action": "shot", "args": ["46-restore-output-through-settings"], "kwargs": {}}
+{"time": 1793114290.5039203, "action": "click", "args": [1520, 83], "kwargs": {}}
+{"time": 1793114290.5040574, "action": "move", "args": [1520, 83], "kwargs": {}}
+{"time": 1793114291.0450115, "action": "click", "args": [1350, 30], "kwargs": {}}
+{"time": 1793114291.0453782, "action": "move", "args": [1350, 30], "kwargs": {}}
+{"time": 1793114291.5931368, "action": "shot", "args": ["47-quick-empty-workspace"], "kwargs": {}}
+{"time": 1793114417.9760127, "action": "click", "args": [1870, 856], "kwargs": {}}
+{"time": 1793114417.9761484, "action": "move", "args": [1870, 856], "kwargs": {}}
+{"time": 1793114418.5172875, "action": "shot", "args": ["48-dnd-toggle"], "kwargs": {}}
+{"time": 1793114571.1900282, "action": "move", "args": [500, 200], "kwargs": {}}
+{"time": 1793114571.37045, "action": "shot", "args": ["49-owned-x11-coordinate-baseline"], "kwargs": {}}
+{"time": 1793114610.7827477, "action": "shot", "args": ["50-quick-owned-client"], "kwargs": {}}
+{"time": 1793114926.9698958, "action": "shot", "args": ["51-quick-workspace-repro"], "kwargs": {}}
+{"time": 1793114982.0933068, "action": "click", "args": [500, 200], "kwargs": {}}
+{"time": 1793114982.0933948, "action": "move", "args": [500, 200], "kwargs": {}}
+{"time": 1793114982.6343937, "action": "shot", "args": ["52-quick-dismiss-owned-client"], "kwargs": {}}
+{"time": 1793115024.38731, "action": "shot", "args": ["53-quick-closed-owned-client"], "kwargs": {}}
+{"time": 1793115127.6406848, "action": "click", "args": [400, 95], "kwargs": {}}
+{"time": 1793115127.6407924, "action": "move", "args": [400, 95], "kwargs": {}}
+{"time": 1793115128.2684815, "action": "text", "args": ["UAT-X11-INPUT"], "kwargs": {}}
+{"time": 1793115128.2686517, "action": "key", "args": ["LEFTSHIFT", "U"], "kwargs": {"delay": 0.025}}
+{"time": 1793115128.3293488, "action": "key", "args": ["LEFTSHIFT", "A"], "kwargs": {"delay": 0.025}}
+{"time": 1793115128.3903518, "action": "key", "args": ["LEFTSHIFT", "T"], "kwargs": {"delay": 0.025}}
+{"time": 1793115128.4517176, "action": "key", "args": ["MINUS"], "kwargs": {"delay": 0.025}}
+{"time": 1793115128.512612, "action": "key", "args": ["LEFTSHIFT", "X"], "kwargs": {"delay": 0.025}}
+{"time": 1793115128.5736532, "action": "key", "args": ["1"], "kwargs": {"delay": 0.025}}
+{"time": 1793115128.6346393, "action": "key", "args": ["1"], "kwargs": {"delay": 0.025}}
+{"time": 1793115128.695196, "action": "key", "args": ["MINUS"], "kwargs": {"delay": 0.025}}
+{"time": 1793115128.756168, "action": "key", "args": ["LEFTSHIFT", "I"], "kwargs": {"delay": 0.025}}
+{"time": 1793115128.8170161, "action": "key", "args": ["LEFTSHIFT", "N"], "kwargs": {"delay": 0.025}}
+{"time": 1793115128.8794258, "action": "key", "args": ["LEFTSHIFT", "P"], "kwargs": {"delay": 0.025}}
+{"time": 1793115128.9425225, "action": "key", "args": ["LEFTSHIFT", "U"], "kwargs": {"delay": 0.025}}
+{"time": 1793115129.0033324, "action": "key", "args": ["LEFTSHIFT", "T"], "kwargs": {"delay": 0.025}}
+{"time": 1793115129.064313, "action": "key", "args": ["LEFTCTRL", "A"], "kwargs": {}}
+{"time": 1793115129.3201668, "action": "key", "args": ["LEFTCTRL", "C"], "kwargs": {}}
+{"time": 1793115129.6710916, "action": "click", "args": [400, 180], "kwargs": {}}
+{"time": 1793115129.6712794, "action": "move", "args": [400, 180], "kwargs": {}}
+{"time": 1793115130.2125828, "action": "key", "args": ["LEFTCTRL", "V"], "kwargs": {}}
+{"time": 1793115130.468887, "action": "shot", "args": ["54-x11-input-clipboard"], "kwargs": {}}
+{"time": 1793115188.4945862, "action": "click", "args": [400, 95], "kwargs": {}}
+{"time": 1793115188.4946828, "action": "move", "args": [400, 95], "kwargs": {}}
+{"time": 1793115189.0358126, "action": "key", "args": ["LEFTCTRL", "A"], "kwargs": {}}
+{"time": 1793115189.2921927, "action": "key", "args": ["LEFTCTRL", "C"], "kwargs": {}}
+{"time": 1793115190.2214286, "action": "key", "args": ["LEFTCTRL", "V"], "kwargs": {}}
+{"time": 1793115190.4782164, "action": "shot", "args": ["55-x11-to-wayland-clipboard"], "kwargs": {}}
+{"time": 1793136485.2912002, "action": "shot", "args": ["56-fresh-fixtures"], "kwargs": {}}
+{"time": 1793136496.8912215, "action": "click", "args": [1476, 30], "kwargs": {}}
+{"time": 1793136496.891328, "action": "move", "args": [1476, 30], "kwargs": {}}
+{"time": 1793136497.43233, "action": "shot", "args": ["57-split-layout"], "kwargs": {}}
+{"time": 1793136497.948886, "action": "click", "args": [1502, 30], "kwargs": {}}
+{"time": 1793136497.949067, "action": "move", "args": [1502, 30], "kwargs": {}}
+{"time": 1793136498.4899764, "action": "shot", "args": ["58-columns-layout"], "kwargs": {}}
+{"time": 1793136498.95696, "action": "click", "args": [1528, 30], "kwargs": {}}
+{"time": 1793136498.9572845, "action": "move", "args": [1528, 30], "kwargs": {}}
+{"time": 1793136499.498548, "action": "shot", "args": ["59-master-layout"], "kwargs": {}}
+{"time": 1793136511.2798216, "action": "click", "args": [1421, 30], "kwargs": {}}
+{"time": 1793136511.279914, "action": "move", "args": [1421, 30], "kwargs": {}}
+{"time": 1793136511.820616, "action": "shot", "args": ["60-fullscreen"], "kwargs": {}}
+{"time": 1793136512.2749135, "action": "key", "args": ["LEFTMETA", "F"], "kwargs": {}}
+{"time": 1793136512.5323298, "action": "shot", "args": ["61-fullscreen-recovery"], "kwargs": {}}
+{"time": 1793136513.0379832, "action": "click", "args": [1450, 30], "kwargs": {}}
+{"time": 1793136513.0381174, "action": "move", "args": [1450, 30], "kwargs": {}}
+{"time": 1793136513.580223, "action": "click", "args": [1563, 30], "kwargs": {}}
+{"time": 1793136513.5803673, "action": "move", "args": [1563, 30], "kwargs": {}}
+{"time": 1793136514.1210682, "action": "shot", "args": ["62-overview"], "kwargs": {}}
+{"time": 1793136526.1920183, "action": "click", "args": [580, 87], "kwargs": {}}
+{"time": 1793136526.1921527, "action": "move", "args": [580, 87], "kwargs": {}}
