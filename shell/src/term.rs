@@ -15,6 +15,7 @@ use blocks::Block;
 
 mod wheel;
 mod links;
+mod completion;
 mod search;
 mod blocks;
 mod integration;
@@ -69,6 +70,8 @@ pub struct TermTab {
     size: (u16, u16),
     wheel: wheel::WheelState,
     input_this_frame: bool,
+    completion_dismissed: Option<String>,
+    completion_index: usize,
     /// Anchor and head of the mouse selection, as (row, col) cells of the visible grid.
     selection: Option<((u16, u16), (u16, u16))>,
     links_to_open: Vec<String>,
@@ -207,6 +210,8 @@ impl TermTab {
             size: (rows, cols),
             wheel: wheel::WheelState::default(),
             input_this_frame: false,
+            completion_dismissed: None,
+            completion_index: 0,
             selection: None,
             links_to_open: Vec::new(),
             exited: false,
@@ -269,6 +274,8 @@ impl TermTab {
 
     /// User input returns to the live grid; protocol replies do not.
     pub fn input(&mut self, bytes: &[u8]) {
+        self.completion_dismissed = None;
+        self.completion_index = 0;
         if bytes.is_empty() { return; }
         self.selection = None;
         self.block_selection = None;
@@ -298,6 +305,34 @@ impl TermTab {
             Some(pid) => persistent::foreground_pid(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?),
             None => self.master.process_group_leader().map(|pid| pid as u32),
         }
+    }
+
+    /// Offer completions only on a verified, single-line shell prompt. Never
+    /// inspect or intercept input while a child program owns the terminal.
+    fn completion_query(&self) -> Option<String> {
+        let screen = self.parser.screen();
+        if screen.alternate_screen() || screen.scrollback() != 0 || self.search.open { return None; }
+        let (line, start) = self.blocks.active_input()?;
+        let (row, col) = screen.cursor_position();
+        if self.blocks.cursor_line(screen) != line || col <= start || col - start > 64 { return None; }
+        let mut input = String::new();
+        for column in start..col {
+            let cell = screen.cell(row, column)?;
+            if cell.is_wide_continuation() { return None; }
+            let text = cell.contents();
+            if text.is_empty() { input.push(' '); continue; }
+            if text.len() != 1 || !text.is_ascii() || text.as_bytes()[0].is_ascii_control() { return None; }
+            input.push_str(text);
+        }
+        let (_, cols) = screen.size();
+        if (col..cols).any(|column| screen.cell(row, column).is_some_and(|cell| cell.has_contents() && cell.contents() != " ")) { return None; }
+        if completion::suggestions(&input).is_empty() { return None; }
+        if self.completion_dismissed.as_deref() == Some(input.as_str()) { return None; }
+        let shell_pid = self.pane_pid.or_else(|| self.child.process_id())?;
+        if self.foreground_pid()? != shell_pid { return None; }
+        let name = std::fs::read_to_string(format!("/proc/{shell_pid}/comm")).ok()?;
+        if !matches!(name.trim(), "bash" | "zsh") { return None; }
+        Some(input)
     }
 
     /// Name of the program currently in the foreground of this terminal.
@@ -468,6 +503,26 @@ impl TermTab {
         }
         let app_cursor = self.parser.screen().application_cursor();
         let bracketed = self.parser.screen().bracketed_paste();
+        if events.len() == 1 {
+            if let Event::Key { key, pressed: true, modifiers, .. } = &events[0] {
+                if *modifiers == Modifiers::NONE {
+                    if let Some(query) = self.completion_query() {
+                        let suggestions = completion::suggestions(&query);
+                        match key {
+                            Key::Escape => { self.completion_dismissed = Some(query); return; }
+                            Key::ArrowDown => { self.completion_index = (self.completion_index + 1) % suggestions.len(); return; }
+                            Key::ArrowUp => { self.completion_index = (self.completion_index + suggestions.len() - 1) % suggestions.len(); return; }
+                            Key::Tab | Key::Enter => {
+                                let value = suggestions[self.completion_index.min(suggestions.len() - 1)].0;
+                                self.input(value[query.len()..].as_bytes());
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
         let mut out: Vec<u8> = Vec::new();
         for event in events {
             match event {
@@ -726,6 +781,36 @@ impl TermTab {
                     if row >= top && row < top + rows as usize {
                         let min = rect.min + Vec2::new(col as f32 * cw, (row - top) as f32 * ch);
                         painter.rect_filled(Rect::from_min_size(min, Vec2::new(width as f32 * cw, ch)), 0.0, theme.selection());
+                    }
+                }
+            }
+        }
+        if focused {
+            if let Some(query) = self.completion_query() {
+                let options = completion::suggestions(&query);
+                let (row, col) = self.parser.screen().cursor_position();
+                let bounds = ui.ctx().screen_rect();
+                let width = 340.0_f32.min(bounds.width().max(1.0));
+                let height = 34.0 * options.len() as f32 + 38.0;
+                let anchor = rect.min + Vec2::new(col as f32 * cw, (row as f32 + 1.0) * ch);
+                let x = anchor.x.clamp(bounds.left(), (bounds.right() - width).max(bounds.left()));
+                let y = if anchor.y + height <= bounds.bottom() { anchor.y } else { (anchor.y - ch - height).max(bounds.top()) };
+                let mut picked = None;
+                egui::Area::new(response.id.with("terminal-completion"))
+                    .order(egui::Order::Foreground).fixed_pos(Pos2::new(x, y)).show(ui.ctx(), |ui| {
+                        egui::Frame::popup(ui.style()).show(ui, |ui| {
+                            ui.set_min_width((width - 16.0).max(1.0));
+                            for (index, (value, description)) in options.iter().enumerate() {
+                                if ui.selectable_label(index == self.completion_index, format!("{value}  ·  {description}")).clicked() { picked = Some(*value); }
+                            }
+                            ui.label(egui::RichText::new("↑ ↓ select   ·   Tab / Enter insert   ·   Esc dismiss").small().color(crate::ui::SECONDARY));
+                        });
+                    });
+                if let Some(value) = picked {
+                    // Recheck immediately before writing: the shell may have
+                    // changed state while the menu was open.
+                    if self.completion_query().as_deref() == Some(query.as_str()) {
+                        self.input(value[query.len()..].as_bytes());
                     }
                 }
             }

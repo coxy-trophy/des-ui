@@ -21,6 +21,7 @@ const OSC_133: &[u8] = b"\x1b]133;";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Block {
     pub prompt: u64,
+    input: Option<(u64, u16)>,
     pub output: Option<u64>,
     pub end: Option<(u64, i32)>,
 }
@@ -69,6 +70,11 @@ impl Blocks {
     /// The most recent command that has finished with output.
     pub fn last_output(&self) -> Option<(u64, u64)> {
         self.blocks.iter().rev().filter(|b| b.end.is_some()).find_map(Block::output_lines)
+    }
+
+    /// A shell-provided prompt-end marker is required before treating text as input.
+    pub fn active_input(&self) -> Option<(u64, u16)> {
+        self.blocks.back().filter(|block| block.output.is_none() && block.end.is_none())?.input
     }
 
     pub fn at_prompt(&self, line: u64) -> Option<&Block> {
@@ -161,13 +167,16 @@ impl Blocks {
                 // A prompt drawn again, or one nothing has run at, moves rather than
                 // starting another block.
                 match self.blocks.back_mut() {
-                    Some(last) if last.output.is_none() && last.end.is_none() => last.prompt = line,
-                    _ => self.push(Block { prompt: line, output: None, end: None }),
+                    Some(last) if last.output.is_none() && last.end.is_none() => { last.prompt = line; last.input = None; },
+                    _ => self.push(Block { prompt: line, input: None, output: None, end: None }),
                 }
             }
+            b"B" => if let Some(last) = self.blocks.back_mut().filter(|last| last.output.is_none() && last.end.is_none()) {
+                last.input = Some((line, screen.cursor_position().1));
+            },
             b"C" => match self.blocks.back_mut() {
                 Some(last) if last.output.is_none() && last.end.is_none() => last.output = Some(line),
-                _ => self.push(Block { prompt: line, output: Some(line), end: None }),
+                _ => self.push(Block { prompt: line, input: None, output: Some(line), end: None }),
             },
             b"D" => {
                 let status = parts
@@ -363,6 +372,19 @@ fn text_run_end(bytes: &[u8], at: usize, chars: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn input_anchor_requires_prompt_end_and_is_cleared_by_execution() {
+        let mut parser = vt100::Parser::new(5, 80, 20);
+        let mut blocks = Blocks::new(20);
+        blocks.feed(&mut parser, b"\x1b]133;A\x07$ ");
+        assert_eq!(blocks.active_input(), None);
+        blocks.feed(&mut parser, b"\x1b]133;B\x07git ch");
+        assert_eq!(blocks.active_input(), Some((0, 2)));
+        blocks.feed(&mut parser, b"\r\n\x1b]133;C\x07");
+        assert_eq!(blocks.active_input(), None);
+        blocks.feed(&mut parser, b"\x1b]133;D;0\x07\x1b]133;A\x07$ ");
+        assert_eq!(blocks.active_input(), None);
+    }
 
     fn screen_top(parser: &mut vt100::Parser, blocks: &Blocks, line: u64) -> String {
         parser.screen_mut().set_scrollback(blocks.offset_for(line));
