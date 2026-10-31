@@ -225,3 +225,11 @@ Load more, and in-flight requests are keyed by server offset. Refresh invalidate
 saved/permission caches. Form submissions carry distinct operation IDs, retain drafts
 on errors and recover after missing confirmations. Canonical Spotify URLs own chapter
 opening (chapters can use episode URIs); launch failures are surfaced in the music UI.
+
+Terminal local completion uses a small built-in list and is shown only at a
+single-line bash or zsh prompt identified by shell integration and a matching
+foreground process. Full-screen programs, commands in progress, and unverified
+prompts retain their normal input. Tab or Enter inserts the chosen suffix without
+running it; Escape dismisses it, and the Terminal settings can turn it off.
+Right-clicking a completed command with retained output offers a local copy action.
+Neither feature sends terminal text to a network service or saves separate history.
