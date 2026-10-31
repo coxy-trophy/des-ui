@@ -94,6 +94,15 @@ impl Companion {
         self.connect(ctx);
         self.send(json!({"type":"status"}));
     }
+    /// Prepare an explicit draft; never send terminal content automatically.
+    pub fn prepare_terminal_explanation(&mut self, ctx: &egui::Context, output: &str) {
+        let remaining = 7000usize.saturating_sub(self.input.chars().count());
+        if remaining < 64 { self.open(ctx); self.error = "Draft is full; clear space before adding terminal output.".into(); return; }
+        if !self.input.is_empty() { self.input.push_str("\n\n"); }
+        self.input.push_str("Explain this terminal output:\n\n");
+        self.input.extend(output.chars().take(remaining.saturating_sub(40)));
+        self.open(ctx);
+    }
     /// Companion configuration is owned by Settings, never the conversation overlay.
     pub fn settings_ui(&mut self, ui: &mut egui::Ui, _theme: &Theme) {
         if self.bridge.is_none() && self.error.is_empty() { self.connect(ui.ctx()); self.send(json!({"type":"status"})); }

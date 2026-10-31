@@ -674,11 +674,15 @@ impl eframe::App for App {
                 }
             });
         if let Some(command) = command { self.send(command); }
+        if let Some(output) = self.tabs.iter_mut().find_map(TermTab::take_explain_output) {
+            self.companion.prepare_terminal_explanation(ctx, &output);
+        }
 
         let look = self.config.term_look();
         let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
         let scratch = if self.companion.open || self.shortcut_reference.open { None } else { self.scratchpad.show(ctx, workspace, screen, &theme, &look, animate,
             (&self.shell, &home, self.config.scrollback, self.config.keep_terminal_sessions && self.live_terminal_lease.is_some()), &events) };
+        if let Some(output) = self.scratchpad.take_explain_output() { self.companion.prepare_terminal_explanation(ctx, &output); }
         // The quick settings, when open, take the lifted area: they are the one in use.
         let readings = quick::Readings {
             volume: self.mon.volume(),

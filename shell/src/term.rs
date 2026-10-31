@@ -76,12 +76,14 @@ pub struct TermTab {
     /// Anchor and head of the mouse selection, as (row, col) cells of the visible grid.
     selection: Option<((u16, u16), (u16, u16))>,
     links_to_open: Vec<String>,
+    explain_output: Option<String>,
     pub exited: bool,
 }
 
 impl TermTab {
     /// Requested links are dispatched by the desktop so launch failures are visible.
     pub fn take_links(&mut self) -> Vec<String> { std::mem::take(&mut self.links_to_open) }
+    pub fn take_explain_output(&mut self) -> Option<String> { self.explain_output.take() }
 
     /// Spawns `shell` as a login shell in `cwd`. `ctx` is woken whenever output arrives.
     pub fn spawn(shell: &str, cwd: &Path, ctx: egui::Context, scrollback: usize) -> anyhow::Result<TermTab> {
@@ -216,6 +218,7 @@ impl TermTab {
             completions_enabled: true,
             selection: None,
             links_to_open: Vec::new(),
+            explain_output: None,
             exited: false,
         })
     }
@@ -699,6 +702,10 @@ impl TermTab {
                 response.context_menu(|ui| {
                     if ui.button("Copy command output").clicked() {
                         if let Some(text) = self.history_text(from, to) { ui.ctx().copy_text(text); }
+                        ui.close_menu();
+                    }
+                    if ui.button("Explain output in Chat…").on_hover_text("Prepare a draft for review; nothing is sent automatically").clicked() {
+                        self.explain_output = self.history_text(from, to);
                         ui.close_menu();
                     }
                 });

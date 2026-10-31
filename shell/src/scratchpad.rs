@@ -85,6 +85,9 @@ impl Scratchpad {
     pub fn take_links(&mut self) -> Vec<String> {
         self.tab.as_mut().map_or_else(Vec::new, TermTab::take_links)
     }
+    pub fn take_explain_output(&mut self) -> Option<String> {
+        self.tab.as_mut().and_then(TermTab::take_explain_output)
+    }
 
     pub fn toggle(&mut self) {
         self.open = !self.open;
