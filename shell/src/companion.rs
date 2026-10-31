@@ -528,6 +528,18 @@ impl Companion {
 mod tests {
     use super::*;
     #[test]
+    fn terminal_explanation_is_a_reviewable_draft_and_is_not_sent() {
+        let child = Command::new("python3").args(["-c", "import time; time.sleep(10)"]).spawn().unwrap();
+        let (tx, commands) = mpsc::sync_channel(8);
+        let (_events, rx) = mpsc::sync_channel(8);
+        let bridge = Bridge { child, tx, rx, failed: Arc::new(AtomicBool::new(false)) };
+        let mut companion = Companion { bridge: Some(bridge), input: "Existing draft".into(), ..Default::default() };
+        companion.prepare_terminal_explanation(&egui::Context::default(), &"x".repeat(9000));
+        assert!(companion.open && companion.input.starts_with("Existing draft\n\nExplain this terminal output:"));
+        assert!(companion.input.ends_with("[Output truncated]"));
+        assert!(commands.try_iter().all(|command| command["type"] != "send"));
+    }
+    #[test]
     fn disabled_social_probe_does_not_start_companion_worker() {
         let (send, receive) = mpsc::channel();
         send.send(false).unwrap();
