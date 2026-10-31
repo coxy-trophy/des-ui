@@ -61,6 +61,7 @@ impl Blocks {
         Blocks { scrolled: 0, limit, blocks: VecDeque::new(), held: Vec::new() }
     }
 
+    #[cfg(test)]
     pub fn iter(&self) -> impl DoubleEndedIterator<Item = &Block> {
         self.blocks.iter()
     }

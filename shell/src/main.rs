@@ -1361,11 +1361,6 @@ impl App {
             }
         }
 
-        let rail_id = egui::Id::new("terminal-session-rail");
-        let rail_open = ui.data(|data| data.get_temp::<bool>(rail_id).unwrap_or(true));
-        if ui::icon_button(ui, theme, Icon::PanelLeft, 28.0, rail_open).on_hover_text("Show or hide terminal sessions").clicked() {
-            ui.data_mut(|data| data.insert_temp(rail_id, !rail_open));
-        }
         if ui::icon_button(ui, theme, Icon::Copy, 28.0, false).on_hover_text("Copy last command output").clicked() { self.copy_last_output(); }
         if ui::icon_button(ui,theme,Icon::Search,28.0,self.tabs[self.focus_tab()].searching()).on_hover_text(shortcuts::hint(ui.ctx(), "Find in terminal", "terminal.find")).clicked() { actions.find_terminal=true; actions.command=Some(Command::Terminal); }
 

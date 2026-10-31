@@ -40,7 +40,6 @@ Controls share a restrained 6px corner radius; content-sized floating surfaces u
 
 Terminal tab selection uses a short expanding underline when terminal tab animation and desktop animation are enabled. Reduce motion or disabling either animation setting makes it immediate. The terminal settings retain the existing font, size, line height, cursor, copy and scrollback controls.
 
-The terminal workbench adds a dismissible session rail in sufficiently wide terminal workspaces; narrow workspaces keep the header tabs. The rail uses actual terminal sessions and command navigation, keeps the nine-session limit visible, and must not cover graphical applications or consume space in their workspace. History, file and job drawers and contextual completion from the concept are separate work and must not be represented by sample data in the desktop.
 
 The default pointer is a compact dark triangle with a soft blue halo, inspired by the supplied reference. The click hotspot stays at its tip; semantic cursor shapes and user-selected size and colour remain available. The compositor renderer and exported Xcursor theme share the same artwork.
 

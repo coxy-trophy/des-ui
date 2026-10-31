@@ -504,7 +504,7 @@ impl eframe::App for App {
                     mine.set_width(left.width);
                 }
                 let inner = mine.shrink2(vec2(24.0, 18.0));
-                let mut inner = Rect::from_min_max(inner.min, inner.max.max(inner.min));
+                let inner = Rect::from_min_max(inner.min, inner.max.max(inner.min));
 
                 if self.settings.open {
                     let changes = region(ui, mine, vec2(0.0, 0.0), Layout::top_down(Align::Min), |ui| {
@@ -598,66 +598,6 @@ impl eframe::App for App {
                 let focused = self.focus_tab();
                 if skip_covered_terminal(state.as_ref(), &mut typed, |bytes| self.tabs[focused].input(bytes)) {
                     return;
-                }
-                // A compact session rail is only shown where it leaves useful
-                // terminal width; narrow workspaces retain the header tabs.
-                let rail_open = ui.data(|data| data.get_temp::<bool>(egui::Id::new("terminal-session-rail")).unwrap_or(true));
-                if rail_open && inner.width() >= 760.0 {
-                    let rail_width = 190.0;
-                    let rail = Rect::from_min_max(inner.min, pos2(inner.left() + rail_width, inner.bottom()));
-                    let mut selected = None;
-                    let mut create = false;
-                    let mut previous = false;
-                    let mut next = false;
-                    let mut copy = false;
-                    let mut jump = None;
-                    let active = self.focus_tab();
-                    let cache_id = egui::Id::new("terminal-session-history");
-                    let cached = ui.data(|data| data.get_temp::<(usize, Instant, Vec<(u64, String, Option<i32>)>)>(cache_id));
-                    let history = match cached {
-                        Some((index, at, entries)) if index == active && at.elapsed() < Duration::from_secs(1) => entries,
-                        _ => {
-                            let entries = self.tabs[active].recent_commands();
-                            ui.data_mut(|data| data.insert_temp(cache_id, (active, Instant::now(), entries.clone())));
-                            entries
-                        }
-                    };
-                    frame_region(ui, rail, vec2(10.0, 12.0), Layout::top_down(Align::Min), |ui| {
-                        egui::ScrollArea::vertical().id_salt("terminal-session-rail-content").show(ui, |ui| {
-                        ui.label(egui::RichText::new("SESSIONS").font(ui::display_bold(11.0)).color(ui::SECONDARY));
-                        ui.add_space(8.0);
-                        for (index, terminal) in self.tabs.iter().enumerate() {
-                            let kind = if terminal.persistent_id.is_some() { "live" } else { "temporary" };
-                            let label = format!("{:02}  {}  ·  {}", index + 1, if index == 0 { "main" } else { "term" }, kind);
-                            if ui.selectable_label(index == self.active, label).clicked() { selected = Some(index); }
-                        }
-                        ui.add_space(8.0);
-                        let available = self.tabs.len() < MAX_TABS;
-                        let hint = if available { "Open a terminal" } else { "Maximum of 9 terminal tabs" };
-                        create = ui.add_enabled(available, egui::Button::new(format!("＋  New terminal    {} / {}", self.tabs.len(), MAX_TABS))).on_hover_text(hint).clicked();
-                        ui.add_space(18.0);
-                        ui.label(egui::RichText::new("COMMANDS").font(ui::display_bold(11.0)).color(ui::SECONDARY));
-                        ui.horizontal_wrapped(|ui| {
-                            previous = ui.button("↑ Previous").on_hover_text("Jump to the previous command").clicked();
-                            next = ui.button("↓ Next").on_hover_text("Jump to the next command").clicked();
-                        });
-                        copy = ui.button("Copy last output").clicked();
-                        ui.add_space(18.0);
-                        ui.label(egui::RichText::new("RECENT COMMANDS").font(ui::display_bold(11.0)).color(ui::SECONDARY));
-                        if history.is_empty() { ui.label(egui::RichText::new("No retained commands").color(ui::SECONDARY)); }
-                        for (line, text, status) in &history {
-                            let indicator = match status { Some(0) => "✓", Some(_) => "!", None => "·" };
-                            let label = format!("{}  {}", indicator, crate::panels::truncate(text, 20));
-                            if ui.button(label).on_hover_text("Jump to this command in the terminal").clicked() { jump = Some(*line); }
-                        }
-                        });
-                    });
-                    if let Some(index) = selected { self.show_tab(index); command = Some(Command::Terminal); }
-                    if create { self.new_tab(); command = Some(Command::Terminal); }
-                    if previous || next { let index = self.focus_tab(); self.tabs[index].jump_prompt(previous); }
-                    if let Some(line) = jump { let index = self.focus_tab(); self.tabs[index].jump_to_command(line); }
-                    if copy { self.copy_last_output(); }
-                    inner.min.x = (rail.right() + 12.0).min(inner.right());
                 }
                 // One pane, or two with a gap and a rule between them.
                 let panes: Vec<(usize, Rect)> = match self.side {
