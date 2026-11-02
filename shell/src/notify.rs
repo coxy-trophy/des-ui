@@ -435,18 +435,26 @@ fn clean_reply(text: &str) -> String {
     out.trim().to_string()
 }
 
+fn notification_bus(
+    builder: zbus::blocking::connection::Builder<'_>,
+    inbox: Arc<Mutex<Inbox>>,
+    ctx: egui::Context,
+) -> zbus::Result<zbus::blocking::Connection> {
+    let bus = builder.serve_at(PATH, Service { inbox, ctx })?.build()?;
+    // Keep the connection in the bus queue if another daemon is running. A shell
+    // restart must not permanently lose notifications to D-Bus activation.
+    bus.request_name_with_flags(NAME, zbus::fdo::RequestNameFlags::ReplaceExisting.into())?;
+    Ok(bus)
+}
+
 impl Center {
     /// Starts taking notifications. With `serve` off, or when another service already
-    /// has the name, only the desktop's own notices are shown.
+    /// has the name, waits for ownership while showing the desktop's own notices.
     pub fn new(ctx: egui::Context, quiet: bool, serve: bool) -> Center {
         let inbox: Arc<Mutex<Inbox>> = Arc::default();
         let bus = serve
             .then(|| {
-                let service = Service { inbox: inbox.clone(), ctx };
-                zbus::blocking::connection::Builder::session()?
-                    .name(NAME)?
-                    .serve_at(PATH, service)?
-                    .build()
+                notification_bus(zbus::blocking::connection::Builder::session()?, inbox.clone(), ctx)
             })
             .and_then(|built| built.map_err(|e| eprintln!("des-ui: not taking applications' notifications: {e}")).ok());
         Center { open: false, quiet, sounds: false, last_sound: None, notices: Vec::new(), inbox, bus, own_id: u32::MAX / 2, schedule: None, collapsed: HashSet::new(), replying: None }
@@ -1229,6 +1237,37 @@ mod tests {
             center.post("Loud", "", true);
             let fresh: Vec<&str> = center.notices.iter().filter(|n| n.fresh).map(|n| n.title.as_str()).collect();
             assert_eq!(fresh, ["Loud"]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+    use std::io::BufRead;
+
+    #[test]
+    fn a_busy_notification_name_is_acquired_when_the_other_daemon_leaves() {
+        let mut daemon = std::process::Command::new("dbus-daemon")
+            .args(["--session", "--nofork", "--print-address=1"])
+            .stdout(std::process::Stdio::piped()).spawn().unwrap();
+        struct Daemon(std::process::Child);
+        impl Drop for Daemon { fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); } }
+        let mut address = String::new();
+        std::io::BufReader::new(daemon.stdout.take().unwrap()).read_line(&mut address).unwrap();
+        let _daemon = Daemon(daemon);
+        let address = address.trim();
+        let incumbent = zbus::blocking::connection::Builder::address(address).unwrap().build().unwrap();
+        incumbent.request_name_with_flags(NAME, zbus::fdo::RequestNameFlags::DoNotQueue.into()).unwrap();
+        let queued = notification_bus(zbus::blocking::connection::Builder::address(address).unwrap(), Arc::default(), egui::Context::default()).unwrap();
+        let proxy = zbus::blocking::fdo::DBusProxy::new(&queued).unwrap();
+        assert_eq!(proxy.get_name_owner(NAME.try_into().unwrap()).unwrap().as_str(), incumbent.unique_name().unwrap().as_str());
+        incumbent.release_name(NAME).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if proxy.get_name_owner(NAME.try_into().unwrap()).unwrap().as_str() == queued.unique_name().unwrap().as_str() { break; }
+            assert!(Instant::now() < deadline, "queued shell never received notification ownership");
+            std::thread::sleep(Duration::from_millis(10));
         }
     }
 }

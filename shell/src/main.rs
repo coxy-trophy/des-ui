@@ -247,6 +247,7 @@ impl App {
         config: config::Config,
         symbols: Option<PathBuf>,
         screenshot: Option<PathBuf>,
+        serve_notifications: bool,
     ) -> anyhow::Result<App> {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
         let home = std::env::var_os("HOME")
@@ -330,7 +331,7 @@ impl App {
         let music = music::Music::new(ctx.clone());
         let capture = capture::Capture::new(ctx.clone());
         let power = power::Power::start(ctx.clone(), desktop.is_some());
-        let mut notices = notify::Center::new(ctx.clone(), config.do_not_disturb, true);
+        let mut notices = notify::Center::new(ctx.clone(), config.do_not_disturb, desktop_present && serve_notifications);
         let control = match control::Control::start(ctx.clone()) {
             Ok(control) => Some(control),
             Err(error) => {
@@ -1653,7 +1654,7 @@ fn main() -> eframe::Result {
             apply_style(&cc.egui_ctx, &theme);
             let symbols = font.or_else(find_nerd_font);
             ui::install_fonts(&cc.egui_ctx, symbols.as_deref(), config.terminal_font.as_deref());
-            let mut app = App::new(cc.egui_ctx.clone(), theme, config, symbols, screenshot)?;
+            let mut app = App::new(cc.egui_ctx.clone(), theme, config, symbols, screenshot, !windowed)?;
             if locked {
                 app.lock.engage();
             }
