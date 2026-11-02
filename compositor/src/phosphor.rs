@@ -23,8 +23,15 @@ use smithay::{
             },
         },
     },
-    utils::{Logical, Physical, Size, Transform},
+    utils::{Logical, Physical, Rectangle, Size, Transform},
 };
+
+// This texture uses buffer scale 1. Its source must cover all physical pixels,
+// independently of the logical destination. Smithay defaults a missing source to
+// the destination size, which crops a 4K texture to 1080p on a 2x mirror.
+fn frame_source(size: Size<i32, Physical>) -> Option<Rectangle<f64, Logical>> {
+    Some(Rectangle::from_size(size.to_logical(1).to_f64()))
+}
 
 /// Colours as they are by day: the night light leaves them alone.
 pub const DAYLIGHT: f32 = 6500.0;
@@ -408,7 +415,7 @@ impl Phosphor {
             1,
             Transform::Normal,
             None,
-            None,
+            frame_source(size),
             Some(logical),
             None,
             Kind::Unspecified,
@@ -428,6 +435,16 @@ impl Phosphor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effect_pass_samples_the_whole_frame_at_every_display_scale() {
+        for (width, height) in [(1920, 1080), (3840, 2160), (2160, 3840)] {
+            let source = frame_source((width, height).into()).expect("explicit full-frame source required: default crops to logical destination");
+            assert_eq!(source.loc, (0.0, 0.0).into());
+            assert_eq!(source.size, (f64::from(width), f64::from(height)).into());
+        }
+    }
+
 
     #[test]
     fn the_user_s_accent_wins_and_bad_values_are_ignored() {
