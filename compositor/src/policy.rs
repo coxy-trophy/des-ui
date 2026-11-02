@@ -227,7 +227,8 @@ mod lock_command_tests {
 impl DesComp {
     /// Tells the policy which displays exist, the main one first. Called by the backend
     /// at startup and whenever a display is added, removed or resized.
-    pub fn set_screens(&mut self, screens: Vec<Rectangle<i32, Logical>>) {
+    pub fn set_screens(&mut self, mut screens: Vec<Rectangle<i32, Logical>>) {
+        self.virtual_geometry(&mut screens);
         if self.screens != screens && self.drag_session.is_some() {
             self.cancel_file_drag();
         }

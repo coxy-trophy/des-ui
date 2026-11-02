@@ -13,6 +13,7 @@ mod policy;
 mod layout;
 mod rules;
 mod capture;
+mod virtual_display;
 mod state;
 mod splash;
 mod toast;

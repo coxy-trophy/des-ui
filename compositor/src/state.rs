@@ -153,6 +153,9 @@ pub struct DesComp {
     pub apps: Vec<App>,
     /// The displays, in logical coordinates; the first is the one with the frame.
     pub screens: Vec<Rectangle<i32, Logical>>,
+    pub physical_screens: Vec<Rectangle<i32, Logical>>,
+    pub virtual_output: Option<crate::virtual_display::VirtualOutput>,
+    pub virtual_server: Option<crate::virtual_display::Server>,
     /// How each display's workspace is being used; parallel to `screens`.
     pub modes: Vec<ScreenMode>,
     /// The workspace in view, and how the displays of each other one were being used
@@ -344,6 +347,9 @@ impl DesComp {
             backdrops: Vec::new(),
             apps: Vec::new(),
             screens: Vec::new(),
+            physical_screens: Vec::new(),
+            virtual_output: None,
+            virtual_server: std::env::var_os("DES_VIRTUAL_SOCKET").and_then(|p| match crate::virtual_display::Server::bind(p.into()) {Ok(s)=>Some(s),Err(e)=>{tracing::error!("virtual socket: {e}");None}}),
             modes: Vec::new(),
             workspace: 0,
             kept_modes: Vec::new(),
@@ -478,6 +484,7 @@ impl DesComp {
 
     /// Work due before drawing a frame. Returns false once the session is over.
     pub fn before_frame(&mut self) -> bool {
+        self.virtual_tick();
         if matches!(&self.cursor_status, CursorImageStatus::Surface(surface) if !surface.alive()) {
             self.cursor_status = CursorImageStatus::default_named();
         }
