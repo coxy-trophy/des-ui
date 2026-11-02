@@ -162,6 +162,8 @@ pub struct Explorer {
     zoom: f32,
     paused: bool,
     hovered: bool,
+    /// Whether this frame drew it; hidden, it needs no frames of its own.
+    drawn: bool,
     selected: Option<Place>,
     hovered_place: Option<Place>,
     query: String,
@@ -171,7 +173,7 @@ pub struct Explorer {
 impl Default for Explorer {
     fn default() -> Self {
         Self { expanded: false, yaw: 0.0, pitch: TILT, zoom: 1.0, paused: false,
-            hovered: false, selected: None, hovered_place: None, query: String::new(), last_tick: None, search_focus: false }
+            hovered: false, drawn: false, selected: None, hovered_place: None, query: String::new(), last_tick: None, search_focus: false }
     }
 }
 impl Explorer {
@@ -184,8 +186,11 @@ impl Explorer {
             _ => {}
         }
         self.hovered = false;
+        self.drawn = false;
     }
     pub fn animating(&self, rotating: bool) -> bool { rotating && !self.paused && !self.hovered }
+    /// Whether the globe on screen is turning, which sets the pace of the shell.
+    pub fn turning(&self, rotating: bool) -> bool { self.drawn && self.animating(rotating) }
     fn turn(&mut self, yaw: f32, pitch: f32) {
         self.yaw = (self.yaw + yaw).rem_euclid(360.0);
         self.pitch = (self.pitch + pitch).clamp(-85.0, 85.0);
@@ -232,6 +237,7 @@ impl Explorer {
         });
     }
     fn canvas(&mut self, ui: &mut Ui, theme: &Theme, size: f32, geo: &Snapshot) -> eframe::egui::Response {
+        self.drawn = true;
         let response = draw(ui, theme, size, self.yaw, self.pitch, self.zoom, geo, self.selected.as_ref().or(self.hovered_place.as_ref()));
         response.widget_info(|| eframe::egui::WidgetInfo::labeled(eframe::egui::WidgetType::Button, ui.is_enabled(), "Interactive globe: drag to rotate, scroll to zoom, click a destination"));
         let center = response.rect.center();
@@ -414,6 +420,17 @@ mod tests {
         explorer.tick(5.0, true, None);
         assert_eq!(explorer.selected, Some(target));
         assert_eq!(explorer.pitch, 35.0);
+    }
+
+    #[test]
+    fn a_hidden_globe_does_not_set_the_pace() {
+        let mut explorer = Explorer::default();
+        explorer.tick(0.0, true, None);
+        assert!(explorer.animating(true) && !explorer.turning(true));
+        explorer.drawn = true;
+        assert!(explorer.turning(true) && !explorer.turning(false));
+        explorer.tick(0.1, true, None);
+        assert!(!explorer.turning(true));
     }
 
     #[test]

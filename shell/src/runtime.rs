@@ -827,7 +827,7 @@ impl eframe::App for App {
         self.polkit.show(ctx, &theme, false);
 
         // The globe turns continuously; without it, the clock sets the pace.
-        let pace = if (open.right || self.world.expanded) && self.world.animating(rotating) { 66 } else { 500 };
+        let pace = if self.world.turning(rotating) { 66 } else { 500 };
         ctx.request_repaint_after(Duration::from_millis(pace));
         self.checkpoint_live_terminals();
         if self.desktop.as_ref().is_some_and(|desktop| desktop.connected()) { self.readiness.notify(); }

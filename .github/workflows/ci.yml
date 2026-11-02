@@ -27,6 +27,10 @@ jobs:
       - name: Verify scripts, tests and programs
         shell: bash
         run: ./scripts/verify.sh 2>&1 | tee "$RUNNER_TEMP/validation.log"
+      # Reports only, for now: nothing has cleared the existing warnings yet.
+      - name: Lints
+        continue-on-error: true
+        run: cargo clippy --workspace --all-targets --locked
       - name: Record exact source snapshot
         if: always()
         run: python3 scripts/validation-snapshot.py > "$RUNNER_TEMP/validation-source.json"

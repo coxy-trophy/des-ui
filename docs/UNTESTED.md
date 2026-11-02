@@ -7,6 +7,9 @@ watched work on a real machine. Tick them off, or note what went wrong.
 
 ## Hand control (Settings → Mouse & touchpad → Hand control, Super+H)
 
+The owner has seen an open hand move the pointer on the laptop (23 October). The
+checks below stay open until each part has been tried.
+
 - [ ] Super+H turns it on: the status bar says CAMERA ON, and CAMERA ON  HAND once a
       hand is seen; Super+H or a click on it turns it off, and the camera light goes out
 - [ ] An open hand moves the pointer smoothly, gliding between camera frames, on
