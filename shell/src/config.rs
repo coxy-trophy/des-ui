@@ -45,6 +45,7 @@ pub struct Config {
     pub cursor_blink: bool,
     /// Animate terminal tab selection when desktop motion is enabled.
     pub terminal_tab_animation: bool,
+    pub terminal_cursor_smear: bool,
     /// Offer local suggestions at verified shell prompts.
     pub terminal_completions: bool,
     pub bold_bright: bool,
@@ -104,6 +105,7 @@ impl Default for Config {
             cursor: CursorShape::Block,
             cursor_blink: false,
             terminal_tab_animation: true,
+            terminal_cursor_smear: true,
             terminal_completions: true,
             bold_bright: true,
             copy_on_select: false,
@@ -184,6 +186,7 @@ impl Config {
                     }
                 }
                 "cursor_blink" => config.cursor_blink = value == "on",
+                "terminal_cursor_smear" => config.terminal_cursor_smear = value != "off",
                 "terminal_tab_animation" => config.terminal_tab_animation = value != "off",
                 "terminal_completions" => config.terminal_completions = value != "off",
                 "bold_bright" => config.bold_bright = value != "off",
@@ -259,6 +262,7 @@ impl Config {
             line_height: self.line_height,
             cursor: self.cursor,
             cursor_blink: self.cursor_blink,
+            cursor_smear: self.terminal_cursor_smear && self.animate && !self.appearance.reduce_motion,
             bold_bright: self.bold_bright,
             copy_on_select: self.copy_on_select,
         }
@@ -651,5 +655,16 @@ mod drag_overview_tests {
         assert!(Config::parse(&std::fs::read_to_string(&path).unwrap()).drag_overview);
         let warning=save_drag_overview_at(&path,false,|p,v|{set_at(p,"drag_overview",Some(v))?;Err(std::io::Error::other("directory sync failed"))}).unwrap();
         assert!(warning.is_some());assert!(!Config::parse(&std::fs::read_to_string(&path).unwrap()).drag_overview);
+    }
+}
+
+#[cfg(test)] mod smear_tests {
+    use super::*;
+    #[test] fn terminal_smear_is_independent_and_respects_motion_preferences() {
+        let default=Config::parse("");assert!(default.term_look().cursor_smear);
+        assert!(!Config::parse("terminal_cursor_smear = off").term_look().cursor_smear);
+        assert!(Config::parse("cursor_smear = off").term_look().cursor_smear);
+        assert!(!Config::parse("animate = off").term_look().cursor_smear);
+        let mut config=default;config.appearance.reduce_motion=true;assert!(!config.term_look().cursor_smear);
     }
 }

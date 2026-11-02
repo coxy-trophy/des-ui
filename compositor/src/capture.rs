@@ -143,14 +143,14 @@ impl DesComp {
                 (Some(udev), _) => {
                     if let Some(at) = at.filter(|at| pointer && rect.to_f64().contains(*at)) {
                         let position = at - rect.loc.to_f64();
-                        elements.extend(crate::udev::cursor_elements(&mut udev.renderer, &mut self.cursors, &cursor_status, position, scale, cursor_animate, std::time::Instant::now()));
+                        elements.extend(crate::udev::cursor_elements(&mut udev.renderer, &mut self.cursors, &cursor_status, position, scale, cursor_animate, std::time::Instant::now(), None));
                     }
                     &mut udev.renderer
                 }
                 (None, Some(backend)) => {
                     let renderer = backend.renderer();
                     if let Some(at) = at.filter(|at| pointer && rect.to_f64().contains(*at)) {
-                        elements.extend(crate::udev::cursor_elements(renderer, &mut self.cursors, &cursor_status, at - rect.loc.to_f64(), scale, cursor_animate, std::time::Instant::now()));
+                        elements.extend(crate::udev::cursor_elements(renderer, &mut self.cursors, &cursor_status, at - rect.loc.to_f64(), scale, cursor_animate, std::time::Instant::now(), None));
                     }
                     renderer
                 },

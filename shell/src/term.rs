@@ -45,6 +45,7 @@ pub struct TermLook {
     pub line_height: f32,
     pub cursor: CursorShape,
     pub cursor_blink: bool,
+    pub cursor_smear: bool,
     /// Show bold text in the bright version of its colour.
     pub bold_bright: bool,
     /// Copy text as soon as it is selected.
@@ -73,6 +74,8 @@ pub struct TermTab {
     completion_dismissed: Option<String>,
     completion_index: usize,
     completions_enabled: bool,
+    smear: des_common::smear::Smear,
+    smear_grid: Option<(u16,u16,f32,f32)>,
     /// Anchor and head of the mouse selection, as (row, col) cells of the visible grid.
     selection: Option<((u16, u16), (u16, u16))>,
     links_to_open: Vec<String>,
@@ -216,6 +219,8 @@ impl TermTab {
             completion_dismissed: None,
             completion_index: 0,
             completions_enabled: true,
+            smear: Default::default(),
+            smear_grid: None,
             selection: None,
             links_to_open: Vec::new(),
             explain_output: None,
@@ -896,6 +901,8 @@ impl TermTab {
         }
         let screen = self.parser.screen();
 
+        let grid = (rows,cols,cw,ch);
+        if self.smear_grid != Some(grid) { self.smear.clear(); self.smear_grid=Some(grid); }
         // A blinking cursor is on for half of each second.
         let lit = !look.cursor_blink || !focused || ui.input(|i| i.time).rem_euclid(1.0) < 0.5;
         if look.cursor_blink && focused {
@@ -922,6 +929,17 @@ impl TermTab {
         }
 
         if let Some((_, _, cell)) = cursor {
+            let ghosts=self.smear.update(ui.input(|i|i.time),[(cell.left()-rect.left()) as f64,(cell.top()-rect.top()) as f64],focused && look.cursor_smear);
+            if !ghosts.is_empty() {ui.ctx().request_repaint_after(Duration::from_millis(16));}
+            for ghost in ghosts {
+                let min=rect.min+Vec2::new(ghost.position[0] as f32,ghost.position[1] as f32);
+                let tail=match look.cursor {
+                    CursorShape::Block=>Rect::from_min_size(min,cell.size()),
+                    CursorShape::Bar=>Rect::from_min_size(min,Vec2::new(2.0,ch)),
+                    CursorShape::Underline=>Rect::from_min_size(min+Vec2::new(0.0,ch-2.0),Vec2::new(cell.width(),2.0)),
+                };
+                painter.rect_filled(tail,0.0,theme.cursor.gamma_multiply(ghost.alpha));
+            }
             let shape = match look.cursor {
                 CursorShape::Block => cell,
                 CursorShape::Bar => Rect::from_min_size(cell.min, Vec2::new(2.0, ch)),
@@ -934,6 +952,8 @@ impl TermTab {
                 painter.rect_stroke(cell, 0.0, Stroke::new(1.0, theme.cursor), egui::StrokeKind::Inside);
             }
         }
+
+        if cursor.is_none() { self.smear.clear(); }
 
         // Under a block cursor the character is drawn again, dark on the cursor's
         // colour, so that it stays readable.
@@ -1151,7 +1171,7 @@ mod tests {
         parser.process(b"|");
         let font = FontId::monospace(size);
         let look = TermLook { font_size: size, line_height: 1.0, cursor: CursorShape::Block,
-            cursor_blink: false, bold_bright: true, copy_on_select: false };
+            cursor_blink: false, cursor_smear: false, bold_bright: true, copy_on_select: false };
         let theme = Theme::load("signal");
         let _ = ctx.run(Default::default(), |ctx| {
             let pixels_per_point = ctx.pixels_per_point();
@@ -1173,7 +1193,7 @@ mod tests {
         let mut parser = vt100::Parser::new(1, 20, 0);
         parser.process(b"\x1b[4m    \x1b[0mX");
         let look = TermLook { font_size: 14.0, line_height: 1.0, cursor: CursorShape::Block,
-            cursor_blink: false, bold_bright: true, copy_on_select: false };
+            cursor_blink: false, cursor_smear: false, bold_bright: true, copy_on_select: false };
         let theme = Theme::load("signal");
         let font = FontId::monospace(14.0);
         let _ = ctx.run(Default::default(), |ctx| ctx.fonts(|fonts| {
@@ -1192,7 +1212,7 @@ mod tests {
         let ctx = egui::Context::default(); crate::ui::install_fonts(&ctx, None, None);
         let parser = vt100::Parser::new(60, 160, 0);
         let look = TermLook { font_size: 14.0, line_height: 1.0, cursor: CursorShape::Block,
-            cursor_blink: false, bold_bright: true, copy_on_select: false };
+            cursor_blink: false, cursor_smear: false, bold_bright: true, copy_on_select: false };
         let theme = Theme::load("signal");
         let font = FontId::monospace(14.0);
         let _ = ctx.run(Default::default(), |ctx| ctx.fonts(|fonts| {
@@ -1220,7 +1240,7 @@ mod tests {
     fn frame(tab: &mut TermTab, ctx: &egui::Context, rect: Rect, events: Vec<Event>, focused: bool, smooth: f32) -> bool {
         let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 500.0))), events, ..Default::default() };
         let look = TermLook { font_size: 14.0, line_height: 1.0, cursor: CursorShape::Block,
-            cursor_blink: false, bold_bright: true, copy_on_select: false };
+            cursor_blink: false, cursor_smear: false, bold_bright: true, copy_on_select: false };
         let theme = Theme::load("signal");
         let mut hovered = false;
         let _ = ctx.run(input, |ctx| {
@@ -1273,7 +1293,7 @@ mod tests {
         tab.parser.process(b"\x1b[2J\x1b[Hhttps://example.org");
         let pos = rect.min + Vec2::new(GUTTER + 30.0, 5.0);
         let look = TermLook { font_size: 14.0, line_height: 1.0, cursor: CursorShape::Block,
-            cursor_blink: false, bold_bright: true, copy_on_select: false };
+            cursor_blink: false, cursor_smear: false, bold_bright: true, copy_on_select: false };
         let theme = Theme::load("signal");
         for ctrl in [false, true] {
             let modifiers = Modifiers { ctrl, ..Modifiers::NONE };

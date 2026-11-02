@@ -836,3 +836,14 @@ In **Settings → Sound & Screen → Notifications**, turn off **Processor tempe
 ### Startup recovery and input-method security
 
 The login session now uses a Python 3 startup watchdog that waits for initialized shell readiness. See [session/STARTUP.md](session/STARTUP.md) for recovery behavior and compatibility. Privileged external Wayland input-method integration is disabled until a trusted launch mechanism is available; ordinary text-input and the shell keyboard remain supported.
+
+Terminal cursor trails (Settings → Terminal) and mouse pointer trails
+(Settings → Mouse & touchpad → Cursor) have separate switches. They retain the
+chosen cursor shape and color, fade within 120 ms, and respect Reduce motion and
+`animate = off`. Set `terminal_cursor_smear = off` or `cursor_smear = off` to
+disable either independently. Desktop trails also use application-supplied cursor images without changing
+their artwork.
+
+The effect was inspired by [smear-cursor.nvim](https://github.com/sphamba/smear-cursor.nvim).
+DEs-UI uses its own bounded native motion history and graphical rendering rather
+than embedding the Neovim plugin or its Lua drawing code.

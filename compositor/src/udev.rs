@@ -95,11 +95,13 @@ pub fn cursor_elements<C>(
     scale: f64,
     animate: bool,
     now: Instant,
+    smear_origin: Option<smithay::utils::Point<f64, smithay::utils::Logical>>,
 ) -> Vec<C>
 where C: From<MemoryRenderBufferRenderElement<GlesRenderer>> + From<WaylandSurfaceRenderElement<GlesRenderer>> {
+    let ghosts=smear_origin.map(|origin| cursors.smear_positions(position+origin,now,animate)).unwrap_or_default();
     let mut elements = Vec::new();
     match status {
-        CursorImageStatus::Hidden => { cursors.suspend(); }
+        CursorImageStatus::Hidden => { cursors.suspend(); cursors.clear_smear(); }
         CursorImageStatus::Surface(surface) => {
             cursors.suspend();
             let hotspot = with_states(surface, |states| {
@@ -117,12 +119,26 @@ where C: From<MemoryRenderBufferRenderElement<GlesRenderer>> + From<WaylandSurfa
                 1.0,
                 Kind::Cursor,
             ));
+            if let Some(origin)=smear_origin {
+                for ghost in ghosts.into_iter().rev() {
+                    let at=(smithay::utils::Point::from((ghost.position[0],ghost.position[1]))-origin-hotspot.to_f64()).to_physical(scale).to_i32_round();
+                    elements.extend(render_elements_from_surface_tree(renderer,surface,at,scale,ghost.alpha,Kind::Cursor));
+                }
+            }
         }
         CursorImageStatus::Named(icon) => {
             let (picture, hotspot) = cursors.get(*icon, scale, animate, now);
             let at = (position - hotspot.to_f64()).to_physical(scale);
             if let Ok(pointer) = MemoryRenderBufferRenderElement::from_buffer(renderer, at, picture, None, None, None, Kind::Cursor) {
                 elements.push(C::from(pointer));
+            }
+            if let Some(origin)=smear_origin {
+                for ghost in ghosts.into_iter().rev() {
+                    let at=(smithay::utils::Point::from((ghost.position[0],ghost.position[1]))-origin-hotspot.to_f64()).to_physical(scale);
+                    if let Ok(tail)=MemoryRenderBufferRenderElement::from_buffer(renderer,at,picture,Some(ghost.alpha),None,None,Kind::Cursor) {
+                        elements.push(C::from(tail));
+                    }
+                }
             }
         }
     }
@@ -1094,7 +1110,8 @@ impl DesComp {
                 // Over a divider between windows, or dragging one, the double arrow.
                 let status = effective_cursor_status(&self.cursor_status, self.resize_hover);
                 elements.extend(cursor_elements(renderer, &mut self.cursors, &status, position, scale,
-                    crate::motion::allowed(self.motions.enabled, self.locked, self.picking), now));
+                    crate::motion::allowed(self.motions.enabled, self.locked, self.picking), now,
+                    Some(geometry.loc.to_f64()).filter(|_| self.input_settings.cursor_smear)));
                 if !self.locked && !self.picking {
                     elements.extend(self.hand_feedback.elements(position, scale, now)
                         .into_iter().map(OutputElements::Solid));

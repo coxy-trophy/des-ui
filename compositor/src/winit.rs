@@ -169,7 +169,8 @@ pub fn init_winit(
                             let status = crate::udev::effective_cursor_status(&state.cursor_status, state.resize_hover);
                             toasts.extend(crate::udev::cursor_elements::<crate::splash::TopElements>(renderer,
                                 &mut state.cursors, &status, pointer.current_location(), scale,
-                                crate::motion::allowed(state.motions.enabled, state.locked, state.picking), std::time::Instant::now()));
+                                crate::motion::allowed(state.motions.enabled, state.locked, state.picking), std::time::Instant::now(),
+                                Some((0.0,0.0).into()).filter(|_| state.input_settings.cursor_smear)));
                         }
                     }
                     if let Some(splash) = state.splash.as_mut() {

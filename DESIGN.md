@@ -147,3 +147,9 @@ Settings navigation follows a shared catalog: Desktop, Hardware, Connections, Pe
 Pointer artwork uses the configured solid fill without a heavy opaque keyline, with a small translucent offset shadow for definition. Settings, named compositor cursors and exported legacy theme use the same silhouette/preferences. Forward only cursor lookup variables to Xwayland and keep standard aliases; app-provided custom cursor artwork remains app-owned. Mirrored scanouts never own a window's preferred client scale; independent outputs use greatest overlap and stable primary tie-breaking.
 
 System panel spacing: Network and World View use only their painted height. Displays and local Controls follow immediately with an 8px section gap; unused height must not stretch the globe reservation into a blank middle band. Playback retains its protected bottom allocation, and the same height budget still prevents clipping on short panels.
+
+Cursor trails use existing cursor colors and shapes, with separate switches in
+Terminal and Mouse & touchpad. Both respect reduced motion and desktop animation
+preferences. The actual cursor remains immediate; a bounded 120 ms history fades
+behind it. Capture omits pointer trails, and hidden cursors clear desktop history; application-supplied cursor artwork
+is reused without modification. No particles or permanent idle animation.
