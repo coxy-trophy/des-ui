@@ -26,7 +26,6 @@ pub struct InputSettings {
     pub mouse_left_handed: bool,
     /// Logical pixels used by the desktop pointer.
     pub cursor_size: u32,
-    pub cursor_smear: bool,
     /// Opaque RGB fill for the desktop pointer.
     pub cursor_color: [u8; 3],
     /// An XKB layout such as `us` or `de`; empty for the system's default.
@@ -64,7 +63,6 @@ impl Default for InputSettings {
             mouse_speed: 0.0,
             mouse_left_handed: false,
             cursor_size: CURSOR_BASE_SIZE,
-            cursor_smear: true,
             cursor_color: DEFAULT_CURSOR_COLOR,
             keyboard_layout: String::new(),
             keyboard_variant: String::new(),
@@ -123,7 +121,6 @@ impl InputSettings {
                 "mouse_natural_scroll" => settings.mouse_natural_scroll = switch(settings.mouse_natural_scroll),
                 "mouse_speed" => settings.mouse_speed = speed(settings.mouse_speed),
                 "mouse_left_handed" => settings.mouse_left_handed = switch(settings.mouse_left_handed),
-                "cursor_smear" => settings.cursor_smear = switch(settings.cursor_smear),
                 "cursor_size" => {
                     if let Ok(size) = value.parse::<u32>() {
                         settings.cursor_size = size.clamp(CURSOR_SIZE_RANGE.0, CURSOR_SIZE_RANGE.1);
@@ -273,15 +270,5 @@ mod tests {
         assert_eq!(settings.repeat_rate, REPEAT_RATE_RANGE.1);
         assert!(settings.touchpad_tap);
         assert_eq!(settings.keyboard_layout, "");
-    }
-}
-
-#[cfg(test)] mod smear_tests {
-    use super::*;
-    #[test] fn pointer_smear_is_independent_of_terminal_smear() {
-        assert!(InputSettings::parse("").cursor_smear);
-        assert!(InputSettings::parse("terminal_cursor_smear = off").cursor_smear);
-        assert!(!InputSettings::parse("cursor_smear = off").cursor_smear);
-        assert!(InputSettings::parse("cursor_smear = nonsense").cursor_smear);
     }
 }

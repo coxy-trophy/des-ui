@@ -837,12 +837,9 @@ In **Settings → Sound & Screen → Notifications**, turn off **Processor tempe
 
 The login session now uses a Python 3 startup watchdog that waits for initialized shell readiness. See [session/STARTUP.md](session/STARTUP.md) for recovery behavior and compatibility. Privileged external Wayland input-method integration is disabled until a trusted launch mechanism is available; ordinary text-input and the shell keyboard remain supported.
 
-Terminal cursor trails (Settings → Terminal) and mouse pointer trails
-(Settings → Mouse & touchpad → Cursor) have separate switches. They retain the
-chosen cursor shape and color, deform smoothly with damped corner springs, and respect Reduce motion and
-`animate = off`. Set `terminal_cursor_smear = off` or `cursor_smear = off` to
-disable either independently. The mouse smear uses the configured pointer color; application-supplied pointer
-artwork remains unchanged at the real pointer position.
+Terminal cursor smear (Settings → Terminal) uses a smooth, spring-driven shape
+and respects Reduce motion and `animate = off`. Set `terminal_cursor_smear = off`
+to disable it. The desktop mouse pointer has no smear effect.
 
 The effect was inspired by [smear-cursor.nvim](https://github.com/sphamba/smear-cursor.nvim).
 DEs-UI uses its own native spring model and continuous graphical rendering rather

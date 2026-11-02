@@ -76,7 +76,6 @@ render_elements! {
     Toast=crate::toast::ToastElement,
     Solid=smithay::backend::renderer::element::solid::SolidColorRenderElement,
     Phosphor=smithay::backend::renderer::gles::element::TextureShaderElement,
-    Smear=smithay::backend::renderer::gles::element::PixelShaderElement,
     Cropped=smithay::backend::renderer::element::utils::CropRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>,
 }
 
@@ -96,12 +95,11 @@ pub fn cursor_elements<C>(
     scale: f64,
     animate: bool,
     now: Instant,
-    smear_origin: Option<smithay::utils::Point<f64, smithay::utils::Logical>>,
 ) -> Vec<C>
-where C: From<MemoryRenderBufferRenderElement<GlesRenderer>> + From<WaylandSurfaceRenderElement<GlesRenderer>> + From<smithay::backend::renderer::gles::element::PixelShaderElement> {
+where C: From<MemoryRenderBufferRenderElement<GlesRenderer>> + From<WaylandSurfaceRenderElement<GlesRenderer>> {
     let mut elements = Vec::new();
     match status {
-        CursorImageStatus::Hidden => { cursors.suspend(); cursors.clear_smear(); }
+        CursorImageStatus::Hidden => { cursors.suspend(); }
         CursorImageStatus::Surface(surface) => {
             cursors.suspend();
             let hotspot = with_states(surface, |states| {
@@ -119,7 +117,6 @@ where C: From<MemoryRenderBufferRenderElement<GlesRenderer>> + From<WaylandSurfa
                 1.0,
                 Kind::Cursor,
             ));
-
         }
         CursorImageStatus::Named(icon) => {
             let (picture, hotspot) = cursors.get(*icon, scale, animate, now);
@@ -127,12 +124,6 @@ where C: From<MemoryRenderBufferRenderElement<GlesRenderer>> + From<WaylandSurfa
             if let Ok(pointer) = MemoryRenderBufferRenderElement::from_buffer(renderer, at, picture, None, None, None, Kind::Cursor) {
                 elements.push(C::from(pointer));
             }
-
-        }
-    }
-    if !matches!(status,CursorImageStatus::Hidden) {
-        if let Some(origin)=smear_origin {
-            if let Some(tail)=cursors.smear_element(renderer,position+origin,origin,now,animate,scale) {elements.push(C::from(tail));}
         }
     }
     elements
@@ -156,7 +147,6 @@ pub fn splash_elements(
             crate::splash::TopElements::Space(space) => OutputElements::Space(space),
             crate::splash::TopElements::Moving(moving) => OutputElements::Moving(moving),
             crate::splash::TopElements::Phosphor(frame) => OutputElements::Phosphor(frame),
-            crate::splash::TopElements::Smear(frame) => OutputElements::Smear(frame),
             crate::splash::TopElements::Cropped(cropped) => OutputElements::Cropped(cropped),
             crate::splash::TopElements::_GenericCatcher(never) => match never {},
         })
@@ -1104,8 +1094,7 @@ impl DesComp {
                 // Over a divider between windows, or dragging one, the double arrow.
                 let status = effective_cursor_status(&self.cursor_status, self.resize_hover);
                 elements.extend(cursor_elements(renderer, &mut self.cursors, &status, position, scale,
-                    crate::motion::allowed(self.motions.enabled, self.locked, self.picking), now,
-                    Some(geometry.loc.to_f64()).filter(|_| self.input_settings.cursor_smear)));
+                    crate::motion::allowed(self.motions.enabled, self.locked, self.picking), now));
                 if !self.locked && !self.picking {
                     elements.extend(self.hand_feedback.elements(position, scale, now)
                         .into_iter().map(OutputElements::Solid));

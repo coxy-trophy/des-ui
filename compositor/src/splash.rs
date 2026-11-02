@@ -35,7 +35,6 @@ render_elements! {
     Space=smithay::desktop::space::SpaceRenderElements<GlesRenderer, smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement<GlesRenderer>>,
     Moving=smithay::backend::renderer::element::utils::RescaleRenderElement<smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement<GlesRenderer>>,
     Phosphor=smithay::backend::renderer::gles::element::TextureShaderElement,
-    Smear=smithay::backend::renderer::gles::element::PixelShaderElement,
     Cropped=smithay::backend::renderer::element::utils::CropRenderElement<smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement<GlesRenderer>>,
 }
 

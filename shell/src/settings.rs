@@ -711,7 +711,7 @@ impl Settings {
         }
         ui.add_space(22.0);
 
-        if switch_row(ui, theme, "Terminal cursor trail", "A short fading trail when the text cursor moves; respects Reduce motion", config.terminal_cursor_smear) {
+        if switch_row(ui, theme, "Terminal cursor smear", "Smooth spring motion when the text cursor moves; respects Reduce motion", config.terminal_cursor_smear) {
             changes.push(Change::Set("terminal_cursor_smear", Some(if config.terminal_cursor_smear { "off" } else { "on" }.into())));
         }
         heading(ui, "BEHAVIOUR", "");
@@ -810,9 +810,6 @@ impl Settings {
 
     fn cursor(&mut self, ui: &mut Ui, theme: &Theme, input: &InputSettings, changes: &mut Vec<Change>) {
         heading(ui, "CURSOR", "Changes apply now. Some apps update when reopened.");
-        if switch_row(ui, theme, "Mouse pointer trail", "A short fading trail behind the pointer; independent of the terminal cursor and respects Reduce motion", input.cursor_smear) {
-            changes.push(Change::Set("cursor_smear", Some(if input.cursor_smear { "off" } else { "on" }.into())));
-        }
         let (low, high) = CURSOR_SIZE_RANGE;
         if let Some(frac) = slider_row(ui, theme, "Cursor size", (input.cursor_size - low) as f32 / (high - low) as f32, &format!("{} px", input.cursor_size)) {
             let size = (low as f32 + frac * (high - low) as f32).round() as u32;

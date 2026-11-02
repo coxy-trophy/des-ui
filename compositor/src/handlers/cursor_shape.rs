@@ -12,7 +12,6 @@ use smithay::{
 use crate::DesComp;
 
 mod art;
-mod smear;
 
 delegate_cursor_shape!(DesComp);
 
@@ -140,10 +139,6 @@ struct Cached {
 /// A scale change only changes raster density; it never restarts the morph.
 pub struct Cursors {
     preferences: Preferences,
-    smear: des_common::smear::Smear,
-    smear_epoch: Instant,
-    smear_program: Option<smithay::backend::renderer::gles::GlesPixelProgram>,
-    smear_shader_failed: bool,
     speaking_until: Option<Instant>,
     speaking_started: Option<Instant>,
     shape: Option<Shape>,
@@ -158,10 +153,6 @@ impl Cursors {
     pub fn new() -> Self {
         Self {
             preferences: Preferences::default(),
-            smear: Default::default(),
-            smear_epoch: Instant::now(),
-            smear_program: None,
-            smear_shader_failed: false,
             speaking_until: None,
             speaking_started: None,
             shape: None,
@@ -177,11 +168,9 @@ impl Cursors {
     /// All cached renderer identities belong to one normalized appearance only.
     pub fn configure(&mut self, preferences: Preferences) {
         let preferences=preferences.normalized();
-        self.smear.clear();
         if self.preferences != preferences {
             self.preferences=preferences;
             self.cache.clear();
-            self.smear.clear();
         }
     }
 
@@ -270,8 +259,6 @@ impl Cursors {
 
     /// Hidden and client-supplied cursors break compositor animation continuity.
     /// Resuming a named cursor displays its target immediately, without a stale morph.
-    pub fn clear_smear(&mut self) { self.smear.clear(); }
-
     pub fn suspend(&mut self) {
         self.shape = None;
         self.started = None;
