@@ -12,6 +12,7 @@ use smithay::{
 use crate::DesComp;
 
 mod art;
+mod smear;
 
 delegate_cursor_shape!(DesComp);
 
@@ -141,6 +142,8 @@ pub struct Cursors {
     preferences: Preferences,
     smear: des_common::smear::Smear,
     smear_epoch: Instant,
+    smear_program: Option<smithay::backend::renderer::gles::GlesPixelProgram>,
+    smear_shader_failed: bool,
     speaking_until: Option<Instant>,
     speaking_started: Option<Instant>,
     shape: Option<Shape>,
@@ -157,6 +160,8 @@ impl Cursors {
             preferences: Preferences::default(),
             smear: Default::default(),
             smear_epoch: Instant::now(),
+            smear_program: None,
+            smear_shader_failed: false,
             speaking_until: None,
             speaking_started: None,
             shape: None,
@@ -265,10 +270,6 @@ impl Cursors {
 
     /// Hidden and client-supplied cursors break compositor animation continuity.
     /// Resuming a named cursor displays its target immediately, without a stale morph.
-    pub fn smear_positions(&mut self, position: Point<f64, Logical>, now: Instant, enabled: bool) -> Vec<des_common::smear::Ghost> {
-        self.smear.update(now.saturating_duration_since(self.smear_epoch).as_secs_f64(), [position.x,position.y], enabled)
-    }
-
     pub fn clear_smear(&mut self) { self.smear.clear(); }
 
     pub fn suspend(&mut self) {

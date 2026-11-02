@@ -76,6 +76,7 @@ render_elements! {
     Toast=crate::toast::ToastElement,
     Solid=smithay::backend::renderer::element::solid::SolidColorRenderElement,
     Phosphor=smithay::backend::renderer::gles::element::TextureShaderElement,
+    Smear=smithay::backend::renderer::gles::element::PixelShaderElement,
     Cropped=smithay::backend::renderer::element::utils::CropRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>,
 }
 
@@ -97,8 +98,7 @@ pub fn cursor_elements<C>(
     now: Instant,
     smear_origin: Option<smithay::utils::Point<f64, smithay::utils::Logical>>,
 ) -> Vec<C>
-where C: From<MemoryRenderBufferRenderElement<GlesRenderer>> + From<WaylandSurfaceRenderElement<GlesRenderer>> {
-    let ghosts=smear_origin.map(|origin| cursors.smear_positions(position+origin,now,animate)).unwrap_or_default();
+where C: From<MemoryRenderBufferRenderElement<GlesRenderer>> + From<WaylandSurfaceRenderElement<GlesRenderer>> + From<smithay::backend::renderer::gles::element::PixelShaderElement> {
     let mut elements = Vec::new();
     match status {
         CursorImageStatus::Hidden => { cursors.suspend(); cursors.clear_smear(); }
@@ -119,12 +119,7 @@ where C: From<MemoryRenderBufferRenderElement<GlesRenderer>> + From<WaylandSurfa
                 1.0,
                 Kind::Cursor,
             ));
-            if let Some(origin)=smear_origin {
-                for ghost in ghosts.into_iter().rev() {
-                    let at=(smithay::utils::Point::from((ghost.position[0],ghost.position[1]))-origin-hotspot.to_f64()).to_physical(scale).to_i32_round();
-                    elements.extend(render_elements_from_surface_tree(renderer,surface,at,scale,ghost.alpha,Kind::Cursor));
-                }
-            }
+
         }
         CursorImageStatus::Named(icon) => {
             let (picture, hotspot) = cursors.get(*icon, scale, animate, now);
@@ -132,14 +127,12 @@ where C: From<MemoryRenderBufferRenderElement<GlesRenderer>> + From<WaylandSurfa
             if let Ok(pointer) = MemoryRenderBufferRenderElement::from_buffer(renderer, at, picture, None, None, None, Kind::Cursor) {
                 elements.push(C::from(pointer));
             }
-            if let Some(origin)=smear_origin {
-                for ghost in ghosts.into_iter().rev() {
-                    let at=(smithay::utils::Point::from((ghost.position[0],ghost.position[1]))-origin-hotspot.to_f64()).to_physical(scale);
-                    if let Ok(tail)=MemoryRenderBufferRenderElement::from_buffer(renderer,at,picture,Some(ghost.alpha),None,None,Kind::Cursor) {
-                        elements.push(C::from(tail));
-                    }
-                }
-            }
+
+        }
+    }
+    if !matches!(status,CursorImageStatus::Hidden) {
+        if let Some(origin)=smear_origin {
+            if let Some(tail)=cursors.smear_element(renderer,position+origin,origin,now,animate,scale) {elements.push(C::from(tail));}
         }
     }
     elements
@@ -163,6 +156,7 @@ pub fn splash_elements(
             crate::splash::TopElements::Space(space) => OutputElements::Space(space),
             crate::splash::TopElements::Moving(moving) => OutputElements::Moving(moving),
             crate::splash::TopElements::Phosphor(frame) => OutputElements::Phosphor(frame),
+            crate::splash::TopElements::Smear(frame) => OutputElements::Smear(frame),
             crate::splash::TopElements::Cropped(cropped) => OutputElements::Cropped(cropped),
             crate::splash::TopElements::_GenericCatcher(never) => match never {},
         })

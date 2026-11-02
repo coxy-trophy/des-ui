@@ -839,11 +839,11 @@ The login session now uses a Python 3 startup watchdog that waits for initialize
 
 Terminal cursor trails (Settings → Terminal) and mouse pointer trails
 (Settings → Mouse & touchpad → Cursor) have separate switches. They retain the
-chosen cursor shape and color, fade within 120 ms, and respect Reduce motion and
+chosen cursor shape and color, deform smoothly with damped corner springs, and respect Reduce motion and
 `animate = off`. Set `terminal_cursor_smear = off` or `cursor_smear = off` to
-disable either independently. Desktop trails also use application-supplied cursor images without changing
-their artwork.
+disable either independently. The mouse smear uses the configured pointer color; application-supplied pointer
+artwork remains unchanged at the real pointer position.
 
 The effect was inspired by [smear-cursor.nvim](https://github.com/sphamba/smear-cursor.nvim).
-DEs-UI uses its own bounded native motion history and graphical rendering rather
+DEs-UI uses its own native spring model and continuous graphical rendering rather
 than embedding the Neovim plugin or its Lua drawing code.

@@ -148,8 +148,11 @@ Pointer artwork uses the configured solid fill without a heavy opaque keyline, w
 
 System panel spacing: Network and World View use only their painted height. Displays and local Controls follow immediately with an 8px section gap; unused height must not stretch the globe reservation into a blank middle band. Playback retains its protected bottom allocation, and the same height budget still prevents clipping on short panels.
 
-Cursor trails use existing cursor colors and shapes, with separate switches in
-Terminal and Mouse & touchpad. Both respect reduced motion and desktop animation
-preferences. The actual cursor remains immediate; a bounded 120 ms history fades
-behind it. Capture omits pointer trails, and hidden cursors clear desktop history; application-supplied cursor artwork
-is reused without modification. No particles or permanent idle animation.
+Cursor smears have separate switches in Terminal and Mouse & touchpad. Both
+respect reduced motion and desktop animation preferences. Use a single deforming
+shape with distinct leading/trailing corner springs, integrated analytically so
+frame rate does not change the response. Terminal caret visuals follow the spring;
+text input and mouse hit testing stay immediate. The mouse smear is one GPU quad
+behind the original pointer, using its configured color. Clear history on hiding,
+focus loss, layout changes or long pauses. Settle exactly at rest; no particles,
+copied-cursor afterimages, per-frame raster textures, or permanent idle animation.

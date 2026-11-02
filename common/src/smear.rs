@@ -1,43 +1,54 @@
-//! Bounded cursor motion history, shared by terminal and desktop renderers.
+//! Native critically damped cursor deformation. No raster history or cursor copies.
+#[derive(Default)]
+pub struct Smear {
+    time: Option<f64>,
+    target: [[f64; 2]; 4],
+    corners: [[f64; 2]; 4],
+    velocity: [[f64; 2]; 4],
+    rates: [f64; 4],
+    active: bool,
+}
+impl Smear {
+    pub fn clear(&mut self) { *self=Self::default(); }
+    pub fn active(&self)->bool {self.active}
+    pub fn quad(&mut self, now:f64, target:[[f64;2];4], enabled:bool)->[[f64;2];4] {
+        let invalid=!now.is_finite() || !target.iter().flatten().all(|v|v.is_finite());
+        if invalid {self.clear();return target;}
+        let jump=(target[0][0]-self.target[0][0]).hypot(target[0][1]-self.target[0][1]);
+        let dt=now-self.time.unwrap_or(now);
+        if !enabled || self.time.is_none() || !(0.0..=0.25).contains(&dt) || jump>2048.0 {
+            self.time=Some(now);self.target=target;self.corners=target;self.velocity=[[0.0;2];4];self.active=false;self.rates=[32.0;4];return target;
+        }
+        // Exact solution of x'' + 2*w*x' + w*w*(x-target) = 0.
+        // Integrate the previous target before applying this frame's new target.
+        for i in 0..4 {for axis in 0..2 {
+            let w=self.rates[i];let error=self.corners[i][axis]-self.target[i][axis];
+            let b=self.velocity[i][axis]+w*error;let decay=(-w*dt).exp();
+            self.corners[i][axis]=self.target[i][axis]+(error+b*dt)*decay;
+            self.velocity[i][axis]=(self.velocity[i][axis]-w*b*dt)*decay;
+        }}
+        if self.target!=target {
+            let center=[target.iter().map(|p|p[0]).sum::<f64>()/4.0,target.iter().map(|p|p[1]).sum::<f64>()/4.0];
+            let distances=self.corners.map(|p|(p[0]-center[0]).hypot(p[1]-center[1]));
+            let min=distances.into_iter().fold(f64::INFINITY,f64::min);let max=distances.into_iter().fold(0.0,f64::max);
+            for (i,d) in distances.into_iter().enumerate(){let weight=if max-min>0.001{(d-min)/(max-min)}else{0.0};self.rates[i]=46.0-22.0*weight;}
+        }
+        self.target=target;self.time=Some(now);
+        self.active=false;
+        for i in 0..4 {for axis in 0..2 {
+            // Bound deformation even when a terminal jumps across a large grid.
+            self.corners[i][axis]=self.corners[i][axis].clamp(target[i][axis]-384.0,target[i][axis]+384.0);
+            if (self.corners[i][axis]-target[i][axis]).abs()>0.04 || self.velocity[i][axis].abs()>0.4 {self.active=true;}
+        }}
+        if !self.active {self.corners=target;self.velocity=[[0.0;2];4];}
+        self.corners
+    }
+}
 #[cfg(test)] mod tests {
  use super::*;
- #[test] fn idle_and_disabled_have_no_trail(){let mut s=Smear::default();assert!(s.update(0.0,[0.0,0.0],true).is_empty());assert!(!s.update(0.01,[20.0,0.0],true).is_empty());assert!(s.update(1.0,[20.0,0.0],true).is_empty());assert!(s.update(1.01,[40.0,0.0],false).is_empty());assert!(s.update(1.02,[40.0,0.0],true).is_empty());}
- #[test] fn history_and_alpha_are_bounded(){let mut s=Smear::default();for i in 0..1000{let g=s.update(i as f64*0.001,[i as f64,0.0],true);assert!(g.len()<=8);assert!(g.iter().all(|g|g.alpha>0.0&&g.alpha<=0.35));}}
- #[test] fn teleports_invalid_time_and_invalid_positions_clear_history(){let mut s=Smear::default();s.update(0.0,[0.0,0.0],true);assert!(s.update(0.01,[10000.0,0.0],true).is_empty());assert!(s.update(f64::NAN,[0.0,0.0],true).is_empty());assert!(s.update(1.0,[f64::NAN,0.0],true).is_empty());}
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct Ghost { pub position: [f64; 2], pub alpha: f32 }
-#[derive(Default)]
-pub struct Smear { last: Option<([f64; 2], f64)>, points: std::collections::VecDeque<([f64; 2], f64)> }
-impl Smear {
-    pub fn clear(&mut self) { self.last=None; self.points.clear(); }
-    pub fn update(&mut self, now:f64, position:[f64;2], enabled:bool)->Vec<Ghost> {
-        if !enabled || !now.is_finite() || !position.iter().all(|v|v.is_finite()) {self.clear();return vec![];}
-        if let Some((old,time))=self.last {
-            let d=(old[0]-position[0]).hypot(old[1]-position[1]);
-            if now<time || now-time>0.25 || d>512.0 {self.points.clear();}
-            else if d>=1.0 {
-                let steps=(d/6.0).ceil().clamp(1.0,8.0) as usize;
-                for i in 0..steps {
-                    let t=i as f64/steps as f64;
-                    let point=[old[0]+(position[0]-old[0])*t,old[1]+(position[1]-old[1])*t];
-                    if self.points.len()==8 {self.points.pop_front();}
-                    self.points.push_back((point,now-(1.0-t)*0.03));
-                }
-            }
-        }
-        self.last=Some((position,now));
-        self.points.retain(|(_,time)|now-time<0.12);
-        self.points.iter().map(|(position,time)|Ghost{position:*position,alpha:(0.35*(1.0-(now-time)/0.12).powi(2)) as f32}).collect()
-    }
-}
-
-#[cfg(test)] mod movement_tests {
-    use super::*;
-    #[test] fn a_cursor_jump_leaves_samples_along_the_path() {
-        let mut s=Smear::default();s.update(0.0,[0.0,0.0],true);
-        let ghosts=s.update(0.01,[80.0,0.0],true);
-        assert!(ghosts.len()>1);assert!(ghosts.iter().any(|g|g.position[0]>0.0&&g.position[0]<80.0));
-    }
+ fn rect(x:f64)->[[f64;2];4]{[[x,0.0],[x+10.0,0.0],[x+10.0,20.0],[x,20.0]]}
+ #[test] fn moves_continuously_and_settles_without_idle_work(){let mut s=Smear::default();s.quad(0.0,rect(0.0),true);assert_eq!(s.quad(0.01,rect(100.0),true),rect(0.0));let q=s.quad(0.026,rect(100.0),true);assert!(q[0][0]>0.0&&q[0][0]<100.0);assert!(s.active());for i in 1..100{s.quad(0.026+i as f64/60.0,rect(100.0),true);}assert!(!s.active());}
+ #[test] fn corners_stretch_instead_of_producing_cursor_copies(){let mut s=Smear::default();s.quad(0.0,rect(0.0),true);s.quad(0.01,rect(100.0),true);let q=s.quad(0.04,rect(100.0),true);assert!(q[1][0]-q[0][0]>10.0);}
+ #[test] fn frame_rate_does_not_change_the_motion(){let run=|hz:u32|{let mut s=Smear::default();s.quad(0.0,rect(0.0),true);s.quad(0.01,rect(100.0),true);let mut q=rect(0.0);for i in 1..=hz/10{q=s.quad(0.01+i as f64/hz as f64,rect(100.0),true);}q};let a=run(60);let b=run(120);for i in 0..4{for j in 0..2{assert!((a[i][j]-b[i][j]).abs()<0.0001);}}}
+ #[test] fn disable_time_gaps_and_teleports_snap_cleanly(){let mut s=Smear::default();s.quad(0.0,rect(0.0),true);assert_eq!(s.quad(0.01,rect(100.0),false),rect(100.0));assert!(!s.active());assert_eq!(s.quad(2.0,rect(200.0),true),rect(200.0));assert_eq!(s.quad(2.01,rect(10000.0),true),rect(10000.0));}
 }

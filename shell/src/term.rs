@@ -904,11 +904,11 @@ impl TermTab {
         let grid = (rows,cols,cw,ch);
         if self.smear_grid != Some(grid) { self.smear.clear(); self.smear_grid=Some(grid); }
         // A blinking cursor is on for half of each second.
-        let lit = !look.cursor_blink || !focused || ui.input(|i| i.time).rem_euclid(1.0) < 0.5;
+        let lit = self.smear.active() || !look.cursor_blink || !focused || ui.input(|i| i.time).rem_euclid(1.0) < 0.5;
         if look.cursor_blink && focused {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
         }
-        let cursor = (!screen.hide_cursor() && screen.scrollback() == 0 && lit).then(|| {
+        let cursor = (!screen.hide_cursor() && screen.scrollback() == 0).then(|| {
             let (crow, ccol) = screen.cursor_position();
             let crow = crow.min(rows - 1);
             let mut ccol = ccol.min(cols - 1);
@@ -929,25 +929,22 @@ impl TermTab {
         }
 
         if let Some((_, _, cell)) = cursor {
-            let ghosts=self.smear.update(ui.input(|i|i.time),[(cell.left()-rect.left()) as f64,(cell.top()-rect.top()) as f64],focused && look.cursor_smear);
-            if !ghosts.is_empty() {ui.ctx().request_repaint_after(Duration::from_millis(16));}
-            for ghost in ghosts {
-                let min=rect.min+Vec2::new(ghost.position[0] as f32,ghost.position[1] as f32);
-                let tail=match look.cursor {
-                    CursorShape::Block=>Rect::from_min_size(min,cell.size()),
-                    CursorShape::Bar=>Rect::from_min_size(min,Vec2::new(2.0,ch)),
-                    CursorShape::Underline=>Rect::from_min_size(min+Vec2::new(0.0,ch-2.0),Vec2::new(cell.width(),2.0)),
-                };
-                painter.rect_filled(tail,0.0,theme.cursor.gamma_multiply(ghost.alpha));
-            }
             let shape = match look.cursor {
                 CursorShape::Block => cell,
                 CursorShape::Bar => Rect::from_min_size(cell.min, Vec2::new(2.0, ch)),
                 CursorShape::Underline => Rect::from_min_max(Pos2::new(cell.left(), cell.bottom() - 2.0), cell.max),
             };
-            if focused {
-                painter.rect_filled(shape, 0.0, theme.cursor);
-            } else {
+            let target=[shape.left_top(),shape.right_top(),shape.right_bottom(),shape.left_bottom()]
+                .map(|p|[(p.x-rect.left()) as f64,(p.y-rect.top()) as f64]);
+            let corners=self.smear.quad(ui.input(|i|i.time),target,focused && look.cursor_smear);
+            if self.smear.active() {ui.ctx().request_repaint_after(Duration::from_millis(8));}
+            if focused && (lit || self.smear.active()) {
+                if self.smear.active() {
+                    let mut mesh=egui::Mesh::default();
+                    for p in corners {mesh.colored_vertex(rect.min+Vec2::new(p[0] as f32,p[1] as f32),theme.cursor);}
+                    mesh.add_triangle(0,1,2);mesh.add_triangle(0,2,3);painter.add(egui::Shape::mesh(mesh));
+                } else {painter.rect_filled(shape,0.0,theme.cursor);}
+            } else if !focused {
                 // Without the keyboard, the cursor is an outline.
                 painter.rect_stroke(cell, 0.0, Stroke::new(1.0, theme.cursor), egui::StrokeKind::Inside);
             }
@@ -957,7 +954,7 @@ impl TermTab {
 
         // Under a block cursor the character is drawn again, dark on the cursor's
         // colour, so that it stays readable.
-        if let (Some((crow, ccol, cell)), CursorShape::Block, true) = (cursor, look.cursor, focused) {
+        if let (Some((crow, ccol, cell)), CursorShape::Block, true) = (cursor, look.cursor, focused && lit && !self.smear.active()) {
             if let Some(under) = screen.cell(crow, ccol).filter(|under| under.has_contents()) {
                 painter.text(
                     Pos2::new(cell.left(), cell.top() + inset),
