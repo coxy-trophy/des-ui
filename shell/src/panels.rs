@@ -1296,6 +1296,25 @@ mod tests {
     }
 }
 
+/// Shared vertical time treatment for collapsed panels and the application rail.
+/// Respect the configured time format and repaint only on the next minute.
+pub fn collapsed_clock(ui: &mut Ui, theme: &Theme, rect: Rect) {
+    if rect.width() < 8.0 || rect.height() < 16.0 { return; }
+    let now = chrono::Local::now();
+    let (hours,minutes,half)=crate::region::vertical_clock(&now);
+    let text=format!("{hours}:{minutes}{}",half.map(|period|format!(" {period}")).unwrap_or_default());
+    let font_size=26.0_f32.min((rect.width()-4.0).max(8.0));
+    let mut galley=ui.painter().layout_no_wrap(text.clone(),ui::display(font_size),theme.main);
+    if galley.size().x>rect.height() {
+        galley=ui.painter().layout_no_wrap(text,ui::display(font_size*rect.height()/galley.size().x),theme.main);
+    }
+    let size=galley.size();
+    let origin=pos2(rect.center().x-size.y/2.0,rect.center().y+size.x/2.0);
+    ui.painter().add(eframe::egui::epaint::TextShape::new(origin,galley,theme.main).with_angle(-std::f32::consts::FRAC_PI_2));
+    use chrono::Timelike;
+    ui.ctx().request_repaint_after(Duration::from_secs((60-now.second()) as u64));
+}
+
 /// A minimized side column stays clickable; its tooltip also names the global shortcut.
 pub fn collapsed_rail(ui: &mut Ui, theme: &Theme, panel: Panel) -> bool {
     let rect = ui.max_rect();
@@ -1316,23 +1335,7 @@ pub fn collapsed_rail(ui: &mut Ui, theme: &Theme, panel: Panel) -> bool {
     let c = pos2(rect.center().x, rect.top() + 48.0);
     ui.painter().line(vec![c + vec2(-2.0*d,-3.0), c + vec2(2.0*d,0.0), c + vec2(-2.0*d,3.0)], Stroke::new(1.2, ui::LABEL));
     if panel == Panel::Left && rect.height() >= 146.0 {
-        let now = chrono::Local::now();
-        let (hours,minutes,half)=crate::region::vertical_clock(&now);
-        // Rotate the whole clock: hours at the bottom, minutes at the top,
-        // with the glyphs facing right rather than stacked upright.
-        let text = format!("{hours}:{minutes}{}", half.map(|period| format!(" {period}")).unwrap_or_default());
-        let mut galley = ui.painter().layout_no_wrap(text.clone(), ui::display(26.0), theme.main);
-        let available = rect.height() - 80.0;
-        if galley.size().x > available {
-            let font_size = 26.0 * available / galley.size().x;
-            galley = ui.painter().layout_no_wrap(text, ui::display(font_size), theme.main);
-        }
-        let size = galley.size();
-        let origin = pos2(rect.center().x - size.y / 2.0, rect.top() + 72.0 + size.x);
-        ui.painter().add(eframe::egui::epaint::TextShape::new(origin, galley, theme.main)
-            .with_angle(-std::f32::consts::FRAC_PI_2));
-        use chrono::Timelike;
-        ui.ctx().request_repaint_after(Duration::from_secs((60 - now.second()) as u64));
+        collapsed_clock(ui, theme, Rect::from_min_max(pos2(rect.left(),rect.top()+72.0),pos2(rect.right(),rect.bottom()-8.0)));
     }
     let clicked = response.clicked();
     response.on_hover_text(hint);

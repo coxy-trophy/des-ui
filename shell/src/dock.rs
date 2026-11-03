@@ -147,7 +147,7 @@ impl Dock {
         let empty=DesktopState::default();let state=state.unwrap_or(&empty);
         let all=items_on(&self.entries,&[],state,None);
         let body=ui.max_rect();let pointer=ctx.pointer_hover_pos();
-        let header=(body.height()*0.2).min(52.0);let footer=(body.height()*0.3).min(88.0);
+        let header=(body.height()*0.4).min(164.0);let footer=(body.height()*0.3).min(88.0);
         let slot=44.0_f32.min((body.height()-header-footer).max(1.0));
         let capacity=((body.height()-header-footer)/slot).floor().max(1.0) as usize;
         let tile=|top:f32,height:f32|Rect::from_min_size(egui::pos2(body.left()+4.0,top),vec2((body.width()-8.0).max(1.0),height.max(1.0)));
@@ -158,6 +158,16 @@ impl Dock {
         ui::paint_icon(ui.painter(),expand.shrink(6.0),ui::Icon::PanelLeft,ui::SECONDARY,false);
         response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,true,"Expand system panel"));
         result.expand=response.on_hover_text("Hover to peek · click to expand the system panel").clicked();
+        if header>=80.0 {
+            let clock=tile(expand.bottom()+8.0,(header-60.0).max(16.0));
+            let response=ui.interact(clock,ui.id().with("left-dock-clock"),Sense::click());
+            if response.hovered()||response.has_focus(){ui.painter().rect_filled(clock,ui::CONTROL_RADIUS,theme.tint());}
+            crate::panels::collapsed_clock(ui,theme,clock.shrink2(vec2(2.0,4.0)));
+            response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,true,"Expand system panel"));
+            result.expand|=response.on_hover_text("Click to expand the system panel").clicked();
+            let y=body.top()+header-8.0;
+            ui.painter().line_segment([egui::pos2(body.left()+12.0,y),egui::pos2(body.right()-12.0,y)],egui::Stroke::new(1.0,ui::LINE));
+        }
         for (n,item) in all.iter().take(capacity).enumerate() {
             let rect=tile(body.top()+header+n as f32*slot,(slot-4.0).min(40.0));
             result.icon_hovered|=pointer.is_some_and(|p|rect.contains(p));
@@ -699,11 +709,28 @@ mod right_panel_tests {
     use super::*;
     use des_common::ipc::{AppInfo,Place};
     fn state()->DesktopState {DesktopState{apps:(0..2).map(|i|AppInfo{app_id:"example".into(),title:format!("Window {i}"),screen:0,place:Place::Main,workspace:i,pinned:false,urgent:false}).collect(),..Default::default()}}
+    #[test] fn expand_button_and_clock_open_full_panel_but_app_does_not() {
+        for (y,wanted) in [(22.0,true),(90.0,true),(180.0,false)] {
+            let ctx=egui::Context::default();crate::ui::install_fonts(&ctx,None,None);
+            let mut dock=Dock::default();dock.scanned=Some(Instant::now());
+            let mut expanded=false;
+            for frame in 0..3 {
+                let mut events=vec![egui::Event::PointerMoved(pos2(22.0,y))];
+                if frame>0 {events.push(egui::Event::PointerButton{pos:pos2(22.0,y),button:egui::PointerButton::Primary,pressed:frame==1,modifiers:Modifiers::NONE});}
+                let input=egui::RawInput{screen_rect:Some(Rect::from_min_size(pos2(0.0,0.0),vec2(600.0,600.0))),time:Some(frame as f64*0.05),events,..Default::default()};
+                let _=ctx.run(input,|ctx|{egui::CentralPanel::default().show(ctx,|ui|{
+                    let mut rail=ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(pos2(0.0,0.0),vec2(44.0,500.0))));
+                    expanded|=dock.rail_on(&mut rail,Some(&state()),&Theme::load("signal")).expand;
+                });});
+            }
+            assert_eq!(expanded,wanted,"expansion ownership at y={y}");
+        }
+    }
     #[test] fn grouped_app_icon_hover_is_distinct_from_unused_rail_space() {
         let ctx=egui::Context::default();crate::ui::install_fonts(&ctx,None,None);
         let mut dock=Dock::default();dock.scanned=Some(Instant::now());
         let mut hover=Vec::new();
-        for (time,y) in [(0.0,70.0),(0.1,125.0)] {
+        for (time,y) in [(0.0,180.0),(0.1,260.0)] {
             let input=egui::RawInput{screen_rect:Some(Rect::from_min_size(pos2(0.0,0.0),vec2(600.0,600.0))),time:Some(time),events:vec![egui::Event::PointerMoved(pos2(22.0,y))],..Default::default()};
             let _=ctx.run(input,|ctx|{egui::CentralPanel::default().show(ctx,|ui|{
                 let mut rail=ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(pos2(0.0,0.0),vec2(44.0,500.0))));

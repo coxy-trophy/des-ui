@@ -178,3 +178,9 @@ icons. Explicit expand/collapse remains available. Suppress peeks while locked,
 picking a capture or another lifted/modal surface owns input. Lift only actual
 popup/peek rectangles above native apps; never union opposite-side overlays into
 a screen-sized crop.
+
+The collapsed left dock retains the shared vertical clock beneath its explicit
+expand control. Time follows the regional format and accent theme, with a fine
+shared LINE divider separating it from running apps. The clock also opens the
+full system column on click; its hover may reveal the existing temporary peek.
+The header shrinks with rail height; app tiles never borrow clock click ownership.

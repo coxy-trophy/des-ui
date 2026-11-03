@@ -43,3 +43,20 @@ Close the preview window to stop its processes and remove temporary state.
 The native preview confirmed two real windows grouped in the collapsed dock;
 hover exclusion/delay are covered by egui/state tests. Interactive hover over
 native windows still needs visual confirmation in the preview.
+
+The original full-column expansion remains available through the top button and
+its global panel shortcut. The restored vertical clock is also a full-expansion
+button. It uses the same shared clock painter as the legacy collapsed panel,
+respects regional time format and updates on minute boundaries. A subtle divider
+separates time from app icons; the header adapts to short displays.
+
+The clock refinement adds an egui click test for both full-expansion targets and
+checks that app clicks do not expand the panel. The optional frontend static
+audit reports 33 pre-existing actionless buttons in the terminal HTML prototype
+(`docs/prototypes/terminal-workbench/index.html`); it reports no findings in these
+native Rust dock changes. That prototype is outside this change.
+
+Clock refinement validation: full shell suite passed 551 tests, one ignored;
+`cargo build -p des-ui --locked -j2` passed. A refreshed native nested preview
+visibly shows the accent clock, divider, grouped running app and launcher without
+overlap. The installed login session was not replaced.
