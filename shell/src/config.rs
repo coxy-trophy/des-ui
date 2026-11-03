@@ -120,7 +120,7 @@ impl Default for Config {
             dnd_schedule: None,
             twelve_hour: false,
             pet: "dog".to_string(),
-            panels: Panels::default(),
+            panels: Panels { left: false, ..Panels::default() },
             side_panel_behavior: des_common::PanelBehavior::default(),
             dock_pins: Vec::new(),
             drag_overview: true,
@@ -666,5 +666,14 @@ mod drag_overview_tests {
         assert!(Config::parse("cursor_smear = off").term_look().cursor_smear);
         assert!(!Config::parse("animate = off").term_look().cursor_smear);
         let mut config=default;config.appearance.reduce_motion=true;assert!(!config.term_look().cursor_smear);
+    }
+}
+
+#[cfg(test)] mod left_dock_tests {
+    use super::*;
+    #[test] fn monitoring_is_collapsed_by_default_but_saved_choices_are_respected() {
+        assert!(!Config::default().panels.left);
+        assert!(Config::parse("panels = left, right").panels.left);
+        assert!(!Config::parse("panels = right").panels.left);
     }
 }

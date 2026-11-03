@@ -77,6 +77,9 @@ pub enum Action {
 #[derive(Default)]
 pub struct Output {pub action:Option<Action>,pub overlay:Option<Rect>,pub keyboard:bool}
 
+#[derive(Default)]
+pub struct RailOutput {pub output:Output,pub icon_hovered:bool,pub expand:bool}
+
 pub struct Dock {
     entries: Vec<AppEntry>,
     scan: Option<Receiver<Vec<AppEntry>>>,
@@ -94,10 +97,11 @@ pub struct Dock {
     display: usize,
     page: usize,
     composing: bool,
+    rail_popup: Option<egui::Id>,
 }
 impl Default for Dock {
     fn default() -> Self {
-        Self { entries:Vec::new(), scan:None, scanned:None, icons:IconCache::new(), motion:Motion::default(), menu_open:false, selection:0, selection_key:None, revealed_selection:None, coverage:None, search:String::new(), expanded:HashSet::new(), selected_window:None, display:0, page:0, composing:false }
+        Self { entries:Vec::new(), scan:None, scanned:None, icons:IconCache::new(), motion:Motion::default(), menu_open:false, selection:0, selection_key:None, revealed_selection:None, coverage:None, search:String::new(), expanded:HashSet::new(), selected_window:None, display:0, page:0, composing:false, rail_popup:None }
     }
 }
 impl Dock {
@@ -136,6 +140,83 @@ impl Dock {
             self.scan=Some(rx);
         }
     }
+    /// Compact running-app dock in the collapsed left column. Blank space is
+    /// deliberately left without an interaction target so it can reveal telemetry.
+    pub fn rail_on(&mut self,ui:&mut egui::Ui,state:Option<&DesktopState>,theme:&Theme)->RailOutput {
+        let ctx=ui.ctx().clone();self.refresh(&ctx);
+        let empty=DesktopState::default();let state=state.unwrap_or(&empty);
+        let all=items_on(&self.entries,&[],state,None);
+        let body=ui.max_rect();let pointer=ctx.pointer_hover_pos();
+        let header=(body.height()*0.2).min(52.0);let footer=(body.height()*0.3).min(88.0);
+        let slot=44.0_f32.min((body.height()-header-footer).max(1.0));
+        let capacity=((body.height()-header-footer)/slot).floor().max(1.0) as usize;
+        let tile=|top:f32,height:f32|Rect::from_min_size(egui::pos2(body.left()+4.0,top),vec2((body.width()-8.0).max(1.0),height.max(1.0)));
+        let mut result=RailOutput::default();let mut seen_popup=false;let mut owns_popup=false;
+        let expand=tile(body.top()+4.0,(header-8.0).min(36.0));
+        let response=ui.interact(expand,ui.id().with("left-dock-expand"),Sense::click());
+        if response.hovered(){ui.painter().rect_filled(expand,ui::CONTROL_RADIUS,theme.tint());}
+        ui::paint_icon(ui.painter(),expand.shrink(6.0),ui::Icon::PanelLeft,ui::SECONDARY,false);
+        response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,true,"Expand system panel"));
+        result.expand=response.on_hover_text("Hover to peek · click to expand the system panel").clicked();
+        for (n,item) in all.iter().take(capacity).enumerate() {
+            let rect=tile(body.top()+header+n as f32*slot,(slot-4.0).min(40.0));
+            result.icon_hovered|=pointer.is_some_and(|p|rect.contains(p));
+            let response=ui.interact(rect,ui.id().with(("left-running-app",item_key(item))),Sense::click());
+            let active=state.focus.is_some_and(|index|item.windows.contains(&index));
+            if response.hovered()||active {ui.painter().rect_filled(rect,ui::CONTROL_RADIUS,theme.tint());}
+            self.icons.paint(ui,Rect::from_center_size(rect.center(),vec2(26.0_f32.min(rect.width()),26.0_f32.min(rect.height()))),item.entry.and_then(|i|self.entries[i].icon.as_deref()));
+            if active {ui.painter().rect_filled(Rect::from_min_size(rect.left_top()+vec2(-3.0,5.0),vec2(2.0,(rect.height()-10.0).max(1.0))),1.0,theme.main);}
+            ui.painter().circle_filled(rect.center_bottom()+vec2(0.0,-2.0),1.5,if active{theme.main}else{ui::SECONDARY});
+            if item.windows.len()>1 {ui.painter().text(rect.right_bottom()+vec2(-1.0,-2.0),Align2::RIGHT_BOTTOM,item.windows.len().to_string(),ui::mono(9.0),ui::TEXT);}
+            if item.windows.iter().any(|&i|state.apps[i].urgent) {ui.painter().circle_filled(rect.right_top()+vec2(-3.0,3.0),2.5,theme.main);}
+            response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,true,&item.label));
+            let popup=ui.id().with(("left-app-windows",item_key(item)));
+            if self.rail_popup==Some(popup){seen_popup=true;}
+            if response.clicked()&&item.windows.len()==1 {self.motion.dismiss();result.output.action=Some(activation(0,item,&self.entries,state));}
+            if response.secondary_clicked() || (response.clicked()&&item.windows.len()>1) {self.motion.dismiss();ctx.memory_mut(|m|m.toggle_popup(popup));self.rail_popup=Some(popup);seen_popup=true;}
+            if let Some(area)=egui::popup_below_widget(ui,popup,&response,egui::PopupCloseBehavior::CloseOnClickOutside,|ui|{
+                ui.set_width(280.0);ui.label(&item.label);
+                egui::ScrollArea::vertical().max_height(360.0).show(ui,|ui|{
+                    for &index in &item.windows {
+                        let app=&state.apps[index];
+                        if ui::button(ui,theme,&format!("{} · W{} · D{}",crate::panels::truncate(&app.title,34),app.workspace+1,app.screen+1),None,false).clicked(){result.output.action=Some(Action::Command(Command::Activate(index)));ui.close_menu();}
+                    }
+                });
+                if let Some(entry)=item.entry {if ui::button(ui,theme,"Open new window",None,false).clicked(){result.output.action=Some(Action::Launch(self.entries[entry].clone()));ui.close_menu();}}
+                ui.min_rect()
+            }) {owns_popup=true;result.output.overlay=Some(area.expand(10.0));}
+            if !self.motion.keyboard {
+                response.on_hover_ui(|ui|{
+                    ui.set_max_width(280.0);ui.label(&item.label);ui.label(group_detail(item,state,0));
+                    if !owns_popup {result.output.overlay=Some(ui.min_rect().expand(10.0));}
+                });
+            }
+        }
+        let footer_control=if all.len()>capacity {((footer-4.0)/2.0).clamp(1.0,36.0)}else{(footer-4.0).clamp(1.0,36.0)};
+        if all.len()>capacity {
+            let rect=tile(body.bottom()-footer,footer_control);
+            result.icon_hovered|=pointer.is_some_and(|p|rect.contains(p));
+            let response=ui.put(rect,egui::Button::new("···").frame(false)).on_hover_text("More running applications");
+            let popup=ui.id().with("left-dock-overflow");if self.rail_popup==Some(popup){seen_popup=true;}
+            if response.clicked(){self.motion.dismiss();ctx.memory_mut(|m|m.toggle_popup(popup));self.rail_popup=Some(popup);seen_popup=true;}
+            if let Some(area)=egui::popup_below_widget(ui,popup,&response,egui::PopupCloseBehavior::CloseOnClickOutside,|ui|{
+                ui.set_width(280.0);
+                egui::ScrollArea::vertical().max_height(360.0).show(ui,|ui|{for item in all.iter().skip(capacity){for &index in &item.windows {
+                    let app=&state.apps[index];if ui::button(ui,theme,&format!("{} · {}",item.label,crate::panels::truncate(&app.title,30)),None,false).clicked(){result.output.action=Some(Action::Command(Command::Activate(index)));ui.close_menu();}
+                }}});ui.min_rect()
+            }) {owns_popup=true;result.output.overlay=Some(area.expand(10.0));}
+        }
+        let launcher=tile(body.bottom()-footer_control-2.0,footer_control);
+        result.icon_hovered|=pointer.is_some_and(|p|launcher.contains(p));
+        let response=ui.interact(launcher,ui.id().with("left-dock-launcher"),Sense::click());
+        ui::paint_icon(ui.painter(),launcher.shrink(5.0),ui::Icon::Apps,if response.hovered(){theme.main}else{ui::SECONDARY},false);
+        if response.clicked(){self.motion.dismiss();result.output.action=Some(Action::Launcher);}
+        response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,true,"Open applications"));response.on_hover_text("Open applications");
+        if !seen_popup {if let Some(id)=self.rail_popup.take(){ctx.memory_mut(|m|{if m.is_popup_open(id){m.close_popup();}});}}
+        result.output.keyboard=owns_popup;
+        result
+    }
+
     /// Render the desktop application manager in its caller's right panel.
     /// The primary display includes every workspace and display.
     pub fn panel_on(&mut self, display:usize, ui:&mut egui::Ui, state:Option<&DesktopState>, pins:&[String], theme:&Theme, animate:bool)->Output {
@@ -612,4 +693,23 @@ mod right_panel_tests {
         });
     }
 
+}
+
+#[cfg(test)] mod left_rail_tests {
+    use super::*;
+    use des_common::ipc::{AppInfo,Place};
+    fn state()->DesktopState {DesktopState{apps:(0..2).map(|i|AppInfo{app_id:"example".into(),title:format!("Window {i}"),screen:0,place:Place::Main,workspace:i,pinned:false,urgent:false}).collect(),..Default::default()}}
+    #[test] fn grouped_app_icon_hover_is_distinct_from_unused_rail_space() {
+        let ctx=egui::Context::default();crate::ui::install_fonts(&ctx,None,None);
+        let mut dock=Dock::default();dock.scanned=Some(Instant::now());
+        let mut hover=Vec::new();
+        for (time,y) in [(0.0,70.0),(0.1,125.0)] {
+            let input=egui::RawInput{screen_rect:Some(Rect::from_min_size(pos2(0.0,0.0),vec2(600.0,600.0))),time:Some(time),events:vec![egui::Event::PointerMoved(pos2(22.0,y))],..Default::default()};
+            let _=ctx.run(input,|ctx|{egui::CentralPanel::default().show(ctx,|ui|{
+                let mut rail=ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(pos2(0.0,0.0),vec2(44.0,500.0))));
+                hover.push(dock.rail_on(&mut rail,Some(&state()),&Theme::load("signal")).icon_hovered);
+            });});
+        }
+        assert_eq!(hover,[true,false],"one grouped icon owns its tile; the empty space can expand telemetry");
+    }
 }

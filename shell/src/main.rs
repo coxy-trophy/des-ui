@@ -5,6 +5,7 @@ mod apps;
 mod autostart;
 mod app_icons;
 mod dock;
+mod left_dock;
 mod capture;
 mod companion;
 mod config;
@@ -153,6 +154,7 @@ struct App {
     desktop: Option<Desktop>,
     launcher: Launcher,
     dock: dock::Dock,
+    left_peek: left_dock::Hover,
     secondary_docks: std::collections::BTreeMap<usize,dock::Dock>,
     secondary_areas: std::collections::BTreeMap<usize,Option<(i32,i32,i32,i32)>>,
     restore: Option<(session_restore::Restore, Vec<apps::AppEntry>, Instant)>,
@@ -375,6 +377,7 @@ impl App {
             desktop,
             launcher,
             dock: dock::Dock::default(),
+            left_peek: Default::default(),
             secondary_docks: Default::default(),
             secondary_areas: Default::default(),
             restore: None,

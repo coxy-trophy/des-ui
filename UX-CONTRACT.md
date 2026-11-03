@@ -237,3 +237,14 @@ prompt, and can prepare an explanation draft in Chat. Insertion never runs the
 command. The user reviews and sends the explanation draft;
 opening it never submits terminal output automatically. Neither feature saves a
 separate terminal history.
+
+Primary left dock: new default configurations start with the left monitoring
+panel collapsed; explicit saved panel choices remain authoritative. Running-app
+icons reuse dock grouping and the shared icon cache. App/control hover excludes
+system-panel expansion. Empty-rail or expand-control hover arms a 220ms peek;
+leaving or entering an app icon closes it after 250ms. Keep icons and native
+workspace geometry fixed while peeking. Explicit expansion still uses existing
+panel commands. Popup/peek coverage must use only its own visible rectangle;
+opposite-side overlays must never be unioned across native applications. Lock,
+capture picking and modal input ownership suppress peeks. Right Apps and Super+D
+remain the detailed window manager and keyboard workflow.

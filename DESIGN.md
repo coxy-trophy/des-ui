@@ -163,3 +163,18 @@ following until Return to current line is chosen, and raises inactive contrast.
 Use edge fades and a restrained accent marker. The first pass has no blur shader,
 animated background, or invented word timing. Respect reduced motion and stop
 animation work once transitions settle; paint only visible lines.
+
+The primary left monitoring panel defaults to collapsed. Its rail is a running-app
+dock, grouping windows through the existing dock model and using the shared icon
+cache. App tiles, window counts, active indicators and the launcher keep fixed hit
+areas. Overflow opens a bounded window list. Existing saved panel choices remain
+valid, and the right Apps manager retains detailed controls.
+
+Hovering app icons or dock controls must never reveal system telemetry. Hovering
+unused rail space or the expand control arms a 220ms system-panel peek. Keep it
+open inside the adjacent panel, and close after a 250ms leave grace period. The
+peek overlays beside the dock; it never changes workspace geometry or moves app
+icons. Explicit expand/collapse remains available. Suppress peeks while locked,
+picking a capture or another lifted/modal surface owns input. Lift only actual
+popup/peek rectangles above native apps; never union opposite-side overlays into
+a screen-sized crop.
