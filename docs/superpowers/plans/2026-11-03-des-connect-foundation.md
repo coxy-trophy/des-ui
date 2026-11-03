@@ -30,11 +30,11 @@
 
 Files: independent des-connect-android repository, its build.gradle.kts, app resources and DES-CONNECT.md; desktop docs/DES-CONNECT.md.
 
-- [ ] Fork KDE/kdeconnect-android to coxy-trophy/des-connect-android; add upstream and record exact base revision.
-- [ ] Read build, manifest, resource and license structure. Record file-level license patterns and dependency inventory limits.
-- [ ] Add a separate application ID and DES Connect label for a co-installable fork; preserve notices and license files.
-- [ ] Run upstream unit/build checks that tooling permits. If tooling fails, reproduce exact cause and record it; do not claim a built APK.
-- [ ] Commit/push Android customization and desktop inventory.
+- [x] Fork KDE/kdeconnect-android to coxy-trophy/des-connect-android; add upstream and record exact base revision.
+- [x] Read build, manifest, resource and license structure. Record file-level license patterns and dependency inventory limits.
+- [x] Add a separate application ID and DES Connect label for a co-installable fork; preserve notices and license files.
+- [x] Run upstream unit/build checks that tooling permits. If tooling fails, reproduce exact cause and record it; do not claim a built APK.
+- [x] Commit/push Android customization and desktop inventory.
 
 ## Task 2: Desktop protocol and pairing state foundation
 
@@ -42,24 +42,26 @@ Files: connect/Cargo.toml, connect/src/lib.rs, connect/src/packet.rs, connect/sr
 
 Interfaces: Packet encoding/decoding consumes newline-delimited JSON with a 64KiB frame bound. Identity validation consumes a decoded identity packet and returns a checked identity. Pairing state only consumes an explicitly authenticated peer identity/fingerprint from a future TLS adapter, never raw network claims.
 
-- [ ] Inspect actual upstream identity, pairing and protocol-version source before fixing model semantics.
-- [ ] Write tests for frame boundary, malformed/oversized JSON, identity validation, unpaired access, explicit acceptance, mismatch and stale/disconnected requests.
-- [ ] Run tests and observe failure before implementation.
-- [ ] Implement the bounded pure protocol/state modules; do not create an unauthenticated LAN service or persist false trust.
-- [ ] Run focused tests, clippy and workspace metadata validation.
-- [ ] Document the TLS/session adapter and real-device verification still required. Commit/push.
+- [x] Inspect actual upstream identity, pairing and protocol-version source before fixing model semantics.
+- [x] Write tests for frame boundary, malformed/oversized JSON, identity validation, unpaired access, explicit acceptance, mismatch and stale/disconnected requests.
+- [x] Run tests and observe failure before implementation.
+- [x] Implement the bounded pure protocol/state modules; do not create an unauthenticated LAN service or persist false trust.
+- [x] Run focused tests and workspace metadata validation; attempt clippy and record unavailable tooling.
+- [x] Document the TLS/session adapter and real-device verification still required. Commit/push.
 
 ## Task 3: Review and handoff
 
-- [ ] Review both diffs, build results and license/branding boundaries independently.
-- [ ] Record exact completed checks and unresolved Android toolchain/device requirements.
-- [ ] Mark stage truthfully: no pairing, streaming or right-panel feature is working until integration and real-device verification exist.
+- [x] Review both diffs, build results and license/branding boundaries independently.
+- [x] Record exact completed checks and unresolved Android toolchain/device requirements.
+- [x] Mark stage truthfully: no pairing, streaming or right-panel feature is working until integration and real-device verification exist.
 
 The remaining stages in the design (authenticated transport, native tab, feature plugins and screen modes) follow separate implementation plans after the foundational contracts are established; this plan does not silently narrow their agreed target scope.
 
 ## Execution ledger
 
 - Approved direction: user explicitly chose Android and authorized native Rust desktop + Android fork on 2026-11-03.
-- Task 1: GitHub fork created, upstream base recorded, separate package/branding and runtime identity fixes implemented. Static checks pass; Android Gradle build is in progress with an existing full JDK21. No Android device is connected.
+- Task 1: GitHub fork created, upstream base recorded, separate package/branding and runtime identity fixes implemented. Static checks pass; Android Gradle build and 140 tests passed with the existing full JDK21. The branded APK installed and launched on the connected Samsung SM-P585, Android 14. Discovery and About credits were observed; pairing remains untested.
 - Task 2: initial tests failed with missing modules; nine implementation tests then passed. Independent review reproduced two stale-attempt failures; per-attempt tokens fixed them. Added exact frame and identity boundary tests: 13/13 pass. Native crate build and workspace metadata pass. fmt/clippy unavailable on this machine.
 - Task 3: independent review completed. Important findings fixed (attempt identity and Android FileProvider authority). Framing errors documented connection-fatal; exact-boundary tests added. No finished connectivity or deployment claim.
+
+- Final Android branding rebuild: 140 tests pass, signed debug APK built and installed; DES Connect header and retained upstream About credits visually confirmed. Streamed install failed EINVAL; push install succeeded. The desktop transport, actual pairing, CONNECT tab and screen modes remain subsequent stages.

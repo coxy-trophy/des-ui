@@ -26,6 +26,8 @@ The Android fork has a DES Connect launcher label, independent application ID
 `io.github.coxytrophy.desconnect` (debug suffix `.debug`), runtime-aware
 self-notification filtering and matching received-file FileProvider authority.
 Internal namespaces, existing artwork and most upstream screens remain intact;
+visible app headers, widgets and notification titles now use DES Connect and the
+About source/bug links point to the fork while retaining upstream credits.
 this is not yet the planned Android UI redesign or screen-sharing extension.
 
 ## Native foundation
@@ -59,8 +61,14 @@ No remote commands or network listener have been enabled by these foundations.
   pairing regressions now pass with per-attempt tokens. Frame error handling is
   documented connection-fatal and exact-limit tests were added.
 
-Android Gradle build/unit-test result is recorded below after completion.
-`adb devices -l` currently reports no connected device. Real pairing,
+Android build and unit tests passed: 140 tests, 24 suites, zero failures/errors/skips.
+The branded debug APK installed using ADB --no-streaming (streamed install hit
+splice EINVAL). First-launch/device-list and About credits were visually checked
+on the tablet: DES Connect label, Devices title, upstream authors and license
+controls present. Android peer discovery was observed; no peer was paired.
+The initial long build was terminated with exit 143 before packaging; the cached
+retry and final branding rebuild passed.
+The connected Samsung SM-P585 (Android 14) was subsequently selected for installation testing. Real pairing,
 received-file opening (including coexistence with official KDE Connect), Android
 permissions and screen capture/control still require device verification.
 
@@ -73,3 +81,12 @@ Apps tab's management actions until they have working replacements. Production
 video must replace the experimental raw-RGBA USB viewer with measured, efficient
 encoding and an authenticated transport; do not expose its existing local helper
 on the LAN.
+
+
+The signed debug APK is at sibling
+`../des-connect-android/build/outputs/apk/debug/des-connect-android-debug.apk`.
+Its final SHA-256 is
+`dbcaebd4b8489fa9e65da2a098c56c34b06970346d47f3bf78e8952569fc17e7`.
+A foreground sample of the first debug build measured 161941 KiB PSS and
+271826 KiB RSS on the tablet. This is a preliminary device-list baseline, not a
+background/release/streaming budget. Full memory profiling remains required.
