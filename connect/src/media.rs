@@ -2,13 +2,14 @@
 //! Caller must authenticate the peer and enforce separate media/system-volume opt-ins.
 //! Construction performs no I/O; requests hold a temporary session bus connection.
 use serde_json::{Value, json};
-use std::{collections::HashMap, fmt, io::{self, Read}, process::{Command, Stdio}, time::{Duration, Instant}, os::fd::AsFd};
+use std::{collections::HashMap, fmt, io::{self, Read, Write}, process::{Command, Stdio}, time::{Duration, Instant}, os::fd::AsFd};
 use zbus::{blocking::{Connection, Proxy}, zvariant::{OwnedValue, ObjectPath}};
 
 pub const MPRIS_REQUEST: &str = "kdeconnect.mpris.request";
 pub const SYSTEM_VOLUME_REQUEST: &str = "kdeconnect.systemvolume.request";
 const MPRIS: &str = "org.mpris.MediaPlayer2.Player";
 const PATH: &str = "/org/mpris/MediaPlayer2";
+const DES_MUSIC: &str = "DES Music";
 const SINK: &str = "default-output";
 const TIMEOUT: Duration = Duration::from_secs(1);
 #[derive(Debug)]
@@ -59,7 +60,8 @@ fn check_budget(started: &Instant) -> Result<(), MediaError> {
     // the first second, so sequential calls cannot accumulate beyond two seconds.
     if started.elapsed() >= TIMEOUT { Err(error("media request budget exhausted")) } else { Ok(()) }
 }
-fn media(b: &Value) -> Result<Vec<MediaReply>, MediaError> {
+fn media(b: &Value) -> Result<Vec<MediaReply>, MediaError> { media_with_music_path(b, &music_socket_path()) }
+fn media_with_music_path(b: &Value, music_path: &std::path::Path) -> Result<Vec<MediaReply>, MediaError> {
     let started = Instant::now();
     // Validate all mutations before any connection or side effect.
     let action = b.get("action").map(|v| v.as_str().ok_or_else(|| error("invalid action"))).transpose()?;
@@ -73,12 +75,21 @@ fn media(b: &Value) -> Result<Vec<MediaReply>, MediaError> {
     if b.get("setLoopStatus").is_some() || b.get("setShuffle").is_some() { return Err(error("loop/shuffle control unsupported")); }
     let list = b.get("requestPlayerList") == Some(&Value::Bool(true));
     if list && (action.is_some() || vol.is_some() || seek.is_some() || position.is_some()) { return Err(error("player list request cannot mutate playback")); }
+    if b.get("player").and_then(Value::as_str) == Some(DES_MUSIC) && !list {
+        return Ok(reply("kdeconnect.mpris", des_music_request(music_path, b, &started)?));
+    }
     if !list && !b.get("player").and_then(Value::as_str).is_some_and(valid_player) { return Err(error("invalid MPRIS player")); }
-    let c = zbus::blocking::connection::Builder::session().map_err(error)?.method_timeout(TIMEOUT).build().map_err(error)?;
-    let available = names(&c, &started)?;
+    // DES Music discovery only reads the service's initial state; it never starts it.
+    let local_music = list && DesMusic::open(music_path, &started).is_ok();
+    let connection = zbus::blocking::connection::Builder::session().map_err(error)
+        .and_then(|builder| builder.method_timeout(TIMEOUT).build().map_err(error));
     if list {
+        let mut available = connection.as_ref().ok().and_then(|c| names(c, &started).ok()).unwrap_or_default();
+        if local_music { available.truncate(15); available.insert(0, DES_MUSIC.to_string()); }
         return Ok(reply("kdeconnect.mpris", json!({"playerList":available,"supportAlbumArtPayload":false})));
     }
+    let c = connection?;
+    let available = names(&c, &started)?;
     let player = b.get("player").and_then(Value::as_str).filter(|p| valid_player(p)).ok_or_else(|| error("invalid MPRIS player"))?;
     if !available.iter().any(|p| p == player) { return Err(error("unknown MPRIS player")); }
     let p = proxy(&c, player)?;
@@ -114,6 +125,141 @@ fn snapshot(player: &str, p: &Proxy<'_>, started: &Instant) -> Result<Value, Med
     let can_control = props.get("CanControl").and_then(|v| bool::try_from(v).ok()).unwrap_or(false);
     let can = |name| can_control && props.get(name).and_then(|v| bool::try_from(v).ok()).unwrap_or(false);
     Ok(json!({"player":player,"title":text("xesam:title"),"artist":artists.chars().take(2048).collect::<String>(),"album":text("xesam:album"),"nowPlaying":text("xesam:title"),"isPlaying":status == "Playing","pos":position.max(0)/1000,"length":length,"volume":volume.map(|v| (v*100.0).clamp(0.0,100.0).round() as i64).unwrap_or(-1),"canPlay":can("CanPlay"),"canPause":can("CanPause"),"canGoNext":can("CanGoNext"),"canGoPrevious":can("CanGoPrevious"),"canSeek":can("CanSeek"),"albumArtUrl":text("mpris:artUrl")}))
+}
+// Independently follows des_common::music's local socket-address contract.
+fn music_socket_path() -> std::path::PathBuf {
+    std::env::var_os("DES_MUSIC_SOCKET").map(std::path::PathBuf::from).unwrap_or_else(|| {
+        std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join(format!("des-music-{}", rustix::process::geteuid().as_raw())))
+            .join("des-music.sock")
+    })
+}
+const MUSIC_LINE_LIMIT: usize = 64 * 1024;
+const MUSIC_TIMEOUT: Duration = Duration::from_millis(500);
+struct DesMusic {
+    stream: std::os::unix::net::UnixStream,
+    started: Instant,
+    buffered: Vec<u8>,
+    state: Value,
+}
+impl DesMusic {
+    fn open(path: &std::path::Path, request_started: &Instant) -> Result<Self, MediaError> {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+        use rustix::net::{socket_with, connect, AddressFamily, SocketType, SocketFlags, SocketAddrUnix};
+        check_budget(request_started)?;
+        if !path.is_absolute() { return Err(error("music socket requires an absolute path")); }
+        let parent = path.parent().ok_or_else(|| error("music socket has no parent"))?;
+        let directory = std::fs::symlink_metadata(parent).map_err(error)?;
+        let metadata = std::fs::symlink_metadata(path).map_err(error)?;
+        let uid = rustix::process::geteuid();
+        if !directory.is_dir() || directory.uid() != uid.as_raw() || directory.mode() & 0o077 != 0
+            || !metadata.file_type().is_socket() || metadata.uid() != uid.as_raw() || metadata.mode() & 0o077 != 0 {
+            return Err(error("music socket and directory must be private and owned by this user"));
+        }
+        let started = Instant::now();
+        let fd = socket_with(AddressFamily::UNIX, SocketType::STREAM, SocketFlags::CLOEXEC | SocketFlags::NONBLOCK, None).map_err(error)?;
+        // A full UNIX accept backlog fails immediately instead of blocking the actor.
+        connect(&fd, &SocketAddrUnix::new(path).map_err(error)?).map_err(error)?;
+        let stream = std::os::unix::net::UnixStream::from(fd);
+        if rustix::net::sockopt::socket_peercred(&stream).map_err(error)?.uid != uid { return Err(error("wrong music service owner")); }
+        let mut session = Self { stream, started, buffered: Vec::new(), state: Value::Null };
+        session.state = session.read_state()?;
+        Ok(session)
+    }
+    fn check_deadline(&self) -> Result<(), MediaError> {
+        if self.started.elapsed() >= MUSIC_TIMEOUT { Err(error("music socket timed out")) } else { Ok(()) }
+    }
+    fn read_state(&mut self) -> Result<Value, MediaError> {
+        loop {
+            self.check_deadline()?;
+            if let Some(end) = self.buffered.iter().position(|b| *b == b'\n') {
+                let state: Value = serde_json::from_slice(&self.buffered[..end]).map_err(error)?;
+                self.buffered.drain(..=end);
+                validate_music_state(&state)?;
+                return Ok(state);
+            }
+            if self.buffered.len() >= MUSIC_LINE_LIMIT { return Err(error("music state exceeds 64KiB")); }
+            let mut bytes = [0u8; 1024];
+            let remaining = (MUSIC_LINE_LIMIT - self.buffered.len()).min(bytes.len());
+            match self.stream.read(&mut bytes[..remaining]) {
+                Ok(0) => return Err(error("music service disconnected")),
+                Ok(n) => self.buffered.extend_from_slice(&bytes[..n]),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(2)),
+                Err(e) => return Err(error(e)),
+            }
+        }
+    }
+    fn send(&mut self, command: Value) -> Result<(), MediaError> {
+        let mut bytes = serde_json::to_vec(&command).map_err(error)?; bytes.push(b'\n');
+        let mut offset = 0;
+        while offset < bytes.len() {
+            self.check_deadline()?;
+            match self.stream.write(&bytes[offset..]) {
+                Ok(0) => return Err(error("music service disconnected")),
+                Ok(n) => offset += n,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(2)),
+                Err(e) => return Err(error(e)),
+            }
+        }
+        Ok(())
+    }
+}
+fn validate_music_state(s: &Value) -> Result<(), MediaError> {
+    let number = |v: &Value| v.as_u64().is_some_and(|n| n <= u32::MAX as u64);
+    if s.get("track").is_none() || s["type"] != "state" || !s["playing"].is_boolean() || !number(&s["position_ms"])
+        || !s["volume"].as_u64().is_some_and(|v| v <= 100) { return Err(error("invalid music state")); }
+    let track = &s["track"];
+    if !track.is_null() && (!track.is_object() || !number(&track["duration_ms"])
+        || ["name", "artists", "album"].iter().any(|key| !track[*key].is_string())
+        || (!track["cover"].is_null() && !track["cover"].is_string())) { return Err(error("invalid music track")); }
+    Ok(())
+}
+fn music_snapshot(state: &Value) -> Value {
+    let track = &state["track"];
+    let text = |key: &str| track[key].as_str().unwrap_or("").chars().take(2048).collect::<String>();
+    let has_track = track.is_object();
+    json!({"player":DES_MUSIC,"title":text("name"),"artist":text("artists"),"album":text("album"),"nowPlaying":text("name"),
+        "isPlaying":state["playing"],"pos":state["position_ms"],"length":track["duration_ms"].as_u64().unwrap_or(0),
+        "volume":state["volume"],"canPlay":has_track,"canPause":has_track,"canGoNext":has_track,"canGoPrevious":has_track,
+        "canSeek":has_track && track["duration_ms"].as_u64().unwrap_or(0)>0,"albumArtUrl":text("cover")})
+}
+fn des_music_request(path: &std::path::Path, b: &Value, started: &Instant) -> Result<Value, MediaError> {
+    let action = b.get("action").map(|v| v.as_str().ok_or_else(|| error("invalid music action"))).transpose()?;
+    if action.is_some_and(|a| !["Play", "Pause", "PlayPause", "Next", "Previous"].contains(&a)) { return Err(error("DES Music does not support this action")); }
+    let volume = b.get("setVolume").map(percent).transpose()?;
+    let absolute = b.get("SetPosition").map(integer).transpose()?;
+    if absolute.is_some_and(|n| n < 0 || n > u32::MAX as i64) { return Err(error("music position outside supported range")); }
+    let seek = b.get("Seek").map(integer).transpose()?;
+    if absolute.is_some() && seek.is_some() { return Err(error("ambiguous music seek")); }
+    let mut music = DesMusic::open(path, started)?;
+    let state = &music.state;
+    let duration = state["track"]["duration_ms"].as_u64().unwrap_or(0) as i64;
+    let target = if let Some(n) = absolute { Some(n) } else if let Some(offset) = seek {
+        Some(state["position_ms"].as_i64().unwrap_or(0).checked_add(offset / 1000).ok_or_else(|| error("music seek overflow"))?)
+    } else { None };
+    if target.is_some_and(|n| n < 0 || n > u32::MAX as i64 || n > duration) { return Err(error("music seek outside current track")); }
+    if (action.is_some() || target.is_some()) && state["track"].is_null() { return Err(error("DES Music has no current track")); }
+    let command = match action {
+        Some("Play") if state["playing"] == false => Some(json!({"cmd":"toggle"})),
+        Some("Pause") if state["playing"] == true => Some(json!({"cmd":"toggle"})),
+        Some("PlayPause") => Some(json!({"cmd":"toggle"})),
+        Some("Next") => Some(json!({"cmd":"next"})),
+        Some("Previous") => Some(json!({"cmd":"prev"})),
+        _ => None,
+    };
+    // Android sends one control per packet. Reject combinations before any write,
+    // avoiding ambiguous asynchronous state broadcasts between distinct commands.
+    let controls = usize::from(volume.is_some()) + usize::from(target.is_some()) + usize::from(action.is_some());
+    if controls > 1 { return Err(error("DES Music accepts one control per request")); }
+    let changed = command.is_some() || target.is_some() || volume.is_some();
+    if let Some(command) = command { music.send(command)?; }
+    if let Some(ms) = target { music.send(json!({"cmd":"seek","ms":ms}))?; }
+    if let Some(percent) = volume { music.send(json!({"cmd":"volume","percent":percent.round() as u64}))?; }
+    if changed {
+        music.send(json!({"cmd":"state"}))?;
+        music.state = music.read_state()?;
+    }
+    Ok(music_snapshot(&music.state))
 }
 fn wpctl() -> Option<&'static str> { ["/usr/bin/wpctl", "/bin/wpctl"].into_iter().find(|p| std::path::Path::new(p).is_file()) }
 /// Fixed executable/argv only, bounded stdout and wall time, kill/wait only our child.
@@ -257,9 +403,15 @@ mod tests {
         let _server = zbus::blocking::connection::Builder::session().unwrap()
             .name(fake_name).unwrap().serve_at(PATH, FakePlayer { volume: 0.5, seek: seek.clone(), position: position.clone() }).unwrap().build().unwrap();
         let mut adapter = MediaAdapter::default();
-        let list = adapter.handle(MPRIS_REQUEST, &json!({"requestPlayerList":true})).unwrap();
+        let list = media_with_music_path(&json!({"requestPlayerList":true}),std::path::Path::new("/nonexistent/des-connect-no-music.sock")).unwrap();
         assert!(list[0].body["playerList"].as_array().unwrap().contains(&json!(fake_name)));
         assert_eq!(list[0].body["supportAlbumArtPayload"], false);
+        assert!(!list[0].body["playerList"].as_array().unwrap().contains(&json!(DES_MUSIC)));
+        let (music_path, music_worker) = music_fixture();
+        let with_music = media_with_music_path(&json!({"requestPlayerList":true}),&music_path).unwrap();
+        assert!(with_music[0].body["playerList"].as_array().unwrap().contains(&json!(DES_MUSIC)));
+        assert!(music_worker.join().unwrap().is_empty());
+
         let status = adapter.handle(MPRIS_REQUEST, &json!({"player":fake_name,"setVolume":35,"Seek":10000000})).unwrap();
         assert_eq!(status[0].body["volume"], 35);
         assert_eq!(seek.load(std::sync::atomic::Ordering::SeqCst), 10000000);
@@ -269,6 +421,96 @@ mod tests {
         assert_eq!(status[0].body["length"], 2500);
         assert_eq!(status[0].body["title"], "Fake track");
         assert!(adapter.handle(MPRIS_REQUEST, &json!({"player":"org.mpris.MediaPlayer2.absent_des_test","action":"Play"})).is_err());
+    }
+
+    fn music_state() -> Value { json!({"type":"state","track":{"name":"Socket song","artists":"Socket artist","album":"Socket album","duration_ms":5000,"cover":"https://example.invalid/known-cover"},"playing":true,"position_ms":2000,"volume":40,"device":null}) }
+    fn music_fixture() -> (std::path::PathBuf, std::thread::JoinHandle<Vec<Value>>) {
+        use std::os::unix::{net::UnixListener, fs::PermissionsExt};
+        use std::io::{BufRead, BufReader, Write};
+        let dir = std::env::temp_dir().join(format!("des-connect-fake-music-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir(&dir).unwrap(); std::fs::set_permissions(&dir,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path=dir.join("music.sock"); let listener=UnixListener::bind(&path).unwrap();
+        std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o600)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let worker=std::thread::spawn(move || {
+            let started=Instant::now();
+            let (mut stream,_)=loop {
+                match listener.accept() {
+                    Ok(pair)=>break pair,
+                    Err(e) if e.kind()==io::ErrorKind::WouldBlock && started.elapsed()<Duration::from_secs(2)=>std::thread::sleep(Duration::from_millis(2)),
+                    Err(e)=>panic!("fake music accept: {e}"),
+                }
+            };
+            stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut state=music_state(); writeln!(stream,"{state}").unwrap();
+            let mut reader=BufReader::new(stream.try_clone().unwrap()); let mut commands=Vec::new();
+            loop {
+                let mut line=String::new(); if !matches!(reader.read_line(&mut line),Ok(n) if n>0) { break; }
+                let command:Value=serde_json::from_str(&line).unwrap(); commands.push(command.clone());
+                match command["cmd"].as_str().unwrap() {
+                    "toggle"=>state["playing"]=json!(!state["playing"].as_bool().unwrap()),
+                    "seek"=>state["position_ms"]=command["ms"].clone(),
+                    "volume"=>state["volume"]=command["percent"].clone(),
+                    "state"=>if writeln!(stream,"{state}").is_err(){break},
+                    "next"|"prev"=>{},
+                    _=>panic!("unexpected command"),
+                }
+            }
+            std::fs::remove_dir_all(dir).unwrap(); commands
+        }); (path,worker)
+    }
+    #[test] fn des_music_maps_state_and_checked_commands() {
+        for (body,expected) in [
+            (json!({"player":"DES Music","action":"Pause"}),json!({"cmd":"toggle"})),
+            (json!({"player":"DES Music","action":"Next"}),json!({"cmd":"next"})),
+            (json!({"player":"DES Music","Seek":-1000000}),json!({"cmd":"seek","ms":1000})),
+            (json!({"player":"DES Music","SetPosition":3000}),json!({"cmd":"seek","ms":3000})),
+            (json!({"player":"DES Music","setVolume":25}),json!({"cmd":"volume","percent":25})),
+        ] {
+            let (path,worker)=music_fixture();
+            let snapshot=des_music_request(&path,&body,&Instant::now()).unwrap();
+            assert_eq!(snapshot["player"],"DES Music"); assert_eq!(snapshot["title"],"Socket song");
+            assert_eq!(snapshot["length"],5000); assert_eq!(snapshot["albumArtUrl"],"https://example.invalid/known-cover");
+            let commands=worker.join().unwrap(); assert_eq!(commands,vec![expected,json!({"cmd":"state"})]);
+        }
+    }
+    #[test] fn des_music_idempotent_play_and_no_stop() {
+        let (path,worker)=music_fixture();
+        let snapshot=des_music_request(&path,&json!({"player":"DES Music","action":"Play"}),&Instant::now()).unwrap();
+        assert_eq!(snapshot["isPlaying"],true); assert!(worker.join().unwrap().is_empty());
+        let missing=std::path::Path::new("/nonexistent/des-music.sock");
+        for body in [json!({"action":"Stop"}),json!({"setVolume":101}),json!({"SetPosition":-1})] { assert!(des_music_request(missing,&body,&Instant::now()).is_err()); }
+    }
+
+    #[test] fn des_music_rejects_out_of_track_and_combined_controls_without_writes() {
+        assert!(des_music_request(std::path::Path::new("/nonexistent/des-music.sock"),&json!({"Seek":1000,"SetPosition":10}),&Instant::now()).is_err());
+        for body in [json!({"Seek":-3000000}),json!({"SetPosition":5001}),json!({"action":"Pause","setVolume":20})] {
+            let (path,worker)=music_fixture();
+            assert!(des_music_request(&path,&body,&Instant::now()).is_err());
+            assert!(worker.join().unwrap().is_empty());
+        }
+    }
+    #[test] fn des_music_bounds_and_validates_socket_state() {
+        use std::os::unix::{net::UnixListener,fs::PermissionsExt};
+        for response in [Some(b"{bad json}\n".to_vec()),Some(vec![b'x';MUSIC_LINE_LIMIT]),None] {
+            let dir=std::env::temp_dir().join(format!("des-connect-fault-music-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+            std::fs::create_dir(&dir).unwrap();std::fs::set_permissions(&dir,std::fs::Permissions::from_mode(0o700)).unwrap();
+            let path=dir.join("music.sock");let listener=UnixListener::bind(&path).unwrap();
+            std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o600)).unwrap();
+            let worker=std::thread::spawn(move||{
+                let(mut stream,_)=listener.accept().unwrap();
+                if let Some(bytes)=response {let _=stream.write_all(&bytes);} else {std::thread::sleep(Duration::from_millis(650));}
+            });
+            let start=Instant::now();assert!(DesMusic::open(&path,&start).is_err());
+            assert!(start.elapsed()<Duration::from_secs(1));worker.join().unwrap();
+            // A world-readable endpoint is rejected before attempting to connect.
+            std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(DesMusic::open(&path,&Instant::now()).is_err());
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+        let mut state=music_state();state["volume"]=json!(101);assert!(validate_music_state(&state).is_err());
+        state=music_state();state["position_ms"]=json!(-1);assert!(validate_music_state(&state).is_err());
+        state=music_state();state["track"]["cover"]=json!({"url":"file:///etc/passwd"});assert!(validate_music_state(&state).is_err());
     }
 
 }

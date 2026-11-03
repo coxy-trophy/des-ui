@@ -27,6 +27,8 @@ credits remain. See the Android DESIGN.md and UX-CONTRACT.md.
 - Native protocol8 discovery, private certificate/key persistence, TLS pairing,
   verification-code display and persisted pinned reconnect.
 - Bidirectional ping and Android battery/charging status.
+- Per-device file-sharing opt-in, encrypted capability negotiation, explicit
+  reconnect, send confirmation, incoming acceptance, progress and cancellation.
 - Native CONNECT tab with explicit start/stop, discover, code-checked accept,
   reject, ping, unpair confirmation and honest unavailable/offline states.
   Existing SYSTEM/APPS functionality is preserved.
@@ -102,12 +104,38 @@ A preliminary daemon sample with two unpaired candidates measured11804KiB RSS,
 160MiB. These are samples, not release/background/video budgets. Keep visible-only
 panel polling, lazy services, bounded caches and no capture while idle.
 
-The file-transfer, MPRIS/volume and feature packet adapters are compiled/tested
-library modules only. Their live per-device permissions, daemon dispatch and panel
-forms still need integration. Remaining capabilities include file sharing, manual
-clipboard/URLs, notification actions, opted-in calls/SMS/contacts, DES Music
-bridging, remote input, command allowlists and production screen transports.
+File transfers are integrated with per-device permission and lock/loss cleanup.
+MPRIS/volume and other feature packet adapters remain library modules pending
+live permissions, daemon dispatch and panel forms. DES Music now has a tested
+private-socket adapter in that library. Remaining capabilities include manual
+clipboard/URLs, notification actions, opted-in calls/SMS/contacts, media controls,
+remote input, command allowlists and production screen transports.
 Do not confuse unit-tested contracts with end-to-end Android functionality.
 No session restart is required for the daemon or Android update. Loading the new
 native panel into the installed shell requires a shell update; compositor virtual
 output configuration may require a session restart, which has not been performed.
+
+## File-sharing integration checkpoint
+
+The service and panel now support default-off per-device file sharing, explicit
+capability reconnect, confirmed sends, approved incoming offers and cancellation.
+Encrypted peer identity carries the opted-in capability; plaintext discovery does
+not. Latest Rust suite: 82 passed, one explicit media fixture ignored; that
+fixture also passed separately on a disposable bus. Native CONNECT tests: 21
+passed, one visual fixture ignored by default; narrow fixtures were inspected.
+The installer now includes both Connect binaries and the existing viewer helper
+without starting networking at boot.
+
+Review fixes have regression coverage: expired/disconnected IPC callers cannot
+start content work; source-file preparation occurs outside the global transfer
+mutex; the lock watchdog stops screen sharing before consulting transfers and
+uses a nonblocking manager lock; shutdown stops screens before joining file
+workers. OS-stalled filesystem operations are not claimed to be interruptible.
+Healthy authenticated same-address control-socket replacements preserve file
+jobs; changed address/capability/policy, real disconnect, unpair and lock revoke
+sharing. TLS fixtures test both continuity and revocation.
+
+The first physical file attempt exposed Android's reused-link callback updating
+capabilities without reloading actual plugins. Its source fix and regression APK
+are being verified separately; this checkpoint does not claim physical file
+transfer success. The prior successful physical mirror/ping checks still stand.

@@ -74,6 +74,12 @@ pub struct TransferSnapshot {
     pub filename: String, pub size: u64, pub transferred: u64,
     pub state: String, pub error: Option<String>, pub path: Option<String>,
 }
+/// A locally selected source opened before acquiring a shared manager mutex.
+/// Opening/statting a regular file can still block in a filesystem driver.
+pub struct PreparedSource { file:File,filename:String,size:u64 }
+impl PreparedSource {
+    pub fn open(path:&Path)->Result<Self> {let(file,filename,size)=open_source(path)?;Ok(Self{file,filename,size})}
+}
 pub struct SendTicket { pub id: String, pub packet: Packet }
 struct IncomingHeader { filename: String, size: u64, port: u16 }
 impl IncomingHeader {
@@ -166,8 +172,12 @@ impl TransferManager {
     /// control channel. Its listener is already bound. Cancel on control-send
     /// failure; the listener also expires after 30 seconds without a valid peer.
     pub fn send(&mut self, peer: PeerTls, path: &Path) -> Result<SendTicket> {
+        self.send_prepared(peer,PreparedSource::open(path)?)
+    }
+    /// Insert a source already prepared outside the caller's global manager lock.
+    pub fn send_prepared(&mut self,peer:PeerTls,source:PreparedSource)->Result<SendTicket> {
         self.sweep(); self.check_capacity()?;
-        let (file, filename, size) = open_source(path)?;
+        let PreparedSource{file,filename,size}=source;
         let id = self.reserve()?;
         let listener = bind_payload(peer.address)?;
         let port = listener.local_addr().map_err(|e| e.to_string())?.port();

@@ -47,6 +47,8 @@ if [ ! -x /usr/local/bin/des-ui ] && [ -x /usr/local/bin/edex-rs ] && [ -x /usr/
 fi
 sudo install -Dm755 target/release/des-ui /usr/local/bin/des-ui
 sudo install -Dm755 target/release/des-ui-ctl /usr/local/bin/des-ui-ctl
+sudo install -Dm755 target/release/des-connectd /usr/local/bin/des-connectd
+sudo install -Dm755 target/release/des-connect-ctl /usr/local/bin/des-connect-ctl
 sudo install -Dm755 target/release/des-comp /usr/local/bin/des-comp
 sudo install -Dm755 target/release/des-music /usr/local/bin/des-music
 sudo install -Dm755 target/release/des-portal /usr/local/bin/des-portal
@@ -59,6 +61,7 @@ sudo install -Dm644 session/des-ui.portal /usr/share/xdg-desktop-portal/portals/
 sudo install -Dm644 session/org.freedesktop.impl.portal.desktop.des-ui.service /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.des-ui.service
 sudo install -d /usr/local/share/des-ui/companion
 sudo install -m644 companion/service.py companion/voice.py companion/credentials.py /usr/local/share/des-ui/companion/
+sudo install -Dm644 scripts/virtual-display-viewer.py /usr/local/share/des-ui/virtual-display-viewer.py
 sudo install -d /usr/local/share/des-ui/themes
 sudo install -m644 themes/*.json /usr/local/share/des-ui/themes/
 sudo install -d /usr/local/share/icons/DEs-UI/cursors

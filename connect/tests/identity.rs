@@ -29,3 +29,18 @@ use std::{fs,os::unix::fs::PermissionsExt};
  fs::set_permissions(&file,fs::Permissions::from_mode(0o600)).unwrap();fs::rename(&file,p.join("real.json")).unwrap();
  std::os::unix::fs::symlink(p.join("real.json"),&file).unwrap();assert!(Store::open(&p).is_err());
 }
+
+#[test] fn file_permission_defaults_off_persists_and_remember_preserves_it() {
+ let d=tempfile::tempdir().unwrap();let peer=tempfile::tempdir().unwrap();
+ let peer=Store::open(&peer.path().join("p")).unwrap();let path=d.path().join("s");let mut store=Store::open(&path).unwrap();
+ store.remember(peer.id(),"Phone","phone",&peer.certificate).unwrap();
+ assert!(!store.peers[peer.id()].files_enabled);
+ let pin=store.pin(peer.id()).unwrap();store.set_files_enabled(peer.id(),true).unwrap();
+ store.remember(peer.id(),"Renamed phone","phone",&peer.certificate).unwrap();
+ assert!(store.peers[peer.id()].files_enabled);assert_eq!(store.pin(peer.id()).unwrap(),pin);
+ assert!(Store::open(&path).unwrap().peers[peer.id()].files_enabled);
+ store.set_files_enabled(peer.id(),false).unwrap();assert!(!Store::open(&path).unwrap().peers[peer.id()].files_enabled);
+ assert!(store.set_files_enabled("unknown",true).is_err());
+ let path=path.join("peers.json");let mut json:serde_json::Value=serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();json[peer.id()].as_object_mut().unwrap().remove("files_enabled");fs::write(&path,serde_json::to_vec(&json).unwrap()).unwrap();
+ assert!(!Store::open(path.parent().unwrap()).unwrap().peers[peer.id()].files_enabled);
+}

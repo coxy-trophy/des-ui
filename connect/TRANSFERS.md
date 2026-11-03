@@ -188,3 +188,92 @@ screen capture, desktop input, or existing user service is involved in these tes
 
 These tests establish library behavior, not physical Android file-transfer or the
 root service's consent UI. Those must be verified separately after integration.
+
+## Integrated daemon consent and policy
+
+The daemon persists `files_enabled` per trusted peer, defaulting to false for
+existing records. Remembering the same peer again preserves this permission.
+Discovery and plaintext identities always advertise only the core capabilities.
+Only the encrypted identity for an opted-in, pinned peer includes
+`kdeconnect.share.request` in both directions. The actor retains the peer's secure
+capabilities and uses the actual current control socket IP for payloads.
+
+Private IPC operations are:
+
+```text
+set_files       {device_id, enabled: boolean}
+reconnect       {device_id}
+send_file       {device_id, path: absolute_local_file}
+accept_transfer {device_id, transfer_id}
+cancel_transfer {transfer_id, device_id?: optional_owner_check}
+```
+
+`set_files` requires an unlocked session and a trusted paired peer; offline trusted
+peers can have their policy updated for their next connection. On an existing
+connection, `Device.files_enabled` shows saved permission and
+`Device.files_reconnect_needed` indicates that the current encrypted advertisement
+no longer matches it. Android does not reliably reload plugins from an ordinary
+in-session identity packet. The explicit `reconnect` action closes the authorized
+actor's control socket without deleting its pin, cancels its transfers, waits for
+the old route to close, then sends one discovery broadcast outside loopback test
+mode. Its acknowledgment confirms the requested close, not successful reconnection.
+There is no automatic reconnect loop or automatic approval after reconnection.
+
+Sending and accepting require a live paired actor, enabled permission, a matching
+current encrypted advertisement and an unlocked session. Sending additionally
+requires the peer's secure incoming capabilities to include sharing. Incoming
+headers require its secure outgoing share capability. Offers remain `offered`
+until local acceptance. A disabled or locked incoming offer is refused without
+starting a payload connection. `cancel_transfer` remains available while locked
+or offline. Disconnect, address/capability-changing socket replacement, unpair, policy disable,
+lock and daemon shutdown cancel affected unfinished transfers.
+
+Content-start jobs retain a duplicate of the originating private IPC connection
+and expire after four seconds in the actor queue. Nonblocking socket peeks reject
+a disconnected requester. The actor rechecks these guards before manager start
+and after preparation, cancelling a created send ticket if the requester expired,
+disconnected or lost policy before its control header is sent. No queued request
+is replayed automatically after a reconnect.
+
+`state.transfers` contains the bounded newest-first snapshots described above.
+Source preparation uses `PreparedSource::open` outside the global manager mutex,
+then `send_prepared`; the compatibility `send` wrapper remains available to callers
+that do not hold a shared lock. Lazy download-directory preparation also runs
+outside that mutex, with a second check so racing preparation cannot replace an
+existing manager. Existing actors bound concurrent preparations; no extra thread
+is spawned per source-open request. These changes do not make kernel filesystem
+I/O interruptible.
+
+The watchdog revokes screens before inspecting transfers, uses `try_lock` for
+transfer bookkeeping, and performs shell/peer checks outside the manager lock.
+Shutdown stops screen capture before cancellation or worker joins. Thus a stuck
+source filesystem cannot keep a screen viewer running behind a file-manager lock.
+A deterministic isolated fixture holds that lock while an owned fake viewer runs;
+a locked shell must still cause the viewer to stop promptly.
+
+Daemon regression fixtures use temporary homes, private fake shell sockets,
+disposable mutual TLS identities, and disposable file bytes. They verify the
+permission/reconnect flow, secure per-peer capability gating, real send/receive
+payloads, explicit approval, refusal of unknown peers, locked policy mutations,
+and actual payload socket/partial cleanup on lock, unpair and orderly daemon stop.
+
+The KDE Connect share namespace does not express separate file, URL and text
+sub-capabilities. Advertising `kdeconnect.share.request` for files can therefore
+also enable Android's external share target for text/URLs. This increment supports
+file payloads only. A non-payload share packet publishes the device error
+“URL/text sharing is not enabled; only file offers supported”; its private content
+is neither retained nor opened. No URL/text feature is silently implied by the
+file permission.
+
+
+A routine discovery refresh can replace the control socket without disconnecting
+its authenticated logical link. Existing payload jobs and pending local offers
+survive that refresh only when the certificate digest is unchanged, the actual
+peer IP is unchanged, the paired file permission is still enabled and unlocked,
+the new encrypted identity advertises files, and the peer's secure incoming and
+outgoing share-capability bits still match. Their existing IDs and consent deadlines
+remain in force; a refresh neither accepts an offer nor restarts a cancelled job.
+Address changes, share-capability changes, revoked policy and actual actor
+termination still cancel affected jobs. Real TLS fixtures exercise both a preserved
+pending offer that subsequently completes and cancellation on capability removal;
+a separate unit guard covers an address change without changing a real interface.

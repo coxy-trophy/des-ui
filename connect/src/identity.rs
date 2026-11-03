@@ -34,7 +34,7 @@ fn save_private<T:Serialize>(path:&Path,value:&T)->Result<()> {
 #[derive(Serialize,Deserialize)]
 struct LocalIdentity {id:String,key_pem:String,cert_pem:String}
 #[derive(Clone,Serialize,Deserialize)]
-pub struct PeerRecord {pub id:String,pub name:String,pub kind:String,pub certificate:String}
+pub struct PeerRecord {pub id:String,pub name:String,pub kind:String,pub certificate:String,#[serde(default)] pub files_enabled:bool}
 pub struct Store {directory:PathBuf,id:String,pub key:PKey<Private>,pub certificate:X509,pub peers:BTreeMap<String,PeerRecord>}
 impl Store {
  pub fn open(directory:&Path)->Result<Self> {
@@ -67,8 +67,12 @@ impl Store {
   let pin=peer_digest(cert,id)?;
   if self.pin(id)?.is_some_and(|old|old!=pin){return Err("certificate changed; unpair explicitly first".into());}
   if self.peers.len()>=64&&!self.peers.contains_key(id){return Err("paired-device limit reached".into());}
-  let record=PeerRecord{id:id.into(),name:name.chars().take(256).collect(),kind:kind.into(),certificate:hex(&cert.to_der()?)};
+  let record=PeerRecord{id:id.into(),name:name.chars().take(256).collect(),kind:kind.into(),certificate:hex(&cert.to_der()?),files_enabled:self.peers.get(id).is_some_and(|peer|peer.files_enabled)};
   let mut peers=self.peers.clone();peers.insert(id.into(),record);save_private(&self.directory.join("peers.json"),&peers)?;self.peers=peers;Ok(())
+ }
+ pub fn set_files_enabled(&mut self,id:&str,enabled:bool)->Result<()> {
+  let mut peers=self.peers.clone();let peer=peers.get_mut(id).ok_or("file permission requires a trusted paired peer")?;
+  peer.files_enabled=enabled;save_private(&self.directory.join("peers.json"),&peers)?;self.peers=peers;Ok(())
  }
  pub fn forget(&mut self,id:&str)->Result<()> {
   let mut peers=self.peers.clone();peers.remove(id);save_private(&self.directory.join("peers.json"),&peers)?;self.peers=peers;Ok(())

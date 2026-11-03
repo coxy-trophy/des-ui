@@ -22,8 +22,8 @@ loop/shuffle controls, remote-phone MPRIS export, or album-art payload transfer.
 Metadata URLs are forwarded as metadata only, never fetched or opened. Controlled
 album-art transport can be added through the separately authorized file bridge.
 
-Player identifiers must be well-formed `org.mpris.MediaPlayer2.*` names currently
-owned on the session bus. Enumeration is capped at 16 players. The fixed object
+External player identifiers must be well-formed `org.mpris.MediaPlayer2.*` names currently
+owned on the session bus. Enumeration is capped at 16 players including the synthetic DES Music entry. The fixed object
 path is `/org/mpris/MediaPlayer2`; the interface is
 `org.mpris.MediaPlayer2.Player`. A temporary zbus session connection is created
 only for an explicit request and dropped afterward. Calls have a one-second
@@ -58,8 +58,8 @@ units observed in the Android fork's `MprisPlugin.kt`, `MprisReceiverPlugin.kt`,
 10,000,000 microseconds), `SystemVolumePlugin.kt`, and `Sink.kt`. No GPL source
 implementation was copied. At implementation time this checkout contains no
 `shell/src/mpris.rs` or music MPRIS service; its music service exposes its own
-socket protocol. Consequently the bridge discovers only actual MPRIS bus owners.
-A music-app MPRIS service is needed before that app appears to the phone.
+socket protocol. The bridge therefore offers DES Music through the synthetic
+adapter below and uses actual MPRIS bus owners for other applications.
 
 Pure tests cover destination validation, volume boundaries/types, seek units and
 overflow, strict bounded sink parsing, and command rejection before any I/O.
@@ -77,3 +77,49 @@ dbus-run-session -- env DES_CONNECT_FAKE_MPRIS=1 cargo test -p des-connect media
 The test checks player discovery, unsupported album-art payload advertisement,
 actual fake-player Volume updates, microsecond Seek, millisecond SetPosition
 and metadata conversion using the current track ID, and unknown-player rejection.
+
+
+## DES Music socket adapter
+
+An exact `player:"DES Music"` request uses the existing music service socket
+instead of D-Bus. Discovery adds that entry only after the already-running
+service returns valid state. It never starts the player. The local address
+contract matches `des_common::music`: `DES_MUSIC_SOCKET` if set, otherwise
+`$XDG_RUNTIME_DIR/des-music.sock`, otherwise
+`$TMPDIR/des-music-<uid>/des-music.sock`. The peer cannot supply a socket path.
+The endpoint must be an owned private socket in an owned private directory;
+Linux peer credentials must match the daemon's effective UID.
+
+Connections use nonblocking Unix sockets and one shared 500 ms deadline for
+connect/read/write and response processing. An unavailable/full accept backlog
+fails immediately. JSON state lines are capped at 64 KiB. The adapter holds no
+socket after the request. It requires valid playback, position, volume, and
+track fields before advertising the service. Metadata text and known cover URLs
+are forwarded with the same 2,048-character caps; no cover file or URL is read.
+
+`Play` and `Pause` use the service's fixed `toggle` command only when the observed
+state requires it; `PlayPause`, `Next`, and `Previous` map to fixed commands.
+Because the socket has no atomic explicit play/pause operation, another client
+changing playback between snapshot and toggle can race this translation. `Stop`
+is rejected because the music socket offers no stop command. There is no
+stop-capability advertisement. Track-dependent controls are unavailable when
+there is no current track.
+
+Relative `Seek` microseconds are converted to milliseconds and added to the
+observed actual position; `SetPosition` is already milliseconds. Positions must
+fit the music service's `u32` field and the current track duration. Volume
+accepts 0..100 and rounds to the integer percent supported by the socket.
+One control per DES Music packet is accepted; ambiguous combined controls are
+rejected before any write. After a command the adapter asks for state and
+returns the next actual state response/broadcast. Service commands have no
+acknowledgement, so the returned observed state can precede asynchronous
+playback completion. It does not invent a successful resulting state. As with
+the music app itself, controls affect the service's current playing destination,
+which can be another Spotify device; no device transfer command is exposed.
+
+Fake private socket tests cover state mapping, idempotent Play, controls and seek
+units, out-of-track and combined-command rejection without writes, malformed
+and oversized state, stalled peers, endpoint permissions, and invalid volume or
+metadata. The private D-Bus test also verifies that the synthetic list entry is
+absent for a missing socket and present only for its fake responding service.
+Tests never connect to the real music socket or control desktop playback.

@@ -2,7 +2,7 @@
 use crate::{theme::Theme, ui};
 use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, io::{BufRead, BufReader, Read, Write}, os::unix::net::UnixStream, path::PathBuf, process::{Command, Stdio}, sync::mpsc::{self, Receiver}, time::{Duration, Instant}};
+use std::{collections::{BTreeMap, VecDeque}, io::{BufRead, BufReader, Read, Write}, os::unix::net::UnixStream, path::PathBuf, process::{Command, Stdio}, sync::mpsc::{self, Receiver}, time::{Duration, Instant}};
 
 const POLL: Duration = Duration::from_secs(2);
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
@@ -24,9 +24,12 @@ struct Device {
     charging: bool,
     last_ping: Option<i64>,
     error: Option<String>,
+    files_enabled: bool,
+    files_reconnect_needed: bool,
 }
 
 impl Device {
+    fn files_ready(&self) -> bool { self.paired && self.connected && self.files_enabled && !self.files_reconnect_needed }
     fn verification_code(&self) -> Option<&str> {
         self.verification_key.as_deref().filter(|code| code.len() == 8 && code.bytes().all(|c| c.is_ascii_hexdigit()))
     }
@@ -40,7 +43,30 @@ struct Snapshot {
     devices: Vec<Device>,
     screens: Option<Screens>,
     screen_capabilities: Option<ScreenCapabilities>,
+    transfers: Vec<Transfer>,
 }
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+struct Transfer {
+    id: String,
+    peer_id: String,
+    direction: String,
+    filename: String,
+    size: u64,
+    transferred: u64,
+    state: String,
+    error: Option<String>,
+    path: Option<String>,
+}
+impl Transfer {
+    fn cancellable(&self) -> bool { !self.id.is_empty() && matches!(self.state.as_str(), "offered" | "connecting" | "waiting" | "transferring") }
+    fn incoming_offer(&self) -> bool { !self.id.is_empty() && self.direction == "receive" && self.state == "offered" }
+    fn progress(&self) -> f32 { if self.size == 0 { 0.0 } else { (self.transferred.min(self.size) as f64 / self.size as f64) as f32 } }
+}
+
+#[derive(Clone)]
+struct FileDraft { device_id: String, device_name: String, path: String }
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
@@ -69,7 +95,7 @@ struct Reply {
     state: Option<Snapshot>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 struct Request {
     op: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -96,7 +122,22 @@ impl Request {
         }
         request
     }
-    fn is_stop(&self) -> bool { matches!(self.op, "stop" | "stop_screen") }
+    fn files_policy(device: &Device, enabled: bool) -> Self {
+        let mut request = Self::device("set_files", device);
+        request.args.insert("enabled".into(), serde_json::json!(enabled));
+        request
+    }
+    fn send_file(draft: &FileDraft) -> Self {
+        let mut request = Self { op: "send_file", device_id: Some(draft.device_id.clone()), ..Self::state() };
+        request.args.insert("path".into(), serde_json::json!(draft.path));
+        request
+    }
+    fn transfer(op: &'static str, transfer: &Transfer) -> Self {
+        let mut request = Self { op, device_id: (!transfer.peer_id.is_empty()).then(|| transfer.peer_id.clone()), ..Self::state() };
+        request.args.insert("transfer_id".into(), serde_json::json!(transfer.id));
+        request
+    }
+    fn is_priority(&self) -> bool { matches!(self.op, "stop" | "stop_screen" | "cancel_transfer") }
     fn feedback(&self) -> &'static str {
         match self.op {
             "discover" => "Discovery requested. Keep DES Connect open on your phone.",
@@ -109,6 +150,11 @@ impl Request {
             "extend" => "Desktop extended to the USB device.",
             "stop_screen" => "Screen sharing stopped.",
             "stop" => "DES Connect stopped.",
+            "set_files" => "File sharing setting saved. It applies on the next phone connection.",
+            "reconnect" => "Reconnect requested. Waiting for the phone to connect again.",
+            "send_file" => "File send requested. Check transfer progress.",
+            "accept_transfer" => "Incoming file accepted. Check transfer progress.",
+            "cancel_transfer" => "File cancellation requested.",
             _ => "Service connected.",
         }
     }
@@ -187,7 +233,9 @@ pub struct Connect {
     notice: Option<String>,
     confirm_unpair: Option<String>,
     usb_serial: String,
-    queued_stop: Option<Request>,
+    queued_controls: VecDeque<Request>,
+    file_paths: BTreeMap<String, String>,
+    confirm_send: Option<FileDraft>,
 }
 impl Connect {
     /// Drain results even when hidden, but only request state while the panel is visible.
@@ -202,7 +250,11 @@ impl Connect {
                 let pending = self.pending.take().unwrap();
                 match response {
                     Ok(reply) => {
-                        if let Some(state) = reply.state { self.snapshot = Some(state); }
+                        if let Some(state) = reply.state {
+                            self.file_paths.retain(|id, _| state.devices.iter().any(|device| &device.id == id && device.paired));
+                            if self.confirm_send.as_ref().is_some_and(|draft| !state.devices.iter().any(|device| device.id == draft.device_id && device.files_ready())) { self.confirm_send = None; }
+                            self.snapshot = Some(state);
+                        }
                         if reply.ok {
                             self.error = None;
                             if pending.op == "stop" { self.snapshot = None; }
@@ -220,7 +272,7 @@ impl Connect {
             }
         }
         if self.pending.is_none() {
-            if let Some(stop) = self.queued_stop.take() { self.request(ctx, stop, false); }
+            if let Some(control) = self.queued_controls.pop_front() { self.request(ctx, control, false); }
         }
         if visible && self.pending.is_none() && self.last_poll.is_none_or(|at| at.elapsed() >= POLL) {
             self.request(ctx, Request::state(), false);
@@ -231,11 +283,20 @@ impl Connect {
 
     fn request(&mut self, ctx: &egui::Context, request: Request, start: bool) {
         if self.pending.is_some() {
-            if request.is_stop() {
-                if self.pending.as_ref().is_some_and(|pending| pending.op == "stop" || pending.op == request.op) { return; }
-                // Preserve command ordering: a slow start cannot overtake its queued stop.
-                if self.queued_stop.as_ref().is_none_or(|queued| queued.op != "stop") { self.queued_stop = Some(request); }
-                self.notice = Some("Stop requested. Waiting for the current command to finish…".into());
+            if request.is_priority() {
+                if self.pending.as_ref().is_some_and(|pending| pending.op == "stop" || (request.op != "cancel_transfer" && pending.op == request.op)) { return; }
+                if self.queued_controls.iter().any(|queued| queued.op == "stop") { return; }
+                // Preserve ordering without losing cancellation of a different transfer.
+                if request.op == "stop" { self.queued_controls.clear(); self.queued_controls.push_front(request); }
+                else if !self.queued_controls.contains(&request) {
+                    if self.queued_controls.len() >= 32 {
+                        self.error = Some("Too many cancellations pending. Retry after the current command finishes.".into());
+                        return;
+                    }
+                    if request.op == "stop_screen" { self.queued_controls.push_front(request); }
+                    else { self.queued_controls.push_back(request); }
+                }
+                self.notice = Some("Cancellation or stop requested. Waiting for the current command to finish…".into());
                 ctx.request_repaint_after(Duration::from_millis(100));
             }
             return;
@@ -254,6 +315,111 @@ impl Connect {
         self.last_poll = Some(Instant::now());
         if !passive { self.notice = Some("Working…".into()); }
         self.pending = Some(Pending { rx, feedback, passive, op });
+    }
+
+    fn transfers_panel(&mut self, ui: &mut egui::Ui, theme: &Theme, snapshot: &Snapshot, busy: bool) {
+        if snapshot.transfers.is_empty() { return; }
+        ui.add_space(ui::SPACE);
+        ui::section(ui, "FILE TRANSFERS", |_| {});
+        for transfer in &snapshot.transfers {
+            ui.push_id(("file-transfer", &transfer.id), |ui| {
+                copy(ui, if transfer.filename.is_empty() { "Unnamed file" } else { &transfer.filename }, ui::TEXT);
+                let peer = snapshot.devices.iter().find(|device| device.id == transfer.peer_id);
+                let name = peer.map(|device| device.name.as_str()).filter(|name| !name.is_empty()).unwrap_or("Disconnected device");
+                let direction = if transfer.direction == "receive" { "From" } else { "To" };
+                copy(ui, &format!("{direction} {name}"), ui::SECONDARY);
+                let status = match transfer.state.as_str() {
+                    "offered" => "Waiting for your approval", "connecting" => "Connecting", "waiting" => "Waiting for the phone",
+                    "transferring" => "Transferring", "complete" => "Complete", "failed" => "Failed", "cancelled" => "Cancelled", "expired" => "Offer expired", _ => "Status unavailable",
+                };
+                copy(ui, status, if transfer.error.is_some() { ui::CAUTION } else { ui::SECONDARY });
+                copy(ui, &format!("{} / {}", crate::quicklook::human_size(transfer.transferred), crate::quicklook::human_size(transfer.size)), ui::SECONDARY);
+                if matches!(transfer.state.as_str(), "connecting" | "waiting" | "transferring") {
+                    ui.add(egui::ProgressBar::new(transfer.progress()).desired_width(ui.available_width()).show_percentage());
+                }
+                if let Some(error) = &transfer.error { copy(ui, error, ui::CAUTION); }
+                if transfer.state == "complete" {
+                    if let Some(path) = &transfer.path {
+                        copy(ui, "Saved to", ui::SECONDARY);
+                        ui.add(egui::Label::new(RichText::new(path).font(ui::mono(11.0)).color(ui::TEXT)).wrap());
+                    }
+                }
+                ui.horizontal_wrapped(|ui| {
+                    if transfer.incoming_offer() {
+                        ui.add_enabled_ui(!busy && peer.is_some_and(Device::files_ready), |ui| {
+                            if ui::button(ui, theme, "Accept file", None, false).clicked() {
+                                self.request(ui.ctx(), Request::transfer("accept_transfer", transfer), false);
+                            }
+                        });
+                    }
+                    // Deliberately independent of connection, policy and other in-flight commands.
+                    if transfer.cancellable() && ui::button(ui, theme, "Cancel transfer", None, false).clicked() {
+                        self.request(ui.ctx(), Request::transfer("cancel_transfer", transfer), false);
+                    }
+                });
+                if transfer.incoming_offer() && !peer.is_some_and(Device::files_ready) {
+                    copy(ui, "Connect the trusted device and apply its file sharing setting before accepting.", ui::SECONDARY);
+                }
+                ui.add_space(4.0);
+                ui.separator();
+            });
+        }
+        ui.add_space(ui::SPACE);
+    }
+
+    fn file_controls(&mut self, ui: &mut egui::Ui, theme: &Theme, device: &Device, busy: bool) {
+        ui.add_space(4.0);
+        ui.add_enabled_ui(!busy, |ui| {
+            if crate::settings::switch_row(ui, theme, "File sharing", "Allow file sends and incoming offers.", device.files_enabled) {
+                self.confirm_send = None;
+                self.request(ui.ctx(), Request::files_policy(device, !device.files_enabled), false);
+            }
+        });
+        if device.files_reconnect_needed {
+            copy(ui, "Reconnect the phone to apply this setting. Turn its connection off and on, or reopen DES Connect on Android.", ui::SECONDARY);
+            ui.add_enabled_ui(!busy && device.connected, |ui| {
+                if ui::button(ui, theme, "Reconnect to apply", None, false).clicked() {
+                    self.confirm_send = None;
+                    self.request(ui.ctx(), Request::device("reconnect", device), false);
+                }
+            });
+        }
+        if !device.files_enabled { return; }
+        if !device.files_ready() {
+            if !device.connected { copy(ui, "Connect this device to send or accept files.", ui::SECONDARY); }
+            return;
+        }
+        copy(ui, "Incoming files always need your approval.", ui::SECONDARY);
+        ui.add_space(4.0);
+        let label = ui.label(RichText::new("Path from Files panel").font(ui::display(13.0)).color(ui::TEXT));
+        let mut path = self.file_paths.get(&device.id).cloned().unwrap_or_default();
+        ui.add_enabled_ui(!busy, |ui| {
+            let response = ui.add(egui::TextEdit::singleline(&mut path).id_salt(("connect-file-path", &device.id)).char_limit(4096).desired_width(ui.available_width()).hint_text("/absolute/path/to/file")).labelled_by(label.id);
+            if response.changed() {
+                self.file_paths.insert(device.id.clone(), path.clone());
+                if self.confirm_send.as_ref().is_some_and(|draft| draft.device_id == device.id) { self.confirm_send = None; }
+            }
+        });
+        copy(ui, "Find the file in the bottom Files panel, then paste its full absolute path here. The service checks the file when you send.", ui::SECONDARY);
+        if !path.is_empty() { if let Some(error) = file_path_error(&path) { copy(ui, error, ui::CAUTION); } }
+        ui.add_enabled_ui(!busy && file_path_error(&path).is_none(), |ui| {
+            if ui::button(ui, theme, "Review send", None, false).clicked() {
+                self.confirm_send = Some(FileDraft { device_id: device.id.clone(), device_name: device.name.clone(), path: path.clone() });
+            }
+        });
+        if let Some(draft) = self.confirm_send.as_ref().filter(|draft| draft.device_id == device.id).cloned() {
+            copy(ui, &format!("Send this file to {}?", draft.device_name), ui::TEXT);
+            ui.add(egui::Label::new(RichText::new(&draft.path).font(ui::mono(11.0)).color(ui::TEXT)).wrap());
+            ui.add_enabled_ui(!busy, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if ui::button(ui, theme, "Confirm send", None, false).clicked() {
+                        self.confirm_send = None;
+                        self.request(ui.ctx(), Request::send_file(&draft), false);
+                    }
+                    if ui::button(ui, theme, "Cancel", None, false).clicked() { self.confirm_send = None; }
+                });
+            });
+        }
     }
 
     pub fn panel(&mut self, ui: &mut egui::Ui, theme: &Theme) {
@@ -287,6 +453,7 @@ impl Connect {
                 return;
             };
             if !snapshot.name.is_empty() { copy(ui, &format!("This computer: {}", snapshot.name), ui::SECONDARY); }
+            self.transfers_panel(ui, theme, &snapshot, busy);
             let screens_running = snapshot.screens.as_ref().is_some_and(|screens| screens.running);
             if let Some(screens) = &snapshot.screens {
                 if screens.running {
@@ -374,6 +541,7 @@ impl Connect {
                             });
                         }
                     });
+                    if device.paired { self.file_controls(ui, theme, device, busy); }
                     if device.paired && device.connected {
                         if let Some(capabilities) = &snapshot.screen_capabilities {
                             if capabilities.phone_mirror || capabilities.extended_output {
@@ -395,6 +563,13 @@ impl Connect {
             }
         });
     }
+}
+
+// Lexical validation only: no filesystem access, stat, canonicalize or readability probe on the UI thread.
+fn file_path_error(path: &str) -> Option<&'static str> {
+    if !std::path::Path::new(path).is_absolute() { Some("Enter the full absolute file path.") }
+    else if path.len() > 4096 || path.chars().any(char::is_control) { Some("Use a path of at most 4096 bytes without control characters.") }
+    else { None }
 }
 
 fn copy(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
@@ -442,11 +617,11 @@ mod tests {
         let (_tx, rx) = mpsc::channel();
         let mut connect = Connect { pending: Some(Pending { rx, passive: false, feedback: "Started", op: "mirror_phone" }), ..Default::default() };
         connect.request(&ctx, Request { op: "stop_screen", ..Request::state() }, false);
-        assert_eq!(connect.queued_stop.as_ref().unwrap().op, "stop_screen");
+        assert_eq!(connect.queued_controls.front().unwrap().op, "stop_screen");
         assert_eq!(connect.pending.as_ref().unwrap().op, "mirror_phone");
         connect.request(&ctx, Request { op: "stop", ..Request::state() }, false);
         connect.request(&ctx, Request { op: "stop_screen", ..Request::state() }, false);
-        assert_eq!(connect.queued_stop.as_ref().unwrap().op, "stop");
+        assert_eq!(connect.queued_controls.front().unwrap().op, "stop");
     }
     #[test]
     fn successful_service_stop_clears_stale_online_state_without_polling_hidden() {
@@ -458,6 +633,59 @@ mod tests {
         assert!(connect.snapshot.is_none());
         assert!(connect.pending.is_none());
         assert_eq!(connect.notice.as_deref(), Some("Stopped"));
+    }
+    #[test]
+    fn file_requests_bind_peer_and_transfer_ids_and_preserve_literal_absolute_path() {
+        let device = Device { id: "paired-phone".into(), ..Default::default() };
+        let policy = serde_json::to_value(Request::files_policy(&device, true)).unwrap();
+        assert_eq!(policy["op"], "set_files"); assert_eq!(policy["device_id"], "paired-phone"); assert_eq!(policy["enabled"], true);
+        let draft = FileDraft { device_id: device.id.clone(), device_name: "Phone".into(), path: "/home/test/Literal $(data); file.txt".into() };
+        let send = serde_json::to_value(Request::send_file(&draft)).unwrap();
+        assert_eq!(send["op"], "send_file"); assert_eq!(send["path"], draft.path);
+        let transfer = Transfer { id: "opaque-transfer".into(), peer_id: device.id, ..Default::default() };
+        for op in ["accept_transfer", "cancel_transfer"] {
+            let request = serde_json::to_value(Request::transfer(op, &transfer)).unwrap();
+            assert_eq!(request["transfer_id"], "opaque-transfer"); assert_eq!(request["device_id"], "paired-phone");
+        }
+    }
+    #[test]
+    fn file_models_are_default_off_and_readiness_requires_applied_current_connection() {
+        let mut device: Device = serde_json::from_str(r#"{"id":"phone","paired":true,"connected":true}"#).unwrap();
+        assert!(!device.files_enabled && !device.files_ready());
+        device.files_enabled = true; assert!(device.files_ready());
+        device.files_reconnect_needed = true; assert!(!device.files_ready());
+        device.files_reconnect_needed = false; device.connected = false; assert!(!device.files_ready());
+        let state: Snapshot = serde_json::from_str(r#"{"running":true,"transfers":[{"id":"t","peer_id":"phone","direction":"receive","filename":"report.pdf","size":1024,"transferred":256,"state":"offered","future":true}]}"#).unwrap();
+        assert!(state.transfers[0].incoming_offer()); assert!(state.transfers[0].cancellable()); assert_eq!(state.transfers[0].progress(), 0.25);
+        assert_eq!(Transfer { size: 1, transferred: 2, ..Default::default() }.progress(),1.0);
+        assert_eq!(Transfer::default().progress(),0.0);
+    }
+    #[test]
+    fn file_path_validation_is_lexical_and_does_not_need_existing_files() {
+        assert!(file_path_error("/a/nonexistent/location/file with spaces.txt").is_none());
+        assert!(file_path_error("relative/file.txt").is_some());
+        assert!(file_path_error("").is_some()); assert!(file_path_error("/bad\0path").is_some());
+        assert!(file_path_error(&format!("/{}", "x".repeat(4096))).is_some());
+    }
+    #[test]
+    fn busy_cancellation_queue_preserves_distinct_transfer_ids_and_stop_priority() {
+        let ctx = egui::Context::default(); let (_tx, rx) = mpsc::channel();
+        let mut connect = Connect { pending: Some(Pending { rx, passive:false, feedback:"Working", op:"send_file" }), ..Default::default() };
+        for id in ["first", "second", "first"] {
+            connect.request(&ctx, Request::transfer("cancel_transfer", &Transfer { id:id.into(), peer_id:"offline-phone".into(), ..Default::default() }), false);
+        }
+        assert_eq!(connect.queued_controls.len(),2);
+        assert_eq!(connect.queued_controls[0].args["transfer_id"],"first");
+        assert_eq!(connect.queued_controls[1].args["transfer_id"],"second");
+        connect.request(&ctx, Request { op:"stop", ..Request::state() }, false);
+        assert_eq!(connect.queued_controls.len(),1); assert_eq!(connect.queued_controls[0].op,"stop");
+    }
+    #[test]
+    fn transfer_terminal_states_cannot_be_accepted_or_cancelled() {
+        for state in ["complete", "failed", "cancelled", "expired", "future"] {
+            let transfer = Transfer { id:"id".into(), direction:"receive".into(), state:state.into(), ..Default::default() };
+            assert!(!transfer.cancellable() && !transfer.incoming_offer());
+        }
     }
     #[test]
     fn invalid_verification_code_cannot_enable_acceptance() {
@@ -630,6 +858,25 @@ mod tests {
                 snapshot.screens = Some(Screens { mode: "phone".into(), serial: Some("USB-123456".into()), running: true, control: false, message: "Disconnecting or locking stops sharing.".into() });
             }
         }
+        if mode.starts_with("files") {
+            let snapshot = connect.snapshot.as_mut().unwrap();
+            snapshot.devices.retain(|device| device.paired && device.connected);
+            let device = &mut snapshot.devices[0];
+            device.files_enabled = true;
+            device.files_reconnect_needed = mode == "files-policy";
+            device.connected = mode != "files-offline";
+            connect.file_paths.insert(device.id.clone(), "/home/test/Documents/Project report.pdf".into());
+            if mode == "files-confirm" {
+                connect.confirm_send = Some(FileDraft { device_id:device.id.clone(), device_name:device.name.clone(), path:"/home/test/Documents/Project report.pdf".into() });
+            }
+            if matches!(mode.as_str(), "files-transfers" | "files-offline") {
+                snapshot.transfers = vec![
+                    Transfer { id:"incoming".into(), peer_id:device.id.clone(), direction:"receive".into(), filename:"Report from phone.pdf".into(), size:1024*1024, state:"offered".into(), ..Default::default() },
+                    Transfer { id:"sending".into(), peer_id:device.id.clone(), direction:"send".into(), filename:"Project archive.zip".into(), size:10*1024*1024, transferred:4*1024*1024, state:"transferring".into(), ..Default::default() },
+                    Transfer { id:"failed".into(), peer_id:device.id.clone(), direction:"send".into(), filename:"Earlier transfer.txt".into(), size:1024, state:"failed".into(), error:Some("The phone disconnected. Select the file again to retry.".into()), ..Default::default() },
+                ];
+            }
+        }
         if mode == "live" {
             connect.snapshot = None;
             connect.last_poll = None;
@@ -640,6 +887,19 @@ mod tests {
             crate::apply_style(&cc.egui_ctx, &Theme::load("signal"));
             Ok(Box::new(Preview { connect, frames: 0, output, live: mode == "live", started: Instant::now() }))
         })).unwrap();
+    }
+    #[test]
+    fn file_controls_and_transfer_rows_fit_a_narrow_panel() {
+        let ctx = egui::Context::default(); ui::install_fonts(&ctx,None,None);
+        let theme = Theme::load("signal"); crate::apply_style(&ctx,&theme);
+        let device = Device { id:"phone".into(), name:"A trusted phone with a long name".into(), paired:true, connected:true, files_enabled:true, ..Default::default() };
+        let mut connect = Connect { last_poll:Some(Instant::now()), snapshot:Some(Snapshot { running:true, devices:vec![device.clone()], transfers:vec![Transfer { id:"transfer".into(), peer_id:device.id.clone(), direction:"receive".into(), filename:"A long incoming filename that must wrap.pdf".into(), size:4096, state:"offered".into(), ..Default::default() }], ..Default::default() }), confirm_send:Some(FileDraft { device_id:device.id.clone(), device_name:device.name.clone(), path:"/home/test/long folder/a long file name.pdf".into() }), ..Default::default() };
+        for _ in 0..3 { let _=ctx.run(egui::RawInput { screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(220.0,400.0))), ..Default::default() }, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                connect.panel(ui,&theme);
+                assert!(ui.min_rect().right()<=220.0); assert!(ui.min_rect().bottom()<=400.0);
+            });
+        }); }
     }
     #[test]
     fn device_panel_stays_within_narrow_bounds() {

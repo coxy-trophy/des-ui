@@ -43,3 +43,19 @@ tested library work, not shipped functionality.
 Security review fixes and focused regressions passed; complete capability-set
 review remains due after the remaining runtime integrations. Preserve existing
 terminal sessions; the compositor has not been restarted.
+
+### File-sharing increment
+
+- Integrate payload manager behind persisted per-device file permission, default
+  off. Derive encrypted identity capabilities from authenticated peer policy.
+- Explicit reconnect applies capabilities; discovery never advertises private
+  opt-ins. Cancel pending/active work on lock, disconnect, unpair, disable or stop.
+- Native panel uses the existing Files panel for locating a path; no duplicate
+  file browser. Require explicit send confirmation and receive acceptance.
+- Extend Android listener acceptance to60s to allow a person to review the
+  desktop's30s offer. TLS deadlines stay unchanged.
+- Keep DES Music's new socket adapter lazy and unadvertised until its separate
+  runtime opt-in and media dispatch are integrated.
+- Ruling: installer includes service/CLI/helper, but never starts networking on
+  boot. Existing installed compositor and user terminals are not replaced during
+  automated verification.

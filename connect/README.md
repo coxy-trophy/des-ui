@@ -1,7 +1,7 @@
 # DES Connect native service
 
 The MIT Rust service implements LAN discovery, protocol-8 mutual TLS, explicit
-pairing, durable certificate pins, battery/ping, owner-only local IPC and an opt-in
+pairing, durable certificate pins, battery/ping, explicit file transfers, owner-only local IPC and an opt-in
 screen bridge. It does not start automatically with the desktop. The Android
 companion is the separate GPL fork at ../des-connect-android; no GPL implementation
 was copied into this crate.
@@ -42,18 +42,23 @@ tokens. Per-IP/global admission limits, absolute handshake deadlines, bounded
 frames and unpaired expiry limit resource use. Same-certificate socket replacement
 preserves an active pairing attempt; a different key does not replace it.
 
-The service currently advertises only battery and ping. Screen sharing is a
+Discovery advertises battery and ping. A trusted peer with file sharing enabled
+receives the file capability through encrypted identity after an explicit reconnect. Screen sharing is a
 separate explicit IPC action requiring a trusted connected peer and an unlocked
 desktop. Capture stops on lock, peer loss or explicit stop and does not auto-resume.
 See SCREEN-BRIDGE.md for USB prerequisites, supported directions and limitations.
 
+The transfer adapter is dispatched by the service and native panel: file sharing
+is off by default per device; send requires an explicit selected path, receive
+requires explicit acceptance. See TRANSFERS.md for limits and filesystem caveats.
+The installer includes the service, CLI and viewer helper, without enabling
+autostart.
+
 The following adapters are compiled and tested but **not dispatched by the live
 service or exposed as working panel controls yet**:
 
-- transfers.rs: pinned mutual-TLS file payloads, explicit receive acceptance,
-  private partial files, cancellation and atomic collision-safe completion.
-- media.rs: lazy MPRIS and bounded default-sink volume control. DES Music currently
-  has its own socket protocol and is not an MPRIS player.
+- media.rs: lazy MPRIS, a bounded private-socket DES Music bridge and default-sink
+  volume control. No player is started or polled in the background.
 - features.rs: default-disabled bounded URL, clipboard, notification, calls, SMS
   and contacts packet contracts. It never sends, opens or imports anything itself.
 
