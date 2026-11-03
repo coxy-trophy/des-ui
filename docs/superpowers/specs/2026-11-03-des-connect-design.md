@@ -1,6 +1,6 @@
 # DES Connect — Android-first design draft
 
-Status: proposed architecture, pending user review. No connectivity feature is
+Status: architecture approved by user on 2026-11-03 (Android fork + native Rust desktop service). No connectivity feature is
 implemented by this document.
 
 ## Intent and agreed scope
@@ -23,7 +23,7 @@ right Apps functions must precede deleting their only UI entry points.
 3. New desktop and Android apps from scratch. Most control, but reproduces years
    of permission, lifecycle, notification, transfer and messaging work.
 
-The recommendation is the builder's proposal, not an approved user choice.
+The user approved option 2 on 2026-11-03.
 Before copying upstream code, inventory file-level SPDX licenses and dependency
 licenses. The existing desktop workspace is MIT; do not relabel upstream GPL
 code as MIT. Keep a fork's notices and applicable source-distribution obligations.
@@ -138,7 +138,7 @@ requirements. Commit and push coherent verified changes per the user's preferenc
 
 ## Open decisions
 
-Choose the backend approach before implementation. Recommended: option 2, with
+Approved backend approach: option 2, with
 upstream-compatible baseline device integration and separately negotiated DES
 screen features. Confirm a physical Android test device and available Android
 build tooling during stage 1. Full UI composition follows the chosen service
