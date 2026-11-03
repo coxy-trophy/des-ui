@@ -170,17 +170,12 @@ cache. App tiles, window counts, active indicators and the launcher keep fixed h
 areas. Overflow opens a bounded window list. Existing saved panel choices remain
 valid, and the right Apps manager retains detailed controls.
 
-Hovering app icons or dock controls must never reveal system telemetry. Hovering
-unused rail space or the expand control arms a 220ms system-panel peek. Keep it
-open inside the adjacent panel, and close after a 250ms leave grace period. The
-peek overlays beside the dock; it never changes workspace geometry or moves app
-icons. Explicit expand/collapse remains available. Suppress peeks while locked,
-picking a capture or another lifted/modal surface owns input. Lift only actual
-popup/peek rectangles above native apps; never union opposite-side overlays into
-a screen-sized crop.
+The system panel expands only on an explicit click or its existing shortcut.
+Hovering any part of the rail never expands it. Lift only actual app popup
+rectangles above native apps; never union opposite-side overlays across windows.
 
 The collapsed left dock retains the shared vertical clock beneath its explicit
 expand control. Time follows the regional format and accent theme, with a fine
 shared LINE divider separating it from running apps. The clock also opens the
-full system column on click; its hover may reveal the existing temporary peek.
+full system column on click. Hover only provides ordinary control feedback.
 The header shrinks with rail height; app tiles never borrow clock click ownership.

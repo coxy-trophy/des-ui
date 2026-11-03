@@ -230,11 +230,9 @@ The left monitoring panel defaults to collapsed. Its rail becomes a dock of
 running applications, grouped by app with window counts and an active indicator.
 Click an icon to activate its window; groups open a window chooser. The bottom
 button opens the launcher, and overflow opens a bounded list of further windows.
-The compact vertical clock stays above the apps. Hovering app icons, launcher or
-overflow never expands the system panel. Hover unused
-rail space or the expand control briefly to peek at the system panel beside the
-dock; it closes after you leave. The peek does not resize windows. Clicking the
-expand control or clock still opens the full panel. Explicit saved panel choices are kept.
+The compact vertical clock stays above the apps. Click the clock or top expand
+control to open the full system panel. Hover never expands it. Explicit saved
+panel choices are kept.
 
 The right panel can minimize to a narrow clickable rail. In **Settings → Frame →
 Minimized side panels**, choose **Collapse** (the default) or **Hide** to reclaim

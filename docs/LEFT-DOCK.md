@@ -1,62 +1,31 @@
 # Collapsed left application dock
 
-The left panel defaults to collapsed in new configurations. Existing explicit
-`panels` preferences remain unchanged. In Collapse mode its rail shows grouped
-running applications across workspaces/displays. A single-window app activates
-on click; a group opens a window chooser. Right-click opens the same window list
-and an Open new window action when its installed application can be resolved.
-The launcher remains available at the bottom. Overflow uses a bounded chooser.
+New configurations start with the left panel collapsed. Explicit saved panel
+preferences remain unchanged. In Collapse mode the rail shows running apps
+grouped across workspaces/displays, using the existing dock model and icon cache.
+Click a single-window app to activate it, or a group to choose a window.
+Right-click also offers Open new window when an installed app is resolved.
+The launcher stays at the bottom; overflow uses a bounded window chooser.
 
-Hovering an app tile, launcher or overflow control never arms system expansion.
-Unused rail space and the top expand control open the monitoring panel after
-220ms. The panel stays open while the pointer is inside it, and closes after a
-250ms grace period when leaving or entering an app tile. The hover panel appears
-beside the fixed dock as an overlay, so native windows are not resized. Clicking
-the top control retains the existing explicit full-panel expansion behavior.
+The vertical clock and top expand button open the full system panel on click.
+The existing panel shortcut also remains available. Hover never expands the
+panel: the temporary peek, hover timers and overlay were removed. Ordinary app
+tooltips and control feedback remain. The clock follows regional time format
+and theme, updates on minute boundaries, and shares the legacy rail painter.
 
-The existing dock grouping, application discovery and bounded shared icon cache
-are reused. Hover timers repaint only while pending; there is no new polling
-worker or persistent animation. Right-side Apps and Super+D retain their existing
-management and keyboard behavior.
+App popups use the existing lifted Dock region. Only one lifted dock surface
+is selected at a time; never union disjoint left/right popup rectangles across
+native windows. Right Apps and Super+D keep their detailed management workflow.
 
-The peek and menus use the compositor's existing lifted Dock region. Only one
-lifted dock surface is selected at a time: disjoint left/right rectangles must
-never be combined into a rectangle covering the native workspace. Lock, capture
-picking and modal surfaces suppress the peek.
+Regression tests cover full expansion through both controls, app click ownership
+and sustained hover over the button, clock, apps and blank space without expansion.
 
-Regression coverage includes icon exclusion, delayed opening, panel retention,
-leave grace, modal reset, grouped icon hit ownership and preserving saved panel
-preferences. Existing dock/window-management and frame tests remain applicable.
+Run `python3 scripts/left-dock-demo.py` in a Wayland session for a disposable
+nested desktop with two grouped Thunar windows (requires Thunar and
+dbus-run-session). It uses private runtime/config directories and a separate
+application bus. Close the preview to clean up its owned processes and state.
+It does not install or restart the login session.
 
-## Validation and preview
-
-`cargo check -p des-ui --locked -j2` and `cargo build -p des-ui --locked -j2`
-passed. The full shell suite with `--test-threads=2` passed 550 tests with one
-ignored. An initial parallel run hit the existing remote descendant-timeout
-fixture before its pidfile was written; its isolated rerun and full rerun passed.
-
-Run `python3 scripts/left-dock-demo.py` from a running Wayland desktop to open
-a disposable nested compositor with two real Thunar windows. This requires
-Thunar and dbus-run-session. It uses private runtime/config directories and a
-separate application bus, and does not install or restart the login session.
-Close the preview window to stop its processes and remove temporary state.
-The native preview confirmed two real windows grouped in the collapsed dock;
-hover exclusion/delay are covered by egui/state tests. Interactive hover over
-native windows still needs visual confirmation in the preview.
-
-The original full-column expansion remains available through the top button and
-its global panel shortcut. The restored vertical clock is also a full-expansion
-button. It uses the same shared clock painter as the legacy collapsed panel,
-respects regional time format and updates on minute boundaries. A subtle divider
-separates time from app icons; the header adapts to short displays.
-
-The clock refinement adds an egui click test for both full-expansion targets and
-checks that app clicks do not expand the panel. The optional frontend static
-audit reports 33 pre-existing actionless buttons in the terminal HTML prototype
-(`docs/prototypes/terminal-workbench/index.html`); it reports no findings in these
-native Rust dock changes. That prototype is outside this change.
-
-Clock refinement validation: full shell suite passed 551 tests, one ignored;
-`cargo build -p des-ui --locked -j2` passed. A refreshed native nested preview
-visibly shows the accent clock, divider, grouped running app and launcher without
-overlap. The installed login session was not replaced.
+Validation after removing hover expansion: full shell suite passed 547 tests
+with one ignored; `cargo build -p des-ui --locked -j2` passed. Preview helper
+Python compilation and `git diff --check` passed.

@@ -91,7 +91,7 @@ def main():
             files = subprocess.Popen(['dbus-run-session', '--', 'sh', '-c',
                 'thunar -w "$1" & first=$!; sleep 1; thunar -w "$2"; wait "$first"',
                 'dock-demo', str(ROOT), str(ROOT / 'shell')], env=app_env, start_new_session=True)
-            print('Preview ready: hover app icons versus empty dock space; click the grouped file-manager icon.', flush=True)
+            print('Preview ready: click the clock or top button to expand; click the grouped file-manager icon.', flush=True)
             print('Close the preview desktop to end its temporary windows and services.', flush=True)
             return compositor.wait()
         finally:

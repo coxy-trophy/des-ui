@@ -78,7 +78,7 @@ pub enum Action {
 pub struct Output {pub action:Option<Action>,pub overlay:Option<Rect>,pub keyboard:bool}
 
 #[derive(Default)]
-pub struct RailOutput {pub output:Output,pub icon_hovered:bool,pub expand:bool}
+pub struct RailOutput {pub output:Output,pub expand:bool}
 
 pub struct Dock {
     entries: Vec<AppEntry>,
@@ -141,12 +141,12 @@ impl Dock {
         }
     }
     /// Compact running-app dock in the collapsed left column. Blank space is
-    /// deliberately left without an interaction target so it can reveal telemetry.
+    /// deliberately left without an interaction target; expansion is click-only.
     pub fn rail_on(&mut self,ui:&mut egui::Ui,state:Option<&DesktopState>,theme:&Theme)->RailOutput {
         let ctx=ui.ctx().clone();self.refresh(&ctx);
         let empty=DesktopState::default();let state=state.unwrap_or(&empty);
         let all=items_on(&self.entries,&[],state,None);
-        let body=ui.max_rect();let pointer=ctx.pointer_hover_pos();
+        let body=ui.max_rect();
         let header=(body.height()*0.4).min(164.0);let footer=(body.height()*0.3).min(88.0);
         let slot=44.0_f32.min((body.height()-header-footer).max(1.0));
         let capacity=((body.height()-header-footer)/slot).floor().max(1.0) as usize;
@@ -157,7 +157,7 @@ impl Dock {
         if response.hovered(){ui.painter().rect_filled(expand,ui::CONTROL_RADIUS,theme.tint());}
         ui::paint_icon(ui.painter(),expand.shrink(6.0),ui::Icon::PanelLeft,ui::SECONDARY,false);
         response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,true,"Expand system panel"));
-        result.expand=response.on_hover_text("Hover to peek · click to expand the system panel").clicked();
+        result.expand=response.on_hover_text("Click to expand the system panel").clicked();
         if header>=80.0 {
             let clock=tile(expand.bottom()+8.0,(header-60.0).max(16.0));
             let response=ui.interact(clock,ui.id().with("left-dock-clock"),Sense::click());
@@ -170,7 +170,6 @@ impl Dock {
         }
         for (n,item) in all.iter().take(capacity).enumerate() {
             let rect=tile(body.top()+header+n as f32*slot,(slot-4.0).min(40.0));
-            result.icon_hovered|=pointer.is_some_and(|p|rect.contains(p));
             let response=ui.interact(rect,ui.id().with(("left-running-app",item_key(item))),Sense::click());
             let active=state.focus.is_some_and(|index|item.windows.contains(&index));
             if response.hovered()||active {ui.painter().rect_filled(rect,ui::CONTROL_RADIUS,theme.tint());}
@@ -205,7 +204,6 @@ impl Dock {
         let footer_control=if all.len()>capacity {((footer-4.0)/2.0).clamp(1.0,36.0)}else{(footer-4.0).clamp(1.0,36.0)};
         if all.len()>capacity {
             let rect=tile(body.bottom()-footer,footer_control);
-            result.icon_hovered|=pointer.is_some_and(|p|rect.contains(p));
             let response=ui.put(rect,egui::Button::new("···").frame(false)).on_hover_text("More running applications");
             let popup=ui.id().with("left-dock-overflow");if self.rail_popup==Some(popup){seen_popup=true;}
             if response.clicked(){self.motion.dismiss();ctx.memory_mut(|m|m.toggle_popup(popup));self.rail_popup=Some(popup);seen_popup=true;}
@@ -217,7 +215,6 @@ impl Dock {
             }) {owns_popup=true;result.output.overlay=Some(area.expand(10.0));}
         }
         let launcher=tile(body.bottom()-footer_control-2.0,footer_control);
-        result.icon_hovered|=pointer.is_some_and(|p|launcher.contains(p));
         let response=ui.interact(launcher,ui.id().with("left-dock-launcher"),Sense::click());
         ui::paint_icon(ui.painter(),launcher.shrink(5.0),ui::Icon::Apps,if response.hovered(){theme.main}else{ui::SECONDARY},false);
         if response.clicked(){self.motion.dismiss();result.output.action=Some(Action::Launcher);}
@@ -726,17 +723,17 @@ mod right_panel_tests {
             assert_eq!(expanded,wanted,"expansion ownership at y={y}");
         }
     }
-    #[test] fn grouped_app_icon_hover_is_distinct_from_unused_rail_space() {
+    #[test] fn hovering_clock_app_and_unused_space_never_expands_panel() {
         let ctx=egui::Context::default();crate::ui::install_fonts(&ctx,None,None);
         let mut dock=Dock::default();dock.scanned=Some(Instant::now());
         let mut hover=Vec::new();
-        for (time,y) in [(0.0,180.0),(0.1,260.0)] {
+        for (time,y) in [(0.0,22.0),(1.0,22.0),(2.0,90.0),(3.0,90.0),(4.0,180.0),(5.0,180.0),(6.0,260.0),(7.0,260.0)] {
             let input=egui::RawInput{screen_rect:Some(Rect::from_min_size(pos2(0.0,0.0),vec2(600.0,600.0))),time:Some(time),events:vec![egui::Event::PointerMoved(pos2(22.0,y))],..Default::default()};
             let _=ctx.run(input,|ctx|{egui::CentralPanel::default().show(ctx,|ui|{
                 let mut rail=ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(pos2(0.0,0.0),vec2(44.0,500.0))));
-                hover.push(dock.rail_on(&mut rail,Some(&state()),&Theme::load("signal")).icon_hovered);
+                hover.push(dock.rail_on(&mut rail,Some(&state()),&Theme::load("signal")).expand);
             });});
         }
-        assert_eq!(hover,[true,false],"one grouped icon owns its tile; the empty space can expand telemetry");
+        assert!(hover.iter().all(|expanded| !expanded),"hover must never open the system panel");
     }
 }

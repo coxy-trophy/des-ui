@@ -240,11 +240,8 @@ separate terminal history.
 
 Primary left dock: new default configurations start with the left monitoring
 panel collapsed; explicit saved panel choices remain authoritative. Running-app
-icons reuse dock grouping and the shared icon cache. App/control hover excludes
-system-panel expansion. Empty-rail or expand-control hover arms a 220ms peek;
-leaving or entering an app icon closes it after 250ms. Keep icons and native
-workspace geometry fixed while peeking. Explicit expansion still uses existing
-panel commands. Popup/peek coverage must use only its own visible rectangle;
-opposite-side overlays must never be unioned across native applications. Lock,
-capture picking and modal input ownership suppress peeks. Right Apps and Super+D
-remain the detailed window manager and keyboard workflow.
+icons reuse dock grouping and the shared icon cache. Hover never expands the
+system panel. The clock and top expand button use existing panel commands on
+click; the existing panel shortcut remains available. App popup coverage uses
+only its visible rectangle; opposite-side overlays must never be unioned across
+native applications. Right Apps and Super+D retain their existing workflows.

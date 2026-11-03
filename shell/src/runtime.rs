@@ -12,7 +12,6 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.lock.locked || self.capture.marking() || self.polkit.active() {self.left_peek=Default::default();}
         // Before anything reads input: what the on-screen keys pressed last frame.
         self.osk.inject(ctx);
         self.mon.set_processor_temperature_warnings(self.config.processor_temperature_warnings);
@@ -338,7 +337,6 @@ impl eframe::App for App {
         let keys_top = frame_layout.keyboard.map(|rect| on_screen(rect).top()).unwrap_or(status_top);
         let mut dock_keys = self.dock.reserve_keyboard(ctx);
         let mut apps_output = dock::Output::default();
-        let mut left_dock_hover=None;
         let mut left_rail_output=None;
         ctx.data_mut(|data| data.insert_temp(egui::Id::new("window-shelf-capable"), self.desktop.as_ref().is_some_and(|d| d.connected() && d.window_shelf)));
         // While the scratchpad is down it has the keyboard, not the panes.
@@ -442,7 +440,7 @@ impl eframe::App for App {
                             if let Some(rect)=rect {
                                 let clicked=if panel==des_common::Panel::Left && !self.capture.marking() {
                                     let rail=frame_region(ui,rect,vec2(0.0,0.0),Layout::top_down(Align::Center),|ui|self.dock.rail_on(ui,state.as_ref(),&theme));
-                                    left_dock_hover=Some((rect,rail.icon_hovered));left_rail_output=Some(rail.output);rail.expand
+                                    left_rail_output=Some(rail.output);rail.expand
                                 } else {frame_region(ui,rect,vec2(0.0,0.0),Layout::top_down(Align::Center),|ui|panels::collapsed_rail(ui,&theme,panel))};
                                 if clicked {match &self.desktop {Some(_)=>command=Some(Command::TogglePanel(panel)),None=>self.local_panels.toggle(panel)}}
                             }
@@ -685,22 +683,6 @@ impl eframe::App for App {
         if let Some(rail)=left_rail_output {
             if rail.action.is_some() || rail.overlay.is_some() {apps_output=rail;}
         }
-        if let Some((rail,icon_hovered))=left_dock_hover {
-            let width=des_common::side_width(screen.width()).min((screen.right()-rail.right()-16.0).max(1.0));
-            let peek=Rect::from_min_size(pos2(rail.right()+8.0,rail.top()),vec2(width,rail.height()));
-            let pointer=ctx.pointer_hover_pos();
-            let trigger=pointer.is_some_and(|p|rail.contains(p));
-            let inside=self.left_peek.is_open() && pointer.is_some_and(|p|rail.union(peek).contains(p));
-            let allowed=!self.capture.marking() && !self.polkit.active() && !self.quick.open && apps_output.overlay.is_none() && !ctx.memory(|m|m.any_popup_open());
-            if self.left_peek.update(ctx.input(|i|i.time),trigger,inside,icon_hovered,allowed) {
-                egui::Area::new(egui::Id::new("left-dock-system-peek")).order(egui::Order::Foreground).fixed_pos(peek.min).show(ctx,|ui|{
-                    ui.set_min_size(peek.size());
-                    frame_region(ui,peek,vec2(24.0,24.0),Layout::top_down(Align::Min),|ui|panels::left(ui,&theme,&self.mon,&mut self.pet,&self.widgets));
-                });
-                apps_output.overlay=Some(peek);
-            }
-            if self.left_peek.pending(){ctx.request_repaint_after(Duration::from_millis(32));}
-        } else {self.left_peek.update(ctx.input(|i|i.time),false,false,false,false);}
         if let Some(command) = command { self.send(command); }
         if let Some(output) = self.tabs.iter_mut().find_map(TermTab::take_explain_output) {
             self.companion.prepare_terminal_explanation(ctx, &output);
