@@ -154,3 +154,12 @@ shape with distinct leading/trailing corner springs, integrated analytically so
 frame rate does not change the response. Text input stays immediate. Clear state
 on hiding, focus loss, layout changes or long pauses. Settle exactly at rest.
 The desktop mouse pointer has no smear or afterimage effect.
+
+Music lyrics use fixed bold text metrics and cached wrapping. Playback focus is
+painted with a small scale/color transition, never by changing layout font sizes.
+Keep the current line near the upper third using damped scrolling; seeks align
+without sweeping through the song. Manual wheel/touch/scrollbar browsing suspends
+following until Return to current line is chosen, and raises inactive contrast.
+Use edge fades and a restrained accent marker. The first pass has no blur shader,
+animated background, or invented word timing. Respect reduced motion and stop
+animation work once transitions settle; paint only visible lines.

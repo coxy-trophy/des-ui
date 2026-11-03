@@ -546,6 +546,7 @@ impl eframe::App for App {
                 }
                 if self.music.open {
                     region(ui, mine, vec2(0.0, 0.0), Layout::top_down(Align::Min), |ui| {
+                        self.music.set_lyrics_motion(self.config.animate && !self.config.appearance.reduce_motion);
                         self.music.show(ui, mine, &theme)
                     });
                     return;

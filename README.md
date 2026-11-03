@@ -542,8 +542,10 @@ the one track, and `LIKE` puts the track among your liked songs (which asks once
 more for Spotify's approval).
 
 `LYRICS` shows the words of the track playing, from Spotify's own source. Where they
-are timed to the music, the line being sung is picked out and kept in the middle,
-and a click on any line goes to it. `UP NEXT` shows what is queued, and `+ QUEUE` on a
+are timed to the music, the current line follows with smooth spring motion and
+gradual emphasis. Scrolling by hand pauses following until **Return to current
+line** is chosen; clicking a timed line seeks to it. Wrapping stays stable as lines
+are highlighted, and Reduce motion disables the transitions. `UP NEXT` shows what is queued, and `+ QUEUE` on a
 track under the pointer adds it. While something plays, the right column shows it
 too, and the keyboard's play, next and previous keys work from anywhere.
 

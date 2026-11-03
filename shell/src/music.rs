@@ -5,6 +5,8 @@
 //! control. The shell starts the service when it is not running, and offers the
 //! sign-in when the service says nobody is signed in.
 
+mod lyrics_view;
+
 use crate::theme::Theme;
 use crate::ui;
 use des_common::music::socket_path;
@@ -716,8 +718,9 @@ pub struct Music {
     devices_asked: Option<Instant>,
     /// The track whose words were last asked for.
     lyrics_asked: Option<String>,
-    /// The line last brought into view, so that it is done once per line.
-    lyrics_at: Option<usize>,
+    /// Stable lyric layout and the playback-follow animation state.
+    lyrics_view: lyrics_view::View,
+    lyrics_motion: bool,
 }
 
 impl Music {
@@ -761,7 +764,7 @@ impl Music {
             covers,
             devices_asked: None,
             lyrics_asked: None,
-            lyrics_at: None,
+            lyrics_view: Default::default(), lyrics_motion: true,
         }
     }
 
@@ -1226,7 +1229,7 @@ impl Music {
                 }
                 if side_row(ui, theme, "LYRICS", self.source == Source::Lyrics) {
                     self.go(Source::Lyrics, false);
-                    self.lyrics_at = None;
+                    self.lyrics_view.reset();
                 }
                 if side_row(ui, theme, "DEVICES", self.source == Source::Devices) {
                     self.go(Source::Devices, false);
@@ -1531,7 +1534,7 @@ impl Music {
         };
         if self.lyrics_asked.as_deref() != Some(track.uri.as_str()) {
             self.lyrics_asked = Some(track.uri.clone());
-            self.lyrics_at = None;
+            self.lyrics_view.reset();
             self.send(json!({ "cmd": "lyrics", "track": track.uri }));
         }
         let lyrics = self.shared.lock().unwrap().lyrics.clone().filter(|lyrics| lyrics.track == track.uri);
@@ -1543,49 +1546,12 @@ impl Music {
             ui::text(ui, why, ui::display(12.0), ui::LABEL);
             return;
         }
-        let current = lyrics.current(now.position_ms());
-        if !lyrics.synced {
-            ui::text(ui, "These words are not timed to the music.", ui::display(11.0), ui::LABEL);
-            ui.add_space(8.0);
-        }
-        let moved = current != self.lyrics_at;
-        self.lyrics_at = current;
-        let mut seek = None;
-        ScrollArea::vertical().id_salt("lyrics").auto_shrink([false, false]).show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 10.0;
-            ui.add_space(ui.available_height() * 0.3);
-            for (index, (at, text)) in lyrics.lines.iter().enumerate() {
-                let sung = current == Some(index);
-                let (font, ink) = match (lyrics.synced, sung, current.is_some_and(|current| index < current)) {
-                    (false, _, _) => (ui::display(17.0), ui::TEXT),
-                    (true, true, _) => (ui::display_bold(22.0), theme.main),
-                    (true, false, true) => (ui::display(17.0), ui::LABEL),
-                    (true, false, false) => (ui::display(17.0), ui::SECONDARY),
-                };
-                // A line with no words is a stretch of music.
-                let shown = if text.is_empty() { "· · ·" } else { text.as_str() };
-                let galley = ui.painter().layout(shown.to_string(), font, ink, ui.available_width() - 12.0);
-                let (rect, response) = ui.allocate_exact_size(galley.size(), if lyrics.synced { Sense::click() } else { Sense::hover() });
-                let ink = if response.hovered() && !sung { ui::TEXT } else { ink };
-                ui.painter().galley(rect.min, galley, ink);
-                if response.clicked() {
-                    seek = Some(*at);
-                }
-                // Follow the singing, but only as it moves on: scrolling by hand is let be until then.
-                if sung && moved {
-                    ui.scroll_to_rect(rect, Some(Align::Center));
-                }
-            }
-            ui.add_space(ui.available_height().max(120.0) * 0.5);
-        });
-        if let Some(ms) = seek {
-            self.send(json!({ "cmd": "seek", "ms": ms }));
-        }
-        // The line changes with the music, not with the pointer.
-        if now.playing && lyrics.synced {
-            ui.ctx().request_repaint_after(Duration::from_millis(200));
+        if let Some(ms)=self.lyrics_view.show(ui,theme,now,&lyrics,self.lyrics_motion) {
+            self.send(json!({"cmd":"seek","ms":ms}));
         }
     }
+
+    pub fn set_lyrics_motion(&mut self,enabled:bool) {self.lyrics_motion=enabled;}
 
     /// Music's software volume is independent of the desktop output volume.
     /// Keep it visible in both players so a quiet source is easy to identify.
@@ -1647,7 +1613,7 @@ impl Music {
             let liked = now.liked == Some(true);
             if ui::chip(ui, theme, if liked { "LIKED" } else { "LIKE" }, None, liked).clicked() { self.send(json!({ "cmd": "like", "on": !liked })); }
             ui.menu_button(egui::RichText::new("MORE").font(ui::display(11.0)), |ui| {
-                if ui.button("Lyrics").clicked() { self.go(Source::Lyrics, true); self.lyrics_at = None; ui.close_menu(); }
+                if ui.button("Lyrics").clicked() { self.go(Source::Lyrics, true); self.lyrics_view.reset(); ui.close_menu(); }
                 if ui.button("Devices").clicked() { self.go(Source::Devices, true); self.devices_asked = None; ui.close_menu(); }
 
             });
@@ -1919,7 +1885,7 @@ mod tests {
             })),
             commands, source: Source::Home, query: String::new(), browser_open: None, editor: None, add_to: None, client_id: String::new(),
             queue_as_of: None, queued: None, asked: Vec::new(), asked_further: None, trail: Vec::new(),
-            covers: Covers { wanted, ready, pending_workers: None, held: HashMap::new(), recent: VecDeque::new() }, devices_asked: None, lyrics_asked: None, lyrics_at: None,
+            covers: Covers { wanted, ready, pending_workers: None, held: HashMap::new(), recent: VecDeque::new() }, devices_asked: None, lyrics_asked: None, lyrics_view: Default::default(), lyrics_motion: true,
         }
     }
 
