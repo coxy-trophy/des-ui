@@ -1,0 +1,45 @@
+# DES Connect Integration Implementation Plan
+
+> Implement inline with independent Android design and shell-panel tasks under the dispatching-parallel-agents skill.
+
+**Goal:** Match the Android app to DES UI, establish real authenticated Android/desktop pairing, and expose actual state/actions in the right panel; then extend verified capabilities without advertising unfinished ones.
+
+**Architecture:** Android GPL fork owns shared platform themes. Native Rust daemon owns TLS identity, persisted peer pins, bounded discovery/connections and private UID-checked IPC. Shell egui CONNECT consumes asynchronous IPC snapshots and never starts networking on shell boot. Unsupported features stay out of the action list until their backend exists.
+
+**Spec:** ../specs/2026-11-03-des-connect-design.md
+
+## Constraints and checks
+
+- Preserve existing Apps/window management until the left dock offers replacements.
+- Never modify the owner's active terminal sessions or restart the installed compositor for preview verification.
+- Identity/capability claims before TLS never authorize features. Require protocol8 encrypted identity exchange, certificate/key possession and identity binding, explicit pair verification and pinned reconnect.
+- Private identity/pin files and IPC are owner-only; bound frames, connections, timeouts and state queues.
+- Defaults use event-driven/blocked I/O and visible-only shell refresh; no decorative animation workers, capture/encoding only while sharing.
+- Android shared tokens cover Compose and XML; retain accessible Android48dp targets, responsive phone/tablet layout, font/license and upstream notices.
+
+## Tasks
+
+- [x] Android shared Signal colors, fonts, shapes, control density and device hierarchy; build/unit tests and real-tablet visual verification.
+- [x] Native private certificate identity/pin persistence, TLS1.2 interoperability and v8 verification code; tests for file permissions/cert mismatch and transcript/geometry limits.
+- [x] Bounded LAN discovery/connection lifecycle, per-session/attempt pair callbacks, real ping and battery; private IPC/CLI and authorization tests.
+- [x] Native CONNECT tab/controller with service unavailable/empty/pairing/trusted/error states and explicit actions. Build and verify via isolated shell preview.
+- [ ] Actual tablet pairing with verification code comparison, bidirectional ping/battery, restart/reconnect and unpair checks.
+- [ ] Add remaining sharing/control/mirroring capabilities in tested increments, with Android consent and locked-session protection; carry any outstanding stages explicitly in docs.
+- [ ] Independent security/correctness review, focused fixes, final test/build, source commits/pushes and honest verification record.
+
+## Progress ledger — 2026-11-03
+
+Core transport, Signal Android redesign, native panel and view-only USB screen
+bridge implemented. Real pairing, bidirectional ping, battery, trusted daemon
+restart/reconnect and visible Android mirror verified. Real unpair not exercised
+on the tablet; loopback TLS lifecycle covers it. See docs/DES-CONNECT.md for
+commands, evidence, outstanding capabilities and runtime limitations.
+
+Ruling: Keep per-feature adapters unadvertised until live permission checks and
+panel dispatch exist. This avoids prompting Android permissions for controls the
+desktop cannot yet perform. Transfer/media/feature adapters are checkpointed as
+tested library work, not shipped functionality.
+
+Security review fixes and focused regressions passed; complete capability-set
+review remains due after the remaining runtime integrations. Preserve existing
+terminal sessions; the compositor has not been restarted.

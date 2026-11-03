@@ -185,3 +185,10 @@ with opaque PANEL fill, LINE_STRONG outline and TEXT digits. Single-window apps
 have no badge; counts above nine show 9+ and expose the exact number in the shared
 tooltip/accessibility label. Urgency uses the opposite corner; the active edge
 and bottom running dot keep their existing meaning.
+
+DES Connect Android follows the desktop Signal palette, fonts and matte layered
+surfaces through shared native theme resources; Android retains 48dp touch targets
+and platform accessibility. Desktop CONNECT uses existing egui tokens/controls,
+visible-only asynchronous state refresh, explicit pairing codes/actions and no
+placeholder actions for unsupported capabilities. Opening the shell does not
+automatically start the connection daemon or advertise the machine.

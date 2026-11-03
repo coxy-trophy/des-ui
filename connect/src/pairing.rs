@@ -28,7 +28,14 @@ impl Default for Pairing {
     }
 }
 type Result<T> = std::result::Result<T, &'static str>;
+impl Attempt { pub fn id(self)->u64 {self.0} }
 impl Pairing {
+    /// Restore a digest only from the validated owner-private persistent trust store.
+    pub fn from_pin(pin:Option<[u8;32]>)->Self {Self{pin,..Self::default()}}
+    pub fn pending(&self)->Option<Attempt> {self.pending}
+    /// The transport calls this periodically so idle pending prompts expire too.
+    pub fn expire(&mut self,session:Session,now:u64) {let _=self.tick(session,now);}
+
     pub fn state(&self) -> State { self.state }
     pub fn pinned(&self) -> Option<[u8; 32]> { self.pin }
     pub fn authorized(&self) -> bool {

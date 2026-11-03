@@ -1,92 +1,113 @@
 # DES Connect: Android-first development
 
-Approved direction: native Rust desktop service, custom right-panel CONNECT tab,
-and a separate GPL Android fork. All KDE Connect-style capabilities plus screen
-mirroring remain the target; this first change establishes the fork and protocol
-foundation only.
+The approved target is a native Rust service, a right-panel CONNECT tab, and a
+custom Android companion with KDE Connect capabilities plus screen sharing.
+This is an incremental implementation; the entire capability set is not finished.
 
 ## Repositories and licensing
 
-- Desktop: this MIT workspace, new `connect` library crate.
-- Android: https://github.com/coxy-trophy/des-connect-android
-- Android checkout: sibling `../des-connect-android`; the existing
-  `../des-ui-mobile` launcher project remains untouched.
-- Android upstream: KDE/kdeconnect-android at
-  `3242aeff092bba165a64d63a690d31627064644d` (protocol 8).
+Desktop: this MIT workspace. Android: https://github.com/coxy-trophy/des-connect-android,
+local sibling ../des-connect-android. Its upstream base is KDE/kdeconnect-android
+3242aeff092bba165a64d63a690d31627064644d (protocol8). The separate des-ui-mobile
+project is untouched. Retain upstream COPYING/LICENSES, copyrights and dependency
+license generation. Android source predominantly declares GPL-2.0-only OR
+GPL-3.0-only OR LicenseRef-KDE-Accepted-GPL with Apache third-party files. This is
+not a complete dependency-license audit. No GPL implementation was copied into
+Rust. Bundled Chakra Petch and JetBrains Mono retain OFL notices.
 
-The Android source inventory finds predominantly
-`GPL-2.0-only OR GPL-3.0-only OR LicenseRef-KDE-Accepted-GPL` declarations and
-Apache-2.0 third-party files. This is a source inventory, not a completed
-transitive dependency-license review. Upstream COPYING/LICENSES, copyright
-headers and Gradle dependency-license generation are retained. No GPL source
-implementation was copied into the MIT Rust library. Screen extensions will
-require their own dependency/license review before distribution.
+The Android app ID is io.github.coxytrophy.desconnect (.debug for debug builds).
+Provider authorities and self-notification filtering follow the runtime ID.
+The app now shares DES UI's Signal palette, local fonts, outlined matte surfaces
+and shared XML/Compose theme tokens. Touch targets remain at least48dp; existing
+light/dark/system preferences, translations, Android permissions and upstream
+credits remain. See the Android DESIGN.md and UX-CONTRACT.md.
 
-The Android fork has a DES Connect launcher label, independent application ID
-`io.github.coxytrophy.desconnect` (debug suffix `.debug`), runtime-aware
-self-notification filtering and matching received-file FileProvider authority.
-Internal namespaces, existing artwork and most upstream screens remain intact;
-visible app headers, widgets and notification titles now use DES Connect and the
-About source/bug links point to the fork while retaining upstream credits.
-this is not yet the planned Android UI redesign or screen-sharing extension.
+## Working integration
 
-## Native foundation
+- Native protocol8 discovery, private certificate/key persistence, TLS pairing,
+  verification-code display and persisted pinned reconnect.
+- Bidirectional ping and Android battery/charging status.
+- Native CONNECT tab with explicit start/stop, discover, code-checked accept,
+  reject, ping, unpair confirmation and honest unavailable/offline states.
+  Existing SYSTEM/APPS functionality is preserved.
+- Explicit view-only USB Android-to-desktop mirroring through pinned scrcpy5.0.1.
+  Starting/stopping, lock checks, disconnect cleanup and capability reporting are
+  wired. No capture starts on boot or on pairing.
+- Existing extended-output helper can be invoked only when the current compositor
+  exposes its opted-in virtual-output socket. It is unavailable in the current
+  installed session. Physical-desktop-to-Android mirroring is unavailable.
 
-`connect/src/packet.rs` implements bounded newline-delimited JSON framing and
-identity validation. `connect/src/pairing.rs` models trust transitions with opaque
-connection and per-attempt tokens, incoming/outgoing timeouts, changed-key
-rejection and explicit approval/send-success requirements. See connect/README.md
-for limits and the mandatory TLS-adapter contract.
+Run/build instructions and security boundaries are in ../connect/README.md;
+USB requirements and limitations are in ../connect/SCREEN-BRIDGE.md.
 
-The crate does not run a network service. Discovery/TLS, certificate identity
-binding, verification-code display, persistent key/pin storage, private IPC and
-the CONNECT tab remain unimplemented. Unit tests are not an Android pairing test.
-No remote commands or network listener have been enabled by these foundations.
+## Device verification — 2026-11-03
 
-## Verification
+The connected Samsung SM-P585, Android14, was used with the owner's permission.
+Real verification codes matched, pairing succeeded, battery/charging state came
+from the tablet, and ping was confirmed in both directions. A native CONNECT
+preview rendered the live paired state in isolation without restarting the
+installed desktop or touching existing terminals. A daemon stop/start retained
+trust, reconnected without approval and returned battery state; Android Send ping
+then updated the restarted daemon's ping timestamp.
 
-- `cargo test -p des-connect --locked`: 13 passed.
-- `cargo build -p des-connect --locked`: passed.
-- `cargo metadata --no-deps --locked --format-version 1`: passed.
-- `git diff --check`: passed for both repositories.
-- Android static checks: distinct app ID/label, dynamic manifest provider
-  authority, no hard-coded upstream provider use, retained license files.
-- The first Java invocation failed because inherited JAVA_HOME pointed to a
-  missing JDK17. System Java25 then failed because it lacks JAVA_COMPILER.
-  Existing full JDK21 at /home/coxy/.local/jdk-21 is used command-scoped instead.
-- Rust formatting/clippy commands were attempted but those cargo components are
-  not installed; they are not reported as passing.
-- Independent review found stale same-connection pairing callbacks and an Android
-  file-provider authority mismatch. Both were reproduced and corrected; the
-  pairing regressions now pass with per-attempt tokens. Frame error handling is
-  documented connection-fatal and exact-limit tests were added.
+USB mirroring visibly displayed the Android screen in a real desktop window.
+The viewer was stopped successfully. Hardware decoding reported initialization
+errors before software fallback displayed frames. Sustained performance, hardware
+decode and motion/latency measurements are still required. Private screenshots
+and device keys are not repository artifacts.
 
-Android build and unit tests passed: 140 tests, 24 suites, zero failures/errors/skips.
-The branded debug APK installed using ADB --no-streaming (streamed install hit
-splice EINVAL). First-launch/device-list and About credits were visually checked
-on the tablet: DES Connect label, Devices title, upstream authors and license
-controls present. Android peer discovery was observed; no peer was paired.
-The initial long build was terminated with exit 143 before packaging; the cached
-retry and final branding rebuild passed.
-The connected Samsung SM-P585 (Android 14) was subsequently selected for installation testing. Real pairing,
-received-file opening (including coexistence with official KDE Connect), Android
-permissions and screen capture/control still require device verification.
+The Android redesign was checked on the tablet in landscape, portrait and a
+400dp layout; its original size/density/rotation were restored. An initial
+capability-aliasing bug exposed unsupported plugin controls/permissions. The fix
+filters plugins on initial identity and later explicit capability updates, honors
+empty sets, preserves missing-vector legacy behavior, and removes stale modules.
+Six failing regression assertions became green. The installed rebuilt APK now
+shows Connected with an honest no-controls state and retains Send ping in its
+menu instead of advertising unavailable desktop features. Notification-listener,
+SMS, contacts and accessibility permissions were not granted through automation.
+No real SMS/call or message to another person was sent.
 
-## Next integration boundary
+## Automated verification
 
-Implement authenticated protocol-8 transport and durable private identity/pin
-storage, then demonstrate two-way ping with the Android fork. Only then expose
-real device status and pairing controls in the right panel. Preserve the right
-Apps tab's management actions until they have working replacements. Production
-video must replace the experimental raw-RGBA USB viewer with measured, efficient
-encoding and an authenticated transport; do not expose its existing local helper
-on the LAN.
+- Rust service suite:67 passed,1 ignored; isolated fake-MPRIS integration also
+  passed on its disposable bus. Includes real loopback TLS sessions/payloads,
+  file collision/symlink protection, explicit transfer acceptance/cancellation,
+  stale approval callbacks, reconnect/replacement, absolute handshake deadlines,
+  lock refusal and screen-process cleanup.
+- cargo build -p des-connect passed.
+- Native panel/controller tests:15 passed,1 fixture ignored by default. Isolated
+  native fixtures were visually checked at narrow widths and with live IPC.
+- The shell build passed. The earlier full shell run had a timing-sensitive
+  terminal backpressure test exceed its existing10s deadline under load; the
+  isolated rerun passed. Terminal code/deadlines were not changed for this work.
+- Android testDebugUnitTest/assembleDebug passed:152 tests across25 suites,
+  zero failures/errors/skips. APK installed with adb --no-streaming because the
+  streamed installation path fails with splice EINVAL on this machine.
+- Inherited JAVA_HOME is invalid; command-scoped JDK21 at
+  /home/coxy/.local/jdk-21 and ANDROID_HOME=/home/coxy/Android/Sdk were used.
+- Rust format/clippy components are absent; those checks are not claimed passing.
+- Static UI audit reports33 existing findings in the old HTML terminal prototype;
+  no new native UI findings were reported by that audit.
 
+Security review findings corrected with focused tests: approval tokens reused
+across new actors, slow-handshake slot exhaustion, lock/trust changes during USB
+preparation, and starts surviving an IPC caller disconnect. The same-certificate
+TLS replacement race observed against the tablet was also reproduced and fixed.
+This is not an independent penetration audit.
 
-The signed debug APK is at sibling
-`../des-connect-android/build/outputs/apk/debug/des-connect-android-debug.apk`.
-Its final SHA-256 is
-`dbcaebd4b8489fa9e65da2a098c56c34b06970346d47f3bf78e8952569fc17e7`.
-A foreground sample of the first debug build measured 161941 KiB PSS and
-271826 KiB RSS on the tablet. This is a preliminary device-list baseline, not a
-background/release/streaming budget. Full memory profiling remains required.
+## Memory and remaining work
+
+A preliminary daemon sample with two unpaired candidates measured11804KiB RSS,
+5586KiB PSS,3 threads and0.2% average CPU. Android foreground debug PSS was about
+160MiB. These are samples, not release/background/video budgets. Keep visible-only
+panel polling, lazy services, bounded caches and no capture while idle.
+
+The file-transfer, MPRIS/volume and feature packet adapters are compiled/tested
+library modules only. Their live per-device permissions, daemon dispatch and panel
+forms still need integration. Remaining capabilities include file sharing, manual
+clipboard/URLs, notification actions, opted-in calls/SMS/contacts, DES Music
+bridging, remote input, command allowlists and production screen transports.
+Do not confuse unit-tested contracts with end-to-end Android functionality.
+No session restart is required for the daemon or Android update. Loading the new
+native panel into the installed shell requires a shell update; compositor virtual
+output configuration may require a session restart, which has not been performed.

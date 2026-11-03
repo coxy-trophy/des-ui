@@ -2,6 +2,7 @@
 
 mod agenda;
 mod apps;
+mod connect;
 mod autostart;
 mod app_icons;
 mod dock;
@@ -167,6 +168,8 @@ struct App {
     document_openers: Vec<std::sync::mpsc::Receiver<Result<(),String>>>,
     dock_area: Option<Option<(i32, i32, i32, i32)>>,
     right_apps: bool,
+    right_connect: bool,
+    connect: connect::Connect,
     apps_panel_pending: bool,
     dock_keyboard: std::collections::BTreeMap<usize,bool>,
     settings: settings::Settings,
@@ -389,6 +392,8 @@ impl App {
             document_openers: Vec::new(),
             dock_area: None,
             right_apps: false,
+            right_connect: false,
+            connect: Default::default(),
             apps_panel_pending: false,
             dock_keyboard: Default::default(),
             settings: settings::Settings::default(),
@@ -1006,6 +1011,7 @@ impl App {
     fn focus_apps(&mut self, screen: usize) {
         if screen > 0 { self.secondary_docks.entry(screen).or_default().reveal_keyboard(); return; }
         self.right_apps = true;
+        self.right_connect = false;
         self.shortcut_reference.close();
         self.quick.open = false;
         self.scratchpad.close_now();

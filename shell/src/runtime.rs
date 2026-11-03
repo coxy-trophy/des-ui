@@ -14,6 +14,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Before anything reads input: what the on-screen keys pressed last frame.
         self.osk.inject(ctx);
+        self.connect.tick(ctx, false);
         self.mon.set_processor_temperature_warnings(self.config.processor_temperature_warnings);
         self.mon.tick();
         // Volume and brightness changed from outside the shell's sliders get a meter.
@@ -398,8 +399,9 @@ impl eframe::App for App {
                     let rect = on_screen(frame_layout.right.expect("open right panel"));
                     frame_region(ui, rect, column, Layout::top_down(Align::Min), |ui| {
                         ui.horizontal(|ui| {
-                            if ui.selectable_label(self.right_apps, "APPS").clicked() {self.right_apps=true;}
-                            if ui.selectable_label(!self.right_apps, "SYSTEM").clicked() {self.right_apps=false;self.dock.dismiss_keyboard(ctx);}
+                            if ui.selectable_label(self.right_apps, "APPS").clicked() {self.right_apps=true;self.right_connect=false;}
+                            if ui.selectable_label(!self.right_apps && !self.right_connect, "SYSTEM").clicked() {self.right_apps=false;self.right_connect=false;self.dock.dismiss_keyboard(ctx);}
+                            if ui.selectable_label(self.right_connect, "CONNECT").clicked() {self.right_apps=false;self.right_connect=true;self.dock.dismiss_keyboard(ctx);}
                         });
                         ui.add_space(12.0);
                         if self.right_apps && !self.capture.marking() {
@@ -409,6 +411,10 @@ impl eframe::App for App {
                             if apps_output.keyboard {self.companion.blur_text();self.fs.blur();}
                             scratch_keys |= self.dock.captures_keyboard();
                             if self.dock.captures_keyboard() {let _=shortcuts::take_modal_input(ctx,true);}
+                            return false;
+                        }
+                        if self.right_connect && !self.capture.marking() {
+                            self.connect.panel(ui, &theme);
                             return false;
                         }
                         let music_height = self.music.preferred_panel_height();

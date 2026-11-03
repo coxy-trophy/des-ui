@@ -1109,8 +1109,12 @@ dependencies = [
 name = "des-connect"
 version = "0.1.0"
 dependencies = [
+ "openssl",
+ "rustix 1.1.5",
  "serde",
  "serde_json",
+ "tempfile",
+ "zbus 5.19.0",
 ]
 
 [[package]]
