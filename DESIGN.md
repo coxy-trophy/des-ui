@@ -179,3 +179,9 @@ expand control. Time follows the regional format and accent theme, with a fine
 shared LINE divider separating it from running apps. The clock also opens the
 full system column on click. Hover only provides ordinary control feedback.
 The header shrinks with rail height; app tiles never borrow clock click ownership.
+
+Grouped app counts use a small neutral pill in the icon tile's upper-right corner,
+with opaque PANEL fill, LINE_STRONG outline and TEXT digits. Single-window apps
+have no badge; counts above nine show 9+ and expose the exact number in the shared
+tooltip/accessibility label. Urgency uses the opposite corner; the active edge
+and bottom running dot keep their existing meaning.

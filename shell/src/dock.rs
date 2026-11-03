@@ -176,9 +176,18 @@ impl Dock {
             self.icons.paint(ui,Rect::from_center_size(rect.center(),vec2(26.0_f32.min(rect.width()),26.0_f32.min(rect.height()))),item.entry.and_then(|i|self.entries[i].icon.as_deref()));
             if active {ui.painter().rect_filled(Rect::from_min_size(rect.left_top()+vec2(-3.0,5.0),vec2(2.0,(rect.height()-10.0).max(1.0))),1.0,theme.main);}
             ui.painter().circle_filled(rect.center_bottom()+vec2(0.0,-2.0),1.5,if active{theme.main}else{ui::SECONDARY});
-            if item.windows.len()>1 {ui.painter().text(rect.right_bottom()+vec2(-1.0,-2.0),Align2::RIGHT_BOTTOM,item.windows.len().to_string(),ui::mono(9.0),ui::TEXT);}
-            if item.windows.iter().any(|&i|state.apps[i].urgent) {ui.painter().circle_filled(rect.right_top()+vec2(-3.0,3.0),2.5,theme.main);}
-            response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,true,&item.label));
+            if item.windows.len()>1 {
+                let count=if item.windows.len()>9 {"9+".to_owned()}else{item.windows.len().to_string()};
+                let width=if item.windows.len()>9 {22.0}else{16.0};
+                let badge=Rect::from_min_size(egui::pos2(rect.right()-width,rect.top()),vec2(width,16.0));
+                ui.painter().rect_filled(badge,8.0,ui::PANEL);
+                ui.painter().rect_stroke(badge,8.0,egui::Stroke::new(1.0,ui::LINE_STRONG),egui::StrokeKind::Inside);
+                ui.painter().text(badge.center(),Align2::CENTER_CENTER,count,ui::mono(10.0),ui::TEXT);
+            }
+            // Attention occupies the opposite corner so it never obscures the count.
+            if item.windows.iter().any(|&i|state.apps[i].urgent) {ui.painter().circle_filled(rect.left_top()+vec2(3.0,3.0),2.5,theme.main);}
+            let window_label=format!("{} · {} {}",item.label,item.windows.len(),if item.windows.len()==1 {"window"}else{"windows"});
+            response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,true,&window_label));
             let popup=ui.id().with(("left-app-windows",item_key(item)));
             if self.rail_popup==Some(popup){seen_popup=true;}
             if response.clicked()&&item.windows.len()==1 {self.motion.dismiss();result.output.action=Some(activation(0,item,&self.entries,state));}
@@ -196,7 +205,7 @@ impl Dock {
             }) {owns_popup=true;result.output.overlay=Some(area.expand(10.0));}
             if !self.motion.keyboard {
                 response.on_hover_ui(|ui|{
-                    ui.set_max_width(280.0);ui.label(&item.label);ui.label(group_detail(item,state,0));
+                    ui.set_max_width(280.0);ui.label(&window_label);ui.label(group_detail(item,state,0));
                     if !owns_popup {result.output.overlay=Some(ui.min_rect().expand(10.0));}
                 });
             }

@@ -29,3 +29,12 @@ It does not install or restart the login session.
 Validation after removing hover expansion: full shell suite passed 547 tests
 with one ignored; `cargo build -p des-ui --locked -j2` passed. Preview helper
 Python compilation and `git diff --check` passed.
+
+Multiple windows are indicated by a neutral rounded badge at the tile's upper
+right. It appears only for two or more windows and caps at 9+ to keep the icon
+legible. Tooltip and accessible name retain the exact count. Urgency stays in
+the opposite corner, separate from count, running state and active-app edge.
+
+Badge validation: both focused rail interaction tests passed; shell build passed.
+Native nested preview visibly confirms the upper-right count badge for two real
+Thunar windows, with clock, app icon and running indicator remaining separate.
