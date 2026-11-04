@@ -111,6 +111,13 @@ fn handshake(shared:&Shared,mut tcp:TcpStream,claim:Option<Packet>)->Result<(Ssl
 struct Actor {shared:Arc<Shared>,view:Device,stream:SslStream<TcpStream>,cert:X509,pair:Pairing,session:Session,started:Instant,timestamp:Option<i64>,write_failed:bool,public_attempt:Option<(Attempt,u64)>,unpaired_permit:Option<UnpairedPermit>,ip:AddressPermit,incoming_capabilities:Vec<String>,outgoing_capabilities:Vec<String>,files_advertised:bool,media_advertised:bool,volume_advertised:bool,reconnect_requested:bool,media_dispatched:bool}
 impl Actor {
  fn send(&mut self,packet:Packet)->Result<()> {let result=write_packet(&mut self.stream,packet);if result.is_err(){self.write_failed=true;}result}
+ fn request_battery(&mut self)->Result<()> {
+  // Current Android peers publish battery updates but no longer accept this
+  // legacy poll. Only send it when the encrypted identity explicitly supports it.
+  if self.incoming_capabilities.iter().any(|kind|kind=="kdeconnect.battery.request") {
+   self.send(packet("kdeconnect.battery.request",json!({"request":true})))?;
+  }Ok(())
+ }
  fn now(&self)->u64 {self.started.elapsed().as_secs()}
  fn publish(&mut self) {
   let policy=self.shared.store.lock().unwrap().peers.get(&self.view.id).map(|peer|(peer.files_enabled,peer.media_enabled,peer.volume_enabled)).unwrap_or_default();
@@ -173,7 +180,7 @@ impl Actor {
     if let Err(e)=self.send(packet("kdeconnect.pair",json!({"pair":true}))){self.pair.send_failed(self.session,attempt);return Err(e);}
     self.pair.accept_sent(self.session,attempt,self.now())?;
     if let Err(e)=self.persist(){self.pair.unpair(self.session)?;let _=self.send(packet("kdeconnect.pair",json!({"pair":false})));return Err(e);}
-    let _=self.send(packet("kdeconnect.battery.request",json!({"request":true})));
+    let _=self.request_battery();
    }
    "reject"=>{let attempt=self.pending(job.attempt)?;self.pair.cancel(self.session,attempt)?;self.send(packet("kdeconnect.pair",json!({"pair":false})))?;}
    "unpair"=>{self.shared.cancel_peer_files(&self.view.id);self.shared.store.lock().unwrap().forget(&self.view.id)?;self.pair.unpair(self.session)?;self.send(packet("kdeconnect.pair",json!({"pair":false})))?;}
@@ -199,7 +206,7 @@ impl Actor {
    else if self.pair.state()==State::Outgoing {
     let attempt=self.pair.pending().ok_or("no pairing attempt")?;self.pair.peer_accepts(self.session,attempt,self.now())?;
     if let Err(e)=self.persist(){self.pair.unpair(self.session)?;return Err(e);}
-    self.send(packet("kdeconnect.battery.request",json!({"request":true})))?;
+    self.request_battery()?;
    } else if self.pair.state()==State::Unpaired {
     let stamp=np.body.get("timestamp").and_then(Value::as_i64).ok_or("v8 pairing request missing timestamp")?;
     self.pair.incoming(self.session,stamp,wall(),self.now())?;self.timestamp=Some(stamp);
@@ -239,10 +246,10 @@ impl Actor {
   self.media_advertised=replacement.media_advertised;self.volume_advertised=replacement.volume_advertised;
   self.files_advertised=replacement.files_advertised;self.incoming_capabilities=replacement.identity.incoming_capabilities;self.outgoing_capabilities=replacement.identity.outgoing_capabilities;
   self.stream=replacement.stream;self.ip=replacement.ip;self.view.name=replacement.identity.name;self.view.kind=replacement.identity.device_type;self.write_failed=false;
-  if self.pair.authorized(){self.send(packet("kdeconnect.battery.request",json!({"request":true})))?;}self.publish();Ok(())
+  if self.pair.authorized(){self.request_battery()?;}self.publish();Ok(())
  }
  fn run(&mut self,rx:mpsc::Receiver<Job>,replacements:mpsc::Receiver<Replacement>)->Result<()> {
-  if self.pair.authorized(){self.send(packet("kdeconnect.battery.request",json!({"request":true})))?;}
+  if self.pair.authorized(){self.request_battery()?;}
   let mut pending=Vec::new();let mut frame_start=None;let mut bytes=[0;4096];let mut carry=VecDeque::new();
   loop {
    if self.shared.stop.load(Ordering::Acquire){return Ok(());}

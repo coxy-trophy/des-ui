@@ -41,6 +41,8 @@ monotonic deadlines, timestamp-bound verification codes and unique IPC approval
 tokens. Per-IP/global admission limits, absolute handshake deadlines, bounded
 frames and unpaired expiry limit resource use. Same-certificate socket replacement
 preserves an active pairing attempt; a different key does not replace it.
+Legacy battery polling is sent only when the encrypted peer identity advertises
+that request type; current Android peers publish battery updates directly.
 
 Discovery advertises battery and ping. A trusted peer with file sharing enabled
 receives the file capability through encrypted identity after an explicit reconnect. Screen sharing is a

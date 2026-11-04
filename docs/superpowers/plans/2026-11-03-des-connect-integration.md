@@ -77,3 +77,16 @@ connect::tests --locked -j 2 => 23 passed/1 fixture ignored; service and shell
 builds passed. Final independent media review found no Important/Critical issues. Android
 155-test verification and final APK build passed; source ae067d10 is pushed.
 No ADB device is connected; physical file/media checks cannot be claimed complete.
+
+### Tablet acceptance follow-through — 2026-11-04
+
+Both physical file directions passed exact-byte checks with disposable59-byte
+files; incoming offer stayedat0bytes until explicitAccept. Filepermission
+revocation removedtheAndroidcontrol. Androidstartupreplyrace reproduced/fixed
+withsharedDevice lifecyclemonitor; physicalfake-playerPlay/Pause/seek/volume
+passed. Volume-onlyUI entryanddynamicstablepager fixed/verifiedphysically;
+161Androidtests across26suites pass, finalAPKinstalled, source047378a7pushed.
+Rust87tests rerunpass aftercapabilitygatinglegacybatterypolls, trustedreconnect
+verified. Fakeaudio/testdaemon/files/UI snapshots cleaned; normaldaemonrunning
+withoriginalpermissions andpins. ActiveDesktop/terminals not restarted.
+Remaining stages arethebroaderroadmap, not unverifiedfile/mediabatchclaims.

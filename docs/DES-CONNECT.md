@@ -208,3 +208,47 @@ new incoming-interface routing map was published, and was discarded. This new
 Android dispatch/lifecycle race is being reproduced and fixed separately; no
 physical media-control success is claimed at this checkpoint. Actual desktop
 playback and output volume were not changed.
+
+## Tablet acceptance results — completed current checks (2026-11-04)
+
+The media startup finding was fixed by serializing packet dispatch with plugin
+creation/destruction on the same Device monitor. Three concurrency regressions
+failed before the fix and passed afterward. The tablet then immediately discovered
+the private fake DES Music player. Android Play and Pause produced the expected
+toggle commands; player volume produced 50 percent and seek produced 24192 ms in
+the fake service's observed state. These actions used only the owned temporary
+Unix socket and disposable D-Bus session, not actual desktop playback.
+
+Independent system-volume permission also needed its own Android entrypoint.
+The app now reuses the multimedia activity's Devices page without requiring media
+permission or adding a duplicate button when media is available. Its pager
+contains only loaded plugins' pages. Stable Play=0/Devices=1 IDs exclude unavailable
+saved pages and hardware-volume lookup uses those same IDs. Regression coverage
+checks all four plugin combinations and actual key-callback routing through the
+framework fragment map. The missing button and unsupported-page cases were
+reproduced by failing tests before their fixes.
+
+On the tablet, enabling system volume with media disabled showed a System volume
+button. It opened and retained an activity containing only Devices and the actual
+Default PipeWire output. No unavailable Play page or MPRIS settings menu appeared.
+This was a read-only UI check: output volume was 1.00 before and after, and no
+actual audio setter was used. The successful file-transfer/hash and explicit
+approval checks above remain the physical transfer evidence.
+
+Final Android source: 047378a7; installed debug APK SHA256:
+aac6170fd40cddbd3091cf16b644c7f00bc7fbddd19da30ebdeebfa3751b2120.
+Full Android test suite: 161 tests across 26 suites, zero failures/errors/skips;
+final testDebugUnitTest/assembleDebug passed. The Rust service suite was rerun
+after gating legacy battery polls on the authenticated incoming capability:
+87 passed, 1 explicit isolated-media test ignored (that media test previously
+passed separately). Trusted tablet reconnect passed without unsupported legacy
+battery-poll warnings. No native shell source changed after its 23-test/build pass.
+
+Cleanup removed only the content-verified disposable transfer files and owned
+tablet UI snapshots. The temporary fake player and private test daemon were stopped.
+A normal daemon was started with the existing identity/pins and no test socket or
+private-bus override; the tablet reconnected with its original file=true,
+media=false and volume=false permissions. No autostart service was installed.
+The installed shell/compositor and active terminal sessions were not restarted;
+the new desktop CONNECT panel still requires installation and a shell refresh.
+Full KDE Connect parity and production screen transport remain future stages.
