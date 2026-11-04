@@ -1,0 +1,32 @@
+{
+  "scope": "throwaway layout proposal; no product or device integration",
+  "source_sha256": "ccf2949b53f77302cce92d291626005fc794ecbed5f34b34cf925ac7fa0fae40",
+  "viewports": [
+    [
+      1500,
+      1120
+    ],
+    [
+      390,
+      844
+    ]
+  ],
+  "checks": [
+    "two tabs only",
+    "default panel content fits",
+    "start and stop",
+    "stop remains available on SYSTEM",
+    "settings dialog and Escape",
+    "local permission toggles",
+    "transfer cancellation",
+    "locked screen clears preview",
+    "unlock does not auto-resume",
+    "offline actions disabled",
+    "portrait frame",
+    "expand and restore",
+    "no horizontal overflow"
+  ],
+  "changed_prototype_audit_findings": 0,
+  "preexisting_terminal_prototype_findings": 33,
+  "production_build_required": false
+}
