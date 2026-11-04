@@ -1,7 +1,9 @@
 # CONNECT layout study
 
-Throwaway visual proposal requested on 2026-11-04. Not an approved implementation
-and not connected to the daemon or tablet. Product source is unchanged.
+Visual study requested on 2026-11-04, subsequently approved for implementation.
+This HTML remains a throwaway mockup; the production native implementation is in
+shell/src/connect.rs and connect/src/screens.rs. See docs/DES-CONNECT.md for its
+runtime verification and remaining startup limitation.
 
 The same panel is shown at 300px and 620px. Remove APPS from right-panel navigation;
 keep SYSTEM and CONNECT. Selected device and battery form one compact header.
@@ -36,3 +38,10 @@ locked/cleared preview, no auto-resume, offline gating, portrait and expand/rest
 were exercised. Node syntax check passed. The strict project audit reports no
 findings in this proposal and 33 existing findings in the older terminal prototype.
 No product build or device test applies to this visual-only spike.
+
+
+Implemented: APPS is removed from production navigation; compact CONNECT, contextual
+settings/transfers and real embedded USB video are native. Explicit Expand uses
+the existing workspace replacement pattern rather than widening compositor panel
+geometry; Minimize returns to the compact tab. This keeps the feature independent
+of a compositor/session restart. The illustrated mockup is still not a live viewer.

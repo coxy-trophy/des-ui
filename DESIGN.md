@@ -196,3 +196,21 @@ and platform accessibility. Desktop CONNECT uses existing egui tokens/controls,
 visible-only asynchronous state refresh, explicit pairing codes/actions and no
 placeholder actions for unsupported capabilities. Opening the shell does not
 automatically start the connection daemon or advertise the machine.
+
+
+## CONNECT
+
+The native right-panel CONNECT view follows the compact device-first study:
+selected device name, connection/battery, a primary live mirror canvas, concise
+actions and compact transfers. Device permissions, USB serial, service controls
+and detailed diagnostics are contextual Settings, rather than permanent copy.
+Pairing codes and incoming file consent remain explicit. Reuse ui.rs controls,
+fonts, semantic theme colors and the native ScrollArea; Stop remains outside
+scrolling content and is available beside SYSTEM while capture is running.
+
+The mirror stays compact until explicit Expand. The larger viewer uses the
+existing workspace replacement pattern and the same texture; Minimize restores
+the tab. It does not resize compositor display geometry or open another scrcpy
+window. Capture is view-only. A disconnected, stopped, locked or hidden preview
+clears its texture and ignores late worker replies; reconnect never starts a
+capture automatically. Decode work exists only for an explicitly active session.

@@ -14,7 +14,9 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Before anything reads input: what the on-screen keys pressed last frame.
         self.osk.inject(ctx);
-        self.connect.tick(ctx, false);
+        let connect_visible=self.right_connect && self.desktop.as_ref().map_or(self.local_panels.right, |d| d.state.panels.right)
+            && !self.lock.locked && !self.lock_confirmed && !self.unlock_pending && !self.capture.marking();
+        self.connect.tick(ctx, connect_visible);
         self.mon.set_processor_temperature_warnings(self.config.processor_temperature_warnings);
         self.mon.tick();
         // Volume and brightness changed from outside the shell's sliders get a meter.
@@ -77,6 +79,7 @@ impl eframe::App for App {
             if std::mem::take(&mut desktop.dock_requested) { apps_requested=Some(0); }
             if std::mem::take(&mut desktop.launcher_requested) && !self.launcher.open {
                 self.world.expanded = false;
+                self.connect.expanded = false;
                 self.settings.open = false; self.files_browser = None;
                 self.music.open = false;
                 self.notices.open = false;
@@ -249,6 +252,7 @@ impl eframe::App for App {
             let state=self.desktop.as_ref().map(|d|d.state.clone());
             self.secondary_views(ctx,state.as_ref(),true);
             self.dock.reset();
+            self.connect.suspend_preview();
             if self.dock_area != Some(None) {
                 self.dock_area = Some(None);
                 self.send(Command::Dock(None));
@@ -298,6 +302,7 @@ impl eframe::App for App {
         let mut reference_input = shortcuts::take_modal_input(ctx, self.shortcut_reference.open || self.companion.open);
         if self.launcher.open || self.settings.open || self.music.open || self.notices.open || self.power_menu.open {
             self.world.expanded = false;
+            self.connect.expanded = false;
             self.files_browser = None;
         }
         let theme = self.theme.clone();
@@ -320,6 +325,8 @@ impl eframe::App for App {
             Some("POWER")
         } else if self.files_browser.is_some() {
             Some("FILES")
+        } else if self.connect.expanded {
+            Some("DEVICE MIRROR")
         } else if self.world.expanded {
             Some("WORLD VIEW")
         } else {
@@ -339,7 +346,7 @@ impl eframe::App for App {
         let mut left_rail_output=None;
         ctx.data_mut(|data| data.insert_temp(egui::Id::new("window-shelf-capable"), self.desktop.as_ref().is_some_and(|d| d.connected() && d.window_shelf)));
         // While the scratchpad is down it has the keyboard, not the panes.
-        let mut scratch_keys = self.companion.open || self.shortcut_reference.open || self.scratchpad.visible() || self.polkit.active() || self.fs.has_keyboard() || self.quick.open;
+        let mut scratch_keys = self.companion.open || self.shortcut_reference.open || self.scratchpad.visible() || self.polkit.active() || self.fs.has_keyboard() || self.connect.has_keyboard() || self.quick.open;
         let mut chat_area=None;
         CentralPanel::default()
             .frame(Frame::new().fill(ui::GROUND))
@@ -396,13 +403,21 @@ impl eframe::App for App {
                 if open.right {
                     let rect = on_screen(frame_layout.right.expect("open right panel"));
                     frame_region(ui, rect, column, Layout::top_down(Align::Min), |ui| {
-                        ui.horizontal(|ui| {
-                            if ui.selectable_label(!self.right_connect, "SYSTEM").clicked() {self.right_connect=false;self.dock.dismiss_keyboard(ctx);}
+                        ui.horizontal_wrapped(|ui| {
+                            if ui.selectable_label(!self.right_connect, "SYSTEM").clicked() {self.right_connect=false;self.connect.expanded=false;self.connect.suspend_preview();self.dock.dismiss_keyboard(ctx);}
                             if ui.selectable_label(self.right_connect, "CONNECT").clicked() {self.right_connect=true;self.dock.dismiss_keyboard(ctx);}
+                            if !self.right_connect && self.connect.sharing() && crate::ui::button(ui,&theme,"Stop",None,false).clicked() { self.connect.stop_sharing(ctx); }
                         });
                         ui.add_space(12.0);
                         if self.right_connect && !self.capture.marking() {
+                            let expanded=self.connect.expanded;
                             self.connect.panel(ui, &theme);
+                            scratch_keys |= self.connect.has_keyboard();
+                            if !expanded && self.connect.expanded {
+                                self.files_browser=None;self.settings.open=false;self.launcher.open=false;
+                                self.music.open=false;self.notices.open=false;self.power_menu.open=false;self.world.expanded=false;
+                                self.send(Command::Terminal);
+                            }
                             return false;
                         }
                         let music_height = self.music.preferred_panel_height();
@@ -483,7 +498,7 @@ impl eframe::App for App {
                     self.top_bar(ui, &theme, state.as_ref())
                 });
                 if actions.find_terminal {
-                    self.launcher.open=false;self.settings.open=false;self.files_browser=None;self.music.open=false;self.notices.open=false;self.power_menu.open=false;
+                    self.launcher.open=false;self.settings.open=false;self.files_browser=None;self.music.open=false;self.notices.open=false;self.power_menu.open=false;self.connect.expanded=false;
                     let i=self.focus_tab();self.tabs[i].open_search();
                 }
                 if actions.open_tab {
@@ -581,6 +596,11 @@ impl eframe::App for App {
                         self.launcher.show(ui, mine, &theme)
                     });
                     if let Some(action) = picked { self.palette_action(action); }
+                    return;
+                }
+
+                if self.connect.expanded {
+                    region(ui, mine, vec2(24.0, 18.0), Layout::top_down(Align::Min), |ui| self.connect.expanded_view(ui, &theme));
                     return;
                 }
 

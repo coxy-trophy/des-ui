@@ -252,3 +252,58 @@ media=false and volume=false permissions. No autostart service was installed.
 The installed shell/compositor and active terminal sessions were not restarted;
 the new desktop CONNECT panel still requires installation and a shell refresh.
 Full KDE Connect parity and production screen transport remain future stages.
+
+
+## Compact CONNECT and embedded mirroring — 2026-11-04
+
+Production CONNECT now uses the device-first layout study: selected name and
+status/battery, a real in-panel preview, short actions and compact transfers.
+Permissions, USB setup, pairing/service details and diagnostics are contextual.
+Stop stays outside the content scroller and also appears beside SYSTEM while
+sharing may still be active. Passive state refresh does not disable editors;
+focused CONNECT fields keep keyboard ownership away from terminal input.
+Expand uses the existing native workspace and the same preview texture, with
+Minimize returning to the tab. It does not alter compositor output geometry.
+
+The embedded source uses the pinned official scrcpy 5.0.1 server and ffmpeg,
+640px maximum axis and 10fps, over a private ADB Unix forward. No browser runtime,
+external scrcpy window, capture file, FIFO recording or LAN frame listener is
+used. One bounded latest RGB frame and one reusable native texture are retained.
+Control/audio/clipboard synchronization/power-on are disabled. Frame requests on
+the existing same-user Unix socket bind the expected peer and USB serial; live
+lock/pairing/connection/client checks run around acquisition. EOF, Stop, lock and
+disconnect clear the source; hidden/context views discard UI textures and late
+worker replies. Reconnection requires explicit capture start.
+
+Connected Samsung SM-P585 acceptance: real 640×400 P6 (768015 bytes including
+header), visibly rendered inside the native CONNECT view; first frame 8.71s.
+Wrong owner/USB requests yielded no pixels. A test lock proxy delegated to the
+real desktop state and could only force additional locking; it stopped capture
+and denied frames, and clearing that forced lock did not restart sharing.
+Explicit restart and Stop passed. Both the local capture/decoder and remote
+scrcpy process were gone after bounded teardown. The normal daemon and existing
+trusted identity/policies were restored. No tablet input, pairing or permissions
+were changed. The physical screen was not locked during this check.
+
+Native screenshot checks covered 180/220/300/620px, active/idle, settings,
+pairing and transfer states. The diagnostic fixture gradient is test-only;
+acceptance also rendered actual tablet pixels. The native fixture waits for a
+real texture before taking a live capture. Private device screenshots remain
+outside git. Independent review found and corrected editor routing, stale owner
+races, Stop availability after errors and expanded-view exit paths.
+
+Static UI audit: 33 existing findings, all in the older
+`docs/prototypes/terminal-workbench/index.html`; none in this change. This static
+audit cannot validate native egui behavior. Runtime tests and source bounds are
+the evidence for this implementation. The tablet's first raw encoded byte took
+about eight seconds; decode added around 20ms. Raw transport removes the roughly
+four seconds of additional Matroska buffering observed in the rejected spike.
+
+
+Validation commands for this update: full des-connect Cargo suite: 95 passed,
+2 ignored fixtures; native shell suite: 576 passed with 2 ignored fixtures, including
+real pointer/text focus during an outstanding passive read. An additional parallel
+rerun hit the existing bash-completion test's 20-second prompt deadline; its isolated
+rerun passed in 0.41s. Final sequential shell run: 576 passed, 0 failed, 2 ignored (68.90s).
+Release shell/daemon build: passed (8m06s). cargo fmt/rustfmt are not installed in this environment; the same
+formatter command fails in the unchanged baseline. git diff --check is clean.

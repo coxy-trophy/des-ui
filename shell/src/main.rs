@@ -535,6 +535,7 @@ impl App {
     fn show_tab(&mut self, index: usize) {
         self.files_browser = None;
         self.world.expanded = false;
+        self.connect.expanded = false;
         if self.side == Some(index) {
             self.side_focused = true;
         } else if index == self.active {
@@ -579,6 +580,7 @@ impl App {
     fn toggle_settings(&mut self) {
         self.companion.blur_text();
         self.world.expanded = false;
+        self.connect.expanded = false;
         if self.settings.open {
             self.settings.appearance_editor.reset(&self.config.appearance);
             self.settings.open = false; self.files_browser = None;
@@ -599,6 +601,7 @@ impl App {
     fn toggle_music(&mut self) {
         self.companion.blur_text();
         self.world.expanded = false;
+        self.connect.expanded = false;
         self.launcher.open = false;
         self.settings.open = false; self.files_browser = None;
         self.notices.open = false;
@@ -613,6 +616,7 @@ impl App {
     fn toggle_notices(&mut self) {
         self.companion.blur_text();
         self.world.expanded = false;
+        self.connect.expanded = false;
         self.launcher.open = false;
         self.settings.open = false; self.files_browser = None;
         self.music.open = false;
@@ -633,6 +637,7 @@ impl App {
     fn toggle_power(&mut self) {
         self.companion.blur_text();
         self.world.expanded = false;
+        self.connect.expanded = false;
         self.launcher.open = false;
         self.settings.open = false; self.files_browser = None;
         self.music.open = false;
@@ -932,6 +937,7 @@ impl App {
     fn toggle_launcher(&mut self) {
         self.companion.blur_text();
         self.world.expanded = false;
+        self.connect.expanded = false;
         self.settings.open = false; self.files_browser = None;
         self.music.open = false;
         self.notices.open = false;
@@ -1021,7 +1027,7 @@ impl App {
 
     /// Focused editors and modals own input before registry shortcuts.
     fn take_shortcuts(&mut self, ctx: &egui::Context) -> Vec<Event> {
-        if self.companion.open || self.dock.captures_keyboard() { return Vec::new(); }
+        if self.companion.open || self.dock.captures_keyboard() || self.connect.has_keyboard() { return Vec::new(); }
         let files_modal = self.files_browser.as_ref().is_some_and(files::Browser::captures_keyboard) && !self.scratchpad.visible() && !self.quick.open;
         if self.polkit.active() || self.shortcut_reference.open || self.settings.shortcut_capture_active() || files_modal || (self.settings.open && self.settings.appearance_editor.picker_open()) {
             return Vec::new();
@@ -1034,8 +1040,9 @@ impl App {
                     ctx.input_mut(|input| { input.consume_key(egui::Modifiers::NONE, Key::Escape); });
                     continue;
                 }
-                if self.world.expanded && *key == Key::Escape && !self.scratchpad.visible() {
+                if (self.world.expanded || self.connect.expanded) && *key == Key::Escape && !self.scratchpad.visible() {
                     self.world.expanded = false;
+                    self.connect.expanded = false;
                     ctx.input_mut(|input| { input.consume_key(egui::Modifiers::NONE, Key::Escape); });
                     continue;
                 }

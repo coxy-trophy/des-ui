@@ -32,7 +32,9 @@ struct Shared {
 impl Shared {
  fn snapshot(&self)->Value {
   let devices=self.devices.lock().unwrap().values().cloned().collect::<Vec<_>>();let transfers=self.transfers.lock().unwrap().as_mut().map(|manager|manager.snapshots()).unwrap_or_default();let mut screens=self.screens.lock().unwrap();
-  json!({"id":self.id,"name":self.name,"tcp_port":self.port,"running":!self.stop.load(Ordering::Acquire),"devices":devices,"transfers":transfers,"screens":screens.status(),"screen_capabilities":screens.capabilities()})
+  let mut screen_status=serde_json::to_value(screens.status()).unwrap();
+  screen_status["device_id"]=json!(self.screen_peer.lock().unwrap().clone());
+  json!({"id":self.id,"name":self.name,"tcp_port":self.port,"running":!self.stop.load(Ordering::Acquire),"devices":devices,"transfers":transfers,"screens":screen_status,"screen_capabilities":screens.capabilities()})
  }
  fn paired(&self,id:&str)->bool {self.devices.lock().unwrap().get(id).is_some_and(|d|d.connected&&d.paired)&&self.store.lock().unwrap().peers.contains_key(id)}
  fn identity(&self)->Packet {self.identity_with_policies(false,false,false)}
@@ -409,7 +411,12 @@ pub fn run_options(socket:&Path,state:&Path,name:&str,loopback:bool)->Result<()>
    if shared.ipc_active.fetch_update(Ordering::AcqRel,Ordering::Relaxed,|n|(n<8).then_some(n+1)).is_err(){continue;}
    let shared=shared.clone();let udp=udp.try_clone()?;thread::spawn(move||{
     let _=stream.set_read_timeout(Some(Duration::from_secs(2)));let _=stream.set_write_timeout(Some(Duration::from_secs(2)));
-    if let Ok(line)=read_line(&mut stream,4096){let mut stopping=false;let result=serde_json::from_slice::<Request>(&line).map(|r|{stopping=r.op=="stop";handle_ipc(&shared,r,&udp,&stream)}).unwrap_or_else(|_|json!({"ok":false,"error":"invalid request"}));if let Ok(mut bytes)=serde_json::to_vec(&result){bytes.push(b'\n');let _=stream.write_all(&bytes);}if stopping{shared.stop.store(true,Ordering::Release);}}
+    if let Ok(line)=read_line(&mut stream,4096){
+     match serde_json::from_slice::<Request>(&line) {
+      Ok(request) if request.op=="screen_frame"=>{let bytes=screen_frame(&shared,&request,&stream);let _=stream.write_all(&bytes);},
+      request=>{let mut stopping=false;let result=request.map(|r|{stopping=r.op=="stop";handle_ipc(&shared,r,&udp,&stream)}).unwrap_or_else(|_|json!({"ok":false,"error":"invalid request"}));if let Ok(mut bytes)=serde_json::to_vec(&result){bytes.push(b'\n');let _=stream.write_all(&bytes);}if stopping{shared.stop.store(true,Ordering::Release);}}
+     }
+    }
     shared.ipc_active.fetch_sub(1,Ordering::Release);
    });
   }
@@ -456,6 +463,33 @@ pub fn session_unlocked()->bool {
  })();result.unwrap_or(false)
 }
 
+/// Check live authorization on both sides of acquiring a frame. A revocation
+/// during decode/snapshotting must never release the cached pixels.
+fn guarded_preview(read: impl FnOnce() -> std::result::Result<Option<Vec<u8>>, String>, mut allowed: impl FnMut() -> bool) -> Vec<u8> {
+ if !allowed() { return b"LOCKED\n".to_vec(); }
+ let frame=read();
+ if !allowed() { return b"LOCKED\n".to_vec(); }
+ match frame { Ok(Some(bytes))=>bytes, Ok(None)=>b"WAIT\n".to_vec(), Err(_)=>b"ERROR\n".to_vec() }
+}
+
+fn screen_session_matches(status:&crate::screens::ScreenStatus, owner:Option<&str>, expected_owner:&str, serial:&str)->bool {
+ status.running && status.mode=="phone" && status.serial.as_deref()==Some(serial) && owner==Some(expected_owner)
+}
+
+fn screen_frame(shared:&Shared,request:&Request,client:&UnixStream)->Vec<u8> {
+ let Some(id)=request.device_id.as_deref() else {return b"ERROR\n".to_vec();};
+ let Some(serial)=request.args.get("serial").and_then(Value::as_str) else {return b"ERROR\n".to_vec();};
+ let bound=|screens:&mut crate::screens::ScreenBridge| {
+  let status=screens.status();
+  screen_session_matches(&status,shared.screen_peer.lock().unwrap().as_deref(),id,serial)
+ };
+ guarded_preview(|| {
+  let mut screens=shared.screens.lock().unwrap();
+  if !bound(&mut screens) {return Err("screen session changed".into());}
+  screens.preview_frame()
+ }, || screen_guard(shared,id,client).is_ok() && bound(&mut shared.screens.lock().unwrap()))
+}
+
 fn screen_guard(shared:&Shared,id:&str,client:&UnixStream)->std::result::Result<(),String>{
  if !control_alive(client){return Err("screen request was cancelled before capture started".into());}
  if !shared.paired(id){return Err("device disconnected or unpaired during screen preparation".into());}
@@ -480,6 +514,26 @@ fn control_alive(client:&UnixStream)->bool {
 }
 #[cfg(test)] mod tests {
  use super::*;
+ #[test] fn preview_is_bound_to_the_requested_owner_and_usb_session() {
+  let status=crate::screens::ScreenStatus {mode:"phone".into(),serial:Some("USB-A".into()),running:true,control:false,message:String::new()};
+  assert!(screen_session_matches(&status,Some("peer-a"),"peer-a","USB-A"));
+  assert!(!screen_session_matches(&status,Some("peer-b"),"peer-a","USB-A"));
+  assert!(!screen_session_matches(&status,Some("peer-a"),"peer-a","USB-B"));
+  assert!(!screen_session_matches(&status,None,"peer-a","USB-A"));
+  let stopped=crate::screens::ScreenStatus {running:false,..status.clone()};
+  assert!(!screen_session_matches(&stopped,Some("peer-a"),"peer-a","USB-A"));
+ }
+ #[test] fn preview_denies_before_reading_or_after_policy_changes() {
+  assert_eq!(guarded_preview(|| panic!("locked capture was read"), || false), b"LOCKED\n");
+  let mut checks=0;
+  assert_eq!(guarded_preview(|| Ok(Some(b"P6\n1 1\n255\nsecret".to_vec())), || {checks+=1;checks==1}),b"LOCKED\n");
+ }
+ #[test] fn preview_waits_without_a_frame_and_reports_reader_failure() {
+  assert_eq!(guarded_preview(|| Ok(None), || true),b"WAIT\n");
+  assert_eq!(guarded_preview(|| Err("decoder stopped".into()), || true),b"ERROR\n");
+  let frame=b"P6\n1 1\n255\nabc".to_vec();
+  assert_eq!(guarded_preview(|| Ok(Some(frame.clone())), || true),frame);
+ }
  #[test] fn transfer_refresh_rejects_address_permission_advertisement_or_share_capability_change(){
   let a:IpAddr="127.0.0.1".parse().unwrap();let b:IpAddr="127.0.0.2".parse().unwrap();
   let share=vec!["kdeconnect.share.request".into()];let core=vec!["kdeconnect.ping".into()];
@@ -516,9 +570,10 @@ fn control_alive(client:&UnixStream)->bool {
    let prompt=rx.recv_timeout(Duration::from_secs(1)).is_ok();drop(stalled);watchdog.join().unwrap();shell.join().unwrap();
    assert!(prompt,"file-manager contention blocked the locked-screen watchdog");assert!(!shared.screens.lock().unwrap().status().running);return;
   }
-  let temp=tempfile::tempdir().unwrap();let adb=temp.path().join("adb");let viewer=temp.path().join("viewer");
-  fs::write(&adb,b"#!/bin/sh\nprintf 'usb:fixture\\n'\n").unwrap();fs::write(&viewer,b"#!/bin/sh\nexec /bin/sleep 20\n").unwrap();
-  for path in [&adb,&viewer]{fs::set_permissions(path,fs::Permissions::from_mode(0o700)).unwrap();}
+  let temp=tempfile::tempdir().unwrap();let adb=temp.path().join("adb");let viewer=temp.path().join("viewer");let ffmpeg=temp.path().join("ffmpeg");
+  fs::write(temp.path().join("scrcpy-server"),b"fixture server").unwrap();
+  fs::write(&adb,b"#!/bin/sh\ncase \"$4\" in CLASSPATH=*) exec /bin/sleep 20;; esac\nprintf 'usb:fixture\\n'\n").unwrap();fs::write(&viewer,b"#!/bin/sh\nexec /bin/sleep 20\n").unwrap();fs::write(&ffmpeg,b"#!/bin/sh\nexec /bin/sleep 20\n").unwrap();
+  for path in [&adb,&viewer,&ffmpeg]{fs::set_permissions(path,fs::Permissions::from_mode(0o700)).unwrap();}
   let result=Command::new(std::env::current_exe().unwrap()).args(["--exact","service::tests::file_manager_contention_cannot_delay_locked_screen_revocation","--nocapture"]).env("DES_CONNECT_WATCHDOG_FIXTURE",temp.path()).env("DES_CONNECT_SCRCPY",viewer).env("DES_UI_CONTROL_SOCKET",temp.path().join("shell.sock")).env("PATH",format!("{}:/usr/bin:/bin",temp.path().display())).stdin(Stdio::null()).output().unwrap();
   assert!(result.status.success(),"{}",String::from_utf8_lossy(&result.stdout));
  }

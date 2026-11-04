@@ -2,6 +2,9 @@
 //!
 //! `running` means that the owned subprocess is alive, not that a video frame has
 //! been observed. Poll status and stop on desktop lock, peer loss or USB loss.
+mod ppm;
+mod preview;
+use preview::Preview;
 use serde::Serialize;
 use std::{
     env, fs,
@@ -51,6 +54,7 @@ struct ExtendedSession {
 
 pub struct ScreenBridge {
     child: Option<Child>,
+    preview: Option<Preview>,
     log: Arc<Mutex<Vec<u8>>>,
     state: ScreenStatus,
     extended: Option<ExtendedSession>,
@@ -59,16 +63,16 @@ pub struct ScreenBridge {
 impl Default for ScreenBridge { fn default() -> Self { Self::new() } }
 impl ScreenBridge {
     pub fn new() -> Self {
-        Self { child: None, log: Arc::default(), state: ScreenStatus::default(), extended: None, last_usb_check: Instant::now() }
+        Self { child: None, preview: None, log: Arc::default(), state: ScreenStatus::default(), extended: None, last_usb_check: Instant::now() }
     }
     pub fn capabilities(&self) -> ScreenCapabilities {
-        let phone_mirror = find_scrcpy().is_some() && find_executable("adb").is_some();
+        let phone_mirror = find_scrcpy().is_some() && find_executable("adb").is_some() && find_executable("ffmpeg").is_some();
         let extended = matching_virtual_socket();
         let extended_output = extended.is_ok() && find_helper().is_some() && find_executable("python3").is_some() && find_executable("adb").is_some();
         ScreenCapabilities {
             phone_mirror, extended_output, desktop_mirror: false,
             message: format!("Phone mirror: {}. Extended output: {}. Physical desktop mirroring is unavailable.",
-                if phone_mirror { "USB scrcpy available" } else { "install scrcpy and adb" },
+                if phone_mirror { "USB scrcpy available" } else { "install scrcpy, adb and ffmpeg" },
                 if extended_output { "experimental USB output available".into() } else { extended.err().unwrap_or_else(|| "viewer helper, Python 3 or adb unavailable".into()) }),
         }
     }
@@ -87,16 +91,24 @@ impl ScreenBridge {
         self.start_phone_with_tools(serial, control, scrcpy, adb, guard)
     }
     fn start_phone_with_tools(&mut self, serial: &str, control: bool, scrcpy: PathBuf, adb: PathBuf, guard: impl FnOnce() -> Result<(), String>) -> Result<ScreenStatus, String> {
+        if control { return Err("Embedded mirroring is view-only".into()); }
         usb_probe_with(&adb, serial, PROBE_TIMEOUT)?;
-        let mut command = Command::new(&scrcpy);
-        command.args(phone_args(serial, control)).env("ADB", &adb);
-        // The portable distribution resolves scrcpy-server relative to itself.
-        if let Some(parent) = scrcpy.parent() {
-            let server = parent.join("scrcpy-server");
-            if server.is_file() { command.env("SCRCPY_SERVER_PATH", server); }
-        }
-        self.launch_guarded(command, "phone", serial, control, None, guard)
+        let ffmpeg = find_executable("ffmpeg").ok_or("ffmpeg unavailable; install it for embedded mirroring")?;
+        let mut preview = Preview::prepare()?;
+        // Only the pinned official server is supported by this raw protocol.
+        let server = scrcpy.parent().ok_or("Pinned scrcpy directory unavailable")?.join("scrcpy-server");
+        if !server.is_file() { return Err("Pinned scrcpy 5.0.1 server unavailable".into()); }
+        let command = preview.forward(&adb, serial, &server)?;
+        // The decoder cannot capture by itself. Revalidate caller policy
+        // immediately before spawning scrcpy, after decoder preparation.
+        self.log = Arc::default();
+        preview.start(&ffmpeg, self.log.clone())?;
+        self.preview = Some(preview);
+        let result = self.launch_guarded(command, "phone", serial, false, None, guard);
+        if result.is_err() { self.preview.take(); }
+        result
     }
+
     /// Caller-only compatibility entrypoint; prefer `start_extended_guarded` in
     /// a service that enforces current desktop lock and paired-peer policy.
     pub fn start_extended(&mut self, serial: &str, width: u32, height: u32, fps: u32) -> Result<ScreenStatus, String> {
@@ -146,7 +158,7 @@ impl ScreenBridge {
         if let Some(session) = self.extended.take() { let _ = fs::remove_file(session.lease); }
     }
     fn launch_guarded(&mut self, mut command: Command, mode: &str, serial: &str, control: bool, extended: Option<ExtendedSession>, guard: impl FnOnce() -> Result<(), String>) -> Result<ScreenStatus, String> {
-        self.log = Arc::default();
+        if self.preview.is_none() { self.log = Arc::default(); }
         self.extended = extended;
         command.process_group(0).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
         if let Err(error) = guard() { self.discard_prepared_extended(); return Err(error); }
@@ -162,7 +174,22 @@ impl ScreenBridge {
             Err(e) => { self.discard_prepared_extended(); Err(format!("Could not start screen viewer: {e}")) }
         }
     }
+    /// Complete P6 PPM, maximum 640 × 640 RGB pixels plus a 64-byte header
+    /// (1,228,864 bytes). Only one latest frame is retained; EOF clears it.
+    pub fn preview_frame(&mut self) -> Result<Option<Vec<u8>>, String> {
+        if !self.status().running { return Ok(None); }
+        Ok(self.preview.as_ref().and_then(Preview::frame))
+    }
     pub fn status(&mut self) -> ScreenStatus {
+        if let Some(error) = self.preview.as_mut().and_then(Preview::error) {
+            let mut ended = self.state.clone();
+            let _ = self.stop();
+            ended.running = false;
+            ended.control = false;
+            ended.message = error;
+            self.state = ended;
+            return self.state.clone();
+        }
         // The browser helper stays alive after unplugging USB. End that session
         // explicitly; reconnection always requires another user request.
         if self.child.is_some() && self.last_usb_check.elapsed() >= Duration::from_secs(2) {
@@ -183,6 +210,7 @@ impl ScreenBridge {
         match result {
             Some(Ok(Some(exit))) => {
                 self.child.take();
+                self.preview.take();
                 let deadline = Instant::now() + Duration::from_millis(50);
                 while Arc::strong_count(&self.log) > 1 && Instant::now() < deadline { thread::sleep(Duration::from_millis(2)); }
                 self.cleanup_extended();
@@ -204,6 +232,7 @@ impl ScreenBridge {
     }
     pub fn stop(&mut self) -> Result<ScreenStatus, String> {
         let result = self.child.take().map(|mut child| terminate(&mut child)).transpose();
+        self.preview.take();
         self.cleanup_extended();
         self.state = ScreenStatus::default();
         result.map(|_| self.state.clone())
@@ -234,11 +263,10 @@ fn validate_serial(serial: &str) -> Result<(), String> {
     }
     Ok(())
 }
-fn phone_args(serial: &str, control: bool) -> Vec<String> {
-    let mut args: Vec<String> = [format!("--serial={serial}"), "--no-audio".into(), "--no-power-on".into(), "--no-clipboard-autosync".into(), "--max-size=1920".into(), "--max-fps=30".into(), "--window-title=DES Connect: Android screen".into()].into();
-    if !control { args.push("--no-control".into()); }
-    args
+fn raw_server_args(serial: &str, remote: &str, scid: &str) -> Vec<String> {
+    ["-s".into(), serial.into(), "shell".into(), format!("CLASSPATH={remote}"), "app_process".into(), "/".into(), "com.genymobile.scrcpy.Server".into(), "5.0.1".into(), format!("scid={scid}"), "tunnel_forward=true".into(), "audio=false".into(), "control=false".into(), "cleanup=false".into(), "raw_stream=true".into(), "max_size=640".into(), "max_fps=10".into(), "power_on=false".into(), "clipboard_autosync=false".into()].into()
 }
+
 fn require_usb(serial: &str) -> Result<PathBuf, String> { usb_probe(serial, PROBE_TIMEOUT) }
 fn usb_probe(serial: &str, timeout: Duration) -> Result<PathBuf, String> {
     let adb = find_executable("adb").ok_or("ADB unavailable; install Android platform-tools")?;
@@ -366,11 +394,11 @@ mod tests {
     }
     #[test]
     fn viewing_never_enables_input_audio_clipboard_or_power_changes() {
-        let args = phone_args("USB123", false);
-        for flag in ["--no-control", "--no-audio", "--no-clipboard-autosync", "--no-power-on", "--max-size=1920", "--max-fps=30"] {
+        let args = raw_server_args("USB123", "/data/local/tmp/fixture.jar", "12345678");
+        for flag in ["control=false", "audio=false", "clipboard_autosync=false", "power_on=false", "max_size=640", "max_fps=10", "raw_stream=true", "5.0.1"] {
             assert!(args.iter().any(|a| a == flag), "{flag}");
         }
-        assert!(!phone_args("USB123", true).iter().any(|a| a == "--no-control"));
+        assert_eq!(&args[..3], &["-s", "USB123", "shell"]);
     }
     #[test]
     fn bounded_process_timeout_reaps_only_its_own_child() {
@@ -449,8 +477,9 @@ mod tests {
         let adb = dir.path().join("adb");
         let viewer = dir.path().join("viewer");
         fs::write(&allowed, b"unlocked and paired").unwrap();
-        fake_tool(&adb, &format!("/bin/sleep 0.1\n/bin/rm -- '{}'\nprintf 'usb:fixture\\n'", allowed.display()));
+        fake_tool(&adb, &format!("case \"$4\" in CLASSPATH=*) /usr/bin/touch -- '{}';; esac\n/bin/sleep 0.1\n/bin/rm -f -- '{}'\nprintf 'usb:fixture\\n'", launched.display(), allowed.display()));
         fake_tool(&viewer, &format!("/usr/bin/touch -- '{}'", launched.display()));
+        fs::write(dir.path().join("scrcpy-server"), b"fixture").unwrap();
         let mut bridge = ScreenBridge::new();
         let called = std::cell::Cell::new(0);
         let error = bridge.start_phone_with_tools("TEST", false, viewer, adb, || {
@@ -462,6 +491,17 @@ mod tests {
         assert!(!launched.exists());
         assert!(!bridge.status().running);
         assert!(bridge.child.is_none());
+        assert!(bridge.preview.is_none());
+    }
+    #[test]
+    fn embedded_control_request_is_rejected_before_tools_or_guard() {
+        let mut bridge = ScreenBridge::new();
+        let called = std::cell::Cell::new(false);
+        let result = bridge.start_phone_with_tools("TEST", true, PathBuf::from("/missing/scrcpy"), PathBuf::from("/missing/adb"), || { called.set(true); Ok(()) });
+        assert!(result.unwrap_err().contains("view-only"));
+        assert!(!called.get());
+        assert!(bridge.child.is_none());
+        assert!(bridge.preview.is_none());
     }
     #[test]
     fn final_guard_rejection_releases_only_prepared_extended_lease() {
@@ -483,6 +523,29 @@ mod tests {
         assert!(!adb_called.exists());
         assert!(bridge.extended.is_none());
         assert!(bridge.child.is_none());
+    }
+
+    #[test]
+    #[ignore = "explicit authorized tablet USB capture; run manually"]
+    fn authorized_tablet_embedded_frame_and_stop() {
+        // Deliberately fixed to the owner's authorized tablet, never adb's
+        // default device (a second USB phone may be connected).
+        let mut bridge = ScreenBridge::new();
+        bridge.start_phone("52005590fa2dc4a9", false).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let frame = loop {
+            if let Some(frame) = bridge.preview_frame().unwrap() { break frame; }
+            assert!(bridge.status().running, "{}", bridge.status().message);
+            assert!(Instant::now() < deadline, "No frame: {}", bridge.status().message);
+            thread::sleep(Duration::from_millis(25));
+        };
+        assert!(frame.len() <= ppm::MAX_FRAME_BYTES);
+        assert!(frame.starts_with(b"P6\n"));
+        let scrcpy_pid = bridge.child.as_ref().unwrap().id();
+        bridge.stop().unwrap();
+        assert!(bridge.preview_frame().unwrap().is_none());
+        assert!(bridge.preview.is_none());
+        assert!(!PathBuf::from(format!("/proc/{scrcpy_pid}")).exists());
     }
 
 }

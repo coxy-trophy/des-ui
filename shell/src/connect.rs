@@ -4,6 +4,8 @@ use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 use std::{collections::{BTreeMap, VecDeque}, io::{BufRead, BufReader, Read, Write}, os::unix::net::UnixStream, path::PathBuf, process::{Command, Stdio}, sync::mpsc::{self, Receiver}, time::{Duration, Instant}};
 
+mod preview;
+
 const POLL: Duration = Duration::from_secs(2);
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
 const SCREEN_START_TIMEOUT: Duration = Duration::from_secs(6);
@@ -88,6 +90,7 @@ struct FileDraft { device_id: String, device_name: String, path: String }
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 struct Screens {
+    device_id: Option<String>,
     mode: String,
     serial: Option<String>,
     running: bool,
@@ -246,6 +249,13 @@ struct Pending {
 #[derive(Default)]
 pub struct Connect {
     snapshot: Option<Snapshot>,
+    preview: preview::Preview,
+    selected_device: Option<String>,
+    settings_open: bool,
+    keyboard: bool,
+    sharing_uncertain: bool,
+    send_open: bool,
+    pub expanded: bool,
     pending: Option<Pending>,
     last_poll: Option<Instant>,
     error: Option<String>,
@@ -272,12 +282,15 @@ impl Connect {
                         if let Some(state) = reply.state {
                             self.file_paths.retain(|id, _| state.devices.iter().any(|device| &device.id == id && device.paired));
                             if self.confirm_send.as_ref().is_some_and(|draft| !state.devices.iter().any(|device| device.id == draft.device_id && device.files_ready())) { self.confirm_send = None; }
+                            if let Some(screen) = &state.screens { self.sharing_uncertain = screen.running; }
+                            else if !state.running { self.sharing_uncertain = false; }
                             self.snapshot = Some(state);
                         }
                         if reply.ok {
                             self.error = None;
-                            if pending.op == "stop" { self.snapshot = None; }
+                            if pending.op == "stop" { self.snapshot = None; self.sharing_uncertain = false; }
                             if pending.op == "stop_screen" {
+                                self.sharing_uncertain = false;
                                 if let Some(screens) = self.snapshot.as_mut().and_then(|state| state.screens.as_mut()) { screens.running = false; }
                             }
                             if !pending.passive { self.notice = Some(pending.feedback.into()); }
@@ -296,11 +309,46 @@ impl Connect {
         if visible && self.pending.is_none() && self.last_poll.is_none_or(|at| at.elapsed() >= POLL) {
             self.request(ctx, Request::state(), false);
         }
+        let session = self.snapshot.as_ref().filter(|s| s.running).and_then(|s| {
+            let screens = s.screens.as_ref().filter(|screens| screens.running && screens.mode == "phone")?;
+            // A revoked or disconnected peer must never retain a visible frame.
+            let owner = screens.device_id.as_ref()?;
+            if !s.devices.iter().any(|device| &device.id == owner && device.paired && device.connected) { return None; }
+            screens.serial.as_ref().map(|serial| preview::Session { device_id: owner.clone(), serial: serial.clone() })
+        });
+        let frame_visible = visible && !self.settings_open && !self.send_open;
+        if !frame_visible { self.suspend_preview(); }
+        if !visible { self.expanded = false; self.keyboard = false; }
+        self.preview.tick(ctx, if frame_visible { session } else { None });
         if self.pending.is_some() { ctx.request_repaint_after(Duration::from_millis(100)); }
         else if visible { ctx.request_repaint_after(POLL.saturating_sub(self.last_poll.map_or(POLL, |at| at.elapsed()))); }
     }
 
+    pub fn suspend_preview(&mut self) { self.preview.clear(); }
+
+    pub fn has_keyboard(&self) -> bool { self.keyboard }
+
+    pub fn sharing(&self) -> bool {
+        if self.sharing_uncertain { return true; }
+        self.snapshot.as_ref().and_then(|s| s.screens.as_ref()).is_some_and(|s| s.running)
+            || self.pending.as_ref().is_some_and(|p| matches!(p.op, "mirror_phone" | "extend"))
+    }
+
+    pub fn stop_sharing(&mut self, ctx: &egui::Context) {
+        self.expanded = false;
+        self.preview.clear();
+        self.preview.blocked = true;
+        self.request(ctx, Request { op: "stop_screen", ..Request::state() }, false);
+    }
+
     fn request(&mut self, ctx: &egui::Context, request: Request, start: bool) {
+        // Background reads must not disable editors or swallow explicit actions.
+        // The bounded read worker may finish; its stale snapshot is discarded.
+        if self.pending.as_ref().is_some_and(|pending| pending.passive) && (request.op != "state" || start) {
+            self.pending = None;
+        }
+        if matches!(request.op, "stop" | "stop_screen") { self.preview.clear(); self.preview.blocked = true; }
+        if matches!(request.op, "mirror_phone" | "extend") && self.pending.is_none() { self.preview.blocked = false; self.sharing_uncertain = true; }
         if self.pending.is_some() {
             if request.is_priority() {
                 if self.pending.as_ref().is_some_and(|pending| pending.op == "stop" || (request.op != "cancel_transfer" && pending.op == request.op)) { return; }
@@ -344,17 +392,15 @@ impl Connect {
             ui.push_id(("file-transfer", &transfer.id), |ui| {
                 copy(ui, if transfer.filename.is_empty() { "Unnamed file" } else { &transfer.filename }, ui::TEXT);
                 let peer = snapshot.devices.iter().find(|device| device.id == transfer.peer_id);
-                let name = peer.map(|device| device.name.as_str()).filter(|name| !name.is_empty()).unwrap_or("Disconnected device");
-                let direction = if transfer.direction == "receive" { "From" } else { "To" };
-                copy(ui, &format!("{direction} {name}"), ui::SECONDARY);
+
+
                 let status = match transfer.state.as_str() {
                     "offered" => "Waiting for your approval", "connecting" => "Connecting", "waiting" => "Waiting for the phone",
                     "transferring" => "Transferring", "complete" => "Complete", "failed" => "Failed", "cancelled" => "Cancelled", "expired" => "Offer expired", _ => "Status unavailable",
                 };
-                copy(ui, status, if transfer.error.is_some() { ui::CAUTION } else { ui::SECONDARY });
-                copy(ui, &format!("{} / {}", crate::quicklook::human_size(transfer.transferred), crate::quicklook::human_size(transfer.size)), ui::SECONDARY);
+                copy(ui, &format!("{status} · {} / {}", crate::quicklook::human_size(transfer.transferred), crate::quicklook::human_size(transfer.size)), if transfer.error.is_some() { ui::CAUTION } else { ui::SECONDARY });
                 if matches!(transfer.state.as_str(), "connecting" | "waiting" | "transferring") {
-                    ui.add(egui::ProgressBar::new(transfer.progress()).desired_width(ui.available_width()).show_percentage());
+                    ui.add(egui::ProgressBar::new(transfer.progress()).desired_width(ui.available_width()).desired_height(4.0));
                 }
                 if let Some(error) = &transfer.error { copy(ui, error, ui::CAUTION); }
                 if transfer.state == "complete" {
@@ -372,7 +418,7 @@ impl Connect {
                         });
                     }
                     // Deliberately independent of connection, policy and other in-flight commands.
-                    if transfer.cancellable() && ui::button(ui, theme, "Cancel transfer", None, false).clicked() {
+                    if transfer.cancellable() && ui::button(ui, theme, "Cancel", None, false).clicked() {
                         self.request(ui.ctx(), Request::transfer("cancel_transfer", transfer), false);
                     }
                 });
@@ -424,6 +470,7 @@ impl Connect {
         let mut path = self.file_paths.get(&device.id).cloned().unwrap_or_default();
         ui.add_enabled_ui(!busy, |ui| {
             let response = ui.add(egui::TextEdit::singleline(&mut path).id_salt(("connect-file-path", &device.id)).char_limit(4096).desired_width(ui.available_width()).hint_text("/absolute/path/to/file")).labelled_by(label.id);
+            self.keyboard |= response.has_focus();
             if response.changed() {
                 self.file_paths.insert(device.id.clone(), path.clone());
                 if self.confirm_send.as_ref().is_some_and(|draft| draft.device_id == device.id) { self.confirm_send = None; }
@@ -451,79 +498,7 @@ impl Connect {
         }
     }
 
-    pub fn panel(&mut self, ui: &mut egui::Ui, theme: &Theme) {
-        self.tick(ui.ctx(), true);
-        ui::section(ui, "DES CONNECT", |ui| ui::meta(ui, if self.snapshot.as_ref().is_some_and(|s| s.running) { "ONLINE" } else { "OFFLINE" }, ui::SECONDARY));
-        let busy = self.pending.is_some();
-        let online = self.snapshot.as_ref().is_some_and(|s| s.running);
-        ui.horizontal_wrapped(|ui| {
-            ui.add_enabled_ui(!busy, |ui| {
-                if !online && ui::button(ui, theme, "Start service", None, false).clicked() {
-                    self.request(ui.ctx(), Request::state(), true);
-                }
-                if online && ui::button(ui, theme, "Rescan", None, false).clicked() {
-                    self.request(ui.ctx(), Request { op: "discover", ..Request::state() }, false);
-                }
-                if ui::button(ui, theme, "Refresh", None, false).clicked() {
-                    self.request(ui.ctx(), Request::state(), false);
-                }
-            });
-            if online && ui::button(ui, theme, "Stop service", None, false).clicked() {
-                self.request(ui.ctx(), Request { op: "stop", ..Request::state() }, false);
-            }
-        });
-        ui.add_space(ui::SPACE);
-        egui::ScrollArea::vertical().id_salt("connect-devices").auto_shrink([false, false]).show(ui, |ui| {
-            if let Some(error) = &self.error { copy(ui, error, ui::CAUTION); }
-            if let Some(notice) = &self.notice { copy(ui, notice, ui::SECONDARY); }
-            if busy { copy(ui, "Contacting DES Connect…", ui::SECONDARY); }
-            let Some(snapshot) = self.snapshot.clone().filter(|s| s.running) else {
-                if self.error.is_none() && !busy { copy(ui, "Start DES Connect to discover your phone on this network.", ui::SECONDARY); }
-                return;
-            };
-            if !snapshot.name.is_empty() { copy(ui, &format!("This computer: {}", snapshot.name), ui::SECONDARY); }
-            self.transfers_panel(ui, theme, &snapshot, busy);
-            let screens_running = snapshot.screens.as_ref().is_some_and(|screens| screens.running);
-            if let Some(screens) = &snapshot.screens {
-                if screens.running {
-                    ui.add_space(ui::SPACE);
-                    copy(ui, match screens.mode.as_str() { "phone" => "USB screen mirror active", "extended" => "Extended USB display active", _ => "Screen sharing active" }, theme.main);
-                    if let Some(serial) = &screens.serial { copy(ui, &format!("USB device: {serial}"), ui::SECONDARY); }
-                    copy(ui, if screens.control { "Remote input active" } else { "View only" }, ui::SECONDARY);
-                    if ui::button(ui, theme, "Stop sharing", None, false).clicked() {
-                        self.request(ui.ctx(), Request { op: "stop_screen", ..Request::state() }, false);
-                    }
-                }
-                if !screens.message.is_empty() { copy(ui, &screens.message, ui::SECONDARY); }
-            }
-            if let Some(capabilities) = &snapshot.screen_capabilities {
-                if capabilities.phone_mirror || capabilities.extended_output {
-                    ui.add_space(ui::SPACE);
-                    let label = ui.label(RichText::new("USB device").font(ui::display(13.0)).color(ui::TEXT));
-                    ui.add_enabled_ui(!busy && !screens_running, |ui| {
-                        ui.add(egui::TextEdit::singleline(&mut self.usb_serial).id_salt("connect-usb-serial").hint_text("USB serial").desired_width(ui.available_width())).labelled_by(label.id);
-                    });
-                    copy(ui, "Enter the USB serial explicitly. USB debugging must be enabled and authorized on that device. Pairing alone does not identify a USB device.", ui::SECONDARY);
-                }
-                if !capabilities.extended_output { copy(ui, "Extended USB display is unavailable on this desktop.", ui::SECONDARY); }
-                if !capabilities.message.is_empty() { copy(ui, &capabilities.message, ui::SECONDARY); }
-            }
-            if snapshot.devices.is_empty() {
-                copy(ui, "No devices found. Open DES Connect on your phone, connect both devices to the same network, then Rescan.", ui::SECONDARY);
-            }
-            for device in &snapshot.devices {
-                ui.add_space(ui::SPACE);
-                ui.separator();
-                ui.add_space(4.0);
-                ui.push_id(&device.id, |ui| {
-                    copy(ui, if device.name.is_empty() { "Unnamed device" } else { &device.name }, ui::TEXT);
-                    let status = if device.paired { if device.connected { "Connected · Trusted" } else { "Offline · Trusted" } }
-                        else if device.connected { "Available · Not paired" } else { "Offline · Not paired" };
-                    copy(ui, status, if device.connected { theme.main } else { ui::SECONDARY });
-                    if !device.kind.is_empty() { copy(ui, &device.kind, ui::SECONDARY); }
-                    if let Some(battery) = device.battery.filter(|n| *n <= 100) {
-                        copy(ui, &format!("Battery {battery}%{}", if device.charging { " · Charging" } else { "" }), ui::SECONDARY);
-                    }
+    fn pairing_controls(&mut self, ui: &mut egui::Ui, theme: &Theme, device: &Device, busy: bool) {
                     if let Some(error) = &device.error { copy(ui, error, ui::CAUTION); }
                     if matches!(device.pair_state.as_str(), "incoming" | "outgoing" | "accepting") {
                         copy(ui, match device.pair_state.as_str() {
@@ -570,31 +545,185 @@ impl Connect {
                             });
                         }
                     });
-                    if device.paired {
-                        self.permissions_controls(ui, theme, device, busy);
-                        self.file_controls(ui, theme, device, busy);
-                    }
-                    if device.paired && device.connected {
-                        if let Some(capabilities) = &snapshot.screen_capabilities {
-                            if capabilities.phone_mirror || capabilities.extended_output {
-                                ui.add_space(4.0);
-                                ui.add_enabled_ui(!busy && !screens_running && !self.usb_serial.trim().is_empty(), |ui| {
-                                    if capabilities.phone_mirror && ui::button(ui, theme, "Mirror USB screen", None, false).clicked() {
-                                        self.request(ui.ctx(), Request::screen("mirror_phone", device, &self.usb_serial), false);
-                                    }
-                                    if capabilities.extended_output && ui::button(ui, theme, "Extend to USB device", None, false).clicked() {
-                                        self.request(ui.ctx(), Request::screen("extend", device, &self.usb_serial), false);
-                                    }
-                                });
-                                if self.usb_serial.trim().is_empty() { copy(ui, "Enter a USB serial above to start sharing.", ui::SECONDARY); }
-                            }
-                        }
-                    }
-                    if device.last_ping.is_some() { copy(ui, "Ping received", ui::SECONDARY); }
-                });
+    }
+
+    pub fn expanded_view(&mut self, ui: &mut egui::Ui, theme: &Theme) {
+        self.keyboard = false;
+        ui.push_id("connect-expanded", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui::meta(ui, "DEVICE SCREEN · VIEW ONLY", ui::SECONDARY);
+                if ui::button(ui, theme, "Minimize", None, false).clicked() { self.expanded = false; }
+                if self.sharing() && ui::button(ui, theme, "Stop", None, false).clicked() { self.stop_sharing(ui.ctx()); }
+            });
+            ui.add_space(ui::SPACE);
+            if let Some(snapshot) = self.snapshot.clone() {
+                let device = snapshot.screens.as_ref().and_then(|screen| screen.device_id.as_ref()).and_then(|owner| snapshot.devices.iter().find(|device| &device.id == owner));
+                if let Some(device) = device { self.mirror_canvas(ui, theme, &snapshot, device, self.pending.is_some()); }
+                else { copy(ui, "Device unavailable · sharing stopped", ui::SECONDARY); }
             }
         });
     }
+
+    pub fn panel(&mut self, ui: &mut egui::Ui, theme: &Theme) {
+        self.keyboard = false;
+        self.tick(ui.ctx(), true);
+        let busy = self.pending.as_ref().is_some_and(|pending| !pending.passive);
+        let snapshot = self.snapshot.clone().filter(|s| s.running);
+        let selected = snapshot.as_ref().and_then(|s| {
+            s.screens.as_ref().filter(|screen| screen.running).and_then(|screen| screen.device_id.as_ref()).and_then(|owner| s.devices.iter().find(|d| &d.id == owner))
+                .or_else(|| s.devices.iter().find(|d| Some(&d.id) == self.selected_device.as_ref()))
+                .or_else(|| s.devices.iter().find(|d| d.paired && d.connected))
+                .or_else(|| s.devices.first())
+        }).cloned();
+        if let Some(device) = &selected { self.selected_device = Some(device.id.clone()); }
+        ui.horizontal(|ui| {
+            let name_width = (ui.available_width() - 82.0).max(30.0);
+            ui.allocate_ui_with_layout(egui::vec2(name_width, ui::CONTROL_HEIGHT), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                let name = selected.as_ref().map(|device| device.name.as_str()).filter(|name| !name.is_empty()).unwrap_or("DES Connect");
+                ui.add(egui::Label::new(RichText::new(name).font(ui::display_bold(17.0)).color(ui::TEXT)).truncate()).on_hover_text(name);
+            });
+            if ui::button(ui, theme, "Settings", None, self.settings_open).clicked() { self.settings_open = !self.settings_open; self.send_open = false; if self.settings_open { self.expanded = false; self.suspend_preview(); } }
+        });
+        ui.horizontal_wrapped(|ui| {
+            if let Some(device) = &selected {
+                ui::meta(ui, if device.connected { if device.paired { "Connected" } else { "Not paired" } } else { "Offline" }, if device.connected { theme.main } else { ui::SECONDARY });
+                if let Some(battery) = device.battery.filter(|n| *n <= 100) {
+                    ui::meta(ui, &format!("{battery}%{}", if device.charging { " · Charging" } else { "" }), ui::SECONDARY);
+                }
+            } else { ui::meta(ui, if snapshot.is_some() { "No device" } else { "Offline" }, ui::SECONDARY); }
+        });
+        // Capture stop stays outside every scroll/context view, including a pending start.
+        let expandable = snapshot.as_ref().and_then(|s| s.screens.as_ref()).is_some_and(|screen| screen.running && screen.mode == "phone" && screen.device_id.is_some());
+        if self.sharing() || expandable {
+            ui.horizontal_wrapped(|ui| {
+                if self.sharing() && ui::button(ui, theme, "Stop", None, false).clicked() { self.stop_sharing(ui.ctx()); }
+                if expandable && ui::button(ui, theme, if self.expanded { "Minimize" } else { "Expand" }, None, false).clicked() { self.expanded = !self.expanded; if self.expanded { self.settings_open=false; self.send_open=false; self.keyboard=false; } }
+            });
+        }
+        if let Some(snapshot) = &snapshot {
+            if snapshot.devices.len() > 1 || self.settings_open {
+                egui::ComboBox::from_id_salt("connect-device-chooser").selected_text("Choose device").width(ui.available_width().min(210.0)).show_ui(ui, |ui| {
+                    for device in &snapshot.devices {
+                        let label = format!("{} · {}", device.name, if device.connected { "online" } else { "offline" });
+                        if ui.add_enabled(!self.sharing(), egui::Button::new(label).selected(self.selected_device.as_deref() == Some(&device.id))).clicked() {
+                            self.selected_device = Some(device.id.clone()); self.send_open = false; self.confirm_send = None; self.confirm_unpair = None;
+                        }
+                    }
+                });
+            }
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) { self.settings_open = false; self.send_open = false; self.confirm_send = None; self.confirm_unpair = None; }
+        ui.add_space(ui::SPACE);
+        egui::ScrollArea::vertical().id_salt("connect-content").auto_shrink([false, false]).show(ui, |ui| {
+            if let Some(error) = &self.error {
+                let first = error.lines().next().unwrap_or("DES Connect could not complete this action.");
+                let summary: String = first.chars().take(160).collect();
+                copy(ui, &summary, ui::CAUTION);
+                if summary.len() < error.len() { egui::CollapsingHeader::new("Details").show(ui, |ui| copy(ui, error, ui::SECONDARY)); }
+            }
+            if let Some(notice) = &self.notice { if notice != "Working…" { copy(ui, notice, ui::SECONDARY); } }
+            let Some(snapshot) = snapshot.as_ref() else {
+                copy(ui, if busy { "Connecting…" } else { "Connect a phone or tablet to share its screen and files." }, ui::SECONDARY);
+                ui.add_enabled_ui(!busy, |ui| {
+                    if ui::button(ui, theme, "Start service", None, false).clicked() { self.request(ui.ctx(), Request::state(), true); }
+                });
+                return;
+            };
+            let Some(device) = selected.as_ref() else {
+                copy(ui, "Open DES Connect on your device, then scan.", ui::SECONDARY);
+                self.service_controls(ui, theme, busy);
+                return;
+            };
+            if self.settings_open {
+                ui::section(ui, "DEVICE SETTINGS", |_| {});
+                self.pairing_controls(ui, theme, device, busy);
+                if device.paired { self.permissions_controls(ui, theme, device, busy); }
+                ui.add_space(ui::SPACE);
+                ui::section(ui, "USB SCREEN", |_| {});
+                let label = ui.label(RichText::new("USB serial").font(ui::display(13.0)).color(ui::TEXT));
+                ui.add_enabled_ui(!busy && !self.sharing(), |ui| {
+                    let response = ui.add(egui::TextEdit::singleline(&mut self.usb_serial).id_salt("connect-usb-serial").char_limit(256).desired_width(ui.available_width()).hint_text("Authorized USB serial")).labelled_by(label.id);
+                    self.keyboard |= response.has_focus();
+                });
+                copy(ui, "Select the exact USB serial. Enable USB debugging and approve this computer on that device.", ui::SECONDARY);
+                if let Some(capabilities) = &snapshot.screen_capabilities {
+                    if !capabilities.message.is_empty() { copy(ui, &capabilities.message, ui::SECONDARY); }
+                    if capabilities.extended_output {
+                        ui.add_enabled_ui(!busy && !self.sharing() && device.paired && device.connected && !self.usb_serial.trim().is_empty(), |ui| {
+                            if ui::button(ui, theme, "Extend desktop", None, false).clicked() { self.request(ui.ctx(), Request::screen("extend", device, &self.usb_serial), false); }
+                        });
+                    }
+                }
+                ui.add_space(ui::SPACE);
+                self.service_controls(ui, theme, busy);
+            } else if self.send_open {
+                ui::section(ui, "SEND FILE", |_| {});
+                if device.files_ready() { self.file_controls(ui, theme, device, busy); }
+                else {
+                    copy(ui, "Enable file sharing in device settings, then reconnect to apply it.", ui::SECONDARY);
+                    if ui::button(ui, theme, "Device settings", None, false).clicked() { self.settings_open = true; self.send_open = false; self.expanded = false; self.suspend_preview(); }
+                }
+            } else {
+                self.mirror_canvas(ui, theme, snapshot, device, busy);
+                ui.add_space(ui::SPACE);
+                ui.horizontal_wrapped(|ui| {
+                    ui.add_enabled_ui(device.paired && device.connected, |ui| {
+                        if ui::button(ui, theme, "Send file", None, false).clicked() { self.send_open = true; self.expanded = false; self.suspend_preview(); }
+                    });
+                });
+                if !device.paired || matches!(device.pair_state.as_str(), "incoming" | "outgoing" | "accepting") {
+                    self.pairing_controls(ui, theme, device, busy);
+                }
+            }
+            self.transfers_panel(ui, theme, snapshot, busy);
+        });
+    }
+
+    fn service_controls(&mut self, ui: &mut egui::Ui, theme: &Theme, busy: bool) {
+        ui.horizontal_wrapped(|ui| {
+            ui.add_enabled_ui(!busy, |ui| {
+                if ui::button(ui, theme, "Scan", None, false).clicked() { self.request(ui.ctx(), Request { op: "discover", ..Request::state() }, false); }
+                if ui::button(ui, theme, "Refresh", None, false).clicked() { self.request(ui.ctx(), Request::state(), false); }
+            });
+            if ui::button(ui, theme, "Stop service", None, false).clicked() { self.request(ui.ctx(), Request { op: "stop", ..Request::state() }, false); }
+        });
+    }
+
+    fn mirror_canvas(&mut self, ui: &mut egui::Ui, theme: &Theme, snapshot: &Snapshot, device: &Device, busy: bool) {
+        let running = self.sharing();
+        ui.horizontal_wrapped(|ui| {
+            ui::meta(ui, if self.preview.texture.is_some() { "LIVE SCREEN · VIEW ONLY" } else if running { "STARTING SCREEN · VIEW ONLY" } else { "DEVICE SCREEN" }, ui::SECONDARY);
+        });
+        let width = ui.available_width().max(1.0);
+        let limit = (ui.available_height() - 106.0).clamp(120.0, if self.expanded { 520.0 } else { 340.0 });
+        let preferred = self.preview.texture.as_ref().map(|texture| { let size = texture.size_vec2(); width * size.y / size.x }).unwrap_or(if running { 220.0 } else { 178.0 });
+        let height = preferred.clamp(120.0, limit);
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+        ui.painter().rect_filled(rect, ui::SURFACE_RADIUS, ui::GROUND);
+        ui.painter().rect_stroke(rect, ui::SURFACE_RADIUS, egui::Stroke::new(1.0, ui::LINE), egui::StrokeKind::Inside);
+        if let Some(texture) = &self.preview.texture {
+            let size = texture.size_vec2();
+            let fit = size * (rect.width() / size.x).min(rect.height() / size.y);
+            let target = egui::Rect::from_center_size(rect.center(), fit);
+            ui.painter().image(texture.id(), target, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0,1.0)), egui::Color32::WHITE);
+        } else {
+            let missing_owner = snapshot.screens.as_ref().is_some_and(|screen| screen.running && screen.device_id.is_none());
+            let message = self.preview.message.unwrap_or(if missing_owner { "Update DES Connect to preview this session" } else if running { "Waiting for device screen…" } else if !device.connected { "Device offline" } else { "Your device screen appears here" });
+            let galley = ui.painter().layout(message.into(), ui::display(13.0), ui::SECONDARY, (width - 24.0).max(1.0));
+            ui.painter().galley(rect.center() - galley.size() * 0.5, galley, ui::SECONDARY);
+        }
+        if !running {
+            let supported = snapshot.screen_capabilities.as_ref().is_some_and(|c| c.phone_mirror);
+            let ready = supported && device.paired && device.connected && !self.usb_serial.trim().is_empty();
+            ui.horizontal_wrapped(|ui| {
+                ui.add_enabled_ui(!busy && ready, |ui| {
+                    if ui::button(ui, theme, "Mirror screen", None, false).clicked() { self.request(ui.ctx(), Request::screen("mirror_phone", device, &self.usb_serial), false); }
+                });
+                if !ready && ui::button(ui, theme, "Set up USB", None, false).clicked() { self.settings_open = true; }
+            });
+        }
+    }
+
 }
 
 // Lexical validation only: no filesystem access, stat, canonicalize or readability probe on the UI thread.
@@ -611,6 +740,120 @@ fn copy(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn compact_default_keeps_settings_contextual_and_stop_above_scroll() {
+        fn texts(shape: &egui::Shape, out: &mut Vec<(String, egui::Pos2)>) {
+            match shape {
+                egui::Shape::Text(t) => out.push((t.galley.job.text.clone(), t.pos)),
+                egui::Shape::Vec(v) => for s in v { texts(s, out); },
+                _ => {},
+            }
+        }
+        let ctx = egui::Context::default(); ui::install_fonts(&ctx, None, None);
+        let theme = Theme::load("signal"); crate::apply_style(&ctx, &theme);
+        let (_tx, rx) = mpsc::channel();
+        let mut connect = Connect {
+            pending: Some(Pending { rx, op: "mirror_phone", feedback: "Started", passive: false }),
+            snapshot: Some(Snapshot { running: true, devices: vec![Device { id:"phone".into(), name:"Personal tablet".into(), paired:true, connected:true, ..Default::default() }], ..Default::default() }),
+            ..Default::default()
+        };
+        connect.preview.fixture = true;
+        for width in [220.0, 300.0, 620.0] {
+            let mut labels = Vec::new();
+            for _ in 0..2 {
+                let output = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 320.0))), ..Default::default() }, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| { connect.panel(ui, &theme); assert!(ui.min_rect().right() <= width); });
+                });
+                labels.clear(); for shape in output.shapes { texts(&shape.shape, &mut labels); }
+            }
+            let stop = labels.iter().find(|(text, _)| text == "Stop").expect("Stop must remain visible during pending start");
+            assert!(stop.1.y < 120.0, "Stop must remain above the scroll area: {:?}", stop.1);
+            assert!(!labels.iter().any(|(t,_)| t == "DEVICE PERMISSIONS" || t == "USB serial"));
+            let click = stop.1 + egui::vec2(8.0, 8.0);
+            for pressed in [true, false] {
+                let _ = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 320.0))), events: vec![egui::Event::PointerMoved(click), egui::Event::PointerButton { pos:click, button:egui::PointerButton::Primary, pressed, modifiers:egui::Modifiers::NONE }], ..Default::default() }, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| connect.panel(ui, &theme));
+                });
+            }
+            assert!(connect.queued_controls.iter().any(|r| r.op == "stop_screen"));
+            assert!(connect.preview.texture.is_none());
+            connect.queued_controls.clear();
+        }
+    }
+
+    #[test]
+    fn preview_is_cleared_for_missing_owner_and_escape_returns_from_context() {
+        let ctx = egui::Context::default(); ui::install_fonts(&ctx, None, None);
+        let theme = Theme::load("signal"); crate::apply_style(&ctx, &theme);
+        let mut connect = Connect { last_poll: Some(Instant::now()), snapshot: Some(Snapshot {
+            running: true, screens: Some(Screens { running:true, mode:"phone".into(), serial:Some("USB".into()), device_id:Some("gone".into()), ..Default::default() }),
+            devices:vec![Device { id:"other".into(), paired:true, connected:true, ..Default::default() }], ..Default::default()
+        }), ..Default::default() };
+        connect.preview.texture = Some(ctx.load_texture("old frame", egui::ColorImage::from_rgb([1,1], &[1,2,3]), egui::TextureOptions::LINEAR));
+        connect.tick(&ctx, true);
+        assert!(connect.preview.texture.is_none(), "an unrelated paired peer cannot preserve a disconnected owner's frame");
+        connect.settings_open = true; connect.send_open = true;
+        let _ = ctx.run(egui::RawInput { events:vec![egui::Event::Key { key:egui::Key::Escape, physical_key:None, pressed:true, repeat:false, modifiers:egui::Modifiers::NONE }], ..Default::default() }, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| connect.panel(ui, &theme));
+        });
+        assert!(!connect.settings_open && !connect.send_open);
+        assert!(connect.sharing(), "leaving settings must retain Stop for an active session");
+    }
+
+    #[test]
+    fn stop_survives_unknown_service_outcome_until_idle_is_confirmed() {
+        let ctx = egui::Context::default();
+        let (tx, rx) = mpsc::channel();
+        tx.send(Err("Timed out".into())).unwrap();
+        let mut connect = Connect { sharing_uncertain:true, pending:Some(Pending { rx, op:"state", feedback:"", passive:true }), ..Default::default() };
+        connect.tick(&ctx, false);
+        assert!(connect.sharing(), "IPC failure cannot prove capture stopped");
+        let (tx, rx) = mpsc::channel();
+        tx.send(Ok(Reply { ok:true, error:None, state:Some(Snapshot { running:true, screens:Some(Screens::default()), ..Default::default() }) })).unwrap();
+        connect.pending = Some(Pending { rx, op:"state", feedback:"", passive:true });
+        connect.tick(&ctx, false);
+        assert!(!connect.sharing());
+    }
+
+    #[test]
+    fn file_input_owns_keyboard_until_context_is_hidden() {
+        fn input_text_position(shape: &egui::Shape) -> Option<egui::Pos2> {
+            match shape {
+                egui::Shape::Text(text) if text.galley.job.text == "/home/test/" => Some(text.pos),
+                egui::Shape::Vec(shapes) => shapes.iter().find_map(input_text_position),
+                _ => None,
+            }
+        }
+        fn draw(connect: &mut Connect, ctx: &egui::Context, theme: &Theme, _device: &Device, events: Vec<egui::Event>) -> egui::FullOutput {
+            connect.keyboard = false;
+            ctx.run(egui::RawInput { screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 600.0))), events, ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| connect.panel(ui, theme));
+            })
+        }
+        let ctx = egui::Context::default(); ui::install_fonts(&ctx, None, None);
+        let theme = Theme::load("signal"); crate::apply_style(&ctx, &theme);
+        let device = Device { id:"phone".into(), paired:true, connected:true, files_enabled:true, ..Default::default() };
+        let (_state_reply, rx) = mpsc::channel();
+        let mut connect = Connect {
+            snapshot: Some(Snapshot {running:true,devices:vec![device.clone()],..Default::default()}),
+            send_open:true,pending:Some(Pending {rx,op:"state",feedback:"",passive:true}),
+            last_poll:Some(Instant::now()),..Default::default()
+        };
+        connect.file_paths.insert(device.id.clone(), "/home/test/".into());
+        let _ = draw(&mut connect, &ctx, &theme, &device, Vec::new());
+        let output = draw(&mut connect, &ctx, &theme, &device, Vec::new());
+        let position = output.shapes.iter().find_map(|shape| input_text_position(&shape.shape)).expect("file path field must render") + egui::vec2(4.0, 6.0);
+        for pressed in [true, false] {
+            let _ = draw(&mut connect, &ctx, &theme, &device, vec![egui::Event::PointerMoved(position), egui::Event::PointerButton { pos:position, button:egui::PointerButton::Primary, pressed, modifiers:egui::Modifiers::NONE }]);
+        }
+        assert!(connect.has_keyboard(), "clicking the real file field must give it keyboard ownership");
+        let _ = draw(&mut connect, &ctx, &theme, &device, vec![egui::Event::Key { key:egui::Key::End, physical_key:None, pressed:true, repeat:false, modifiers:egui::Modifiers::NONE }, egui::Event::Text("typed.txt".into())]);
+        assert!(connect.has_keyboard());
+        assert_eq!(connect.file_paths[&device.id], "/home/test/typed.txt");
+        connect.tick(&ctx, false);
+        assert!(!connect.has_keyboard());
+    }
+
     #[test]
     fn accepts_forward_compatible_state_and_optional_device_fields() {
         let reply: Reply = serde_json::from_str(r#"{"ok":true,"state":{"name":"Desktop","running":true,"future":1,"devices":[{"id":"phone","name":"Phone","connected":true}]}}"#).unwrap();
@@ -899,7 +1142,9 @@ mod tests {
                 let ready = self.connect.snapshot.is_some() || self.connect.error.is_some();
                 if self.live && ready { assert!(self.connect.snapshot.as_ref().is_some_and(|state| state.running), "Live preview requires a responding DES Connect daemon"); }
                 assert!(!self.live || ready || self.started.elapsed() < Duration::from_secs(10), "Live preview IPC did not complete");
-                if !self.live || ready { self.frames += 1; }
+                let frame_ready = !self.connect.sharing() || self.connect.preview.texture.is_some();
+                if !self.live || (ready && frame_ready) { self.frames += 1; }
+                assert!(!self.live || frame_ready || self.started.elapsed() < Duration::from_secs(10), "Live screen never produced a visible native texture");
                 if self.frames == 4 { ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default())); }
                 ctx.request_repaint();
             }
@@ -916,13 +1161,14 @@ mod tests {
                 Device { id: "offline".into(), name: "Offline phone".into(), paired: true, pair_state: "offline".into(), ..Default::default() },
             ] }, ..Default::default() });
         }
+        if mode.is_empty() || mode == "pairing" { connect.selected_device = Some("tablet".into()); }
         if mode.starts_with("screen") {
             connect.usb_serial = "USB-123456".into();
             let snapshot = connect.snapshot.as_mut().unwrap();
             snapshot.devices.retain(|device| device.paired && device.connected);
             snapshot.screen_capabilities = Some(ScreenCapabilities { phone_mirror: true, extended_output: mode != "screen-unavailable", message: if mode == "screen-unavailable" { "Extended USB display unavailable: this desktop has no virtual-output support.".into() } else { "USB screen sharing available.".into() } });
             if mode == "screen-active" {
-                snapshot.screens = Some(Screens { mode: "phone".into(), serial: Some("USB-123456".into()), running: true, control: false, message: "Disconnecting or locking stops sharing.".into() });
+                snapshot.screens = Some(Screens { device_id: Some("phone".into()), mode: "phone".into(), serial: Some("USB-123456".into()), running: true, control: false, message: "Disconnecting or locking stops sharing.".into() });
             }
         }
         if mode.starts_with("files") {
@@ -953,6 +1199,8 @@ mod tests {
             device.media_reconnect_needed = true;
             device.volume_reconnect_needed = true;
         }
+        if matches!(mode.as_str(), "media-policy" | "screen-unavailable" | "settings") { connect.settings_open = true; }
+        if mode.starts_with("files") && mode != "files-transfers" { connect.send_open = true; }
         if mode == "live" {
             connect.snapshot = None;
             connect.last_poll = None;
@@ -961,6 +1209,16 @@ mod tests {
         eframe::run_native("DES Connect fixture", options, Box::new(move |cc| {
             ui::install_fonts(&cc.egui_ctx, None, None);
             crate::apply_style(&cc.egui_ctx, &Theme::load("signal"));
+            if mode != "live" {
+                connect.preview.fixture = true;
+                if mode == "screen-active" {
+                    // Explicit native rendering test pattern; never substitutes for live IPC.
+                    let (width, height) = (480, 270);
+                    let mut rgb = Vec::with_capacity(width * height * 3);
+                    for y in 0..height { for x in 0..width { rgb.extend_from_slice(&[(x * 255 / width) as u8, (y * 255 / height) as u8, 90]); } }
+                    connect.preview.texture = Some(cc.egui_ctx.load_texture("TEST ONLY · color bars", egui::ColorImage::from_rgb([width,height], &rgb), egui::TextureOptions::LINEAR));
+                }
+            }
             Ok(Box::new(Preview { connect, frames: 0, output, live: mode == "live", started: Instant::now() }))
         })).unwrap();
     }

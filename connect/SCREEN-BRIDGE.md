@@ -9,12 +9,12 @@ that association from an Android model or a display name.
 
 ## Supported directions
 
-- **Android screen → desktop:** an owned scrcpy window, over authorized USB ADB.
-  Viewing defaults to no device control. Control is a separate explicit option.
-  Audio and clipboard autosync are disabled; starting does not wake the phone.
-  Capture is capped at 1920 pixels on the longest side and 30 fps. Older Android
-  versions may not enforce the FPS ceiling; scrcpy documents official FPS support
-  from Android 10. Secure Android surfaces may remain black.
+- **Android screen → desktop:** a native embedded CONNECT preview over authorized
+  USB ADB. The pinned scrcpy server supplies video to an owned ffmpeg decoder;
+  only the newest bounded RGB frame is retained. No separate scrcpy window or
+  disk recording is required. Viewing is read-only; embedded control requests
+  are rejected. Audio and clipboard autosync remain disabled and starting does
+  not wake the phone. Secure Android surfaces may remain black.
 - **Extra desktop output → Android:** the existing experimental
   `scripts/virtual-display-viewer.py` creates a genuine compositor output. It
   transports uncompressed frames to an Android browser through a random-token
@@ -131,3 +131,20 @@ The host binary's `--version` reports scrcpy 5.0.1. Actual Android capture,
 keyboard/mouse control, unplug/reconnect, and extended-output streaming require
 coordinated manual verification after pairing; unit tests do not establish those
 end-to-end behaviors.
+
+
+## Native frame delivery
+
+The existing private same-user Unix control socket accepts
+`{"op":"screen_frame","device_id":"PEER","serial":"USB_SERIAL"}` followed by a newline. Each frame request is bound to the current screen owner and selected USB serial; a concurrent stop/start cannot substitute another stream. It returns a complete P6 PPM
+(`P6\nWIDTH HEIGHT\n255\n` plus RGB bytes), or a single-line `WAIT`, `STOPPED`,
+`LOCKED`, or `ERROR`. Maximum decoded dimensions are 640×640. This is not a LAN
+stream. The normal JSON state carries the capture's `device_id` owner, never its
+pixels. The service rechecks live paired-peer and unlock policy around frame
+acquisition. The native client keeps one bounded request and one texture, clears
+late results on suspension, and polls only while CONNECT is visible.
+
+The decoder and capture process are session-owned and are terminated and reaped
+on Stop, lock, peer/USB loss or decoder failure. Frames are cleared on EOF.
+The raw capture path follows the official scrcpy developer protocol:
+https://github.com/Genymobile/scrcpy/blob/master/doc/develop.md

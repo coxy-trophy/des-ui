@@ -245,3 +245,33 @@ system panel. The clock and top expand button use existing panel commands on
 click; the existing panel shortcut remains available. App popup coverage uses
 only its visible rectangle; opposite-side overlays must never be unioned across
 native applications. The left dock retains app controls; Super+D opens the primary window overview.
+
+
+## Compact CONNECT and embedded USB preview — 2026-11-04
+
+Canonical owners: Connect owns selected-device/context navigation and request
+feedback; ScreenBridge owns capture/decoder lifetime; service::screen_frame owns
+live peer/lock authorization; connect::preview owns bounded background frame
+requests and the native texture. ui.rs and native egui own buttons, fields,
+selection, focus and scrolling. Existing pairing/file/permission policies remain
+in connect service, pairing and transfer modules.
+
+Only SYSTEM/CONNECT occupy right navigation. Show the active screen owner while
+sharing; device selection cannot relabel another device's stream. An explicit
+USB serial remains required because network pairing cannot establish USB identity.
+Settings contains permission switches and service/USB details. Send file keeps
+absolute-path validation and explicit confirmation. Incoming offers retain Accept
+and Cancel; active transfer cancellation and Stop survive another pending command.
+
+The same-user control socket accepts screen_frame separately from JSON state.
+Requests bind the expected owner and USB serial. A response is bounded P6 RGB or WAIT/STOPPED/LOCKED/ERROR; no frame enters general
+state, logs, saved files or an unauthenticated network endpoint. Live pairing,
+connection, client and desktop unlock are rechecked before and after frame
+acquisition. Missing lock status denies frames. The service watchdog stops capture
+on lock/peer loss, while USB loss and decoder EOF invalidate buffered frames.
+The shell invalidates pending frame generations and removes the texture on
+hide/lock/stop/session changes. There is at most one in-flight UI frame request
+and one reusable texture. Capture never auto-resumes after unlock or reconnect.
+
+Expand uses the terminal workspace with Minimize/Stop; other workspace actions
+close that enlarged view without closing or restarting terminal processes.
