@@ -19,12 +19,15 @@ impl Shell {
 impl Drop for Shell { fn drop(&mut self){self.stop.store(true,Ordering::Release);if let Some(handle)=self.handle.take(){handle.join().unwrap();}} }
 struct Fixture { _daemon:Daemon,shell:Shell,temp:tempfile::TempDir,socket:PathBuf,state:PathBuf,home:PathBuf,port:u16,phone:Store,desktop:Store }
 impl Fixture {
- fn new()->Self {
+ fn new()->Self {Self::with_music(None)}
+ fn with_music(music:Option<&Path>)->Self {
   let temp=tempfile::tempdir().unwrap();fs::set_permissions(temp.path(),fs::Permissions::from_mode(0o700)).unwrap();
   let state=temp.path().join("state");let home=temp.path().join("home");fs::create_dir(&home).unwrap();fs::set_permissions(&home,fs::Permissions::from_mode(0o700)).unwrap();
   let phone=Store::open(&temp.path().join("phone")).unwrap();let mut desktop=Store::open(&state).unwrap();desktop.remember(phone.id(),"Fixture phone","phone",&phone.certificate).unwrap();
   let socket=temp.path().join("runtime/control.sock");let shell=Shell::new(temp.path().join("shell.sock"));
-  let daemon=Daemon(Command::new(env!("CARGO_BIN_EXE_des-connectd")).arg("--loopback").env("HOME",&home).env("DES_UI_CONTROL_SOCKET",&shell.path).args(["--socket",socket.to_str().unwrap(),"--state-dir",state.to_str().unwrap()]).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
+  let mut command=Command::new(env!("CARGO_BIN_EXE_des-connectd"));command.arg("--loopback").env("HOME",&home).env("DES_UI_CONTROL_SOCKET",&shell.path).env("DBUS_SESSION_BUS_ADDRESS","unix:path=/nonexistent/des-connect-fixture-bus").args(["--socket",socket.to_str().unwrap(),"--state-dir",state.to_str().unwrap()]).stdout(Stdio::null()).stderr(Stdio::null());
+  if let Some(path)=music{command.env("DES_MUSIC_SOCKET",path);}
+  let daemon=Daemon(command.spawn().unwrap());
   let ready=wait(&socket,|state|state["ok"]==true);let port=ready["state"]["tcp_port"].as_u64().unwrap() as u16;
   Self{_daemon:daemon,shell,temp,socket,state,home,port,phone,desktop}
  }
@@ -46,8 +49,10 @@ fn wait(socket:&Path,predicate:impl Fn(&Value)->bool)->Value {let end=Instant::n
 fn read(stream:&mut impl Read)->Packet {let mut bytes=Vec::new();loop{let mut b=[0];stream.read_exact(&mut b).unwrap();bytes.push(b[0]);assert!(bytes.len()<65536);if b[0]==b'\n'{return Packet::read(&mut std::io::Cursor::new(bytes)).unwrap();}}}
 fn send(stream:&mut impl Write,packet:Packet){stream.write_all(&packet.encode().unwrap()).unwrap();}
 fn has_share(identity:&Packet)->bool { ["incomingCapabilities","outgoingCapabilities"].iter().all(|key|identity.body[*key].as_array().unwrap().iter().any(|cap|cap=="kdeconnect.share.request")) }
-fn connect(port:u16,phone:&Store,desktop:&Store,files:bool)->(SslStream<TcpStream>,Packet){
+fn connect(port:u16,phone:&Store,desktop:&Store,files:bool)->(SslStream<TcpStream>,Packet){connect_with_caps(port,phone,desktop,files,true,true)}
+fn connect_with_caps(port:u16,phone:&Store,desktop:&Store,files:bool,media:bool,volume:bool)->(SslStream<TcpStream>,Packet){
  let mut incoming=vec!["kdeconnect.ping","kdeconnect.battery.request"];let mut outgoing=vec!["kdeconnect.ping","kdeconnect.battery"];if files{incoming.push("kdeconnect.share.request");outgoing.push("kdeconnect.share.request");}
+ if media{incoming.push("kdeconnect.mpris");outgoing.push("kdeconnect.mpris.request");}if volume{incoming.push("kdeconnect.systemvolume");outgoing.push("kdeconnect.systemvolume.request");}
  let identity=service::packet("kdeconnect.identity",json!({"deviceId":phone.id(),"deviceName":"Fixture phone","deviceType":"phone","protocolVersion":8,"incomingCapabilities":incoming,"outgoingCapabilities":outgoing}));
  let mut tcp=TcpStream::connect((Ipv4Addr::LOCALHOST,port)).unwrap();tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();tcp.set_write_timeout(Some(Duration::from_secs(5))).unwrap();send(&mut tcp,identity.clone());
  let mut context=SslContextBuilder::new(SslMethod::tls()).unwrap();context.set_min_proto_version(Some(SslVersion::TLS1_2)).unwrap();context.set_max_proto_version(Some(SslVersion::TLS1_2)).unwrap();context.set_certificate(&phone.certificate).unwrap();context.set_private_key(&phone.key).unwrap();let pin=identity::peer_digest(&desktop.certificate,desktop.id()).unwrap();let id=desktop.id().to_owned();context.set_verify_callback(SslVerifyMode::PEER|SslVerifyMode::FAIL_IF_NO_PEER_CERT,move|_,verify|verify.current_cert().is_some_and(|cert|identity::peer_digest(&cert.to_owned(),&id).is_ok_and(|digest|digest==pin)));
@@ -142,4 +147,52 @@ fn transfer<'a>(state:&'a Value,id:&str)->Option<&'a Value>{state["state"]["tran
  let state=wait(&fixture.socket,|state|state["state"]["transfers"].as_array().unwrap().iter().any(|view|view["state"]=="offered"));let id=state["state"]["transfers"][0]["id"].as_str().unwrap().to_owned();
  thread::sleep(Duration::from_millis(300));let(mut replacement,_)=connect(fixture.port,&fixture.phone,&fixture.desktop,false);read(&mut replacement);drop(first);
  wait(&fixture.socket,|state|transfer(state,&id).is_some_and(|view|view["state"]=="cancelled"));
+}
+
+struct Music {path:PathBuf,_directory:tempfile::TempDir,calls:Arc<std::sync::atomic::AtomicUsize>,commands:Arc<std::sync::Mutex<Vec<Value>>>,revoke:Arc<std::sync::Mutex<Option<Arc<AtomicBool>>>>,stop:Arc<AtomicBool>,handle:Option<thread::JoinHandle<()>>}
+impl Music {
+ fn new()->Self{
+  let dir=tempfile::tempdir().unwrap();fs::set_permissions(dir.path(),fs::Permissions::from_mode(0o700)).unwrap();let path=dir.path().join("music.sock");let listener=UnixListener::bind(&path).unwrap();fs::set_permissions(&path,fs::Permissions::from_mode(0o600)).unwrap();listener.set_nonblocking(true).unwrap();
+  let calls=Arc::new(std::sync::atomic::AtomicUsize::new(0));let commands=Arc::new(std::sync::Mutex::new(Vec::new()));let revoke:Arc<std::sync::Mutex<Option<Arc<AtomicBool>>>>=Arc::new(std::sync::Mutex::new(None));let stop=Arc::new(AtomicBool::new(false));let(count,received,locked,done)=(calls.clone(),commands.clone(),revoke.clone(),stop.clone());
+  let handle=thread::spawn(move||{
+   while !done.load(Ordering::Acquire){let(mut stream,_)=match listener.accept(){Ok(pair)=>pair,Err(_)=>{thread::sleep(Duration::from_millis(5));continue}};count.fetch_add(1,Ordering::Release);
+    let mut state=json!({"type":"state","track":{"name":"Private fixture song","artists":"Fixture artist","album":"Fixture album","duration_ms":5000,"cover":null},"playing":true,"position_ms":2000,"volume":40});
+    if let Some(lock)=locked.lock().unwrap().take(){thread::sleep(Duration::from_millis(50));lock.store(true,Ordering::Release);}
+    if writeln!(stream,"{state}").is_err(){continue;}stream.set_read_timeout(Some(Duration::from_millis(500))).unwrap();let mut reader=std::io::BufReader::new(stream.try_clone().unwrap());
+    loop{let mut line=String::new();if !matches!(std::io::BufRead::read_line(&mut reader,&mut line),Ok(n)if n>0){break;}let command:Value=serde_json::from_str(&line).unwrap();received.lock().unwrap().push(command.clone());match command["cmd"].as_str(){Some("toggle")=>state["playing"]=json!(!state["playing"].as_bool().unwrap()),Some("volume")=>state["volume"]=command["percent"].clone(),Some("state")=>{if writeln!(stream,"{state}").is_err(){break;}},Some("next")|Some("prev")=>{},other=>panic!("unexpected fake command: {other:?}")}}
+   }
+  });Self{path,_directory:dir,calls,commands,revoke,stop,handle:Some(handle)}
+ }
+}
+impl Drop for Music {fn drop(&mut self){self.stop.store(true,Ordering::Release);if let Some(handle)=self.handle.take(){handle.join().unwrap();}}}
+fn has(identity:&Packet,key:&str,capability:&str)->bool{identity.body[key].as_array().unwrap().iter().any(|value|value==capability)}
+fn reconnect_policy(fixture:&Fixture,stream:SslStream<TcpStream>)->(SslStream<TcpStream>,Packet){assert_eq!(fixture.call("reconnect",json!({}))["ok"],true);drop(stream);wait(&fixture.socket,|state|device(state,fixture.phone.id())["connected"]==false);thread::sleep(Duration::from_millis(300));let(mut stream,identity)=fixture.connect();read(&mut stream);(stream,identity)}
+
+#[test] fn media_and_volume_tls_permissions_are_separate_lazy_and_rechecked_at_music_mutation(){
+ let music=Music::new();let fixture=Fixture::with_music(Some(&music.path));let(mut stream,identity)=fixture.connect();read(&mut stream);
+ for cap in ["kdeconnect.mpris.request","kdeconnect.systemvolume.request"]{assert!(!has(&identity,"incomingCapabilities",cap));}
+ let request=||service::packet("kdeconnect.mpris.request",json!({"player":"DES Music","requestNowPlaying":true}));send(&mut stream,request());wait(&fixture.socket,|state|device(state,fixture.phone.id())["error"].as_str().is_some_and(|error|error.contains("disabled")));assert_eq!(music.calls.load(Ordering::Acquire),0);
+ let enabled=fixture.call("set_media",json!({"enabled":true}));assert_eq!(enabled["ok"],true);assert_eq!(device(&enabled,fixture.phone.id())["media_reconnect_needed"],true);assert_eq!(device(&enabled,fixture.phone.id())["volume_enabled"],false);
+ send(&mut stream,request());wait(&fixture.socket,|state|device(state,fixture.phone.id())["error"].as_str().is_some_and(|error|error.contains("reconnect")));assert_eq!(music.calls.load(Ordering::Acquire),0);
+ let(mut stream,identity)=reconnect_policy(&fixture,stream);assert!(has(&identity,"incomingCapabilities","kdeconnect.mpris.request"));assert!(has(&identity,"outgoingCapabilities","kdeconnect.mpris"));assert!(!has(&identity,"incomingCapabilities","kdeconnect.systemvolume.request"));
+ send(&mut stream,request());let response=read(&mut stream);assert_eq!(response.kind,"kdeconnect.mpris");assert_eq!(response.body["title"],"Private fixture song");assert!(music.commands.lock().unwrap().is_empty());
+ send(&mut stream,service::packet("kdeconnect.systemvolume.request",json!({"name":"default-output","volume":101})));wait(&fixture.socket,|state|device(state,fixture.phone.id())["error"].as_str().is_some_and(|error|error.contains("disabled")));
+
+ let mut combined=request().encode().unwrap();combined.extend(service::packet("kdeconnect.mpris.request",json!({"player":"DES Music","action":"Next"})).encode().unwrap());stream.write_all(&combined).unwrap();assert_eq!(read(&mut stream).kind,"kdeconnect.mpris");assert_eq!(read(&mut stream).kind,"kdeconnect.mpris");assert!(music.commands.lock().unwrap().iter().any(|command|command["cmd"]=="next"));music.commands.lock().unwrap().clear();
+ *music.revoke.lock().unwrap()=Some(fixture.shell.locked.clone());send(&mut stream,service::packet("kdeconnect.mpris.request",json!({"player":"DES Music","action":"Pause"})));
+ let refused=wait(&fixture.socket,|state|device(state,fixture.phone.id())["error"].as_str().is_some_and(|error|error.contains("failed")||error.contains("locked")));assert!(music.commands.lock().unwrap().is_empty());assert!(!serde_json::to_string(&refused).unwrap().contains("Private fixture song"));assert_eq!(fixture.call("set_media",json!({"enabled":false}))["ok"],false);
+ fixture.shell.locked.store(false,Ordering::Release);assert_eq!(fixture.call("set_media",json!({"enabled":true}))["ok"],true);
+ *music.revoke.lock().unwrap()=Some(fixture.shell.locked.clone());send(&mut stream,request());let hidden=wait(&fixture.socket,|state|device(state,fixture.phone.id())["error"].as_str().is_some_and(|error|error.contains("locked")));assert!(!serde_json::to_string(&hidden).unwrap().contains("Private fixture song"));stream.get_ref().set_read_timeout(Some(Duration::from_millis(80))).unwrap();let mut byte=[0];assert!(matches!(stream.read(&mut byte),Err(error)if matches!(error.kind(),std::io::ErrorKind::TimedOut|std::io::ErrorKind::WouldBlock)));stream.get_ref().set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+ fixture.shell.locked.store(false,Ordering::Release);let changed=fixture.call("set_volume",json!({"enabled":true}));assert_eq!(changed["ok"],true);assert_eq!(device(&changed,fixture.phone.id())["media_enabled"],true);assert_eq!(device(&changed,fixture.phone.id())["volume_reconnect_needed"],true);
+ let(mut stream,identity)=reconnect_policy(&fixture,stream);assert!(has(&identity,"incomingCapabilities","kdeconnect.systemvolume.request"));assert!(has(&identity,"outgoingCapabilities","kdeconnect.systemvolume"));
+ // Invalid volume is rejected before any real wpctl subprocess can run.
+ send(&mut stream,service::packet("kdeconnect.systemvolume.request",json!({"name":"default-output","volume":101})));wait(&fixture.socket,|state|device(state,fixture.phone.id())["error"].as_str().is_some_and(|error|error.contains("failed")));
+ assert_eq!(fixture.call("set_media",json!({"enabled":false}))["ok"],true);let before=music.calls.load(Ordering::Acquire);send(&mut stream,request());wait(&fixture.socket,|state|device(state,fixture.phone.id())["error"].as_str().is_some_and(|error|error.contains("disabled")));assert_eq!(music.calls.load(Ordering::Acquire),before);
+ send(&mut stream,service::packet("kdeconnect.ping",json!({})));wait(&fixture.socket,|state|!device(state,fixture.phone.id())["last_ping"].is_null());
+}
+
+#[test] fn secure_media_capability_direction_and_offline_policy_do_not_authorize_an_unknown_peer(){
+ let music=Music::new();let fixture=Fixture::with_music(Some(&music.path));assert_eq!(fixture.call("set_media",json!({"enabled":true}))["ok"],true);assert_eq!(fixture.call("set_volume",json!({"enabled":true}))["ok"],true);
+ let unknown=Store::open(&fixture.temp.path().join("unknown-media")).unwrap();let(mut stranger,identity)=connect_with_caps(fixture.port,&unknown,&fixture.desktop,false,true,true);assert!(!has(&identity,"incomingCapabilities","kdeconnect.mpris.request"));assert!(!has(&identity,"incomingCapabilities","kdeconnect.systemvolume.request"));send(&mut stranger,service::packet("kdeconnect.mpris.request",json!({"player":"DES Music","action":"Pause"})));wait(&fixture.socket,|state|device(state,unknown.id())["error"].as_str().is_some_and(|error|error.contains("paired")));assert_eq!(music.calls.load(Ordering::Acquire),0);drop(stranger);thread::sleep(Duration::from_millis(350));
+ let(mut stream,_)=connect_with_caps(fixture.port,&fixture.phone,&fixture.desktop,false,false,false);read(&mut stream);send(&mut stream,service::packet("kdeconnect.mpris.request",json!({"player":"DES Music","action":"Pause"})));wait(&fixture.socket,|state|device(state,fixture.phone.id())["error"].as_str().is_some_and(|error|error.contains("capabilities")));assert_eq!(music.calls.load(Ordering::Acquire),0);assert!(music.commands.lock().unwrap().is_empty());
 }

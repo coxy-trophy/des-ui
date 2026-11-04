@@ -105,10 +105,10 @@ A preliminary daemon sample with two unpaired candidates measured11804KiB RSS,
 panel polling, lazy services, bounded caches and no capture while idle.
 
 File transfers are integrated with per-device permission and lock/loss cleanup.
-MPRIS/volume and other feature packet adapters remain library modules pending
-live permissions, daemon dispatch and panel forms. DES Music now has a tested
-private-socket adapter in that library. Remaining capabilities include manual
-clipboard/URLs, notification actions, opted-in calls/SMS/contacts, media controls,
+MPRIS, DES Music and system-volume control now have separate media/volume
+permissions, encrypted capability negotiation and guarded runtime dispatch. Other
+feature packet adapters still need runtime integration. Remaining capabilities include manual
+clipboard/URLs, notification actions, opted-in calls/SMS/contacts,
 remote input, command allowlists and production screen transports.
 Do not confuse unit-tested contracts with end-to-end Android functionality.
 No session restart is required for the daemon or Android update. Loading the new
@@ -139,3 +139,27 @@ The first physical file attempt exposed Android's reused-link callback updating
 capabilities without reloading actual plugins. Its source fix and regression APK
 are being verified separately; this checkpoint does not claim physical file
 transfer success. The prior successful physical mirror/ping checks still stand.
+
+## Media integration verification — 2026-11-04
+
+Separate default-off media and system-volume permissions are persisted per peer
+and exposed through one native device-permissions group. A single explicit
+reconnect applies changed capabilities while retaining trust. Lazy request
+adapters handle real MPRIS players, the existing private DES Music socket, and
+the default PipeWire output. No player is started and no media is exported while
+idle. Authorization is checked again after blocking preparation before every
+mutation, and before each TLS metadata reply.
+
+Fresh verification: 87 Rust tests passed; the ignored fake-MPRIS test passed
+separately on its disposable bus. All 23 CONNECT tests passed. Both native service
+and shell builds passed. Tests cover independent permissions, old-record
+migration, locked/disabled/capability-mismatched requests, coalesced request
+handling, revocation during lazy setup, and suppression of prepared metadata after
+lock. All audio mutations used disposable fake services.
+
+The machine restarted/interrupted since the previous test window; ADB currently
+shows no tablet. Physical file-transfer success and Android media interoperability
+remain unverified. The previously observed pairing, ping and USB mirror results
+are historical checks, not claims about the current session. The new Android
+callback regression fix is pending its final build/reinstallation and physical
+retry. No installed shell/compositor was restarted by this verification.

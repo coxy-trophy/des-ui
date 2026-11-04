@@ -3,19 +3,20 @@ use crate::{identity::{self,Store,Result},packet::{Identity,Packet,MAX_FRAME},pa
 use openssl::{ssl::{Ssl,SslContextBuilder,SslMethod,SslStream,SslVerifyMode,SslVersion},x509::X509};
 use serde::{Serialize,Deserialize};
 use serde_json::{json,Value};
-use std::{collections::{BTreeMap,HashMap},fs,io::{Read,Write},net::{TcpListener,TcpStream,UdpSocket,SocketAddr,IpAddr},os::unix::{net::{UnixListener,UnixStream},fs::{PermissionsExt,MetadataExt}},path::{Path,PathBuf},sync::{Arc,Mutex,mpsc::{self,SyncSender},atomic::{AtomicUsize,AtomicU64,AtomicBool,Ordering}},thread,time::{Duration,Instant,SystemTime,UNIX_EPOCH}};
+use std::{collections::{BTreeMap,HashMap,VecDeque},fs,io::{Read,Write},net::{TcpListener,TcpStream,UdpSocket,SocketAddr,IpAddr},os::unix::{net::{UnixListener,UnixStream},fs::{PermissionsExt,MetadataExt}},path::{Path,PathBuf},sync::{Arc,Mutex,mpsc::{self,SyncSender},atomic::{AtomicUsize,AtomicU64,AtomicBool,Ordering}},thread,time::{Duration,Instant,SystemTime,UNIX_EPOCH}};
 #[derive(Clone,Serialize,Deserialize,Debug)]
 pub struct Device {
  pub id:String,pub name:String,pub kind:String,pub connected:bool,pub paired:bool,pub pair_state:String,
  pub attempt:Option<u64>,pub verification_key:Option<String>,pub battery:Option<u8>,pub charging:bool,
  pub last_ping:Option<i64>,pub error:Option<String>,
  #[serde(default)] pub files_enabled:bool,#[serde(default)] pub files_reconnect_needed:bool,
+ #[serde(default)] pub media_enabled:bool,#[serde(default)] pub volume_enabled:bool,#[serde(default)] pub media_reconnect_needed:bool,#[serde(default)] pub volume_reconnect_needed:bool,
  #[serde(skip)] epoch:u64,
 }
-impl Device {fn offline(id:String,name:String,kind:String,files_enabled:bool)->Self {Self{id,name,kind,connected:false,paired:true,pair_state:"offline".into(),attempt:None,verification_key:None,battery:None,charging:false,last_ping:None,error:None,files_enabled,files_reconnect_needed:false,epoch:0}}}
+impl Device {fn offline(id:String,name:String,kind:String,files_enabled:bool,media_enabled:bool,volume_enabled:bool)->Self {Self{id,name,kind,connected:false,paired:true,pair_state:"offline".into(),attempt:None,verification_key:None,battery:None,charging:false,last_ping:None,error:None,files_enabled,files_reconnect_needed:false,media_enabled,volume_enabled,media_reconnect_needed:false,volume_reconnect_needed:false,epoch:0}}}
 #[derive(Clone,Deserialize,Serialize,Debug)]
 pub struct Request {pub op:String,#[serde(default)] pub device_id:Option<String>,#[serde(default)] pub attempt:Option<u64>,#[serde(flatten)]pub args:BTreeMap<String,Value>}
-struct Replacement {stream:SslStream<TcpStream>,identity:Identity,ip:AddressPermit,files_advertised:bool}
+struct Replacement {stream:SslStream<TcpStream>,identity:Identity,ip:AddressPermit,files_advertised:bool,media_advertised:bool,volume_advertised:bool}
 #[derive(Clone)]
 struct Route {epoch:u64,digest:[u8;32],commands:SyncSender<Job>,replacement:SyncSender<Replacement>}
 struct Job {op:String,attempt:Option<u64>,args:BTreeMap<String,Value>,reply:SyncSender<std::result::Result<(),String>>,client:UnixStream,expires_at:Instant}
@@ -34,14 +35,18 @@ impl Shared {
   json!({"id":self.id,"name":self.name,"tcp_port":self.port,"running":!self.stop.load(Ordering::Acquire),"devices":devices,"transfers":transfers,"screens":screens.status(),"screen_capabilities":screens.capabilities()})
  }
  fn paired(&self,id:&str)->bool {self.devices.lock().unwrap().get(id).is_some_and(|d|d.connected&&d.paired)&&self.store.lock().unwrap().peers.contains_key(id)}
- fn identity(&self)->Packet {self.identity_with_files(false)}
- fn identity_with_files(&self,files:bool)->Packet {let mut identity=packet("kdeconnect.identity",json!({"deviceId":self.id,"deviceName":self.name,"deviceType":"desktop","protocolVersion":8,"tcpPort":self.port,
+ fn identity(&self)->Packet {self.identity_with_policies(false,false,false)}
+ fn identity_with_policies(&self,files:bool,media:bool,volume:bool)->Packet {let mut identity=packet("kdeconnect.identity",json!({"deviceId":self.id,"deviceName":self.name,"deviceType":"desktop","protocolVersion":8,"tcpPort":self.port,
  "incomingCapabilities":["kdeconnect.ping","kdeconnect.battery"],"outgoingCapabilities":["kdeconnect.ping","kdeconnect.battery.request"]}));
-  if files {for key in ["incomingCapabilities","outgoingCapabilities"] {identity.body.get_mut(key).unwrap().as_array_mut().unwrap().push(json!("kdeconnect.share.request"));}}identity
+  if files {for key in ["incomingCapabilities","outgoingCapabilities"] {identity.body.get_mut(key).unwrap().as_array_mut().unwrap().push(json!("kdeconnect.share.request"));}}
+  for(enabled,request,reply)in[(media,"kdeconnect.mpris.request","kdeconnect.mpris"),(volume,"kdeconnect.systemvolume.request","kdeconnect.systemvolume")] {
+   if enabled{identity.body.get_mut("incomingCapabilities").unwrap().as_array_mut().unwrap().push(json!(request));identity.body.get_mut("outgoingCapabilities").unwrap().as_array_mut().unwrap().push(json!(reply));}
+  }identity
  }
- fn secure_identity(&self,id:&str,digest:[u8;32])->Result<(Packet,bool)> {
-  let store=self.store.lock().unwrap();let enabled=store.pin(id)?==Some(digest)&&store.peers.get(id).is_some_and(|peer|peer.files_enabled);
-  Ok((self.identity_with_files(enabled),enabled))
+ fn secure_identity(&self,id:&str,digest:[u8;32])->Result<(Packet,(bool,bool,bool))> {
+  let store=self.store.lock().unwrap();let trusted=store.pin(id)?==Some(digest);let peer=store.peers.get(id);
+  let files=trusted&&peer.is_some_and(|p|p.files_enabled);let media=trusted&&peer.is_some_and(|p|p.media_enabled);let volume=trusted&&peer.is_some_and(|p|p.volume_enabled);
+  Ok((self.identity_with_policies(files,media,volume),(files,media,volume)))
  }
  fn files_allowed(&self,id:&str)->bool {self.paired(id)&&self.store.lock().unwrap().peers.get(id).is_some_and(|peer|peer.files_enabled)}
  fn ensure_transfers(&self)->Result<()> {
@@ -84,7 +89,7 @@ fn tls_context(shared:&Shared,id:&str)->Result<openssl::ssl::SslContext> {
   verify.current_cert().is_some_and(|cert| identity::peer_digest(&cert.to_owned(),&expected).is_ok_and(|digest|pin.is_none_or(|known|known==digest)))
  });Ok(ctx.build())
 }
-fn handshake(shared:&Shared,mut tcp:TcpStream,claim:Option<Packet>)->Result<(SslStream<TcpStream>,Identity,X509,bool)> {
+fn handshake(shared:&Shared,mut tcp:TcpStream,claim:Option<Packet>)->Result<(SslStream<TcpStream>,Identity,X509,(bool,bool,bool))> {
  tcp.set_read_timeout(Some(Duration::from_secs(5)))?;tcp.set_write_timeout(Some(Duration::from_secs(3)))?;tcp.set_nodelay(true)?;
  let _deadline=HandshakeDeadline::new(&tcp)?;
  let client_mode=claim.is_none();
@@ -103,13 +108,14 @@ fn handshake(shared:&Shared,mut tcp:TcpStream,claim:Option<Packet>)->Result<(Ssl
  stream.get_ref().set_read_timeout(Some(Duration::from_millis(200)))?;
  Ok((stream,after,cert,files_advertised))
 }
-struct Actor {shared:Arc<Shared>,view:Device,stream:SslStream<TcpStream>,cert:X509,pair:Pairing,session:Session,started:Instant,timestamp:Option<i64>,write_failed:bool,public_attempt:Option<(Attempt,u64)>,unpaired_permit:Option<UnpairedPermit>,ip:AddressPermit,incoming_capabilities:Vec<String>,outgoing_capabilities:Vec<String>,files_advertised:bool,reconnect_requested:bool}
+struct Actor {shared:Arc<Shared>,view:Device,stream:SslStream<TcpStream>,cert:X509,pair:Pairing,session:Session,started:Instant,timestamp:Option<i64>,write_failed:bool,public_attempt:Option<(Attempt,u64)>,unpaired_permit:Option<UnpairedPermit>,ip:AddressPermit,incoming_capabilities:Vec<String>,outgoing_capabilities:Vec<String>,files_advertised:bool,media_advertised:bool,volume_advertised:bool,reconnect_requested:bool,media_dispatched:bool}
 impl Actor {
  fn send(&mut self,packet:Packet)->Result<()> {let result=write_packet(&mut self.stream,packet);if result.is_err(){self.write_failed=true;}result}
  fn now(&self)->u64 {self.started.elapsed().as_secs()}
  fn publish(&mut self) {
-  self.view.files_enabled=self.pair.authorized()&&self.shared.store.lock().unwrap().peers.get(&self.view.id).is_some_and(|peer|peer.files_enabled);
-  self.view.files_reconnect_needed=self.pair.authorized()&&self.view.files_enabled!=self.files_advertised;
+  let policy=self.shared.store.lock().unwrap().peers.get(&self.view.id).map(|peer|(peer.files_enabled,peer.media_enabled,peer.volume_enabled)).unwrap_or_default();
+  let authorized=self.pair.authorized();self.view.files_enabled=authorized&&policy.0;self.view.media_enabled=authorized&&policy.1;self.view.volume_enabled=authorized&&policy.2;
+  self.view.files_reconnect_needed=authorized&&self.view.files_enabled!=self.files_advertised;self.view.media_reconnect_needed=authorized&&self.view.media_enabled!=self.media_advertised;self.view.volume_reconnect_needed=authorized&&self.view.volume_enabled!=self.volume_advertised;
   self.view.paired=self.pair.authorized();self.view.pair_state=match self.pair.state(){State::Incoming=>"incoming",State::Outgoing=>"outgoing",State::Accepting=>"accepting",State::Paired=>"paired",State::Disconnected=>"offline",State::Unpaired=>"unpaired"}.into();
   let attempt=self.pair.pending();if self.public_attempt.map(|p|p.0)!=attempt {self.public_attempt=attempt.map(|a|(a,self.shared.next_approval.fetch_add(1,Ordering::Relaxed)));}
   self.view.attempt=self.public_attempt.map(|a|a.1);
@@ -130,11 +136,11 @@ impl Actor {
  fn pending(&self,id:Option<u64>)->Result<Attempt>{self.public_attempt.filter(|a|Some(a.1)==id&&self.pair.pending()==Some(a.0)).map(|a|a.0).ok_or_else(||"pairing request changed; refresh before accepting".into())}
  fn command(&mut self,job:&Job)->Result<()> {
   match job.op.as_str() {
-   "set_files"=>{
-    if !self.pair.authorized()||!session_unlocked(){return Err("file permission changes require a paired device and unlocked DES UI session".into());}
+   "set_files"|"set_media"|"set_volume"=>{
+    if !self.pair.authorized()||!session_unlocked(){return Err("permission changes require a paired device and unlocked DES UI session".into());}
     let enabled=job.args.get("enabled").and_then(Value::as_bool).ok_or("enabled must be a boolean")?;
-    self.shared.store.lock().unwrap().set_files_enabled(&self.view.id,enabled)?;
-    if !enabled{self.shared.cancel_peer_files(&self.view.id);}
+    {let mut store=self.shared.store.lock().unwrap();match job.op.as_str(){"set_files"=>store.set_files_enabled(&self.view.id,enabled)?,"set_media"=>store.set_media_enabled(&self.view.id,enabled)?,_=>store.set_volume_enabled(&self.view.id,enabled)?}}
+    if job.op=="set_files"&&!enabled{self.shared.cancel_peer_files(&self.view.id);}
    }
    "reconnect"=>{
     if !self.pair.authorized()||!session_unlocked(){return Err("reconnect requires a paired device and unlocked DES UI session".into());}
@@ -180,6 +186,7 @@ impl Actor {
  fn received(&mut self,np:Packet)->Result<()> {
   if np.payload_size.is_some(){
    if !self.pair.authorized(){return Ok(());}
+   if matches!(np.kind.as_str(),crate::media::MPRIS_REQUEST|crate::media::SYSTEM_VOLUME_REQUEST){self.view.error=Some("Media payloads are unsupported".into());self.publish();return Ok(());}
    if np.kind!="kdeconnect.share.request"{return Err("unsupported payload packet".into());}
    let result=(||->Result<()>{self.file_guard()?;
     if !self.outgoing_capabilities.iter().any(|cap|cap=="kdeconnect.share.request"){return Err("peer did not advertise sending files".into());}
@@ -199,6 +206,7 @@ impl Actor {
    }
    self.publish();return Ok(());
   }
+  if matches!(np.kind.as_str(),crate::media::MPRIS_REQUEST|crate::media::SYSTEM_VOLUME_REQUEST){return self.media_request(np);}
   if !self.pair.authorized(){return Ok(());}
   match np.kind.as_str(){
    "kdeconnect.share.request"=>{self.view.error=Some("URL/text sharing is not enabled; only file offers supported".into());}
@@ -207,6 +215,20 @@ impl Actor {
    _=>{},
   }self.publish();Ok(())
  }
+ fn media_request(&mut self,np:Packet)->Result<()> {
+  self.media_dispatched=true;
+  let kind=np.kind.as_str();let response=if kind==crate::media::MPRIS_REQUEST{"kdeconnect.mpris"}else{"kdeconnect.systemvolume"};
+  let advertised=if kind==crate::media::MPRIS_REQUEST{self.media_advertised}else{self.volume_advertised};
+  let pin=self.pair.pinned();let shared=self.shared.clone();let id=self.view.id.clone();
+  let capable=self.outgoing_capabilities.iter().any(|cap|cap==kind)&&self.incoming_capabilities.iter().any(|cap|cap==response);
+  let guard=||media_request_guard(&shared,&id,pin,kind,advertised,capable);
+  if let Err(error)=guard(){self.view.error=Some(error.to_string().chars().take(256).collect());self.publish();return Ok(());}
+  let mut adapter=crate::media::MediaAdapter::default();
+  let replies=adapter.handle_guarded(kind,&Value::Object(np.body.clone()),||guard().map_err(|e|crate::media::MediaError(e.to_string())));
+  let replies=match replies{Ok(replies)if replies.len()<=4=>replies,_=>{self.view.error=Some("Media request failed or is unsupported; no successful reply".into());self.publish();return Ok(());}};
+  for reply in replies{if let Err(error)=guard(){self.view.error=Some(error.to_string().chars().take(256).collect());self.publish();return Ok(());}self.send(packet(reply.kind,reply.body))?;}
+  self.view.error=None;self.publish();Ok(())
+ }
  fn replace(&mut self,replacement:Replacement)->Result<()> {
   // peer_worker only supplies replacements whose authenticated certificate
   // digest equals this route's pin. Routine same-link discovery refreshes must
@@ -214,39 +236,54 @@ impl Actor {
   let preserve=preserve_files_on_refresh(self.ip.ip,replacement.ip.ip,self.file_guard().is_ok(),replacement.files_advertised,
    (&self.incoming_capabilities,&self.outgoing_capabilities),(&replacement.identity.incoming_capabilities,&replacement.identity.outgoing_capabilities));
   if !preserve{self.shared.cancel_peer_files(&self.view.id);}
+  self.media_advertised=replacement.media_advertised;self.volume_advertised=replacement.volume_advertised;
   self.files_advertised=replacement.files_advertised;self.incoming_capabilities=replacement.identity.incoming_capabilities;self.outgoing_capabilities=replacement.identity.outgoing_capabilities;
   self.stream=replacement.stream;self.ip=replacement.ip;self.view.name=replacement.identity.name;self.view.kind=replacement.identity.device_type;self.write_failed=false;
   if self.pair.authorized(){self.send(packet("kdeconnect.battery.request",json!({"request":true})))?;}self.publish();Ok(())
  }
  fn run(&mut self,rx:mpsc::Receiver<Job>,replacements:mpsc::Receiver<Replacement>)->Result<()> {
   if self.pair.authorized(){self.send(packet("kdeconnect.battery.request",json!({"request":true})))?;}
-  let mut pending=Vec::new();let mut frame_start=None;let mut bytes=[0;4096];
+  let mut pending=Vec::new();let mut frame_start=None;let mut bytes=[0;4096];let mut carry=VecDeque::new();
   loop {
    if self.shared.stop.load(Ordering::Acquire){return Ok(());}
-   if let Ok(replacement)=replacements.try_recv(){self.replace(replacement)?;pending.clear();frame_start=None;}
+   if let Ok(replacement)=replacements.try_recv(){self.replace(replacement)?;pending.clear();carry.clear();frame_start=None;}
    if self.pair.authorized(){self.unpaired_permit=None;}else{
     let limit=bounded_duration("DES_CONNECT_UNPAIRED_MS",90_000);let elapsed=self.started.elapsed();
     if elapsed>limit&&(self.pair.state()==State::Unpaired||elapsed>limit+Duration::from_secs(30)){return Err("unpaired session expired; discover again".into());}
     if self.unpaired_permit.is_none(){self.unpaired_permit=Some(UnpairedPermit::new(self.shared.clone())?);}
    }
    let state=self.pair.state();self.pair.expire(self.session,self.now());if state!=self.pair.state(){self.publish();}
-   for _ in 0..8 {let Ok(job)=rx.try_recv()else{break};let result=self.command(&job).map_err(|e|e.to_string());if let Err(e)=&result{self.view.error=Some(e.clone());self.publish();}let _=job.reply.try_send(result);if self.reconnect_requested{return Ok(()); }if self.write_failed{if let Ok(replacement)=replacements.recv_timeout(Duration::from_millis(300)){self.replace(replacement)?;pending.clear();frame_start=None;}else{return Err("TLS write failed".into());}}}
-   match self.stream.read(&mut bytes){
-    Ok(0)=>{if let Ok(replacement)=replacements.recv_timeout(Duration::from_millis(300)){self.replace(replacement)?;pending.clear();frame_start=None;continue;}return Err("device disconnected".into());},
+   for _ in 0..8 {let Ok(job)=rx.try_recv()else{break};let result=self.command(&job).map_err(|e|e.to_string());if let Err(e)=&result{self.view.error=Some(e.clone());self.publish();}let _=job.reply.try_send(result);if self.reconnect_requested{return Ok(()); }if self.write_failed{if let Ok(replacement)=replacements.recv_timeout(Duration::from_millis(300)){self.replace(replacement)?;pending.clear();carry.clear();frame_start=None;}else{return Err("TLS write failed".into());}}}
+   self.media_dispatched=false;
+   // Yield to local commands after each potentially blocking media request.
+   // Keep at most one existing 4KiB read of raw bytes; do not drop coalesced
+   // player/volume requests or read more network data while that carry remains.
+   let read=if carry.is_empty(){self.stream.read(&mut bytes)}else{let n=carry.len().min(bytes.len());for slot in &mut bytes[..n]{*slot=carry.pop_front().unwrap();}Ok(n)};
+   match read{
+    Ok(0)=>{if let Ok(replacement)=replacements.recv_timeout(Duration::from_millis(300)){self.replace(replacement)?;pending.clear();carry.clear();frame_start=None;continue;}return Err("device disconnected".into());},
     Ok(n)=>{
-     for b in &bytes[..n] {
+     for (offset,b) in bytes[..n].iter().enumerate() {
       if frame_start.is_none(){frame_start=Some(Instant::now());}
       pending.push(*b);if pending.len()>MAX_FRAME{return Err("packet frame too large".into());}
-      if *b==b'\n'{let np=decode(&pending)?;pending.clear();frame_start=None;self.received(np)?;}
+      if *b==b'\n'{let np=decode(&pending)?;pending.clear();frame_start=None;self.received(np)?;if self.media_dispatched{carry.extend(bytes[offset+1..n].iter().copied());break;}}
      }
     }
     Err(e)if matches!(e.kind(),std::io::ErrorKind::WouldBlock|std::io::ErrorKind::TimedOut)=>{},
-    Err(e)=>{if let Ok(replacement)=replacements.recv_timeout(Duration::from_millis(300)){self.replace(replacement)?;pending.clear();frame_start=None;continue;}return Err(e.into());},
+    Err(e)=>{if let Ok(replacement)=replacements.recv_timeout(Duration::from_millis(300)){self.replace(replacement)?;pending.clear();carry.clear();frame_start=None;continue;}return Err(e.into());},
    }
    if frame_start.is_some_and(|at:Instant|at.elapsed()>Duration::from_secs(5)){return Err("partial packet timed out".into());}
   }
  }
 }
+fn media_request_guard(shared:&Shared,id:&str,pin:Option<[u8;32]>,kind:&str,advertised:bool,capable:bool)->Result<()> {
+ if shared.stop.load(Ordering::Acquire)||!shared.paired(id){return Err("media request refused: device must be paired and connected".into());}
+ let enabled={let store=shared.store.lock().unwrap();if pin.is_none()||store.pin(id)?!=pin{return Err("media request refused: paired certificate changed".into());}store.peers.get(id).is_some_and(|peer|if kind==crate::media::MPRIS_REQUEST{peer.media_enabled}else{peer.volume_enabled})};
+ if !enabled{return Err("media request refused: this permission is disabled".into());}
+ if !advertised{return Err("media request refused: reconnect to apply permission".into());}
+ if !capable{return Err("media request refused: peer lacks secure request/reply capabilities".into());}
+ if !session_unlocked(){return Err("media request refused: session is locked or unavailable".into());}Ok(())
+}
+
 fn preserve_files_on_refresh(old_ip:IpAddr,new_ip:IpAddr,current_authorized:bool,new_advertised:bool,
  old_caps:(&[String],&[String]),new_caps:(&[String],&[String]))->bool {
  let share=|caps:(&[String],&[String])|(caps.0.iter().any(|cap|cap=="kdeconnect.share.request"),caps.1.iter().any(|cap|cap=="kdeconnect.share.request"));
@@ -255,25 +292,25 @@ fn preserve_files_on_refresh(old_ip:IpAddr,new_ip:IpAddr,current_authorized:bool
 }
 
 fn peer_worker(shared:Arc<Shared>,tcp:TcpStream,claim:Option<Packet>){
- let result=(||->Result<()>{let ip=AddressPermit::new(shared.clone(),tcp.peer_addr()?.ip())?;let (mut stream,mut id,cert,mut files_advertised)=handshake(&shared,tcp,claim)?;
+ let result=(||->Result<()>{let ip=AddressPermit::new(shared.clone(),tcp.peer_addr()?.ip())?;let (mut stream,mut id,cert,(mut files_advertised,mut media_advertised,mut volume_advertised))=handshake(&shared,tcp,claim)?;
   let digest=identity::peer_digest(&cert,&id.device_id)?;let pin=shared.store.lock().unwrap().pin(&id.device_id)?;
   let mut ip=Some(ip);
   let existing=shared.routes.lock().unwrap().get(&id.device_id).cloned();
   if let Some(route)=existing {
    if route.digest!=digest{return Err("active device certificate changed".into());}
-   match route.replacement.try_send(Replacement{stream,identity:id,ip:ip.take().unwrap(),files_advertised}){
+   match route.replacement.try_send(Replacement{stream,identity:id,ip:ip.take().unwrap(),files_advertised,media_advertised,volume_advertised}){
     Ok(())=>return Ok(()),
     Err(mpsc::TrySendError::Full(_))=>return Err("device reconnect already pending".into()),
-    Err(mpsc::TrySendError::Disconnected(replacement))=>{stream=replacement.stream;id=replacement.identity;ip=Some(replacement.ip);files_advertised=replacement.files_advertised;let mut routes=shared.routes.lock().unwrap();if routes.get(&id.device_id).is_some_and(|r|r.epoch==route.epoch){routes.remove(&id.device_id);}}
+    Err(mpsc::TrySendError::Disconnected(replacement))=>{stream=replacement.stream;id=replacement.identity;ip=Some(replacement.ip);files_advertised=replacement.files_advertised;media_advertised=replacement.media_advertised;volume_advertised=replacement.volume_advertised;let mut routes=shared.routes.lock().unwrap();if routes.get(&id.device_id).is_some_and(|r|r.epoch==route.epoch){routes.remove(&id.device_id);}}
    }
   }
   let mut pair=Pairing::from_pin(pin);let session=pair.connected(digest)?;
   let epoch=shared.next.fetch_add(1,Ordering::Relaxed);let (tx,rx)=mpsc::sync_channel(8);let (replacement_tx,replacement_rx)=mpsc::sync_channel(1);
   {let mut routes=shared.routes.lock().unwrap();if routes.contains_key(&id.device_id){return Err("simultaneous device connection".into());}routes.insert(id.device_id.clone(),Route{epoch,digest,commands:tx,replacement:replacement_tx});}
-  let view=Device{id:id.device_id.clone(),name:id.name,kind:id.device_type,connected:true,paired:pair.authorized(),pair_state:"unpaired".into(),attempt:None,verification_key:None,battery:None,charging:false,last_ping:None,error:None,files_enabled:false,files_reconnect_needed:false,epoch};
-  let mut actor=Actor{shared:shared.clone(),view,stream,cert,pair,session,started:Instant::now(),timestamp:None,write_failed:false,public_attempt:None,unpaired_permit:None,ip:ip.unwrap(),incoming_capabilities:id.incoming_capabilities,outgoing_capabilities:id.outgoing_capabilities,files_advertised,reconnect_requested:false};actor.publish();
+  let view=Device{id:id.device_id.clone(),name:id.name,kind:id.device_type,connected:true,paired:pair.authorized(),pair_state:"unpaired".into(),attempt:None,verification_key:None,battery:None,charging:false,last_ping:None,error:None,files_enabled:false,files_reconnect_needed:false,media_enabled:false,volume_enabled:false,media_reconnect_needed:false,volume_reconnect_needed:false,epoch};
+  let mut actor=Actor{shared:shared.clone(),view,stream,cert,pair,session,started:Instant::now(),timestamp:None,write_failed:false,public_attempt:None,unpaired_permit:None,ip:ip.unwrap(),incoming_capabilities:id.incoming_capabilities,outgoing_capabilities:id.outgoing_capabilities,files_advertised,media_advertised,volume_advertised,reconnect_requested:false,media_dispatched:false};actor.publish();
   let result=actor.run(rx,replacement_rx);let _=actor.stream.get_ref().shutdown(std::net::Shutdown::Both);shared.cancel_peer_files(&id.device_id);actor.pair.disconnected(session);
-  let mut routes=shared.routes.lock().unwrap();if routes.get(&id.device_id).is_some_and(|r|r.epoch==epoch){routes.remove(&id.device_id);actor.view.connected=false;actor.view.paired=shared.store.lock().unwrap().peers.contains_key(&id.device_id);actor.view.pair_state="offline".into();actor.view.files_reconnect_needed=false;actor.view.attempt=None;actor.view.verification_key=None;actor.view.error=result.as_ref().err().map(ToString::to_string);if actor.view.paired{shared.update(actor.view.clone());}else{shared.devices.lock().unwrap().remove(&id.device_id);}}
+  let mut routes=shared.routes.lock().unwrap();if routes.get(&id.device_id).is_some_and(|r|r.epoch==epoch){routes.remove(&id.device_id);actor.view.connected=false;actor.view.paired=shared.store.lock().unwrap().peers.contains_key(&id.device_id);actor.view.pair_state="offline".into();actor.view.files_reconnect_needed=false;actor.view.media_reconnect_needed=false;actor.view.volume_reconnect_needed=false;actor.view.attempt=None;actor.view.verification_key=None;actor.view.error=result.as_ref().err().map(ToString::to_string);if actor.view.paired{shared.update(actor.view.clone());}else{shared.devices.lock().unwrap().remove(&id.device_id);}}
   result
  })();if let Err(e)=result{eprintln!("DES Connect session: {e}");}shared.active.fetch_sub(1,Ordering::Release);
 }
@@ -304,17 +341,17 @@ fn handle_ipc(shared:&Arc<Shared>,request:Request,udp:&UdpSocket,client:&UnixStr
     if let Some(peer)=request.device_id.as_deref(){if !manager.snapshots().iter().any(|view|view.id==id&&view.peer_id==peer){return Err("transfer does not belong to this device".into());}}
     manager.cancel(id)?;
    }
-   "set_files" if !shared.routes.lock().unwrap().contains_key(request.device_id.as_deref().unwrap_or(""))=>{
-    if !session_unlocked(){return Err("file permission changes require an unlocked DES UI session".into());}
+   "set_files"|"set_media"|"set_volume" if !shared.routes.lock().unwrap().contains_key(request.device_id.as_deref().unwrap_or(""))=>{
+    if !session_unlocked(){return Err("permission changes require an unlocked DES UI session".into());}
     let id=request.device_id.as_deref().ok_or("device_id required")?;
     let enabled=request.args.get("enabled").and_then(Value::as_bool).ok_or("enabled must be a boolean")?;
-    shared.store.lock().unwrap().set_files_enabled(id,enabled)?;
-    if !enabled{shared.cancel_peer_files(id);}
-    if let Some(view)=shared.devices.lock().unwrap().get_mut(id){view.files_enabled=enabled;view.files_reconnect_needed=false;}
+    {let mut store=shared.store.lock().unwrap();match request.op.as_str(){"set_files"=>store.set_files_enabled(id,enabled)?,"set_media"=>store.set_media_enabled(id,enabled)?,_=>store.set_volume_enabled(id,enabled)?}}
+    if request.op=="set_files"&&!enabled{shared.cancel_peer_files(id);}
+    if let Some(view)=shared.devices.lock().unwrap().get_mut(id){match request.op.as_str(){"set_files"=>{view.files_enabled=enabled;view.files_reconnect_needed=false;},"set_media"=>{view.media_enabled=enabled;view.media_reconnect_needed=false;},_=>{view.volume_enabled=enabled;view.volume_reconnect_needed=false;}}}
    }
    "discover"=>{udp.send_to(&shared.identity().encode()?,"255.255.255.255:1716")?;}
    "unpair" if !shared.routes.lock().unwrap().contains_key(request.device_id.as_deref().unwrap_or(""))=>{let id=request.device_id.as_deref().ok_or("device_id required")?;shared.cancel_peer_files(id);shared.store.lock().unwrap().forget(id)?;shared.devices.lock().unwrap().remove(id);}
-   "pair"|"accept"|"reject"|"unpair"|"ping"|"set_files"|"reconnect"|"send_file"|"accept_transfer"=>{
+   "pair"|"accept"|"reject"|"unpair"|"ping"|"set_files"|"set_media"|"set_volume"|"reconnect"|"send_file"|"accept_transfer"=>{
     let id=request.device_id.as_deref().ok_or("device_id required")?;
     let route=shared.routes.lock().unwrap().get(id).cloned().ok_or("device is not connected")?;let tx=route.commands;
     let reconnect=request.op=="reconnect";
@@ -342,7 +379,7 @@ pub fn run_options(socket:&Path,state:&Path,name:&str,loopback:bool)->Result<()>
  let ipc=UnixListener::bind(socket)?;fs::set_permissions(socket,fs::Permissions::from_mode(0o600))?;let _guard=SocketGuard{path:socket.into(),ino:fs::symlink_metadata(socket)?.ino()};ipc.set_nonblocking(true)?;
  let tcp=if loopback{TcpListener::bind(("127.0.0.1",0))?}else{(1716..=1764).find_map(|port|TcpListener::bind(("0.0.0.0",port)).ok()).ok_or("no available KDE Connect TCP port")?};tcp.set_nonblocking(true)?;let port=tcp.local_addr()?.port();
  let udp=UdpSocket::bind(if loopback{("127.0.0.1",0)}else{("0.0.0.0",1716)})?;udp.set_broadcast(true)?;udp.set_nonblocking(true)?;
- let devices=store.peers.iter().map(|(id,p)|(id.clone(),Device::offline(id.clone(),p.name.clone(),p.kind.clone(),p.files_enabled))).collect();
+ let devices=store.peers.iter().map(|(id,p)|(id.clone(),Device::offline(id.clone(),p.name.clone(),p.kind.clone(),p.files_enabled,p.media_enabled,p.volume_enabled))).collect();
  let mut random=[0;8];openssl::rand::rand_bytes(&mut random)?;let approval_seed=u64::from_be_bytes(random)&(u64::MAX>>1);
  let shared=Arc::new(Shared{id:store.id().into(),store:Mutex::new(store),ips:Mutex::new(Default::default()),devices:Mutex::new(devices),routes:Mutex::new(Default::default()),screens:Mutex::new(crate::screens::ScreenBridge::new()),screen_peer:Mutex::new(None),transfers:Mutex::new(None),loopback,stop:AtomicBool::new(false),next:AtomicU64::new(1),next_approval:AtomicU64::new(approval_seed),unpaired:AtomicUsize::new(0),active:AtomicUsize::new(0),ipc_active:AtomicUsize::new(0),name:name.into(),port});
  eprintln!("DES Connect listening on private control socket and LAN TCP {port}");
@@ -441,6 +478,7 @@ fn control_alive(client:&UnixStream)->bool {
   let share=vec!["kdeconnect.share.request".into()];let core=vec!["kdeconnect.ping".into()];
   let allowed=(&share[..],&share[..]);let revoked=(&core[..],&share[..]);
   assert!(preserve_files_on_refresh(a,a,true,true,allowed,allowed));
+  let unrelated=vec!["kdeconnect.share.request".into(),"kdeconnect.mpris.request".into()];assert!(preserve_files_on_refresh(a,a,true,true,allowed,(&unrelated,&share)));
   assert!(!preserve_files_on_refresh(a,b,true,true,allowed,allowed));
   assert!(!preserve_files_on_refresh(a,a,false,true,allowed,allowed));
   assert!(!preserve_files_on_refresh(a,a,true,false,allowed,allowed));
@@ -461,7 +499,7 @@ fn control_alive(client:&UnixStream)->bool {
   use std::process::{Command,Stdio};
   if let Some(base)=std::env::var_os("DES_CONNECT_WATCHDOG_FIXTURE"){
    let base=PathBuf::from(base);let peer=Store::open(&base.join("peer")).unwrap();let mut store=Store::open(&base.join("local")).unwrap();store.remember(peer.id(),"Fixture","phone",&peer.certificate).unwrap();
-   let mut device=Device::offline(peer.id().into(),"Fixture".into(),"phone".into(),false);device.connected=true;
+   let mut device=Device::offline(peer.id().into(),"Fixture".into(),"phone".into(),false,false,false);device.connected=true;
    let listener=UnixListener::bind(base.join("shell.sock")).unwrap();
    let shell=thread::spawn(move||{let(mut stream,_)=listener.accept().unwrap();let mut bytes=[0;6];stream.read_exact(&mut bytes).unwrap();stream.write_all(b"ok {\"locked\":true}\n").unwrap();});
    let mut screens=crate::screens::ScreenBridge::new();screens.start_phone_guarded("TEST",false,||Ok(())).unwrap();

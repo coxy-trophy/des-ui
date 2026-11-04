@@ -54,17 +54,17 @@ requires explicit acceptance. See TRANSFERS.md for limits and filesystem caveats
 The installer includes the service, CLI and viewer helper, without enabling
 autostart.
 
-The following adapters are compiled and tested but **not dispatched by the live
-service or exposed as working panel controls yet**:
+Media controls and system volume have independent default-off per-device
+permissions in CONNECT. After enabling one, reconnect the phone to apply its
+encrypted capability list. Android then controls actual MPRIS players, the running
+DES Music service, or the default PipeWire output. The adapter opens services only
+on request, checks live policy before mutations and replies, and starts no player.
+See MEDIA.md for supported operations and limits.
 
-- media.rs: lazy MPRIS, a bounded private-socket DES Music bridge and default-sink
-  volume control. No player is started or polled in the background.
-- features.rs: default-disabled bounded URL, clipboard, notification, calls, SMS
-  and contacts packet contracts. It never sends, opens or imports anything itself.
-
-Their integration contracts are documented in TRANSFERS.md, MEDIA.md and
-FEATURES.md. Input, command allowlists, physical-desktop mirroring, wireless video
-and a release installer are still outstanding. Do not advertise unsupported
+`features.rs` contains tested default-disabled URL, clipboard, notification, calls,
+SMS and contacts packet contracts, but their runtime dispatch and panel controls
+remain unfinished. Input, command allowlists, physical-desktop mirroring, wireless
+video and release packaging also remain outstanding. Do not advertise unsupported
 capabilities before their runtime permission/lock checks and UI exist.
 
 ## Verification

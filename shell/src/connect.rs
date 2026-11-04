@@ -26,13 +26,30 @@ struct Device {
     error: Option<String>,
     files_enabled: bool,
     files_reconnect_needed: bool,
+    media_enabled: bool,
+    volume_enabled: bool,
+    media_reconnect_needed: bool,
+    volume_reconnect_needed: bool,
 }
 
 impl Device {
+    fn permissions_reconnect_needed(&self) -> bool { self.files_reconnect_needed || self.media_reconnect_needed || self.volume_reconnect_needed }
     fn files_ready(&self) -> bool { self.paired && self.connected && self.files_enabled && !self.files_reconnect_needed }
     fn verification_code(&self) -> Option<&str> {
         self.verification_key.as_deref().filter(|code| code.len() == 8 && code.bytes().all(|c| c.is_ascii_hexdigit()))
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DevicePermission { Files, Media, Volume }
+impl DevicePermission {
+    const ALL: [Self; 3] = [Self::Files, Self::Media, Self::Volume];
+    fn op(self) -> &'static str { match self { Self::Files => "set_files", Self::Media => "set_media", Self::Volume => "set_volume" } }
+    fn label(self) -> &'static str { match self { Self::Files => "File sharing", Self::Media => "Media controls", Self::Volume => "System volume" } }
+    fn description(self) -> &'static str {
+        match self { Self::Files => "Allow file sends and incoming offers.", Self::Media => "Let this phone control desktop players.", Self::Volume => "Let this phone adjust desktop output volume." }
+    }
+    fn enabled(self, device: &Device) -> bool { match self { Self::Files => device.files_enabled, Self::Media => device.media_enabled, Self::Volume => device.volume_enabled } }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -122,8 +139,8 @@ impl Request {
         }
         request
     }
-    fn files_policy(device: &Device, enabled: bool) -> Self {
-        let mut request = Self::device("set_files", device);
+    fn permission(device: &Device, permission: DevicePermission, enabled: bool) -> Self {
+        let mut request = Self::device(permission.op(), device);
         request.args.insert("enabled".into(), serde_json::json!(enabled));
         request
     }
@@ -151,6 +168,8 @@ impl Request {
             "stop_screen" => "Screen sharing stopped.",
             "stop" => "DES Connect stopped.",
             "set_files" => "File sharing setting saved. It applies on the next phone connection.",
+            "set_media" => "Media control permission saved. It applies on the next phone connection.",
+            "set_volume" => "System volume permission saved. It applies on the next phone connection.",
             "reconnect" => "Reconnect requested. Waiting for the phone to connect again.",
             "send_file" => "File send requested. Check transfer progress.",
             "accept_transfer" => "Incoming file accepted. Check transfer progress.",
@@ -367,23 +386,33 @@ impl Connect {
         ui.add_space(ui::SPACE);
     }
 
-    fn file_controls(&mut self, ui: &mut egui::Ui, theme: &Theme, device: &Device, busy: bool) {
-        ui.add_space(4.0);
+    fn permissions_controls(&mut self, ui: &mut egui::Ui, theme: &Theme, device: &Device, busy: bool) {
+        ui.add_space(ui::SPACE);
+        ui::section(ui, "DEVICE PERMISSIONS", |_| {});
         ui.add_enabled_ui(!busy, |ui| {
-            if crate::settings::switch_row(ui, theme, "File sharing", "Allow file sends and incoming offers.", device.files_enabled) {
-                self.confirm_send = None;
-                self.request(ui.ctx(), Request::files_policy(device, !device.files_enabled), false);
+            for permission in DevicePermission::ALL {
+                ui.push_id(permission.op(), |ui| {
+                    if crate::settings::switch_row(ui, theme, permission.label(), permission.description(), permission.enabled(device)) {
+                        self.confirm_send = None;
+                        self.request(ui.ctx(), Request::permission(device, permission, !permission.enabled(device)), false);
+                    }
+                });
             }
         });
-        if device.files_reconnect_needed {
-            copy(ui, "Reconnect the phone to apply this setting. Turn its connection off and on, or reopen DES Connect on Android.", ui::SECONDARY);
+        if device.permissions_reconnect_needed() {
+            copy(ui, "Reconnect the phone to apply permission changes. Turn its connection off and on, or reopen DES Connect on Android.", ui::SECONDARY);
             ui.add_enabled_ui(!busy && device.connected, |ui| {
                 if ui::button(ui, theme, "Reconnect to apply", None, false).clicked() {
                     self.confirm_send = None;
                     self.request(ui.ctx(), Request::device("reconnect", device), false);
                 }
             });
+        } else if !device.connected {
+            copy(ui, "Permissions apply when this phone connects again.", ui::SECONDARY);
         }
+    }
+
+    fn file_controls(&mut self, ui: &mut egui::Ui, theme: &Theme, device: &Device, busy: bool) {
         if !device.files_enabled { return; }
         if !device.files_ready() {
             if !device.connected { copy(ui, "Connect this device to send or accept files.", ui::SECONDARY); }
@@ -541,7 +570,10 @@ impl Connect {
                             });
                         }
                     });
-                    if device.paired { self.file_controls(ui, theme, device, busy); }
+                    if device.paired {
+                        self.permissions_controls(ui, theme, device, busy);
+                        self.file_controls(ui, theme, device, busy);
+                    }
                     if device.paired && device.connected {
                         if let Some(capabilities) = &snapshot.screen_capabilities {
                             if capabilities.phone_mirror || capabilities.extended_output {
@@ -637,7 +669,7 @@ mod tests {
     #[test]
     fn file_requests_bind_peer_and_transfer_ids_and_preserve_literal_absolute_path() {
         let device = Device { id: "paired-phone".into(), ..Default::default() };
-        let policy = serde_json::to_value(Request::files_policy(&device, true)).unwrap();
+        let policy = serde_json::to_value(Request::permission(&device, DevicePermission::Files, true)).unwrap();
         assert_eq!(policy["op"], "set_files"); assert_eq!(policy["device_id"], "paired-phone"); assert_eq!(policy["enabled"], true);
         let draft = FileDraft { device_id: device.id.clone(), device_name: "Phone".into(), path: "/home/test/Literal $(data); file.txt".into() };
         let send = serde_json::to_value(Request::send_file(&draft)).unwrap();
@@ -685,6 +717,41 @@ mod tests {
         for state in ["complete", "failed", "cancelled", "expired", "future"] {
             let transfer = Transfer { id:"id".into(), direction:"receive".into(), state:state.into(), ..Default::default() };
             assert!(!transfer.cancellable() && !transfer.incoming_offer());
+        }
+    }
+    #[test]
+    fn media_and_volume_permissions_default_off_and_use_separate_rpc_names() {
+        let device: Device = serde_json::from_str(r#"{"id":"phone","paired":true,"connected":true,"future":true}"#).unwrap();
+        assert!(!device.media_enabled && !device.volume_enabled && !device.permissions_reconnect_needed());
+        for (permission, op) in [(DevicePermission::Media,"set_media"),(DevicePermission::Volume,"set_volume")] {
+            let request=serde_json::to_value(Request::permission(&device,permission,true)).unwrap();
+            assert_eq!(request["op"],op); assert_eq!(request["device_id"],"phone"); assert_eq!(request["enabled"],true);
+        }
+        let device=Device { paired:true, connected:true, files_enabled:true, media_reconnect_needed:true, volume_reconnect_needed:true, ..Default::default() };
+        assert!(device.permissions_reconnect_needed());
+        assert!(device.files_ready(),"unrelated media permission changes must preserve applied file policy");
+    }
+    #[test]
+    fn grouped_permissions_fit_narrow_width_and_offer_one_reconnect_for_all_changes() {
+        fn reconnect_labels(shape: &egui::Shape) -> usize {
+            match shape {
+                egui::Shape::Text(text) => usize::from(text.galley.job.text == "Reconnect to apply"),
+                egui::Shape::Vec(shapes) => shapes.iter().map(reconnect_labels).sum(),
+                _ => 0,
+            }
+        }
+        let ctx=egui::Context::default(); ui::install_fonts(&ctx,None,None);
+        let theme=Theme::load("signal"); crate::apply_style(&ctx,&theme);
+        let device=Device { id:"phone".into(), paired:true, connected:true, files_reconnect_needed:true, media_reconnect_needed:true, volume_reconnect_needed:true, ..Default::default() };
+        let mut connect=Connect::default();
+        for _ in 0..3 {
+            let output=ctx.run(egui::RawInput { screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(220.0,600.0))), ..Default::default() },|ctx| {
+                egui::CentralPanel::default().show(ctx,|ui| {
+                    connect.permissions_controls(ui,&theme,&device,false);
+                    assert!(ui.min_rect().right()<=220.0); assert!(ui.min_rect().bottom()<=600.0);
+                });
+            });
+            assert_eq!(output.shapes.iter().map(|shape|reconnect_labels(&shape.shape)).sum::<usize>(),1);
         }
     }
     #[test]
@@ -876,6 +943,15 @@ mod tests {
                     Transfer { id:"failed".into(), peer_id:device.id.clone(), direction:"send".into(), filename:"Earlier transfer.txt".into(), size:1024, state:"failed".into(), error:Some("The phone disconnected. Select the file again to retry.".into()), ..Default::default() },
                 ];
             }
+        }
+        if mode == "media-policy" {
+            let snapshot = connect.snapshot.as_mut().unwrap();
+            snapshot.devices.retain(|device| device.paired && device.connected);
+            let device = &mut snapshot.devices[0];
+            device.media_enabled = true;
+            device.volume_enabled = true;
+            device.media_reconnect_needed = true;
+            device.volume_reconnect_needed = true;
         }
         if mode == "live" {
             connect.snapshot = None;

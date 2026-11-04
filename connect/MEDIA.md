@@ -2,7 +2,8 @@
 
 `MediaAdapter::default()` is zero-I/O and holds no connection, worker, or timer.
 After pairing authentication and separate per-feature opt-in checks, call
-`handle(kind, &body)` and send its `MediaReply` values to the same peer. An
+`handle_guarded(kind, &body, live_policy_guard)` and send its `MediaReply` values
+to the same peer only after another policy check. An
 adapter error is local diagnostic information, not a successful protocol reply.
 Do not call this module for unauthenticated discovery or disabled features.
 
@@ -123,3 +124,73 @@ and oversized state, stalled peers, endpoint permissions, and invalid volume or
 metadata. The private D-Bus test also verifies that the synthetic list entry is
 absent for a missing socket and present only for its fake responding service.
 Tests never connect to the real music socket or control desktop playback.
+
+## Integrated daemon permissions and transport
+
+The native daemon persists two independent per-peer permissions:
+`media_enabled` and `volume_enabled`, both defaulting to false for existing
+records. Updating either preserves the certificate pin, file permission and the
+other media permission; remembering a peer again also preserves all three.
+Media permission covers player listing, metadata, playback and the player's own
+volume. System-volume permission separately controls the desktop's default output.
+
+Private IPC uses `set_media {device_id, enabled:boolean}` and
+`set_volume {device_id, enabled:boolean}`. Both require an unlocked session and a
+trusted paired peer. A trusted offline peer can be updated for its next connection.
+Device snapshots expose these booleans plus `media_reconnect_needed` and
+`volume_reconnect_needed`. Changes to an existing connection's advertised policy
+use the existing explicit `reconnect {device_id}` action; it preserves pairing and
+requests a single new connection rather than replaying any old media request.
+
+Public discovery/plaintext identities retain the core-only capability list.
+Only an encrypted identity for the opted-in, currently pinned peer includes:
+
+| Permission | Incoming request | Outgoing response |
+| --- | --- | --- |
+| Media | `kdeconnect.mpris.request` | `kdeconnect.mpris` |
+| System volume | `kdeconnect.systemvolume.request` | `kdeconnect.systemvolume` |
+
+The actor retains the peer's secure capability lists and its own actual advertised
+policy across socket replacement. The peer must advertise the matching outgoing
+request and incoming reply types. A media permission or capability change does not
+invalidate an otherwise unchanged, authorized file-transfer link.
+
+Every incoming media request verifies current paired/connected state, the current
+stored certificate pin, its specific saved and advertised permission, both secure
+capability directions and current desktop lock status. Disabled, locked or
+unsupported requests retain the control connection and publish a bounded local
+device error. Adapter errors use a generic bounded message rather than caching
+private request or player content. Media payload transfer is unsupported.
+
+`MediaAdapter::handle_guarded(kind, body, guard)` rechecks the live authorization
+callback after lazy preparation and immediately before **each** actual mutation:
+MPRIS property/method writes, DES Music control writes and `wpctl` setter execution.
+The compatibility `handle` entrypoint supplies an always-allow guard for callers
+that already own policy; the daemon uses the guarded entrypoint. A permission or
+lock check only before opening a bus/socket is insufficient. The daemon also
+rechecks the same policy immediately before each TLS response, so metadata prepared
+while the session locks is discarded rather than returned or saved in snapshots.
+MPRIS dispatch targets the enumerated player's current unique bus owner; an owner
+that disappears cannot be started again through its well-known name.
+
+The adapter remains a local temporary value per authorized request. There is no
+resident adapter connection, media cache, player polling, event subscription,
+background export or music-service startup. Player information is returned only
+on the current authenticated TLS connection. After one potentially blocking media
+request the actor yields to local commands and revocation checks; at most one
+already-read 4 KiB of raw input is retained before processing the next request.
+Coalesced player/volume startup requests are preserved, not silently dropped.
+The adapter's existing OS/D-Bus connection and filesystem limitations still apply;
+this integration does not make blocking kernel or bus setup interruptible.
+
+Additional regression tests use disposable TLS identities, temporary daemon homes,
+a private fake shell and a private fake DES Music service. They cover old-policy
+migration, independent permissions, encrypted capability gates, explicit reconnect,
+unknown peers and missing peer capability directions. A fake service delays its
+initial state until the fake shell locks: a playback mutation must produce no
+control command, and a separate read-only request must return no prepared metadata.
+Coalesced requests both receive replies, and malformed volume requests are refused
+before any real system-volume command. A dummy `wpctl` script checks that revocation
+after sink lookup prevents setter execution. The disposable private-D-Bus test
+also checks that a revoked guard leaves its fake player's Volume unchanged.
+None of these fixtures reads or changes the actual desktop's playback or audio.

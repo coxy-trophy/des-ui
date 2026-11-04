@@ -24,10 +24,16 @@ pub struct MediaAdapter;
 impl MediaAdapter {
     /// No event subscriptions or polling. Invoke only for an authorized explicit request.
     pub fn handle(&mut self, kind: &str, body: &Value) -> Result<Vec<MediaReply>, MediaError> {
+        self.handle_guarded(kind,body,||Ok(()))
+    }
+    /// The caller's live policy is checked before any I/O and immediately before
+    /// every mutation, after lazy bus/socket/sink preparation has completed.
+    pub fn handle_guarded(&mut self,kind:&str,body:&Value,mut guard:impl FnMut()->Result<(),MediaError>)->Result<Vec<MediaReply>,MediaError> {
+        guard()?;
         if !body.is_object() { return Err(error("expected media object")); }
         match kind {
-            MPRIS_REQUEST => media(body),
-            SYSTEM_VOLUME_REQUEST => system_volume(body),
+            MPRIS_REQUEST => media_with_music_path_guarded(body,&music_socket_path(),&mut guard),
+            SYSTEM_VOLUME_REQUEST => system_volume_guarded(body,&mut guard),
             _ => Err(error("unsupported media packet")),
         }
     }
@@ -45,7 +51,11 @@ fn percent(v: &Value) -> Result<f64, MediaError> {
 fn integer(v: &Value) -> Result<i64, MediaError> { v.as_i64().ok_or_else(|| error("expected signed integer")) }
 fn milliseconds_to_microseconds(n: i64) -> Result<i64, MediaError> { n.checked_mul(1000).ok_or_else(|| error("position overflow")) }
 fn proxy<'a>(c: &'a Connection, name: &'a str) -> Result<Proxy<'a>, MediaError> {
-    zbus::blocking::proxy::Builder::new(c).destination(name).map_err(error)?.path(PATH).map_err(error)?
+    // Bind to the current unique owner. If the advertised player quits between
+    // enumeration and dispatch, its well-known name must not auto-activate it.
+    let dbus=zbus::blocking::fdo::DBusProxy::new(c).map_err(error)?;
+    let owner=dbus.get_name_owner(name.try_into().map_err(error)?).map_err(error)?;
+    zbus::blocking::proxy::Builder::new(c).destination(owner).map_err(error)?.path(PATH).map_err(error)?
         .interface(MPRIS).map_err(error)?.cache_properties(zbus::proxy::CacheProperties::No).build().map_err(error)
 }
 fn names(c: &Connection, started: &Instant) -> Result<Vec<String>, MediaError> {
@@ -60,8 +70,11 @@ fn check_budget(started: &Instant) -> Result<(), MediaError> {
     // the first second, so sequential calls cannot accumulate beyond two seconds.
     if started.elapsed() >= TIMEOUT { Err(error("media request budget exhausted")) } else { Ok(()) }
 }
-fn media(b: &Value) -> Result<Vec<MediaReply>, MediaError> { media_with_music_path(b, &music_socket_path()) }
-fn media_with_music_path(b: &Value, music_path: &std::path::Path) -> Result<Vec<MediaReply>, MediaError> {
+#[cfg(test)]
+fn media_with_music_path(b:&Value,music_path:&std::path::Path)->Result<Vec<MediaReply>,MediaError> {
+    media_with_music_path_guarded(b,music_path,&mut ||Ok(()))
+}
+fn media_with_music_path_guarded(b:&Value,music_path:&std::path::Path,guard:&mut dyn FnMut()->Result<(),MediaError>)->Result<Vec<MediaReply>,MediaError> {
     let started = Instant::now();
     // Validate all mutations before any connection or side effect.
     let action = b.get("action").map(|v| v.as_str().ok_or_else(|| error("invalid action"))).transpose()?;
@@ -76,7 +89,7 @@ fn media_with_music_path(b: &Value, music_path: &std::path::Path) -> Result<Vec<
     let list = b.get("requestPlayerList") == Some(&Value::Bool(true));
     if list && (action.is_some() || vol.is_some() || seek.is_some() || position.is_some()) { return Err(error("player list request cannot mutate playback")); }
     if b.get("player").and_then(Value::as_str) == Some(DES_MUSIC) && !list {
-        return Ok(reply("kdeconnect.mpris", des_music_request(music_path, b, &started)?));
+        return Ok(reply("kdeconnect.mpris", des_music_request_guarded(music_path,b,&started,guard)?));
     }
     if !list && !b.get("player").and_then(Value::as_str).is_some_and(valid_player) { return Err(error("invalid MPRIS player")); }
     // DES Music discovery only reads the service's initial state; it never starts it.
@@ -92,22 +105,22 @@ fn media_with_music_path(b: &Value, music_path: &std::path::Path) -> Result<Vec<
     let available = names(&c, &started)?;
     let player = b.get("player").and_then(Value::as_str).filter(|p| valid_player(p)).ok_or_else(|| error("invalid MPRIS player"))?;
     if !available.iter().any(|p| p == player) { return Err(error("unknown MPRIS player")); }
-    let p = proxy(&c, player)?;
-    if let Some(v) = vol { check_budget(&started)?; p.set_property("Volume", v / 100.0).map_err(error)?; }
+    check_budget(&started)?;let p = proxy(&c, player)?;
+    if let Some(v) = vol { guard()?; check_budget(&started)?; p.set_property("Volume", v / 100.0).map_err(error)?; }
     // KDE Connect Seek is already microseconds; SetPosition/pos/length are milliseconds.
-    if let Some(offset) = seek { check_budget(&started)?; p.call::<_, _, ()>("Seek", &(offset,)).map_err(error)?; }
+    if let Some(offset) = seek { guard()?; check_budget(&started)?; p.call::<_, _, ()>("Seek", &(offset,)).map_err(error)?; }
     if let Some(position) = position {
         check_budget(&started)?;
         let metadata: HashMap<String, OwnedValue> = p.get_property("Metadata").map_err(error)?;
         let track = metadata.get("mpris:trackid").and_then(|v| <&ObjectPath<'_>>::try_from(v).ok())
             .ok_or_else(|| error("player has no track object path"))?;
-        check_budget(&started)?;
+        guard()?;check_budget(&started)?;
         p.call::<_, _, ()>("SetPosition", &(track, position)).map_err(error)?;
     }
     if let Some(action) = action {
         check_budget(&started)?;
         let method = match action { "Play" => "Play", "Pause" => "Pause", "PlayPause" => "PlayPause", "Next" => "Next", "Previous" => "Previous", "Stop" => "Stop", _ => unreachable!("validated above") };
-        p.call::<_, _, ()>(method, &()).map_err(error)?;
+        guard()?;check_budget(&started)?;p.call::<_, _, ()>(method, &()).map_err(error)?;
     }
     Ok(reply("kdeconnect.mpris", snapshot(player, &p, &started)?))
 }
@@ -189,11 +202,12 @@ impl DesMusic {
             }
         }
     }
-    fn send(&mut self, command: Value) -> Result<(), MediaError> {
+    fn send(&mut self,command:Value)->Result<(),MediaError>{self.send_guarded(command,&mut ||Ok(()))}
+    fn send_guarded(&mut self, command: Value,guard:&mut dyn FnMut()->Result<(),MediaError>) -> Result<(), MediaError> {
         let mut bytes = serde_json::to_vec(&command).map_err(error)?; bytes.push(b'\n');
         let mut offset = 0;
         while offset < bytes.len() {
-            self.check_deadline()?;
+            self.check_deadline()?;guard()?;
             match self.stream.write(&bytes[offset..]) {
                 Ok(0) => return Err(error("music service disconnected")),
                 Ok(n) => offset += n,
@@ -223,7 +237,11 @@ fn music_snapshot(state: &Value) -> Value {
         "volume":state["volume"],"canPlay":has_track,"canPause":has_track,"canGoNext":has_track,"canGoPrevious":has_track,
         "canSeek":has_track && track["duration_ms"].as_u64().unwrap_or(0)>0,"albumArtUrl":text("cover")})
 }
-fn des_music_request(path: &std::path::Path, b: &Value, started: &Instant) -> Result<Value, MediaError> {
+#[cfg(test)]
+fn des_music_request(path:&std::path::Path,b:&Value,started:&Instant)->Result<Value,MediaError> {
+    des_music_request_guarded(path,b,started,&mut ||Ok(()))
+}
+fn des_music_request_guarded(path:&std::path::Path,b:&Value,started:&Instant,guard:&mut dyn FnMut()->Result<(),MediaError>)->Result<Value,MediaError> {
     let action = b.get("action").map(|v| v.as_str().ok_or_else(|| error("invalid music action"))).transpose()?;
     if action.is_some_and(|a| !["Play", "Pause", "PlayPause", "Next", "Previous"].contains(&a)) { return Err(error("DES Music does not support this action")); }
     let volume = b.get("setVolume").map(percent).transpose()?;
@@ -252,9 +270,9 @@ fn des_music_request(path: &std::path::Path, b: &Value, started: &Instant) -> Re
     let controls = usize::from(volume.is_some()) + usize::from(target.is_some()) + usize::from(action.is_some());
     if controls > 1 { return Err(error("DES Music accepts one control per request")); }
     let changed = command.is_some() || target.is_some() || volume.is_some();
-    if let Some(command) = command { music.send(command)?; }
-    if let Some(ms) = target { music.send(json!({"cmd":"seek","ms":ms}))?; }
-    if let Some(percent) = volume { music.send(json!({"cmd":"volume","percent":percent.round() as u64}))?; }
+    if let Some(command) = command { music.send_guarded(command,guard)?; }
+    if let Some(ms) = target { music.send_guarded(json!({"cmd":"seek","ms":ms}),guard)?; }
+    if let Some(percent) = volume { music.send_guarded(json!({"cmd":"volume","percent":percent.round() as u64}),guard)?; }
     if changed {
         music.send(json!({"cmd":"state"}))?;
         music.state = music.read_state()?;
@@ -310,7 +328,10 @@ fn parse_sink(s: &str) -> Result<(f64, bool), MediaError> {
     if words.next().is_some() { return Err(error("unexpected sink status suffix")); }
     Ok(((n * 100.0).round(), muted))
 }
-fn system_volume(b: &Value) -> Result<Vec<MediaReply>, MediaError> {
+fn system_volume_guarded(b:&Value,guard:&mut dyn FnMut()->Result<(),MediaError>)->Result<Vec<MediaReply>,MediaError> {
+    system_volume_with_executable(b,wpctl(),guard)
+}
+fn system_volume_with_executable(b:&Value,executable:Option<&str>,guard:&mut dyn FnMut()->Result<(),MediaError>)->Result<Vec<MediaReply>,MediaError> {
     let started = Instant::now();
     let volume = b.get("volume").map(percent).transpose()?;
     let muted = b.get("muted").map(|v| v.as_bool().ok_or_else(|| error("invalid mute flag"))).transpose()?;
@@ -318,7 +339,7 @@ fn system_volume(b: &Value) -> Result<Vec<MediaReply>, MediaError> {
     let list = b.get("requestSinks") == Some(&Value::Bool(true));
     if !list && b.get("name").and_then(Value::as_str) != Some(SINK) { return Err(error("unknown system volume sink")); }
     if list && (volume.is_some() || muted.is_some()) { return Err(error("list request cannot mutate volume")); }
-    let Some(executable) = wpctl() else {
+    let Some(executable) = executable else {
         return if list { Ok(reply("kdeconnect.systemvolume", json!({"sinkList":[]}))) } else { Err(error("wpctl unavailable")) };
     };
     let run = |args: &[&str]| -> Result<String, MediaError> { check_budget(&started)?; run_wpctl(executable, args) };
@@ -328,8 +349,8 @@ fn system_volume(b: &Value) -> Result<Vec<MediaReply>, MediaError> {
         return Ok(reply("kdeconnect.systemvolume", json!({"sinkList":sinks})));
     }
     current?;
-    if let Some(volume) = volume { run(&["set-volume", "--limit", "1.0", "@DEFAULT_AUDIO_SINK@", &format!("{volume}%")])?; }
-    if let Some(muted) = muted { run(&["set-mute", "@DEFAULT_AUDIO_SINK@", if muted { "1" } else { "0" }])?; }
+    if let Some(volume) = volume { guard()?;run(&["set-volume", "--limit", "1.0", "@DEFAULT_AUDIO_SINK@", &format!("{volume}%")])?; }
+    if let Some(muted) = muted { guard()?;run(&["set-mute", "@DEFAULT_AUDIO_SINK@", if muted { "1" } else { "0" }])?; }
     let (volume, muted) = parse_sink(&run(&["get-volume", "@DEFAULT_AUDIO_SINK@"] )?)?;
     Ok(reply("kdeconnect.systemvolume", json!({"name":SINK,"volume":volume,"muted":muted,"enabled":true})))
 }
@@ -421,6 +442,9 @@ mod tests {
         assert_eq!(status[0].body["length"], 2500);
         assert_eq!(status[0].body["title"], "Fake track");
         assert!(adapter.handle(MPRIS_REQUEST, &json!({"player":"org.mpris.MediaPlayer2.absent_des_test","action":"Play"})).is_err());
+        let calls=std::cell::Cell::new(0);let guarded=adapter.handle_guarded(MPRIS_REQUEST,&json!({"player":fake_name,"setVolume":77}),||{calls.set(calls.get()+1);if calls.get()>1{Err(error("revoked after bus preparation"))}else{Ok(())}});
+        assert!(guarded.is_err());let connection=Connection::session().unwrap();let player=proxy(&connection,fake_name).unwrap();assert!(player.destination().as_str().starts_with(':'));assert_eq!(player.get_property::<f64>("Volume").unwrap(),0.35);
+
     }
 
     fn music_state() -> Value { json!({"type":"state","track":{"name":"Socket song","artists":"Socket artist","album":"Socket album","duration_ms":5000,"cover":"https://example.invalid/known-cover"},"playing":true,"position_ms":2000,"volume":40,"device":null}) }
@@ -511,6 +535,23 @@ mod tests {
         let mut state=music_state();state["volume"]=json!(101);assert!(validate_music_state(&state).is_err());
         state=music_state();state["position_ms"]=json!(-1);assert!(validate_music_state(&state).is_err());
         state=music_state();state["track"]["cover"]=json!({"url":"file:///etc/passwd"});assert!(validate_music_state(&state).is_err());
+    }
+
+    #[test] fn delayed_music_state_rechecks_guard_before_any_control_write(){
+        use std::os::unix::{net::UnixListener,fs::PermissionsExt};
+        use std::sync::{Arc,atomic::{AtomicBool,Ordering}};
+        let dir=tempfile::tempdir().unwrap();std::fs::set_permissions(dir.path(),std::fs::Permissions::from_mode(0o700)).unwrap();let path=dir.path().join("music.sock");let listener=UnixListener::bind(&path).unwrap();std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o600)).unwrap();
+        let allowed=Arc::new(AtomicBool::new(true));let revoked=allowed.clone();
+        let worker=std::thread::spawn(move||{let(mut stream,_)=listener.accept().unwrap();std::thread::sleep(Duration::from_millis(50));revoked.store(false,Ordering::Release);writeln!(stream,"{}",music_state()).unwrap();stream.set_read_timeout(Some(Duration::from_millis(500))).unwrap();let mut received=[0;1024];stream.read(&mut received).unwrap_or(0)});
+        let mut guard=||if allowed.load(Ordering::Acquire){Ok(())}else{Err(error("revoked during preparation"))};
+        assert!(media_with_music_path_guarded(&json!({"player":DES_MUSIC,"action":"Pause"}),&path,&mut guard).is_err());assert_eq!(worker.join().unwrap(),0);
+    }
+    #[test] fn volume_guard_rechecks_after_dummy_sink_read_before_mutation_exec(){
+        use std::os::unix::fs::PermissionsExt;
+        let dir=tempfile::tempdir().unwrap();let tool=dir.path().join("wpctl");let marker=dir.path().join("revoked");let changed=dir.path().join("changed");
+        let script=format!("#!/bin/sh\nif [ \"$1\" = get-volume ]; then /usr/bin/touch '{}'; printf 'Volume: 0.40\\n'; else /usr/bin/touch '{}'; fi\n",marker.display(),changed.display());std::fs::write(&tool,script).unwrap();std::fs::set_permissions(&tool,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut guard=||if marker.exists(){Err(error("revoked during sink preparation"))}else{Ok(())};
+        assert!(system_volume_with_executable(&json!({"name":SINK,"volume":55}),Some(tool.to_str().unwrap()),&mut guard).is_err());assert!(marker.exists());assert!(!changed.exists());
     }
 
 }

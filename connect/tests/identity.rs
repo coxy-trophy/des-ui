@@ -44,3 +44,13 @@ use std::{fs,os::unix::fs::PermissionsExt};
  let path=path.join("peers.json");let mut json:serde_json::Value=serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();json[peer.id()].as_object_mut().unwrap().remove("files_enabled");fs::write(&path,serde_json::to_vec(&json).unwrap()).unwrap();
  assert!(!Store::open(path.parent().unwrap()).unwrap().peers[peer.id()].files_enabled);
 }
+
+#[test] fn media_and_volume_permissions_are_independent_default_off_and_preserved(){
+ let temp=tempfile::tempdir().unwrap();let remote=Store::open(&temp.path().join("phone")).unwrap();let path=temp.path().join("store");let mut store=Store::open(&path).unwrap();store.remember(remote.id(),"Phone","phone",&remote.certificate).unwrap();
+ assert!(!store.peers[remote.id()].media_enabled);assert!(!store.peers[remote.id()].volume_enabled);
+ let pin=store.pin(remote.id()).unwrap();store.set_files_enabled(remote.id(),true).unwrap();store.set_media_enabled(remote.id(),true).unwrap();assert!(!store.peers[remote.id()].volume_enabled);store.set_volume_enabled(remote.id(),true).unwrap();
+ store.remember(remote.id(),"Updated phone","phone",&remote.certificate).unwrap();let loaded=Store::open(&path).unwrap();let peer=&loaded.peers[remote.id()];assert!(peer.files_enabled&&peer.media_enabled&&peer.volume_enabled);assert_eq!(loaded.pin(remote.id()).unwrap(),pin);
+ store.set_media_enabled(remote.id(),false).unwrap();assert!(store.peers[remote.id()].files_enabled&&store.peers[remote.id()].volume_enabled);
+ assert!(store.set_media_enabled("unknown",true).is_err());assert!(store.set_volume_enabled("unknown",true).is_err());
+ let file=path.join("peers.json");let mut data:serde_json::Value=serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();data[remote.id()].as_object_mut().unwrap().remove("media_enabled");data[remote.id()].as_object_mut().unwrap().remove("volume_enabled");fs::write(file,serde_json::to_vec(&data).unwrap()).unwrap();let legacy=Store::open(&path).unwrap();assert!(!legacy.peers[remote.id()].media_enabled&&!legacy.peers[remote.id()].volume_enabled);assert!(legacy.peers[remote.id()].files_enabled);
+}

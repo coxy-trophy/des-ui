@@ -59,3 +59,20 @@ terminal sessions; the compositor has not been restarted.
 - Ruling: installer includes service/CLI/helper, but never starts networking on
   boot. Existing installed compositor and user terminals are not replaced during
   automated verification.
+
+### Media permissions increment
+
+Files checkpoint f46f647 passed82Rusttests and21paneltests, with physicalretry
+pendingAndroidcallbackfix. Continueinline/parallelwithinapprovedscope: add
+separatemedia/systemvolume opt-ins, encryptedcapabilities and unlockedruntime
+dispatch. Phoneownsplayercontrols; nativepanelownsonlypermissions/reconnect.
+No realaudiochangesinautomatedtests; adaptersremainslazyandnocapturestarts.
+
+### Resume verification — 2026-11-04
+
+Media service, lazy adapter guards and native permission controls are implemented.
+Fresh commands: cargo test -p des-connect --locked -j 2 => 87 passed/1 ignored;
+disposable dbus-run-session fake_mpris => 1 passed; cargo test -p des-ui
+connect::tests --locked -j 2 => 23 passed/1 fixture ignored; service and shell
+builds passed. Final independent review and Android rebuild remain in progress.
+No ADB device is connected; physical file/media checks cannot be claimed complete.
