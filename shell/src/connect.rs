@@ -469,7 +469,7 @@ impl Connect {
         let label = ui.label(RichText::new("Path from Files panel").font(ui::display(13.0)).color(ui::TEXT));
         let mut path = self.file_paths.get(&device.id).cloned().unwrap_or_default();
         ui.add_enabled_ui(!busy, |ui| {
-            let response = ui.add(egui::TextEdit::singleline(&mut path).id_salt(("connect-file-path", &device.id)).char_limit(4096).desired_width(ui.available_width()).hint_text("/absolute/path/to/file")).labelled_by(label.id);
+            let response = ui.add(egui::TextEdit::singleline(&mut path).min_size(egui::vec2(0.0, ui::CONTROL_HEIGHT)).id_salt(("connect-file-path", &device.id)).char_limit(4096).desired_width(ui.available_width()).hint_text("/absolute/path/to/file")).labelled_by(label.id);
             self.keyboard |= response.has_focus();
             if response.changed() {
                 self.file_paths.insert(device.id.clone(), path.clone());
@@ -642,7 +642,7 @@ impl Connect {
                 ui::section(ui, "USB SCREEN", |_| {});
                 let label = ui.label(RichText::new("USB serial").font(ui::display(13.0)).color(ui::TEXT));
                 ui.add_enabled_ui(!busy && !self.sharing(), |ui| {
-                    let response = ui.add(egui::TextEdit::singleline(&mut self.usb_serial).id_salt("connect-usb-serial").char_limit(256).desired_width(ui.available_width()).hint_text("Authorized USB serial")).labelled_by(label.id);
+                    let response = ui.add(egui::TextEdit::singleline(&mut self.usb_serial).min_size(egui::vec2(0.0, ui::CONTROL_HEIGHT)).id_salt("connect-usb-serial").char_limit(256).desired_width(ui.available_width()).hint_text("Authorized USB serial")).labelled_by(label.id);
                     self.keyboard |= response.has_focus();
                 });
                 copy(ui, "Select the exact USB serial. Enable USB debugging and approve this computer on that device.", ui::SECONDARY);
