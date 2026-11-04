@@ -74,5 +74,6 @@ Media service, lazy adapter guards and native permission controls are implemente
 Fresh commands: cargo test -p des-connect --locked -j 2 => 87 passed/1 ignored;
 disposable dbus-run-session fake_mpris => 1 passed; cargo test -p des-ui
 connect::tests --locked -j 2 => 23 passed/1 fixture ignored; service and shell
-builds passed. Final independent review and Android rebuild remain in progress.
+builds passed. Final independent media review found no Important/Critical issues. Android
+155-test verification and final APK build passed; source ae067d10 is pushed.
 No ADB device is connected; physical file/media checks cannot be claimed complete.

@@ -136,9 +136,8 @@ jobs; changed address/capability/policy, real disconnect, unpair and lock revoke
 sharing. TLS fixtures test both continuity and revocation.
 
 The first physical file attempt exposed Android's reused-link callback updating
-capabilities without reloading actual plugins. Its source fix and regression APK
-are being verified separately; this checkpoint does not claim physical file
-transfer success. The prior successful physical mirror/ping checks still stand.
+capabilities without reloading actual plugins. At that checkpoint its source fix and regression APK were still being verified;
+physical file-transfer success was not claimed. The prior successful physical mirror/ping checks still stand.
 
 ## Media integration verification — 2026-11-04
 
@@ -160,6 +159,29 @@ lock. All audio mutations used disposable fake services.
 The machine restarted/interrupted since the previous test window; ADB currently
 shows no tablet. Physical file-transfer success and Android media interoperability
 remain unverified. The previously observed pairing, ping and USB mirror results
-are historical checks, not claims about the current session. The new Android
-callback regression fix is pending its final build/reinstallation and physical
-retry. No installed shell/compositor was restarted by this verification.
+are historical checks, not claims about the current session. The Android callback fix now passes its tests and APK build; reinstallation
+and the physical retry are still pending. No installed shell/compositor was restarted by this verification.
+
+Final review found no Important/Critical findings in the media integration.
+Android verification completed: 155 tests across 25 suites, zero failures, errors
+or skipped tests; testDebugUnitTest/assembleDebug succeeded. After adding the
+modified-file license notice, the final assembleDebug also succeeded. The callback
+fix reloads real plugin handlers before notifying observers, including capability
+removal; three regressions cover gain, removal and unchanged identities. Payload
+listener acceptance is bounded to 60 seconds, allowing the desktop's 30-second
+receive approval window without changing TLS handshake deadlines.
+
+Android source commit: ae067d10. APK: sibling
+../des-connect-android/build/outputs/apk/debug/des-connect-android-debug.apk.
+SHA256: f87f7d8b1256b70225ef85cdf9cd84f3a6881edabfb7863b15999015b747e0f6.
+The tablet was not connected during final verification, so this APK was not
+installed in this session. Desktop media source commit: 2ca0df3 on the remote
+work/des-connect branch. Installed shell/compositor binaries were not replaced;
+install the build and refresh the shell to load the new CONNECT panel.
+
+Remaining device acceptance: reconnect/unlock the authorized tablet, install the
+APK, confirm file controls appear and disappear with permission/reconnect, transfer
+disposable files in both directions and compare bytes, then test Android media
+control against a disposable player before touching actual audio. The rest of the
+feature roadmap remains in the design specification; these checks do not imply
+full KDE Connect parity.
