@@ -167,10 +167,8 @@ struct App {
     browser_openers: Vec<std::sync::mpsc::Receiver<Result<(), String>>>,
     document_openers: Vec<std::sync::mpsc::Receiver<Result<(),String>>>,
     dock_area: Option<Option<(i32, i32, i32, i32)>>,
-    right_apps: bool,
     right_connect: bool,
     connect: connect::Connect,
-    apps_panel_pending: bool,
     dock_keyboard: std::collections::BTreeMap<usize,bool>,
     settings: settings::Settings,
     shortcut_reference: shortcuts::Reference,
@@ -391,10 +389,8 @@ impl App {
             browser_openers: Vec::new(),
             document_openers: Vec::new(),
             dock_area: None,
-            right_apps: false,
             right_connect: false,
             connect: Default::default(),
-            apps_panel_pending: false,
             dock_keyboard: Default::default(),
             settings: settings::Settings::default(),
             shortcut_reference: Default::default(),
@@ -1007,23 +1003,19 @@ impl App {
         else { self.shortcut_reference.open = true; self.quick.open = false; self.dock.reset(); }
     }
 
-    /// Reveal Apps while preserving the compositor's asynchronous panel state.
+    /// Application switching no longer opens a right-panel Apps destination.
     fn focus_apps(&mut self, screen: usize) {
         if screen > 0 { self.secondary_docks.entry(screen).or_default().reveal_keyboard(); return; }
-        self.right_apps = true;
-        self.right_connect = false;
         self.shortcut_reference.close();
         self.quick.open = false;
         self.scratchpad.close_now();
         self.companion.blur_text();
         self.fs.blur();
-        self.dock.reveal_keyboard();
-        let open = self.desktop.as_ref().map_or(self.local_panels.right, |d| d.state.panels.right);
-        let request_open = !open && !self.apps_panel_pending;
-        self.apps_panel_pending = !open;
-        if request_open {
-            if self.desktop.is_some() { self.send(Command::TogglePanel(des_common::Panel::Right)); }
-            else { self.local_panels.right = true; }
+        self.dock.reset();
+        if self.desktop.is_some() {
+            self.send(Command::Overview);
+        } else {
+            self.launcher.open();
         }
     }
 

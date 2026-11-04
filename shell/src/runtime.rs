@@ -249,7 +249,6 @@ impl eframe::App for App {
             let state=self.desktop.as_ref().map(|d|d.state.clone());
             self.secondary_views(ctx,state.as_ref(),true);
             self.dock.reset();
-            self.apps_panel_pending=false;
             if self.dock_area != Some(None) {
                 self.dock_area = Some(None);
                 self.send(Command::Dock(None));
@@ -336,7 +335,6 @@ impl eframe::App for App {
         let center = on_screen(frame_layout.center);
         let status_top = screen.bottom() - des_common::STATUS_HEIGHT;
         let keys_top = frame_layout.keyboard.map(|rect| on_screen(rect).top()).unwrap_or(status_top);
-        let mut dock_keys = self.dock.reserve_keyboard(ctx);
         let mut apps_output = dock::Output::default();
         let mut left_rail_output=None;
         ctx.data_mut(|data| data.insert_temp(egui::Id::new("window-shelf-capable"), self.desktop.as_ref().is_some_and(|d| d.connected() && d.window_shelf)));
@@ -399,20 +397,10 @@ impl eframe::App for App {
                     let rect = on_screen(frame_layout.right.expect("open right panel"));
                     frame_region(ui, rect, column, Layout::top_down(Align::Min), |ui| {
                         ui.horizontal(|ui| {
-                            if ui.selectable_label(self.right_apps, "APPS").clicked() {self.right_apps=true;self.right_connect=false;}
-                            if ui.selectable_label(!self.right_apps && !self.right_connect, "SYSTEM").clicked() {self.right_apps=false;self.right_connect=false;self.dock.dismiss_keyboard(ctx);}
-                            if ui.selectable_label(self.right_connect, "CONNECT").clicked() {self.right_apps=false;self.right_connect=true;self.dock.dismiss_keyboard(ctx);}
+                            if ui.selectable_label(!self.right_connect, "SYSTEM").clicked() {self.right_connect=false;self.dock.dismiss_keyboard(ctx);}
+                            if ui.selectable_label(self.right_connect, "CONNECT").clicked() {self.right_connect=true;self.dock.dismiss_keyboard(ctx);}
                         });
                         ui.add_space(12.0);
-                        if self.right_apps && !self.capture.marking() {
-                            ctx.input_mut(|i|i.events.extend(std::mem::take(&mut dock_keys)));
-                            apps_output=self.dock.panel_on(0,ui,state.as_ref(),&self.config.dock_pins,&theme,animate);
-                            if let Some(area)=apps_output.overlay {apps_output.overlay=Some(area.union(rect));}
-                            if apps_output.keyboard {self.companion.blur_text();self.fs.blur();}
-                            scratch_keys |= self.dock.captures_keyboard();
-                            if self.dock.captures_keyboard() {let _=shortcuts::take_modal_input(ctx,true);}
-                            return false;
-                        }
                         if self.right_connect && !self.capture.marking() {
                             self.connect.panel(ui, &theme);
                             return false;
@@ -720,8 +708,7 @@ impl eframe::App for App {
         powerup::frame_lines(&lines, screen, workspace, status_top, osk_height, open,
             self.config.side_panel_behavior == des_common::PanelBehavior::Collapse, line, &stage);
 
-        if open.right {self.apps_panel_pending=false;}
-        if (!open.right && !self.apps_panel_pending) || self.capture.marking() {self.dock.reset();self.apps_panel_pending=false;}
+        if self.capture.marking() { self.dock.reset(); }
         let dock = apps_output;
         let dock_area = dock.overlay.map(|rect| (
             rect.left().floor() as i32, rect.top().floor() as i32,

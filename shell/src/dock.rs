@@ -1,4 +1,4 @@
-//! Native right-panel application and window management.
+//! Native left-dock application controls and secondary-display app chooser.
 use crate::{app_icons::IconCache, apps::{self, AppEntry}, theme::Theme, ui::{self}};
 use des_common::ipc::{Command, DesktopState};
 use eframe::egui::{self, Align2, Key, Modifiers, Rect, Sense, vec2};

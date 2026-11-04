@@ -175,10 +175,10 @@ Remember API key securely defaults on. libsecret operations run on one bounded b
 
 ## Right-panel applications —2026-10-25
 
-System is the default right-panel tab; Apps remains available on demand. No bottom app strip or reserved dock band remains. Apps groups running windows across workspaces/displays and exposes activation, launch, close, pin ordering and window workspace controls. Super+D opens and focuses Apps. Escape/activation/outside native clicks release keyboard ownership without hiding the normal panel. Secondary displays show a transient right rail for keyboard switching. Existing Dock IPC names are retained internally for overlay crop and explicit keyboard ownership.
+System is the default right-panel tab; Connect is its only sibling. App switching and window actions use the left dock and overview. Super+D opens overview on the primary display, with the launcher as the standalone fallback. Secondary displays retain their transient keyboard app chooser. Existing Dock IPC names remain for overlay crop and explicit keyboard ownership.
 
 
-Separated frame geometry: common::frame::Layout is the canonical source for primary side panels/rails, center/header, Files/Chat and the inset native workspace. The compositor uses exactly its workspace rectangle; the shell uses all surface rectangles. New shell/compositor builds must be activated together for geometry changes. Fullscreen and secondary outputs retain their existing ownership. Initial right-panel selection is System; Super+D still explicitly selects Apps and handles keyboard/focus as before. No persistent tab-selection field is introduced.
+Separated frame geometry: common::frame::Layout is the canonical source for primary side panels/rails, center/header, Files/Chat and the inset native workspace. The compositor uses exactly its workspace rectangle; the shell uses all surface rectangles. New shell/compositor builds must be activated together for geometry changes. Fullscreen and secondary outputs retain their existing ownership. Initial right-panel selection is System; Super+D opens primary overview without changing the selected right-panel tab. No persistent tab-selection field is introduced.
 
 The on-screen keyboard types into shell controls and terminals. A bounded keyboard-height IPC reservation now keeps native application placement clear of the center-column keyboard card; it does not add virtual-keyboard typing into native applications. The same rounded height and canonical frame layout are used on both sides, including reconnect/lock reset.
 
@@ -244,4 +244,4 @@ icons reuse dock grouping and the shared icon cache. Hover never expands the
 system panel. The clock and top expand button use existing panel commands on
 click; the existing panel shortcut remains available. App popup coverage uses
 only its visible rectangle; opposite-side overlays must never be unioned across
-native applications. Right Apps and Super+D retain their existing workflows.
+native applications. The left dock retains app controls; Super+D opens the primary window overview.
