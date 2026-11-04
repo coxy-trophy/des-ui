@@ -185,3 +185,26 @@ disposable files in both directions and compare bytes, then test Android media
 control against a disposable player before touching actual audio. The rest of the
 feature roadmap remains in the design specification; these checks do not imply
 full KDE Connect parity.
+
+## Physical tablet verification — 2026-11-04
+
+The authorized Samsung tablet was reconnected and the ae067d10 debug APK installed
+successfully using adb --no-streaming. Existing certificate trust reconnected
+without re-pairing. The Android Send files control appeared.
+
+A disposable 59-byte desktop-to-tablet file completed and its received bytes
+matched SHA256409ba2d66577316ec1a4c5d6867710bc48870449c651594ec84752e5df8d4885.
+A separate disposable 59-byte tablet-to-desktop file remained offered at zero
+bytes, with no received file, until explicit desktop acceptance. It then completed
+and matched SHA2562f52969122b79a1754b290cdea8eb547b42b764d27d4d0dd7f854b007a6d826f.
+Disabling file permission and reconnecting removed Send files from the visible
+Android device screen, leaving its honest Connected/no-controls state.
+
+Media was tested against a private fake DES Music socket and disposable D-Bus
+session, with system-volume permission disabled. Direct adapter discovery
+returned DES Music, but the tablet initially showed no players. Android logs
+confirmed that the fast startup reply arrived during plugin creation, before the
+new incoming-interface routing map was published, and was discarded. This new
+Android dispatch/lifecycle race is being reproduced and fixed separately; no
+physical media-control success is claimed at this checkpoint. Actual desktop
+playback and output volume were not changed.
