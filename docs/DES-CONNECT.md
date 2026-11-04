@@ -307,3 +307,21 @@ rerun hit the existing bash-completion test's 20-second prompt deadline; its iso
 rerun passed in 0.41s. Final sequential shell run: 576 passed, 0 failed, 2 ignored (68.90s).
 Release shell/daemon build: passed (8m06s). cargo fmt/rustfmt are not installed in this environment; the same
 formatter command fails in the unchanged baseline. git diff --check is clean.
+
+
+Final input-height follow-up: both path and USB fields use ui::CONTROL_HEIGHT
+(30px). All 29 CONNECT tests passed; the final release shell rebuild passed
+(6m39s). The full release shell was launched under an isolated X server/private
+D-Bus with its own settings, runtime socket and disposable /bin/sh. CONNECT and
+Send file were opened by pointer input; an absolute test path and Enter stayed
+inside CONNECT, while the terminal remained at an empty prompt. The final 30px
+field was visually inspected. Both live managed desktop terminal IDs remained
+unchanged; the real compositor/graphical shell was never restarted.
+
+Deployment: source is committed/pushed and the main checkout is fast-forwarded.
+`sudo -n install` was refused because an administrator password is required.
+The installed shell has a different digest from the tested release; therefore
+this verification does not claim that the user's live desktop has loaded the
+new UI. Install target/release/des-ui and target/release/des-connectd into
+/usr/local/bin with normal sudo authentication, then Super+Shift+R loads the
+shell while managed terminal processes reconnect. No logout is required.
