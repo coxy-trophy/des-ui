@@ -214,3 +214,8 @@ the tab. It does not resize compositor display geometry or open another scrcpy
 window. Capture is view-only. A disconnected, stopped, locked or hidden preview
 clears its texture and ignores late worker replies; reconnect never starts a
 capture automatically. Decode work exists only for an explicitly active session.
+
+
+CONNECT's Mirror screen action opens a compact USB chooser when needed. Display
+paired/unpaired status beside duplicate device names. Keep raw serial entry in
+manual setup and explain the cable/debugging requirement in the empty state.

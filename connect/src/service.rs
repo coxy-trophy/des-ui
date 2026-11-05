@@ -327,6 +327,14 @@ fn start_peer(shared:&Arc<Shared>,tcp:TcpStream,claim:Option<Packet>){
  if shared.active.fetch_update(Ordering::AcqRel,Ordering::Relaxed,|n|(n<8).then_some(n+1)).is_ok(){let shared=shared.clone();thread::spawn(move||peer_worker(shared,tcp,claim));}
 }
 fn handle_ipc(shared:&Arc<Shared>,request:Request,udp:&UdpSocket,client:&UnixStream)->Value {
+ if request.op=="usb_devices" {
+  let result=if session_unlocked() {crate::screens::usb_devices()} else {Err("Unlock DES UI to choose a USB device".into())};
+  let mut state=shared.snapshot();
+  return match result {
+   Ok(devices)=>{state["usb_devices"]=json!(devices);json!({"ok":true,"state":state})},
+   Err(error)=>json!({"ok":false,"error":error,"state":state}),
+  };
+ }
  let result=(||->Result<()>{
   match request.op.as_str(){
    "state"=>{},

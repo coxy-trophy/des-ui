@@ -63,7 +63,11 @@ struct Snapshot {
     screens: Option<Screens>,
     screen_capabilities: Option<ScreenCapabilities>,
     transfers: Vec<Transfer>,
+    usb_devices: Option<Vec<UsbDevice>>,
 }
+
+#[derive(Clone, Debug, Deserialize)]
+struct UsbDevice { serial: String, model: String }
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
@@ -203,7 +207,7 @@ fn connect_local(path: &std::path::Path) -> Result<UnixStream, String> {
 
 fn exchange(path: &std::path::Path, request: &Request) -> Result<Reply, String> {
     let mut stream = connect_local(path).map_err(|e| format!("DES Connect service unavailable: {e}. Start the service or retry."))?;
-    let read_timeout = if matches!(request.op, "mirror_phone" | "extend") { SCREEN_START_TIMEOUT } else { IO_TIMEOUT };
+    let read_timeout = if matches!(request.op, "mirror_phone" | "extend" | "usb_devices") { SCREEN_START_TIMEOUT } else { IO_TIMEOUT };
     stream.set_read_timeout(Some(read_timeout)).map_err(|e| e.to_string())?;
     stream.set_write_timeout(Some(IO_TIMEOUT)).map_err(|e| e.to_string())?;
     serde_json::to_writer(&mut stream, request).map_err(|e| format!("Could not send command: {e}"))?;
@@ -261,7 +265,9 @@ pub struct Connect {
     error: Option<String>,
     notice: Option<String>,
     confirm_unpair: Option<String>,
-    usb_serial: String,
+    usb_open: bool,
+    usb_devices: Option<Vec<UsbDevice>>,
+    usb_serials: BTreeMap<String, String>,
     queued_controls: VecDeque<Request>,
     file_paths: BTreeMap<String, String>,
     confirm_send: Option<FileDraft>,
@@ -279,10 +285,15 @@ impl Connect {
                 let pending = self.pending.take().unwrap();
                 match response {
                     Ok(reply) => {
-                        if let Some(state) = reply.state {
+                        if let Some(mut state) = reply.state {
+                            if let Some(devices) = state.usb_devices.take() { self.usb_devices = Some(devices); }
+                            self.usb_serials.retain(|id, _| state.devices.iter().any(|device| &device.id == id && device.paired));
                             self.file_paths.retain(|id, _| state.devices.iter().any(|device| &device.id == id && device.paired));
                             if self.confirm_send.as_ref().is_some_and(|draft| !state.devices.iter().any(|device| device.id == draft.device_id && device.files_ready())) { self.confirm_send = None; }
-                            if let Some(screen) = &state.screens { self.sharing_uncertain = screen.running; }
+                            if let Some(screen) = &state.screens {
+                                self.sharing_uncertain = screen.running;
+                                if screen.running { self.usb_open = false; }
+                            }
                             else if !state.running { self.sharing_uncertain = false; }
                             self.snapshot = Some(state);
                         }
@@ -293,7 +304,8 @@ impl Connect {
                                 self.sharing_uncertain = false;
                                 if let Some(screens) = self.snapshot.as_mut().and_then(|state| state.screens.as_mut()) { screens.running = false; }
                             }
-                            if !pending.passive { self.notice = Some(pending.feedback.into()); }
+                            if pending.op == "usb_devices" { self.notice = None; }
+                            else if !pending.passive { self.notice = Some(pending.feedback.into()); }
                         } else {
                             self.notice = None;
                             self.error = Some(reply.error.unwrap_or_else(|| "The service rejected this command. Refresh and retry.".into()));
@@ -316,7 +328,7 @@ impl Connect {
             if !s.devices.iter().any(|device| &device.id == owner && device.paired && device.connected) { return None; }
             screens.serial.as_ref().map(|serial| preview::Session { device_id: owner.clone(), serial: serial.clone() })
         });
-        let frame_visible = visible && !self.settings_open && !self.send_open;
+        let frame_visible = visible && !self.settings_open && !self.send_open && !self.usb_open;
         if !frame_visible { self.suspend_preview(); }
         if !visible { self.expanded = false; self.keyboard = false; }
         self.preview.tick(ctx, if frame_visible { session } else { None });
@@ -582,7 +594,7 @@ impl Connect {
                 let name = selected.as_ref().map(|device| device.name.as_str()).filter(|name| !name.is_empty()).unwrap_or("DES Connect");
                 ui.add(egui::Label::new(RichText::new(name).font(ui::display_bold(17.0)).color(ui::TEXT)).truncate()).on_hover_text(name);
             });
-            if ui::button(ui, theme, "Settings", None, self.settings_open).clicked() { self.settings_open = !self.settings_open; self.send_open = false; if self.settings_open { self.expanded = false; self.suspend_preview(); } }
+            if ui::button(ui, theme, "Settings", None, self.settings_open).clicked() { self.settings_open = !self.settings_open; self.send_open = false; self.usb_open = false; if self.settings_open { self.expanded = false; self.suspend_preview(); } }
         });
         ui.horizontal_wrapped(|ui| {
             if let Some(device) = &selected {
@@ -597,22 +609,24 @@ impl Connect {
         if self.sharing() || expandable {
             ui.horizontal_wrapped(|ui| {
                 if self.sharing() && ui::button(ui, theme, "Stop", None, false).clicked() { self.stop_sharing(ui.ctx()); }
-                if expandable && ui::button(ui, theme, if self.expanded { "Minimize" } else { "Expand" }, None, false).clicked() { self.expanded = !self.expanded; if self.expanded { self.settings_open=false; self.send_open=false; self.keyboard=false; } }
+                if expandable && ui::button(ui, theme, if self.expanded { "Minimize" } else { "Expand" }, None, false).clicked() { self.expanded = !self.expanded; if self.expanded { self.settings_open=false; self.send_open=false; self.usb_open=false; self.keyboard=false; } }
             });
         }
         if let Some(snapshot) = &snapshot {
             if snapshot.devices.len() > 1 || self.settings_open {
                 egui::ComboBox::from_id_salt("connect-device-chooser").selected_text("Choose device").width(ui.available_width().min(210.0)).show_ui(ui, |ui| {
                     for device in &snapshot.devices {
-                        let label = format!("{} · {}", device.name, if device.connected { "online" } else { "offline" });
+                        let label = format!("{} · {}", device.name, match (device.paired, device.connected) {
+                            (true, true) => "paired", (true, false) => "paired, offline", (false, true) => "unpaired", (false, false) => "offline",
+                        });
                         if ui.add_enabled(!self.sharing(), egui::Button::new(label).selected(self.selected_device.as_deref() == Some(&device.id))).clicked() {
-                            self.selected_device = Some(device.id.clone()); self.send_open = false; self.confirm_send = None; self.confirm_unpair = None;
+                            self.selected_device = Some(device.id.clone()); self.send_open = false; self.usb_open = false; self.confirm_send = None; self.confirm_unpair = None;
                         }
                     }
                 });
             }
         }
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) { self.settings_open = false; self.send_open = false; self.confirm_send = None; self.confirm_unpair = None; }
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) { self.settings_open = false; self.send_open = false; self.usb_open = false; self.confirm_send = None; self.confirm_unpair = None; }
         ui.add_space(ui::SPACE);
         egui::ScrollArea::vertical().id_salt("connect-content").auto_shrink([false, false]).show(ui, |ui| {
             if let Some(error) = &self.error {
@@ -640,22 +654,24 @@ impl Connect {
                 if device.paired { self.permissions_controls(ui, theme, device, busy); }
                 ui.add_space(ui::SPACE);
                 ui::section(ui, "USB SCREEN", |_| {});
-                let label = ui.label(RichText::new("USB serial").font(ui::display(13.0)).color(ui::TEXT));
-                ui.add_enabled_ui(!busy && !self.sharing(), |ui| {
-                    let response = ui.add(egui::TextEdit::singleline(&mut self.usb_serial).min_size(egui::vec2(0.0, ui::CONTROL_HEIGHT)).id_salt("connect-usb-serial").char_limit(256).desired_width(ui.available_width()).hint_text("Authorized USB serial")).labelled_by(label.id);
-                    self.keyboard |= response.has_focus();
-                });
-                copy(ui, "Select the exact USB serial. Enable USB debugging and approve this computer on that device.", ui::SECONDARY);
+                if device.paired && device.connected && snapshot.screen_capabilities.as_ref().is_some_and(|caps| caps.phone_mirror) {
+                    ui.add_enabled_ui(!busy && !self.sharing(), |ui| {
+                        if ui::button(ui, theme, "Choose USB", None, false).clicked() { self.open_usb_picker(ui.ctx()); }
+                    });
+                }
+                self.usb_serial_field(ui, device, busy);
                 if let Some(capabilities) = &snapshot.screen_capabilities {
                     if !capabilities.message.is_empty() { copy(ui, &capabilities.message, ui::SECONDARY); }
                     if capabilities.extended_output {
-                        ui.add_enabled_ui(!busy && !self.sharing() && device.paired && device.connected && !self.usb_serial.trim().is_empty(), |ui| {
-                            if ui::button(ui, theme, "Extend desktop", None, false).clicked() { self.request(ui.ctx(), Request::screen("extend", device, &self.usb_serial), false); }
+                        ui.add_enabled_ui(!busy && !self.sharing() && device.paired && device.connected && !self.usb_serial_for(device).trim().is_empty(), |ui| {
+                            if ui::button(ui, theme, "Extend desktop", None, false).clicked() { self.request(ui.ctx(), Request::screen("extend", device, self.usb_serial_for(device)), false); }
                         });
                     }
                 }
                 ui.add_space(ui::SPACE);
                 self.service_controls(ui, theme, busy);
+            } else if self.usb_open && !self.sharing() {
+                self.usb_picker(ui, theme, device, busy);
             } else if self.send_open {
                 ui::section(ui, "SEND FILE", |_| {});
                 if device.files_ready() { self.file_controls(ui, theme, device, busy); }
@@ -689,6 +705,70 @@ impl Connect {
         });
     }
 
+    fn usb_serial_for(&self, device: &Device) -> &str {
+        self.usb_serials.get(&device.id).map(String::as_str).unwrap_or("")
+    }
+
+    fn open_usb_picker(&mut self, ctx: &egui::Context) {
+        self.settings_open = false;
+        self.send_open = false;
+        self.usb_open = true;
+        self.usb_devices = None;
+        self.request(ctx, Request { op: "usb_devices", ..Request::state() }, false);
+        ctx.request_repaint();
+    }
+
+    fn usb_serial_field(&mut self, ui: &mut egui::Ui, device: &Device, busy: bool) {
+        if !device.paired { return; }
+        let enabled = !busy && !self.sharing();
+        let serial = self.usb_serials.entry(device.id.clone()).or_default();
+        let label = ui.label(RichText::new("USB serial").font(ui::display(13.0)).color(ui::TEXT));
+        ui.add_enabled_ui(enabled, |ui| {
+            let response = ui.add(egui::TextEdit::singleline(serial).min_size(egui::vec2(0.0, ui::CONTROL_HEIGHT))
+                .id_salt(("connect-usb-serial", &device.id)).char_limit(128).desired_width(ui.available_width())
+                .hint_text("Authorized USB serial")).labelled_by(label.id);
+            self.keyboard |= response.has_focus();
+        });
+    }
+
+    fn usb_picker(&mut self, ui: &mut egui::Ui, theme: &Theme, device: &Device, busy: bool) {
+        ui::section(ui, "MIRROR OVER USB", |_| {});
+        ui.horizontal_wrapped(|ui| {
+            if ui::button(ui, theme, "Back", None, false).clicked() { self.usb_open = false; ui.ctx().request_repaint(); }
+            ui.add_enabled_ui(!busy, |ui| {
+                if ui::button(ui, theme, "Refresh USB", None, false).clicked() { self.open_usb_picker(ui.ctx()); }
+            });
+        });
+        if let Some(devices) = self.usb_devices.clone() {
+            if devices.is_empty() { copy(ui, "Connect the phone by USB and approve USB debugging. Wireless debugging is not supported.", ui::SECONDARY); }
+            for usb in devices {
+                ui.push_id(&usb.serial, |ui| {
+                    let model = if usb.model.is_empty() { "Android device" } else { &usb.model };
+                    let suffix = usb.serial.get(usb.serial.len().saturating_sub(4)..).unwrap_or(&usb.serial);
+                    copy(ui, &format!("{model} · …{suffix}"), ui::TEXT);
+                    ui.add_enabled_ui(!busy && device.paired && device.connected, |ui| {
+                        if ui::button(ui, theme, "Mirror this device", None, false).on_hover_text(&usb.serial).clicked() {
+                            self.usb_serials.insert(device.id.clone(), usb.serial.clone());
+                            self.usb_open = false;
+                            self.request(ui.ctx(), Request::screen("mirror_phone", device, &usb.serial), false);
+                        }
+                    });
+                });
+            }
+        } else if busy { copy(ui, "Checking USB…", ui::SECONDARY); }
+        else { copy(ui, "USB list unavailable. Refresh or enter the serial manually.", ui::SECONDARY); }
+        egui::CollapsingHeader::new("Enter serial manually").show(ui, |ui| {
+            self.usb_serial_field(ui, device, busy);
+            let serial = self.usb_serial_for(device).trim().to_owned();
+            ui.add_enabled_ui(!busy && device.paired && device.connected && !serial.is_empty(), |ui| {
+                if ui::button(ui, theme, "Mirror screen", None, false).clicked() {
+                    self.usb_open = false;
+                    self.request(ui.ctx(), Request::screen("mirror_phone", device, &serial), false);
+                }
+            });
+        });
+    }
+
     fn mirror_canvas(&mut self, ui: &mut egui::Ui, theme: &Theme, snapshot: &Snapshot, device: &Device, busy: bool) {
         let running = self.sharing();
         ui.horizontal_wrapped(|ui| {
@@ -714,12 +794,16 @@ impl Connect {
         }
         if !running {
             let supported = snapshot.screen_capabilities.as_ref().is_some_and(|c| c.phone_mirror);
-            let ready = supported && device.paired && device.connected && !self.usb_serial.trim().is_empty();
+            let ready = supported && device.paired && device.connected;
             ui.horizontal_wrapped(|ui| {
                 ui.add_enabled_ui(!busy && ready, |ui| {
-                    if ui::button(ui, theme, "Mirror screen", None, false).clicked() { self.request(ui.ctx(), Request::screen("mirror_phone", device, &self.usb_serial), false); }
+                    let serial = self.usb_serial_for(device).trim().to_owned();
+                    if ui::button(ui, theme, "Mirror screen", None, false).clicked() {
+                        if serial.is_empty() { self.open_usb_picker(ui.ctx()); }
+                        else { self.request(ui.ctx(), Request::screen("mirror_phone", device, &serial), false); }
+                    }
+                    if !serial.is_empty() && ui::button(ui, theme, "Change USB", None, false).clicked() { self.open_usb_picker(ui.ctx()); }
                 });
-                if !ready && ui::button(ui, theme, "Set up USB", None, false).clicked() { self.settings_open = true; }
             });
         }
     }
@@ -1163,13 +1247,17 @@ mod tests {
         }
         if mode.is_empty() || mode == "pairing" { connect.selected_device = Some("tablet".into()); }
         if mode.starts_with("screen") {
-            connect.usb_serial = "USB-123456".into();
+            connect.usb_serials.insert("phone".into(), "USB-123456".into());
             let snapshot = connect.snapshot.as_mut().unwrap();
             snapshot.devices.retain(|device| device.paired && device.connected);
             snapshot.screen_capabilities = Some(ScreenCapabilities { phone_mirror: true, extended_output: mode != "screen-unavailable", message: if mode == "screen-unavailable" { "Extended USB display unavailable: this desktop has no virtual-output support.".into() } else { "USB screen sharing available.".into() } });
             if mode == "screen-active" {
                 snapshot.screens = Some(Screens { device_id: Some("phone".into()), mode: "phone".into(), serial: Some("USB-123456".into()), running: true, control: false, message: "Disconnecting or locking stops sharing.".into() });
             }
+        }
+        if matches!(mode.as_str(), "usb-picker" | "usb-empty") {
+            connect.usb_open = true;
+            connect.usb_devices = Some(if mode == "usb-empty" { vec![] } else { vec![UsbDevice { model:"RMX3760".into(), serial:"REALME-26CA".into() }] });
         }
         if mode.starts_with("files") {
             let snapshot = connect.snapshot.as_mut().unwrap();

@@ -325,3 +325,26 @@ this verification does not claim that the user's live desktop has loaded the
 new UI. Install target/release/des-ui and target/release/des-connectd into
 /usr/local/bin with normal sudo authentication, then Super+Shift+R loads the
 shell while managed terminal processes reconnect. No logout is required.
+
+
+## USB picker
+
+On CONNECT select the entry marked **paired**, then **Mirror screen**. If a USB
+choice is needed, choose **Mirror this device** beside the physical device.
+The choice is remembered for that paired peer until the shell closes; **Change
+USB** replaces it. The setup view explains an empty list and retains manual
+serial entry for troubleshooting. A paired and an unpaired entry can share a
+name when KDE Connect and DES Connect are both installed on Android.
+
+The shell requests `usb_devices` on demand over the private control socket.
+The daemon lists at most 16 authorized, physically connected USB transports;
+wireless ADB, unauthorized/offline devices, duplicates and malformed serials
+are excluded. The list never starts a capture or grants trust. Selecting a USB
+transport is an explicit choice and existing live peer/lock/USB checks still
+apply to capture. Wireless discovery/pairing does not provide mirroring.
+
+Verification: 96 daemon tests and 29 CONNECT shell tests passed. Native 180px
+previews covered a populated picker and the empty state. An isolated daemon
+queried the real ADB server while the realme was connected wirelessly: the USB
+list was empty, and the locked request was rejected. The realme had previously
+produced a 288×640 RGB frame through the wired mirror path.

@@ -257,6 +257,41 @@ impl ScreenBridge {
 }
 impl Drop for ScreenBridge { fn drop(&mut self) { let _ = self.stop(); } }
 
+#[derive(Serialize)]
+pub struct UsbDevice {
+    serial: String,
+    model: String,
+}
+
+fn parse_usb_devices(output: &str) -> Vec<UsbDevice> {
+    let mut devices: Vec<UsbDevice> = Vec::new();
+    for line in output.lines() {
+        let mut fields = line.split_ascii_whitespace();
+        let Some(serial) = fields.next() else { continue };
+        if validate_serial(serial).is_err() || fields.next() != Some("device") { continue; }
+        let mut usb = false;
+        let mut model = String::new();
+        for field in fields {
+            usb |= field.starts_with("usb:");
+            if let Some(value) = field.strip_prefix("model:") {
+                model = value.chars().filter(|c| !c.is_control()).take(40).collect::<String>().replace('_', " ");
+            }
+        }
+        if usb && !devices.iter().any(|device| device.serial == serial) {
+            devices.push(UsbDevice { serial: serial.into(), model });
+            if devices.len() == 16 { break; }
+        }
+    }
+    devices
+}
+
+pub fn usb_devices() -> Result<Vec<UsbDevice>, String> {
+    let adb = find_executable("adb").ok_or("ADB unavailable; install Android platform-tools")?;
+    let mut command = Command::new(adb);
+    command.args(["devices", "-l"]);
+    run_bounded(&mut command, Duration::from_millis(1200)).map(|output| parse_usb_devices(&output))
+}
+
 fn validate_serial(serial: &str) -> Result<(), String> {
     if serial.is_empty() || serial.len() > 128 || serial.starts_with('-') || !serial.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')) {
         return Err("Select a USB ADB serial (1–128 ASCII letters, digits, dot, underscore or hyphen); network serials are refused".into());
@@ -384,6 +419,14 @@ fn run_bounded(command: &mut Command, timeout: Duration) -> Result<String, Strin
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn usb_picker_rejects_network_and_unapproved_devices() {
+        let devices = parse_usb_devices("List of devices attached\nREALME device usb:1-4 model:RMX3760\n192.168.1.4:5555 device model:RMX3760\nWIFI device model:Phone\nWAIT unauthorized usb:1-1\nOLD offline usb:1-2\n-flag device usb:1-3\nREALME device usb:1-4\n");
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].serial, "REALME");
+        assert_eq!(devices[0].model, "RMX3760");
+    }
+
     use super::*;
     #[test]
     fn serial_rejects_network_and_argument_injection() {
