@@ -1,0 +1,74 @@
+# Screen savers and sleep — design study
+
+Open [index.html](index.html) locally. Choose Silk Fold, Signal Contour or
+Terminal Weave. Drag **Morph** to the right to inspect the assembled logo,
+or select **Replay** to watch it form. **Fullscreen** shows the effect at
+monitor scale. The lower timeline switches between example AC and battery
+profiles. This prototype does not lock, blank or suspend the machine.
+
+The studies use the actual DEs-UI boot wordmark from
+`compositor/assets/wordmark.la`, with local Chakra Petch and JetBrains Mono
+fonts. [React Bits PatternWaves](https://reactbits.dev/backgrounds/pattern-waves?color=ff00f1)
+informed the appearance and pointer behavior. The prototype is its own Canvas
+renderer; it installs no React, OGL, or browser runtime in the desktop.
+
+## Product direction for review
+
+Recommend **Silk Fold** as the first native saver. Keep Contour as a second
+preset if it is useful for lower-power hardware; leave the third study as a
+design option until we have measured it. Retain an Off choice and a static
+wordmark for Reduce Motion and unsupported rendering backends. A time-only
+overlay could be a separate option, with no notifications or private content.
+
+There are three different actions to configure:
+
+| Stage | Plugged in example | Battery example | What happens |
+| --- | ---: | ---: | --- |
+| Lock and show saver | 5 min | 2 min | Lock first, then show the chosen animation on the secure surface. |
+| Display off | 10 min | 3 min | Stop the animation and turn physical outputs off. |
+| Suspend | 30 min | 10 min | Ask logind to suspend, with the session already locked. |
+
+Times are measured from the last activity. They're starting points, not
+changes to anybody's configuration. Allow Never for each automatic stage,
+show the resulting order in Settings, and flag combinations where an earlier
+display-off deadline will skip the saver. The battery profile can disable the
+animation entirely. Plugging or unplugging recomputes the deadlines without
+unlocking or flashing the desktop.
+
+An input event wakes the display and reveals the existing password prompt if
+locked. A key or click that dismisses the saver must not land in an underlying
+window or be entered as part of the password. The interactive ripples in HTML
+are for preview mode. A real saver should dismiss on deliberate input instead
+of trapping the cursor in an animation. Resume never restarts a prior capture
+or goes back to the unlocked desktop when lock-before-sleep is enabled.
+
+## Where it belongs
+
+The compositor already tracks input, asks the shell to lock on idle, handles
+Wayland idle inhibitors and can turn DRM displays off. The shell already
+serves the D-Bus ScreenSaver inhibitor API and handles logind's sleep/lock
+events. Default automatic lock is ten minutes and automatic screen-off is
+disabled in the current source. The prototype's proposed profiles should
+reuse these owners and preserve existing settings on upgrade.
+
+- Give the compositor one explicit idle state machine with independent
+  deadlines and a lock acknowledgement. The existing shell lock screen owns
+  the password UI. Manual lock, explicit sleep, critical battery and lid
+  behavior keep their own priority; distinguish idle/presentation inhibition
+  from logind sleep inhibitors.
+- Prefer one bounded native render pass, or a sparse batched point mesh using
+  the current renderer. Use the HTML for visual tuning; a browser process and
+  a full WebGL ripple simulation would add work just when the desktop is idle.
+  Reuse the existing wordmark, cap animation around 24 fps on AC, and compare a
+  static or lower-rate battery mode on the target laptop. Allocate resources
+  on entry, release or suspend them on exit, and submit no saver frames after
+  display-off or suspend.
+- Validate lid and external-display combinations before changing policy for a
+  docked laptop. Make presentation mode discoverable and show why an idle
+  action is being held off. Test keyboard/mouse/touch wake, lock handshake,
+  suspend failure, resume, display hotplug and disconnect, live inhibitors,
+  and critical battery. Measure CPU, GPU and RAM with the saver idle, visible,
+  and off. Confirm no pre-lock desktop frame appears on any output at wake.
+
+The native implementation is intentionally pending a visual choice and
+agreement on the timing defaults.

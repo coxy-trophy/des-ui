@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#08080b">
+<title>DEs-UI · Screen savers</title>
+<link rel="stylesheet" href="saver.css">
+<script src="saver.js" defer></script>
+</head>
+<body>
+<main class="page">
+  <header class="mast">
+    <span class="brand">DEs<span>-</span>UI</span>
+    <span class="mast-slash" aria-hidden="true">/</span>
+    <span>Screen &amp; sleep</span>
+    <span class="edition"><i></i> Design study</span>
+  </header>
+  <section class="intro" aria-labelledby="title">
+    <div><p class="eyebrow">DEs-UI · IDLE EXPERIENCE</p><h1 id="title">Screen savers</h1></div>
+    <p>Three ways for the desktop to fade into its own mark.</p>
+  </section>
+  <section class="studio" id="studio" aria-label="Interactive screensaver preview">
+    <div class="toolbar">
+      <span class="preview-label"><i></i> <span id="preview-name">Silk Fold</span></span>
+      <div class="tools">
+        <button id="pause" type="button" aria-pressed="false"><span aria-hidden="true">Ⅱ</span> <span id="pause-label">Pause</span></button>
+        <button id="full" type="button"><span aria-hidden="true">⛶</span> <span id="full-label">Fullscreen</span></button>
+      </div>
+    </div>
+    <div class="screen" id="screen">
+      <canvas id="waves" aria-hidden="true"></canvas>
+      <p class="sr-only" id="canvas-description">Soft magenta dots move like folded silk and gather into the DEs-UI logo.</p>
+      <span class="screen-note" id="motion-note">Move your pointer to ripple the preview</span>
+    </div>
+    <div class="transport">
+      <label for="phase">Morph</label>
+      <input id="phase" type="range" min="0" max="100" value="0" aria-label="Logo morph position">
+      <output id="phase-label" for="phase">Wave</output>
+      <button id="replay" type="button"><span aria-hidden="true">↺</span> Replay</button>
+    </div>
+  </section>
+  <section class="studies" aria-label="Screensaver studies">
+    <button class="study" type="button" data-style="silk" aria-pressed="true">
+      <svg class="sample" viewBox="0 0 52 40" aria-hidden="true"><path d="M3 25C13 35 18 9 29 16s12 15 20 2M3 18C13 28 18 2 29 9s12 15 20 2M3 32C13 42 18 16 29 23s12 15 20 2"/></svg>
+      <span><span class="study-title">Silk Fold</span><span class="study-copy">Soft dots fold into the logo.</span></span><span class="number">01</span>
+    </button>
+    <button class="study" type="button" data-style="contour" aria-pressed="false">
+      <svg class="sample" viewBox="0 0 52 40" aria-hidden="true"><path d="M3 35C18 35 21 7 49 7M3 28C18 28 23 3 49 3M3 40C24 40 26 13 49 13M10 40C30 39 33 20 49 20"/></svg>
+      <span><span class="study-title">Signal Contour</span><span class="study-copy">Fine lines trace the logo.</span></span><span class="number">02</span>
+    </button>
+    <button class="study" type="button" data-style="terminal" aria-pressed="false">
+      <svg class="sample terminal" viewBox="0 0 52 40" aria-hidden="true"><text x="2" y="14">.:+*</text><text x="2" y="28">*#%=</text></svg>
+      <span><span class="study-title">Terminal Weave</span><span class="study-copy">Characters assemble the logo.</span></span><span class="number">03</span>
+    </button>
+  </section>
+  <section class="policy" aria-labelledby="policy-title">
+    <div class="policy-head">
+      <div><p class="eyebrow">PROPOSED BEHAVIOR</p><h2 id="policy-title">From idle to sleep</h2></div>
+      <div class="power-toggle" aria-label="Power source">
+        <button type="button" data-power="plugged" aria-pressed="true">Plugged in</button>
+        <button type="button" data-power="battery" aria-pressed="false">On battery</button>
+      </div>
+    </div>
+    <ol class="timeline">
+      <li><span id="lock-time">5 min</span><strong>Lock &amp; show saver</strong><small>Wake to the password prompt.</small></li>
+      <li><span id="off-time">10 min</span><strong>Turn display off</strong><small>Stop drawing the animation.</small></li>
+      <li><span id="sleep-time">30 min</span><strong>Suspend</strong><small>Pause the machine and keep your session.</small></li>
+    </ol>
+    <p class="policy-note" id="policy-note">Times count from your last input. Video playback or presentation mode can hold off automatic stages. Manual lock and lid-close sleep still work.</p>
+  </section>
+  <footer>Browser prototype · desktop settings are unchanged</footer>
+</main>
+</body>
+</html>
