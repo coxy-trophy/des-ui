@@ -517,9 +517,9 @@ impl Connect {
 
     fn transfers_panel(&mut self, ui: &mut egui::Ui, theme: &Theme, snapshot: &Snapshot, busy: bool) {
         if snapshot.transfers.is_empty() { return; }
-        ui.add_space(ui::SPACE);
-        ui::section(ui, "FILE TRANSFERS", |_| {});
-        for transfer in &snapshot.transfers {
+        crate::panels::card(ui, |ui| {
+        crate::panels::card_head(ui, "TRANSFERS", |ui| ui::meta(ui, &snapshot.transfers.len().to_string(), ui::LABEL));
+        for (index, transfer) in snapshot.transfers.iter().enumerate() {
             ui.push_id(("file-transfer", &transfer.id), |ui| {
                 copy(ui, if transfer.filename.is_empty() { "Unnamed file" } else { &transfer.filename }, ui::TEXT);
                 let peer = snapshot.devices.iter().find(|device| device.id == transfer.peer_id);
@@ -543,7 +543,7 @@ impl Connect {
                 ui.horizontal_wrapped(|ui| {
                     if transfer.incoming_offer() {
                         ui.add_enabled_ui(!busy && peer.is_some_and(Device::files_ready), |ui| {
-                            if ui::button(ui, theme, "Accept file", None, false).clicked() {
+                            if ui::button(ui, theme, "Accept file", None, true).clicked() {
                                 self.request(ui.ctx(), Request::transfer("accept_transfer", transfer), false);
                             }
                         });
@@ -556,16 +556,14 @@ impl Connect {
                 if transfer.incoming_offer() && !peer.is_some_and(Device::files_ready) {
                     copy(ui, "Connect the trusted device and apply its file sharing setting before accepting.", ui::SECONDARY);
                 }
-                ui.add_space(4.0);
-                ui.separator();
+                if index + 1 < snapshot.transfers.len() { ui.add_space(4.0); ui.separator(); }
             });
         }
-        ui.add_space(ui::SPACE);
+        });
     }
 
     fn permissions_controls(&mut self, ui: &mut egui::Ui, theme: &Theme, device: &Device, busy: bool) {
-        ui.add_space(ui::SPACE);
-        ui::section(ui, "DEVICE PERMISSIONS", |_| {});
+        crate::panels::card_head(ui, "PERMISSIONS", |_| {});
         ui.add_enabled_ui(!busy, |ui| {
             for permission in DevicePermission::ALL {
                 ui.push_id(permission.op(), |ui| {
@@ -711,47 +709,33 @@ impl Connect {
                 .or_else(|| s.devices.first())
         }).cloned();
         if let Some(device) = &selected { self.selected_device = Some(device.id.clone()); }
-        ui.horizontal(|ui| {
-            let name_width = (ui.available_width() - 82.0).max(30.0);
-            ui.allocate_ui_with_layout(egui::vec2(name_width, ui::CONTROL_HEIGHT), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                let name = selected.as_ref().map(|device| device.name.as_str()).filter(|name| !name.is_empty()).unwrap_or("DES Connect");
-                ui.add(egui::Label::new(RichText::new(name).font(ui::display_bold(17.0)).color(ui::TEXT)).truncate()).on_hover_text(name);
-            });
-            if ui::button(ui, theme, "Settings", None, self.settings_open).clicked() { self.settings_open = !self.settings_open; self.send_open = false; self.usb_open = false; if self.settings_open { self.expanded = false; self.suspend_preview(); } }
-        });
-        ui.horizontal_wrapped(|ui| {
-            if let Some(device) = &selected {
-                ui::meta(ui, if device.connected { if device.paired { "Connected" } else { "Not paired" } } else { "Offline" }, if device.connected { theme.main } else { ui::SECONDARY });
-                if let Some(battery) = device.battery.filter(|n| *n <= 100) {
-                    ui::meta(ui, &format!("{battery}%{}", if device.charging { " · Charging" } else { "" }), ui::SECONDARY);
-                }
-            } else { ui::meta(ui, if snapshot.is_some() { "No device" } else { "Offline" }, ui::SECONDARY); }
-        });
-        // Capture stop stays outside every scroll/context view, including a pending start.
-        let expandable = snapshot.as_ref().and_then(|s| s.screens.as_ref()).is_some_and(|screen| screen.has_preview() && screen.device_id.is_some());
-        if self.sharing() || expandable {
-            ui.horizontal_wrapped(|ui| {
-                if self.sharing() && ui::button(ui, theme, "Stop", None, false).clicked() { self.stop_sharing(ui.ctx()); }
-                if expandable && ui::button(ui, theme, if self.expanded { "Minimize" } else { "Expand" }, None, false).clicked() { self.expanded = !self.expanded; if self.expanded { self.settings_open=false; self.send_open=false; self.usb_open=false; self.keyboard=false; } }
-            });
-        }
-        if let Some(snapshot) = &snapshot {
-            if snapshot.devices.len() > 1 || self.settings_open {
-                egui::ComboBox::from_id_salt("connect-device-chooser").selected_text("Choose device").width(ui.available_width().min(210.0)).show_ui(ui, |ui| {
-                    for device in &snapshot.devices {
-                        let label = format!("{} · {}", device.name, match (device.paired, device.connected) {
-                            (true, true) => "paired", (true, false) => "paired, offline", (false, true) => "unpaired", (false, false) => "offline",
-                        });
-                        if ui.add_enabled(!self.sharing(), egui::Button::new(label).selected(self.selected_device.as_deref() == Some(&device.id))).clicked() {
-                            self.selected_device = Some(device.id.clone()); self.send_open = false; self.usb_open = false; self.confirm_send = None; self.confirm_unpair = None;
-                        }
-                    }
-                });
-            }
-        }
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) { self.settings_open = false; self.send_open = false; self.usb_open = false; self.confirm_send = None; self.confirm_unpair = None; }
-        ui.add_space(ui::SPACE);
+        // Outside the scroll: the device, and Stop while anything is shared.
+        let expandable = snapshot.as_ref().and_then(|s| s.screens.as_ref()).is_some_and(|screen| screen.has_preview() && screen.device_id.is_some());
+        if self.settings_open {
+            ui.horizontal(|ui| {
+                if ui::button(ui, theme, "← Back", None, false).clicked() { self.settings_open = false; }
+                ui::text(ui, "Device settings", ui::display_bold(15.0), ui::TEXT);
+            });
+            if self.sharing() && ui::button(ui, theme, "Stop", None, false).clicked() { self.stop_sharing(ui.ctx()); }
+            ui.add_space(4.0);
+        } else if let (Some(snapshot), Some(device)) = (&snapshot, &selected) {
+            crate::panels::card(ui, |ui| self.device_card(ui, theme, snapshot, device, busy, expandable));
+        } else if self.sharing() {
+            if ui::button(ui, theme, "Stop", None, false).clicked() { self.stop_sharing(ui.ctx()); }
+        }
         egui::ScrollArea::vertical().id_salt("connect-content").auto_shrink([false, false]).show(ui, |ui| {
+            let Some(snapshot) = snapshot.as_ref() else {
+                crate::panels::card(ui, |ui| {
+                    ui::text(ui, "Connect a phone or tablet", ui::display_bold(15.0), ui::TEXT);
+                    copy(ui, if busy { "Starting the Connect service…" } else { "Share its screen and files with this desktop. The Connect service is not running." }, ui::SECONDARY);
+                    ui.add_enabled_ui(!busy, |ui| {
+                        if ui::button(ui, theme, "Start service", None, true).clicked() { self.request(ui.ctx(), Request::state(), true); }
+                    });
+                    if let Some(error) = &self.error { egui::CollapsingHeader::new("Details").id_salt("connect-error-details").show(ui, |ui| copy(ui, error, ui::SECONDARY)); }
+                });
+                return;
+            };
             if let Some(error) = &self.error {
                 let first = error.lines().next().unwrap_or("DES Connect could not complete this action.");
                 let summary: String = first.chars().take(160).collect();
@@ -759,63 +743,127 @@ impl Connect {
                 if summary.len() < error.len() { egui::CollapsingHeader::new("Details").show(ui, |ui| copy(ui, error, ui::SECONDARY)); }
             }
             if let Some(notice) = &self.notice { if notice != "Working…" { copy(ui, notice, ui::SECONDARY); } }
-            let Some(snapshot) = snapshot.as_ref() else {
-                copy(ui, if busy { "Connecting…" } else { "Connect a phone or tablet to share its screen and files." }, ui::SECONDARY);
-                ui.add_enabled_ui(!busy, |ui| {
-                    if ui::button(ui, theme, "Start service", None, false).clicked() { self.request(ui.ctx(), Request::state(), true); }
-                });
-                return;
-            };
             let Some(device) = selected.as_ref() else {
-                copy(ui, "Open DES Connect on your device, then scan.", ui::SECONDARY);
-                self.service_controls(ui, theme, busy);
+                crate::panels::card(ui, |ui| {
+                    crate::panels::card_head(ui, "NO DEVICE YET", |_| {});
+                    copy(ui, "Open DES Connect on your device, then scan.", ui::SECONDARY);
+                    self.service_controls(ui, theme, busy);
+                });
                 return;
             };
             if self.settings_open {
-                ui::section(ui, "DEVICE SETTINGS", |_| {});
-                self.pairing_controls(ui, theme, device, busy);
-                if device.paired { self.permissions_controls(ui, theme, device, busy); }
-                ui.add_space(ui::SPACE);
-                ui::section(ui, "USB SCREEN", |_| {});
-                if device.paired && device.connected && snapshot.screen_capabilities.as_ref().is_some_and(|caps| caps.phone_mirror) {
-                    ui.add_enabled_ui(!busy && !self.sharing(), |ui| {
-                        if ui::button(ui, theme, "Choose USB", None, false).clicked() { self.open_usb_picker(ui.ctx()); }
-                    });
-                }
-                self.usb_serial_field(ui, device, busy);
-                if let Some(capabilities) = &snapshot.screen_capabilities {
-                    if !capabilities.message.is_empty() { copy(ui, &capabilities.message, ui::SECONDARY); }
-                    if capabilities.extended_output {
-                        ui.add_enabled_ui(!busy && !self.sharing() && device.paired && device.connected && !self.usb_serial_for(device).trim().is_empty(), |ui| {
-                            if ui::button(ui, theme, "Extend desktop", None, false).clicked() { self.request(ui.ctx(), Request::screen("extend", device, self.usb_serial_for(device)), false); }
+                crate::panels::card(ui, |ui| {
+                    crate::panels::card_head(ui, "DEVICES", |_| {});
+                    for other in &snapshot.devices {
+                        let state = match (other.paired, other.connected) { (true, true) => "PAIRED", (true, false) => "PAIRED, OFFLINE", (false, true) => "NOT PAIRED", (false, false) => "OFFLINE" };
+                        let chosen = other.id == device.id;
+                        ui.add_enabled_ui(!self.sharing(), |ui| {
+                            if device_row(ui, theme, &other.name, state, chosen).clicked() && !chosen {
+                                self.selected_device = Some(other.id.clone()); self.send_open = false; self.usb_open = false; self.confirm_send = None; self.confirm_unpair = None;
+                            }
                         });
                     }
-                }
-                ui.add_space(ui::SPACE);
-                self.service_controls(ui, theme, busy);
-            } else if self.usb_open && !self.sharing() {
-                self.usb_picker(ui, theme, device, busy);
-            } else if self.send_open {
-                ui::section(ui, "SEND FILE", |_| {});
-                if device.files_ready() { self.file_controls(ui, theme, device, busy); }
-                else {
-                    copy(ui, "Enable file sharing in device settings, then reconnect to apply it.", ui::SECONDARY);
-                    if ui::button(ui, theme, "Device settings", None, false).clicked() { self.settings_open = true; self.send_open = false; self.expanded = false; self.suspend_preview(); }
-                }
-            } else {
-                self.mirror_canvas(ui, theme, snapshot, device, busy, !self.expanded, preview_height);
-                ui.add_space(ui::SPACE);
-                ui.horizontal_wrapped(|ui| {
-                    ui.add_enabled_ui(device.paired && device.connected, |ui| {
-                        if ui::button(ui, theme, "Send file", None, false).clicked() { self.send_open = true; self.expanded = false; self.suspend_preview(); }
-                    });
-                });
-                if !device.paired || matches!(device.pair_state.as_str(), "incoming" | "outgoing" | "accepting") {
+                    ui.add_space(2.0);
                     self.pairing_controls(ui, theme, device, busy);
+                });
+                if device.paired { crate::panels::card(ui, |ui| self.permissions_controls(ui, theme, device, busy)); }
+                crate::panels::card(ui, |ui| {
+                    crate::panels::card_head(ui, "USB SCREEN", |_| {});
+                    if device.paired && device.connected && snapshot.screen_capabilities.as_ref().is_some_and(|caps| caps.phone_mirror) {
+                        ui.add_enabled_ui(!busy && !self.sharing(), |ui| {
+                            if ui::button(ui, theme, "Choose USB", None, false).clicked() { self.open_usb_picker(ui.ctx()); }
+                        });
+                    }
+                    self.usb_serial_field(ui, device, busy);
+                    if let Some(capabilities) = &snapshot.screen_capabilities {
+                        if !capabilities.message.is_empty() { copy(ui, &capabilities.message, ui::SECONDARY); }
+                        if capabilities.extended_output {
+                            ui.add_enabled_ui(!busy && !self.sharing() && device.paired && device.connected && !self.usb_serial_for(device).trim().is_empty(), |ui| {
+                                if ui::button(ui, theme, "Extend desktop", None, false).clicked() { self.request(ui.ctx(), Request::screen("extend", device, self.usb_serial_for(device)), false); }
+                            });
+                        }
+                    }
+                });
+                crate::panels::card(ui, |ui| {
+                    crate::panels::card_head(ui, "SERVICE", |ui| { crate::panels::pill(ui, "RUNNING", theme.main); });
+                    self.service_controls(ui, theme, busy);
+                });
+            } else if self.usb_open && !self.sharing() {
+                crate::panels::card(ui, |ui| self.usb_picker(ui, theme, device, busy));
+            } else if self.send_open {
+                crate::panels::card(ui, |ui| {
+                    crate::panels::card_head(ui, "SEND FILE", |_| {});
+                    if device.files_ready() { self.file_controls(ui, theme, device, busy); }
+                    else {
+                        copy(ui, "Enable file sharing in device settings, then reconnect to apply it.", ui::SECONDARY);
+                        if ui::button(ui, theme, "Device settings", None, false).clicked() { self.settings_open = true; self.send_open = false; self.expanded = false; self.suspend_preview(); }
+                    }
+                    if ui::button(ui, theme, "Done", None, false).clicked() { self.send_open = false; self.confirm_send = None; }
+                });
+            } else {
+                if !device.paired || matches!(device.pair_state.as_str(), "incoming" | "outgoing" | "accepting") {
+                    crate::panels::card(ui, |ui| {
+                        crate::panels::card_head(ui, "PAIRING", |_| {});
+                        self.pairing_controls(ui, theme, device, busy);
+                    });
                 }
+                crate::panels::card(ui, |ui| self.mirror_canvas(ui, theme, snapshot, device, busy, !self.expanded, preview_height));
             }
             self.transfers_panel(ui, theme, snapshot, busy);
         });
+    }
+
+    /// The device in a card: its name and a way to its settings, whether it is
+    /// connected and its battery, then what it can do now, or Stop while sharing.
+    fn device_card(&mut self, ui: &mut egui::Ui, theme: &Theme, snapshot: &Snapshot, device: &Device, busy: bool, expandable: bool) {
+        ui.horizontal(|ui| {
+            let room = (ui.available_width() - 40.0).max(30.0);
+            ui.allocate_ui_with_layout(egui::vec2(room, ui::CONTROL_HEIGHT), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                let name = if device.name.is_empty() { "DES Connect" } else { device.name.as_str() };
+                ui.add(egui::Label::new(RichText::new(name).font(ui::display_bold(16.0)).color(ui::TEXT)).truncate()).on_hover_text(name);
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui::icon_button(ui, theme, ui::Icon::Settings, ui::CONTROL_HEIGHT, false).on_hover_text("Device settings").clicked() {
+                    self.settings_open = true; self.send_open = false; self.usb_open = false; self.expanded = false; self.suspend_preview();
+                }
+            });
+        });
+        ui.horizontal_wrapped(|ui| {
+            let (state, lit) = match (device.connected, device.paired) { (true, true) => ("CONNECTED", true), (true, false) => ("NOT PAIRED", false), _ => ("OFFLINE", false) };
+            crate::panels::pill(ui, state, if lit { theme.main } else { ui::SECONDARY });
+            if let Some(battery) = device.battery.filter(|n| *n <= 100) {
+                ui::text(ui, &format!("{battery}%{}", if device.charging { " · charging" } else { "" }), ui::mono(11.5), ui::SECONDARY);
+            }
+        });
+        if self.sharing() || expandable {
+            ui.horizontal(|ui| {
+                if self.sharing() && ui::button(ui, theme, "Stop", None, false).clicked() { self.stop_sharing(ui.ctx()); }
+                if expandable && ui::button(ui, theme, if self.expanded { "Minimize" } else { "Expand" }, None, false).clicked() { self.expanded = !self.expanded; if self.expanded { self.settings_open=false; self.send_open=false; self.usb_open=false; } }
+            });
+        } else if device.paired {
+            let ready = device.paired && device.connected;
+            let supported = snapshot.screen_capabilities.as_ref().is_some_and(|c| c.phone_mirror);
+            let serial = self.usb_serial_for(device).trim().to_owned();
+            let mut actions: Vec<(ui::Icon, &str, bool, u8)> = Vec::new();
+            if supported || !device.wireless_cast { actions.push((ui::Icon::Display, "Mirror", !busy && ready && supported, 0)); }
+            if device.wireless_cast { actions.push((ui::Icon::Wifi, "Cast", !busy && ready, 1)); }
+            actions.push((ui::Icon::Upload, "Send file", ready, 2));
+            let gap = 6.0;
+            let width = ((ui.available_width() - gap * (actions.len() as f32 - 1.0)) / actions.len() as f32).floor();
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                for (icon, label, enabled, which) in actions {
+                    if action_tile(ui, theme, egui::vec2(width, 54.0), icon, label, enabled) {
+                        match which {
+                            0 if serial.is_empty() => self.open_usb_picker(ui.ctx()),
+                            0 => self.request(ui.ctx(), Request::screen("mirror_phone", device, &serial), false),
+                            1 => self.request(ui.ctx(), Request::device("cast_phone", device), false),
+                            _ => { self.send_open = true; self.expanded = false; self.suspend_preview(); }
+                        }
+                    }
+                }
+            });
+        }
     }
 
     fn service_controls(&mut self, ui: &mut egui::Ui, theme: &Theme, busy: bool) {
@@ -855,7 +903,7 @@ impl Connect {
     }
 
     fn usb_picker(&mut self, ui: &mut egui::Ui, theme: &Theme, device: &Device, busy: bool) {
-        ui::section(ui, "MIRROR OVER USB", |_| {});
+        crate::panels::card_head(ui, "MIRROR OVER USB", |_| {});
         ui.horizontal_wrapped(|ui| {
             if ui::button(ui, theme, "Back", None, false).clicked() { self.usb_open = false; ui.ctx().request_repaint(); }
             ui.add_enabled_ui(!busy, |ui| {
@@ -996,31 +1044,43 @@ impl Connect {
             });
             if let Some(error) = &self.cast_input_error { copy(ui, error, ui::CAUTION); }
         }
-        if !running {
-            let supported = snapshot.screen_capabilities.as_ref().is_some_and(|c| c.phone_mirror);
-            let ready = device.paired && device.connected;
-            ui.horizontal_wrapped(|ui| {
-                if device.wireless_cast {
-                    ui.add_enabled_ui(!busy && ready, |ui| {
-                        if ui::button(ui, theme, "Cast wirelessly", None, false).clicked() {
-                            self.request(ui.ctx(), Request::device("cast_phone", device), false);
-                        }
-                    });
-                }
-                if supported || !device.wireless_cast {
-                    ui.add_enabled_ui(!busy && ready && supported, |ui| {
-                        let serial = self.usb_serial_for(device).trim().to_owned();
-                        if ui::button(ui, theme, if device.wireless_cast { "Mirror via USB" } else { "Mirror screen" }, None, false).clicked() {
-                            if serial.is_empty() { self.open_usb_picker(ui.ctx()); }
-                            else { self.request(ui.ctx(), Request::screen("mirror_phone", device, &serial), false); }
-                        }
-                        if !serial.is_empty() && ui::button(ui, theme, "Change USB", None, false).clicked() { self.open_usb_picker(ui.ctx()); }
-                    });
-                }
+        // Starting is in the device card; a chosen USB connection can be changed here.
+        if !running && device.paired && device.connected && !self.usb_serial_for(device).trim().is_empty() {
+            ui.add_enabled_ui(!busy, |ui| {
+                if ui::button(ui, theme, "Change USB", None, false).clicked() { self.open_usb_picker(ui.ctx()); }
             });
         }
     }
 
+}
+
+/// A square button with an icon over its name, for what the device can do now.
+fn action_tile(ui: &mut egui::Ui, theme: &Theme, size: egui::Vec2, icon: ui::Icon, label: &str, enabled: bool) -> bool {
+    let (rect, response) = ui.allocate_exact_size(size, if enabled { egui::Sense::click() } else { egui::Sense::hover() });
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+    let painter = ui.painter();
+    painter.rect_filled(rect, ui::SURFACE_RADIUS, if response.hovered() && enabled { ui::LINE } else { ui::TRACK });
+    painter.rect_stroke(rect, ui::SURFACE_RADIUS, egui::Stroke::new(1.0, if response.has_focus() { theme.main } else { ui::LINE }), egui::StrokeKind::Inside);
+    let ink = if enabled { theme.main } else { ui::LABEL };
+    ui::paint_icon(painter, egui::Rect::from_center_size(rect.center() - egui::vec2(0.0, 9.0), egui::vec2(16.0, 16.0)), icon, ink, false);
+    painter.text(rect.center() + egui::vec2(0.0, 12.0), egui::Align2::CENTER_CENTER, label, ui::display(12.0), if enabled { ui::TEXT } else { ui::LABEL });
+    response.clicked()
+}
+
+/// A device in the settings list: its name and state; the chosen one outlined.
+fn device_row(ui: &mut egui::Ui, theme: &Theme, name: &str, state: &str, chosen: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 38.0), egui::Sense::click());
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, ui.is_enabled(), chosen, format!("{name} · {state}")));
+    let painter = ui.painter();
+    painter.rect_filled(rect, ui::CONTROL_RADIUS + 2.0, if response.hovered() { ui::LINE } else { ui::TRACK });
+    painter.rect_stroke(rect, ui::CONTROL_RADIUS + 2.0, egui::Stroke::new(1.0, if chosen || response.has_focus() { theme.main } else { ui::LINE }), egui::StrokeKind::Inside);
+    let tag = painter.layout_no_wrap(state.to_string(), ui::mono(9.5), if chosen { theme.main } else { ui::LABEL });
+    let mut job = egui::text::LayoutJob::simple_singleline(name.to_string(), ui::display(13.0), ui::TEXT);
+    job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - tag.size().x - 32.0).max(20.0));
+    let title = painter.layout_job(job);
+    painter.galley(egui::pos2(rect.left() + 10.0, rect.center().y - title.size().y / 2.0), title, ui::TEXT);
+    painter.galley(egui::pos2(rect.right() - 10.0 - tag.size().x, rect.center().y - tag.size().y / 2.0), tag, ui::LABEL);
+    response
 }
 
 // Lexical validation only: no filesystem access, stat, canonicalize or readability probe on the UI thread.

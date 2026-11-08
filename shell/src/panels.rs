@@ -1286,26 +1286,6 @@ pub fn collapsed_clock(ui: &mut Ui, theme: &Theme, rect: Rect) {
     ui.ctx().request_repaint_after(Duration::from_secs((60-now.second()) as u64));
 }
 
-/// The time for the dock: hours over minutes, read without tilting the head, and
-/// the day (or AM/PM) under them when there is room. Repaints on the next minute.
-pub fn stacked_clock(ui: &mut Ui, theme: &Theme, rect: Rect) {
-    if rect.width() < 8.0 || rect.height() < 16.0 { return; }
-    let now = chrono::Local::now();
-    let (hours, minutes, half) = crate::region::vertical_clock(&now);
-    let size = 22.0_f32.min(rect.width() * 0.5).min(rect.height() / 2.6);
-    let painter = ui.painter();
-    let line = size * 0.98;
-    let day = half.unwrap_or_else(|| now.format("%a %d").to_string().to_uppercase());
-    let room_for_day = rect.height() >= line * 2.0 + 16.0;
-    let total = line * 2.0 + if room_for_day { 14.0 } else { 0.0 };
-    let top = rect.center().y - total / 2.0;
-    painter.text(pos2(rect.center().x, top + line / 2.0), Align2::CENTER_CENTER, hours, ui::display(size), ui::TEXT);
-    painter.text(pos2(rect.center().x, top + line * 1.5), Align2::CENTER_CENTER, minutes, ui::display(size), theme.main);
-    if room_for_day { painter.text(pos2(rect.center().x, top + line * 2.0 + 9.0), Align2::CENTER_CENTER, day, ui::mono(9.0), ui::LABEL); }
-    use chrono::Timelike;
-    ui.ctx().request_repaint_after(Duration::from_secs((60 - now.second()) as u64));
-}
-
 /// A minimized side column stays clickable; its tooltip also names the global shortcut.
 pub fn collapsed_rail(ui: &mut Ui, theme: &Theme, panel: Panel) -> bool {
     let rect = ui.max_rect();

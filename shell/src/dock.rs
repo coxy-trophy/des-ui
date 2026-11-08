@@ -167,7 +167,7 @@ impl Dock {
             let clock=tile(expand.bottom()+8.0,(header-60.0).max(16.0));
             let response=ui.interact(clock,ui.id().with("left-dock-clock"),Sense::click());
             if response.hovered()||response.has_focus(){ui.painter().rect_filled(clock,ui::CONTROL_RADIUS,theme.tint());}
-            crate::panels::stacked_clock(ui,theme,clock.shrink2(vec2(2.0,4.0)));
+            crate::panels::collapsed_clock(ui,theme,clock.shrink2(vec2(2.0,4.0)));
             response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,true,"Expand system panel"));
             result.expand|=response.on_hover_text("Click to expand the system panel").clicked();
             let y=body.top()+header-8.0;
