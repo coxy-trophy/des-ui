@@ -9,6 +9,7 @@ const slider = get("phase"), phaseLabel = get("phase-label");
 const reduce = matchMedia("(prefers-reduced-motion: reduce)");
 const presets = {
   silk: {name:"Silk Fold", description:"Magenta dots travel across folds of silk and gather into the DEs-UI wordmark.", ink:"#ff00f1", highlight:"#ff9ce0", background:"#050208"},
+  "silk-ink": {name:"Silk Fold · Ink", description:"A deep magenta DEs-UI wordmark stays woven into the moving field of silk dots.", ink:"#ad227b", highlight:"#d765ac", background:"#050208"},
   contour: {name:"Signal Contour", description:"Fine pink contour lines bend and become slices of the DEs-UI wordmark.", ink:"#ed56be", highlight:"#ffd1ec", background:"#06040a"},
   terminal: {name:"Terminal Weave", description:"Magenta and pale cyan glyphs drift across a grid and assemble the DEs-UI wordmark.", ink:"#d44ab6", highlight:"#9ef5e1", background:"#040609"}
 };
@@ -23,6 +24,7 @@ let paused=reduce.matches, inView=true, frame=0, last=0, elapsed=0;
 let motionOverride=false;
 const motionAllowed=()=>!reduce.matches||motionOverride;
 let logoDots=[],logoRuns=[];
+let logoMask;
 const pointer={x:0,y:0,energy:0};
 
 function logoAt(step) {
@@ -33,6 +35,7 @@ function logoAt(step) {
   logo.onload=()=>{
     m.drawImage(logo,0,0);
     const samples=m.getImageData(0,0,642,126).data;
+    logoMask=samples;
     const filled=(x,y)=>samples[(y*642+x)*4]>115;
     for(let y=2;y<126;y+=step){
       for(let x=2;x<642;x+=step) {
@@ -75,7 +78,9 @@ function background(p) {
   ctx.fillStyle=halo;ctx.fillRect(0,0,w,h);
 }
 function field(p,k) {
-  const step=mode==="terminal"?Math.max(10,w/116):Math.max(6.7,w/174);
+  const woven=mode==="silk-ink";
+  const step=mode==="terminal"?Math.max(10,w/116):woven?Math.max(4.6,w/205):Math.max(6.7,w/174);
+  const lw=Math.min(w*.75,h*1.32,690), lh=lw*126/642;
   if(mode==="terminal")ctx.font=`${Math.max(7,step*.85)}px JetBrains, monospace`;
   for(let y=-step;y<h+step;y+=step)for(let x=0;x<w;x+=step) {
     const height=surface(x,y,elapsed), slope=surface(x+step,y,elapsed)-height;
@@ -83,10 +88,15 @@ function field(p,k) {
     const band=1-smooth(.1,.60,Math.abs(y/h-.51+height*.2));
     const mid=1-smooth(.08,.65,Math.abs(y/h-.5)*1.7+Math.abs(x/w-.5)*.70);
     const light=clamp(.32 + slope*2.6 + height*.3);
-    const opacity=edge*(.12+band*.88)*(.19+light*.68)*(1-k*(.43+mid*.52));
-    if(opacity<.024)continue;
     const r=ripple(x,y);
     const py=y+height*h*.103+r*16;
+    // The logo changes the dye and weight of the very same moving dots.
+    const u=(x-(w-lw)*.5)/lw, v=(py-r*5-height*h*.018-(h-lh)*.5)/lh;
+    const mark=woven&&logoMask&&u>=0&&u<1&&v>=0&&v<1?logoMask[((v*126|0)*642+(u*642|0))*4]/255:0;
+    const dye=smooth(.23,.75,mark);
+    const foldOpacity=edge*(.12+band*.88)*(.19+light*.68);
+    const opacity=woven?mix(foldOpacity*(.66-mid*.36),.68+.24*light+.08*k,dye):foldOpacity*(1-k*(.43+mid*.52));
+    if(opacity<.024)continue;
     ctx.globalAlpha=opacity;
     if(mode==="terminal") {
       const seed=noise(x/step|0,y/step|0);
@@ -94,8 +104,8 @@ function field(p,k) {
       ctx.fillStyle=seed>.92?p.highlight:p.ink;
       ctx.fillText(ch,x,py);
     } else {
-      const radius=clamp(step*(.115+light*.25),.6,3.8);
-      ctx.fillStyle=light>.83?p.highlight:p.ink;
+      const radius=clamp(step*(.115+light*.25+dye*(.16+.045*k)),.6,3.8);
+      ctx.fillStyle=dye>.3?(light>.54?"#e054a7":"#b61d70"):light>.83?p.highlight:p.ink;
       ctx.beginPath();ctx.arc(x,py,radius,0,tau);ctx.fill();
     }
   }
@@ -165,7 +175,7 @@ function draw(){
   const p=presets[mode], k=smooth(0,1,phase);
   background(p);
   if(mode==="contour")contours(p,k);else field(p,k);
-  logo(p,k);
+  if(mode!=="silk-ink")logo(p,k);
   ctx.globalAlpha=1;
 }
 function updateControls(){
@@ -173,7 +183,8 @@ function updateControls(){
   get("pause-label").textContent=paused?"Play":"Pause";
   get("replay").disabled=!motionAllowed();
   slider.value=Math.round(phase*100);
-  phaseLabel.value=phase>.94?"Logo":phase>.06?"Forming":"Wave";
+  get("phase-caption").textContent=mode==="silk-ink"?"Ink":"Morph";
+  phaseLabel.value=mode==="silk-ink"?(phase>.5?"Deep":"Soft"):(phase>.94?"Logo":phase>.06?"Forming":"Wave");
   get("motion-note").textContent=!motionAllowed()?"Reduced motion · scrub to explore":"Move your pointer to ripple the preview";
 }
 function tick(now){
@@ -241,3 +252,4 @@ for(const button of document.querySelectorAll("[data-power]"))button.addEventLis
   get("policy-note").textContent=battery?"On battery, show the saver briefly or skip it entirely. Critical battery and lid-close sleep still take priority.":"Times count from your last input. Video playback or presentation mode can hold off automatic stages. Manual lock and lid-close sleep still work.";
 });
 logoAt(5);resize();updateControls();
+if(location.hash==="#silk-ink")document.querySelector('[data-style="silk-ink"]').click();

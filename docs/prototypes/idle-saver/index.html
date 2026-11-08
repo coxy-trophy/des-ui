@@ -18,7 +18,7 @@
   </header>
   <section class="intro" aria-labelledby="title">
     <div><p class="eyebrow">DEs-UI · IDLE EXPERIENCE</p><h1 id="title">Screen savers</h1></div>
-    <p>Three ways for the desktop to fade into its own mark.</p>
+    <p>Four ways for the desktop to fade into its own mark.</p>
   </section>
   <section class="studio" id="studio" aria-label="Interactive screensaver preview">
     <div class="toolbar">
@@ -34,8 +34,8 @@
       <span class="screen-note" id="motion-note">Move your pointer to ripple the preview</span>
     </div>
     <div class="transport">
-      <label for="phase">Morph</label>
-      <input id="phase" type="range" min="0" max="100" value="0" aria-label="Logo morph position">
+      <label id="phase-caption" for="phase">Morph</label>
+      <input id="phase" type="range" min="0" max="100" value="0">
       <output id="phase-label" for="phase">Wave</output>
       <button id="replay" type="button"><span aria-hidden="true">↺</span> Replay</button>
     </div>
@@ -45,13 +45,17 @@
       <svg class="sample" viewBox="0 0 52 40" aria-hidden="true"><path d="M3 25C13 35 18 9 29 16s12 15 20 2M3 18C13 28 18 2 29 9s12 15 20 2M3 32C13 42 18 16 29 23s12 15 20 2"/></svg>
       <span><span class="study-title">Silk Fold</span><span class="study-copy">Soft dots fold into the logo.</span></span><span class="number">01</span>
     </button>
+    <button class="study" type="button" data-style="silk-ink" aria-pressed="false">
+      <svg class="sample" viewBox="0 0 52 40" aria-hidden="true"><path d="M3 24C16 37 20 4 35 16s11 12 14 9M3 17C16 30 20-3 35 9s11 12 14 9M3 31C16 44 20 11 35 23s11 12 14 9"/><path stroke-width="2.4" d="M18 22c4-6 7-10 12-10"/></svg>
+      <span><span class="study-title">Silk Fold · Ink</span><span class="study-copy">Deep magenta woven into the fabric.</span></span><span class="number">02</span>
+    </button>
     <button class="study" type="button" data-style="contour" aria-pressed="false">
       <svg class="sample" viewBox="0 0 52 40" aria-hidden="true"><path d="M3 35C18 35 21 7 49 7M3 28C18 28 23 3 49 3M3 40C24 40 26 13 49 13M10 40C30 39 33 20 49 20"/></svg>
-      <span><span class="study-title">Signal Contour</span><span class="study-copy">Fine lines trace the logo.</span></span><span class="number">02</span>
+      <span><span class="study-title">Signal Contour</span><span class="study-copy">Fine lines trace the logo.</span></span><span class="number">03</span>
     </button>
     <button class="study" type="button" data-style="terminal" aria-pressed="false">
       <svg class="sample terminal" viewBox="0 0 52 40" aria-hidden="true"><text x="2" y="14">.:+*</text><text x="2" y="28">*#%=</text></svg>
-      <span><span class="study-title">Terminal Weave</span><span class="study-copy">Characters assemble the logo.</span></span><span class="number">03</span>
+      <span><span class="study-title">Terminal Weave</span><span class="study-copy">Characters assemble the logo.</span></span><span class="number">04</span>
     </button>
   </section>
   <section class="policy" aria-labelledby="policy-title">

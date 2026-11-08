@@ -1,8 +1,9 @@
 # Screen savers and sleep — design study
 
-Open [index.html](index.html) locally. Choose Silk Fold, Signal Contour or
-Terminal Weave. Drag **Morph** to the right to inspect the assembled logo,
-or select **Replay** to watch it form. **Fullscreen** shows the effect at
+Open [index.html](index.html) locally. Choose Silk Fold, Silk Fold · Ink,
+Signal Contour or Terminal Weave. Drag **Morph** to inspect the assembled
+logo, or choose [Ink](index.html#silk-ink) and scrub from Soft to Deep to see
+the wordmark dyed into the moving dots. **Fullscreen** shows the effect at
 monitor scale. The lower timeline switches between example AC and battery
 profiles. This prototype does not lock, blank or suspend the machine.
 
