@@ -200,7 +200,7 @@ function draw(){
   const p=presets[mode], k=smooth(0,1,phase);
   if(p.draw){
     ctx.save();
-    p.draw({ctx,w,h,t:elapsed,p:sceneLevels.get(mode),px:pointer.x/w,py:pointer.y/h,energy:pointer.energy,inside:pointer.inside,motion:motionAllowed(),brand:drawBrand});
+    p.draw({ctx,w,h,t:elapsed,p:sceneLevels.get(mode),px:pointer.x/w,py:pointer.y/h,energy:pointer.energy,inside:pointer.inside,motion:motionAllowed(),brand:drawBrand,brandPoints:logoDots});
     ctx.restore();return;
   }
   background(p);

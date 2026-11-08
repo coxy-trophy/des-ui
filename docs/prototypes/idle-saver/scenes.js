@@ -253,7 +253,36 @@ globalThis.desSaverScenes = (() => {
     if(volleys.length>=6)volleys.shift();
     volleys.push({x,t});
   }
-  function rising({ctx,w,h,t,p,px,energy,inside,motion,brand}) {
+  const riseLoop=14;
+  const ease=n=>{const a=clamp(n);return a*a*(3-2*a)};
+  function risingLogo(ctx,w,h,horizon,t,motion,points){
+    const clock=motion?t%riseLoop:7;
+    const width=Math.min(w*.74,h*1.32,610),height=width*126/642;
+    const left=(w-width)/2,top=h*.42-height/2;
+    for(const q of points){
+      const start=1.05+q.x*1.28+q.seed*.68;
+      const travel=(clock-start)/(1.44+q.fuzz*.94);
+      const release=(clock-9.4-q.seed*.84-q.x*.48)/(1.85+q.fuzz*.52);
+      if(travel<=0||release>=1)continue;
+      const tx=left+q.x*width,ty=top+q.y*height;
+      const move=1-(1-clamp(travel))**2.35,depart=ease(release);
+      const spread=(q.seed-.5)*w*.15;
+      const x=mix(tx+spread,tx,move)+(q.fuzz-.5)*w*.12*depart;
+      const y=mix(horizon,ty,move)-depart*h*(.18+q.seed*.51);
+      const fade=ease(travel*5)*(1-ease(release));
+      const tail=travel<1?(1-move)*h*(.032+q.seed*.115):depart*h*.08;
+      if(tail>.7){
+        ctx.globalAlpha=fade*.36;
+        ctx.fillStyle=q.fuzz>.5?"#bd68ef":"#f2a5e3";
+        ctx.fillRect(x-.42,y,.84,Math.min(tail,horizon-y));
+      }
+      ctx.globalAlpha=fade*(.58+q.seed*.42);
+      ctx.fillStyle=q.seed>.63?"#ffe4ff":q.fuzz>.42?"#eca4ec":"#a97ce6";
+      dot(ctx,x,y,Math.max(.48,width/642*(1.13+q.seed*.85)));
+    }
+    ctx.globalAlpha=1;
+  }
+  function rising({ctx,w,h,t,p,px,energy,inside,motion,brandPoints}) {
     ground(ctx,w,h,"#07060b","#090610");
     const horizon=h*.895, center=w*.50;
     const reveal=motion?Math.min(1,.25+t*.7):1, strength=.44+p*.54;
@@ -323,7 +352,7 @@ globalThis.desSaverScenes = (() => {
           clamp(1-age/2.7)*(.67+.31*rand(i*13+103)));
       }
     }
-    brand(center,horizon+h*.064,Math.min(w*.15,155),"#e3b3ee",.55);
+    risingLogo(ctx,w,h,horizon,t,motion,brandPoints);
   }
 
   return {
@@ -332,6 +361,6 @@ globalThis.desSaverScenes = (() => {
     "night-transit": {name:"Night Transit", description:"Rose and cyan traffic trails trace a highway into a neon horizon.", control:"Speed", hint:"Move the pointer to steer the view", level:.47, draw:transit},
     "liquid-prism": {name:"Liquid Prism", description:"Bands of rose, jade and lilac glass slide past the DEs-UI wordmark.", control:"Sheen", hint:"Move the pointer to bend the ribbons", level:.62, draw:prism},
     "phosphor-sweep": {name:"Phosphor Sweep", description:"A green radar sweep leaves fading contacts and a phosphor trail.", control:"Trail", hint:"Move the pointer over the scope to mark a contact", level:.56, draw:radar},
-    "rising-lines": {name:"Rising Lines", description:"Pink-white filaments rise from a violet horizon and fade into the dark.", control:"Density", hint:"Hover for an updraft · click to launch a volley", level:.57, draw:rising, click:launchRise, reset:()=>{volleys.length=0}}
+    "rising-lines": {name:"Rising Lines", description:"Pink-white sparks rise from a violet horizon, trace the DEs-UI wordmark, and drift away.", control:"Density", hint:"Hover for an updraft · click to launch a volley", level:.57, draw:rising, click:launchRise, reset:()=>{volleys.length=0}}
   };
 })();

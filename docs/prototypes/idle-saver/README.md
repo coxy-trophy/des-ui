@@ -22,7 +22,7 @@ references as starting points:
 | [Night Transit](index.html#night-transit) | [Hyperspeed](https://reactbits.dev/backgrounds/hyperspeed) | A rose and cyan night drive with a low skyline, curved lanes and adjustable speed. |
 | [Liquid Prism](index.html#liquid-prism) | [Iridescence](https://reactbits.dev/backgrounds/iridescence) | Shaded ribbons of rose, jade and lilac glass that bend slightly under the pointer. |
 | [Phosphor Sweep](index.html#phosphor-sweep) | [Radar](https://reactbits.dev/backgrounds/radar) | A green scope with fading contacts, an adjustable afterglow and a pointer marker. |
-| [Rising Lines](index.html#rising-lines) | [Rising Lines](https://pro.reactbits.dev/docs/components/rising-lines) | An original recreation from the public preview: white-tipped lines rise from a violet horizon. Hover to lift a column, click for a short volley, and use Density to tune the field. |
+| [Rising Lines](index.html#rising-lines) | [Rising Lines](https://pro.reactbits.dev/docs/components/rising-lines) | White-tipped particles rise from the violet horizon, draw the DEs-UI logo, and drift away. Hover to lift a column or click for a volley. Reduced motion holds the assembled logo. |
 
 ## Product direction for review
 
