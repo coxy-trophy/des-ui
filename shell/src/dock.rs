@@ -2,6 +2,7 @@
 use crate::{app_icons::IconCache, apps::{self, AppEntry}, theme::Theme, ui::{self}};
 use des_common::ipc::{Command, DesktopState};
 use eframe::egui::{self, Align2, Key, Modifiers, Rect, Sense, vec2};
+
 #[cfg(test)]
 use eframe::egui::pos2;
 use std::collections::HashSet;
@@ -80,6 +81,9 @@ pub struct Output {pub action:Option<Action>,pub overlay:Option<Rect>,pub keyboa
 #[derive(Default)]
 pub struct RailOutput {pub output:Output,pub expand:bool}
 
+/// The few readings the collapsed system panel keeps in view, at the foot of the dock.
+pub struct Vitals { pub cpu: f32, pub memory: f32, pub failed: usize }
+
 pub struct Dock {
     entries: Vec<AppEntry>,
     scan: Option<Receiver<Vec<AppEntry>>>,
@@ -142,12 +146,13 @@ impl Dock {
     }
     /// Compact running-app dock in the collapsed left column. Blank space is
     /// deliberately left without an interaction target; expansion is click-only.
-    pub fn rail_on(&mut self,ui:&mut egui::Ui,state:Option<&DesktopState>,theme:&Theme)->RailOutput {
+    pub fn rail_on(&mut self,ui:&mut egui::Ui,state:Option<&DesktopState>,theme:&Theme,vitals:Option<&Vitals>)->RailOutput {
         let ctx=ui.ctx().clone();self.refresh(&ctx);
         let empty=DesktopState::default();let state=state.unwrap_or(&empty);
         let all=items_on(&self.entries,&[],state,None);
         let body=ui.max_rect();
-        let header=(body.height()*0.4).min(164.0);let footer=(body.height()*0.3).min(88.0);
+        let header=(body.height()*0.4).min(164.0);let base_footer=(body.height()*0.3).min(88.0);
+        let vitals_height=if vitals.is_some()&&body.height()>=480.0 {78.0}else{0.0};let footer=base_footer+vitals_height;
         let slot=44.0_f32.min((body.height()-header-footer).max(1.0));
         let capacity=((body.height()-header-footer)/slot).floor().max(1.0) as usize;
         let tile=|top:f32,height:f32|Rect::from_min_size(egui::pos2(body.left()+4.0,top),vec2((body.width()-8.0).max(1.0),height.max(1.0)));
@@ -162,7 +167,7 @@ impl Dock {
             let clock=tile(expand.bottom()+8.0,(header-60.0).max(16.0));
             let response=ui.interact(clock,ui.id().with("left-dock-clock"),Sense::click());
             if response.hovered()||response.has_focus(){ui.painter().rect_filled(clock,ui::CONTROL_RADIUS,theme.tint());}
-            crate::panels::collapsed_clock(ui,theme,clock.shrink2(vec2(2.0,4.0)));
+            crate::panels::stacked_clock(ui,theme,clock.shrink2(vec2(2.0,4.0)));
             response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,true,"Expand system panel"));
             result.expand|=response.on_hover_text("Click to expand the system panel").clicked();
             let y=body.top()+header-8.0;
@@ -210,9 +215,15 @@ impl Dock {
                 });
             }
         }
-        let footer_control=if all.len()>capacity {((footer-4.0)/2.0).clamp(1.0,36.0)}else{(footer-4.0).clamp(1.0,36.0)};
+        let footer_control=if all.len()>capacity {((base_footer-4.0)/2.0).clamp(1.0,36.0)}else{(base_footer-4.0).clamp(1.0,36.0)};
+        if let Some(vitals)=vitals.filter(|_|vitals_height>0.0) {
+            let rect=tile(body.bottom()-footer,vitals_height-10.0);
+            result.expand|=vitals_corner(ui,theme,rect,vitals);
+            let y=rect.bottom()+4.0;
+            ui.painter().line_segment([egui::pos2(body.left()+12.0,y),egui::pos2(body.right()-12.0,y)],egui::Stroke::new(1.0,ui::LINE));
+        }
         if all.len()>capacity {
-            let rect=tile(body.bottom()-footer,footer_control);
+            let rect=tile(body.bottom()-base_footer,footer_control);
             let response=ui.put(rect,egui::Button::new("···").frame(false)).on_hover_text("More running applications");
             let popup=ui.id().with("left-dock-overflow");if self.rail_popup==Some(popup){seen_popup=true;}
             if response.clicked(){self.motion.dismiss();ctx.memory_mut(|m|m.toggle_popup(popup));self.rail_popup=Some(popup);seen_popup=true;}
@@ -711,6 +722,32 @@ mod right_panel_tests {
 
 }
 
+/// The processor and memory as two short gauges, and failed services as an amber
+/// count; amber only when something needs a look. A click opens the system panel.
+fn vitals_corner(ui:&mut egui::Ui,theme:&Theme,rect:egui::Rect,vitals:&Vitals)->bool {
+    let response=ui.interact(rect,ui.id().with("left-dock-vitals"),Sense::click());
+    let failed=if vitals.failed>0 {format!(", {} failed {}",vitals.failed,if vitals.failed==1{"service"}else{"services"})}else{String::new()};
+    let label=format!("Processor {:.0}%, memory {:.0}%{failed}",vitals.cpu,vitals.memory);
+    response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,true,&label));
+    if response.hovered()||response.has_focus(){ui.painter().rect_filled(rect,ui::CONTROL_RADIUS,theme.tint());}
+    let painter=ui.painter();
+    let well=|x:f32,value:f32|{
+        let track=egui::Rect::from_min_size(egui::pos2(x-3.0,rect.top()+8.0),vec2(6.0,30.0));
+        painter.rect_filled(track,3.0,ui::TRACK);
+        let frac=(value/100.0).clamp(0.0,1.0);
+        let ink=if frac>ui::CAUTION_ABOVE {ui::CAUTION}else{theme.main};
+        painter.rect_filled(egui::Rect::from_min_max(egui::pos2(track.left(),track.bottom()-track.height()*frac),track.max),3.0,ink);
+    };
+    well(rect.center().x-7.0,vitals.cpu);well(rect.center().x+7.0,vitals.memory);
+    painter.text(egui::pos2(rect.center().x,rect.top()+46.0),Align2::CENTER_CENTER,"CPU MEM",ui::mono(8.5),ui::LABEL);
+    if vitals.failed>0 {
+        let at=egui::pos2(rect.center().x,rect.top()+60.0);
+        painter.circle_filled(at-vec2(6.0,0.0),3.0,ui::CAUTION);
+        painter.text(at+vec2(2.0,0.0),Align2::LEFT_CENTER,vitals.failed.min(99).to_string(),ui::mono(9.5),ui::CAUTION);
+    }
+    response.on_hover_text(format!("{label}\nClick to expand the system panel")).clicked()
+}
+
 #[cfg(test)] mod left_rail_tests {
     use super::*;
     use des_common::ipc::{AppInfo,Place};
@@ -726,7 +763,7 @@ mod right_panel_tests {
                 let input=egui::RawInput{screen_rect:Some(Rect::from_min_size(pos2(0.0,0.0),vec2(600.0,600.0))),time:Some(frame as f64*0.05),events,..Default::default()};
                 let _=ctx.run(input,|ctx|{egui::CentralPanel::default().show(ctx,|ui|{
                     let mut rail=ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(pos2(0.0,0.0),vec2(44.0,500.0))));
-                    expanded|=dock.rail_on(&mut rail,Some(&state()),&Theme::load("signal")).expand;
+                    expanded|=dock.rail_on(&mut rail,Some(&state()),&Theme::load("signal"),None).expand;
                 });});
             }
             assert_eq!(expanded,wanted,"expansion ownership at y={y}");
@@ -740,7 +777,7 @@ mod right_panel_tests {
             let input=egui::RawInput{screen_rect:Some(Rect::from_min_size(pos2(0.0,0.0),vec2(600.0,600.0))),time:Some(time),events:vec![egui::Event::PointerMoved(pos2(22.0,y))],..Default::default()};
             let _=ctx.run(input,|ctx|{egui::CentralPanel::default().show(ctx,|ui|{
                 let mut rail=ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(pos2(0.0,0.0),vec2(44.0,500.0))));
-                hover.push(dock.rail_on(&mut rail,Some(&state()),&Theme::load("signal")).expand);
+                hover.push(dock.rail_on(&mut rail,Some(&state()),&Theme::load("signal"),None).expand);
             });});
         }
         assert!(hover.iter().all(|expanded| !expanded),"hover must never open the system panel");

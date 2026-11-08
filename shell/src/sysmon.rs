@@ -287,7 +287,6 @@ impl SysMon {
     }
 
     /// The processor's temperature, or failing a sensor of its own the hottest there is.
-    #[cfg(test)]
     pub fn cpu_temperature(&self) -> Option<f32> {
         self.temps
             .iter()

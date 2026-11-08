@@ -337,14 +337,6 @@ pub fn tile<R>(ui: &mut Ui, theme: &Theme, active: bool, add: impl FnOnce(&mut U
         }).inner
 }
 
-/// A tile holding one labelled value.
-pub fn value_tile(ui: &mut Ui, theme: &Theme, label: &str, value: &str) {
-    tile(ui, theme, false, |ui| {
-        tracked(ui, label, display(11.0), SECONDARY, 0.7);
-        text(ui, value, mono(12.0), TEXT);
-    });
-}
-
 /// A key's name in a box. Returns the space it took.
 pub fn keycap(ui: &mut Ui, key: &str) -> Response {
     let galley = galley(ui, key, mono(11.0), TEXT, 0.0);

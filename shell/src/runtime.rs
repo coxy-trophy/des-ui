@@ -462,9 +462,10 @@ impl eframe::App for App {
 
                 let column = vec2(24.0, 24.0);
                 if open.left {
+                    let next_event = self.agenda.next_today();
                     let rect = on_screen(frame_layout.left.expect("open left panel"));
                     frame_region(ui, rect, column, Layout::top_down(Align::Min), |ui| {
-                        panels::left(ui, &theme, &self.mon, &mut self.pet, &self.widgets)
+                        panels::left(ui, &theme, &self.mon, &mut self.pet, &self.widgets, next_event.as_ref())
                     });
                 }
                 if open.right {
@@ -515,7 +516,8 @@ impl eframe::App for App {
                         if !visible {
                             if let Some(rect)=rect {
                                 let clicked=if panel==des_common::Panel::Left && !self.capture.marking() {
-                                    let rail=frame_region(ui,rect,vec2(0.0,0.0),Layout::top_down(Align::Center),|ui|self.dock.rail_on(ui,state.as_ref(),&theme));
+                                    let vitals=crate::dock::Vitals{cpu:self.mon.cpu_hist.back().copied().unwrap_or(0.0),memory:self.mon.mem_used as f32*100.0/self.mon.mem_total.max(1) as f32,failed:self.mon.failed_units.len()};
+                                    let rail=frame_region(ui,rect,vec2(0.0,0.0),Layout::top_down(Align::Center),|ui|self.dock.rail_on(ui,state.as_ref(),&theme,Some(&vitals)));
                                     left_rail_output=Some(rail.output);rail.expand
                                 } else {frame_region(ui,rect,vec2(0.0,0.0),Layout::top_down(Align::Center),|ui|panels::collapsed_rail(ui,&theme,panel))};
                                 if clicked {match &self.desktop {Some(_)=>command=Some(Command::TogglePanel(panel)),None=>self.local_panels.toggle(panel)}}

@@ -19,12 +19,9 @@ use std::time::{Duration, Instant};
 
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
-/// Space between a column's sections.
-const SECTION_GAP: f32 = 22.0;
-
 /// What the left column keeps for the process list and the companion, so that the
 /// optional instrument sections above them never crowd them out.
-const LEFT_RESERVE: f32 = 3.0 * 27.0 + SECTION_GAP + 30.0;
+const LEFT_RESERVE: f32 = CARD_CHROME + 3.0 * 26.0 + 30.0;
 
 /// How many of the optional sections, in order and each of the given height, fit in
 /// `available` while leaving `reserve` for what must follow.
@@ -64,16 +61,58 @@ pub fn truncate(s: &str, max: usize) -> String {
 }
 
 /// Lays two equal tiles side by side.
-fn tile_pair(ui: &mut Ui, mut left: impl FnMut(&mut Ui), mut right: impl FnMut(&mut Ui)) {
-    let width = (ui.available_width() - 8.0) / 2.0;
-    ui.horizontal_top(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        ui.allocate_ui_with_layout(vec2(width, 0.0), Layout::top_down(Align::Min), |ui| left(ui));
-        ui.allocate_ui_with_layout(vec2(width, 0.0), Layout::top_down(Align::Min), |ui| right(ui));
-    });
+/// A rounded card around a group of readings, as wide as the column.
+pub(crate) fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let inner = eframe::egui::Frame::new()
+        .fill(ui::PANEL)
+        .stroke(Stroke::new(1.0, ui::LINE))
+        .corner_radius(ui::SURFACE_RADIUS)
+        .inner_margin(eframe::egui::Margin::same(CARD_PAD as i8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 7.0;
+            add(ui)
+        })
+        .inner;
+    ui.add_space(CARD_GAP);
+    inner
 }
 
-/// The clock, in the display face: hours and minutes large, seconds in the accent.
+/// Inside a card around a panel's readings.
+const CARD_PAD: f32 = 12.0;
+/// Between cards.
+const CARD_GAP: f32 = 8.0;
+/// A card's frame and heading, before its readings.
+const CARD_CHROME: f32 = CARD_PAD * 2.0 + 18.0 + 7.0 + CARD_GAP;
+
+/// A card's heading: its name at the left, and whatever `right` draws at the right.
+/// Fixed height, so the column's budget can count on it.
+pub(crate) fn card_head(ui: &mut Ui, title: &str, right: impl FnOnce(&mut Ui)) {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 18.0), Sense::hover());
+    let title = ui::galley(ui, title, ui::display_bold(12.5), ui::SECONDARY, 1.2);
+    ui.painter().galley(pos2(rect.left(), rect.center().y - title.size().y / 2.0), title.clone(), ui::SECONDARY);
+    let mut end = ui.new_child(eframe::egui::UiBuilder::new().max_rect(Rect::from_min_max(pos2(rect.left() + title.size().x + 8.0, rect.top()), rect.max)).layout(Layout::right_to_left(Align::Center)));
+    end.spacing_mut().item_spacing.x = 6.0;
+    right(&mut end);
+}
+
+/// A small rounded label: a state in a word or two.
+pub(crate) fn pill(ui: &mut Ui, text: &str, color: eframe::egui::Color32) -> eframe::egui::Response {
+    let galley = ui::galley(ui, text, ui::mono(10.0), color, 0.6);
+    let size = galley.size() + vec2(14.0, 6.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    ui.painter().rect_stroke(rect, size.y / 2.0, Stroke::new(1.0, color.gamma_multiply(0.7)), StrokeKind::Inside);
+    ui.painter().galley(rect.center() - galley.size() / 2.0, galley, color);
+    response
+}
+
+/// A labelled reading in a fixed-height row: name at the left, value at the right.
+fn reading_row(ui: &mut Ui, label: &str, value: &str, color: eframe::egui::Color32) {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 16.0), Sense::hover());
+    ui.painter().text(rect.left_center(), Align2::LEFT_CENTER, label, ui::mono(11.5), ui::LABEL);
+    ui.painter().text(rect.right_center(), Align2::RIGHT_CENTER, value, ui::mono(11.5), color);
+}
+
 fn clock(ui: &mut Ui, theme: &Theme, size: f32) {
     let now = chrono::Local::now();
     let main = ui::galley(ui, &crate::region::hours_minutes(&now), ui::display(size), ui::TEXT, 1.0);
@@ -91,8 +130,90 @@ fn clock(ui: &mut Ui, theme: &Theme, size: f32) {
     ui.painter().galley(seconds_pos, seconds, theme.main);
 }
 
+/// The date and how long the machine has been up, on one line; the uptime goes
+/// when the column is too narrow for both.
+fn date_line(ui: &mut Ui, mon: &SysMon, font: eframe::egui::FontId) {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 16.0), Sense::hover());
+    let date = ui::galley(ui, &chrono::Local::now().format("%a %d %b %Y").to_string().to_uppercase(), font.clone(), ui::SECONDARY, 1.6);
+    let up = mon.uptime_shown();
+    let uptime = ui::galley(ui, &format!("UP {} D {} H", up / 86400, (up / 3600) % 24), font, ui::SECONDARY, 1.0);
+    ui.painter().galley(pos2(rect.left(), rect.center().y - date.size().y / 2.0), date.clone(), ui::SECONDARY);
+    if date.size().x + 16.0 + uptime.size().x <= rect.width() {
+        ui.painter().galley(pos2(rect.right() - uptime.size().x, rect.center().y - uptime.size().y / 2.0), uptime, ui::SECONDARY);
+    }
+}
+
+/// What the calendar has next today, as a way into the calendar.
+fn next_event(ui: &mut Ui, next: &(String, chrono::NaiveDateTime)) {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
+    response.widget_info(|| eframe::egui::WidgetInfo::labeled(eframe::egui::WidgetType::Button, true, format!("Next: {} at {}", next.0, next.1.format("%H:%M"))));
+    let painter = ui.painter();
+    painter.rect_filled(rect, ui::CONTROL_RADIUS + 2.0, if response.hovered() { ui::LINE } else { ui::TRACK });
+    let icon = Rect::from_center_size(rect.left_center() + vec2(18.0, 0.0), vec2(14.0, 14.0));
+    painter.rect_stroke(icon, 2.0, Stroke::new(1.3, ui::SECONDARY), StrokeKind::Inside);
+    painter.hline(icon.x_range(), icon.top() + 4.0, Stroke::new(1.3, ui::SECONDARY));
+    let time = ui::galley(ui, &next.1.format("%H:%M").to_string(), ui::mono(11.0), ui::SECONDARY, 0.0);
+    let room = rect.width() - 34.0 - time.size().x - 18.0;
+    let mut job = eframe::egui::text::LayoutJob::simple_singleline(format!("Next: {}", next.0), ui::display(12.5), ui::TEXT);
+    job.wrap = eframe::egui::text::TextWrapping::truncate_at_width(room.max(20.0));
+    let title = painter.layout_job(job);
+    painter.galley(pos2(rect.left() + 34.0, rect.center().y - title.size().y / 2.0), title, ui::TEXT);
+    painter.galley(pos2(rect.right() - 10.0 - time.size().x, rect.center().y - time.size().y / 2.0), time, ui::SECONDARY);
+    if response.on_hover_cursor(eframe::egui::CursorIcon::PointingHand).clicked() {
+        crate::agenda::request(ui.ctx(), pos2(rect.left(), rect.bottom() + 8.0));
+    }
+}
+
+/// A line chart of recent values with the area under it lightly filled.
+fn area_chart(ui: &mut Ui, values: &[f32], max: f32, size: eframe::egui::Vec2, color: eframe::egui::Color32) {
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    if values.len() < 2 || max <= 0.0 { return; }
+    let step = rect.width() / (values.len() - 1) as f32;
+    let points: Vec<eframe::egui::Pos2> = values.iter().enumerate()
+        .map(|(i, v)| pos2(rect.left() + i as f32 * step, rect.bottom() - 1.0 - (v / max).clamp(0.0, 1.0) * (rect.height() - 2.0)))
+        .collect();
+    let mut mesh = eframe::egui::Mesh::default();
+    let fill = color.gamma_multiply(0.14);
+    for pair in points.windows(2) {
+        let base = mesh.vertices.len() as u32;
+        mesh.colored_vertex(pair[0], fill);
+        mesh.colored_vertex(pair[1], fill);
+        mesh.colored_vertex(pos2(pair[1].x, rect.bottom()), fill);
+        mesh.colored_vertex(pos2(pair[0].x, rect.bottom()), fill);
+        mesh.add_triangle(base, base + 1, base + 2);
+        mesh.add_triangle(base, base + 2, base + 3);
+    }
+    ui.painter().add(eframe::egui::Shape::mesh(mesh));
+    ui.painter().line(points, Stroke::new(1.5, color));
+}
+
+/// The machine whose readings these are: its name, whether it is this one or one
+/// followed through ssh, and services that failed.
+fn machine_card(ui: &mut Ui, theme: &Theme, mon: &SysMon) {
+    card(ui, |ui| {
+        let name = mon.remote.as_ref().map_or(mon.host.as_str(), |remote| if remote.live { mon.host.as_str() } else { remote.name.as_str() });
+        card_head(ui, &truncate(&name.to_uppercase(), 16), |ui| {
+            match &mon.remote {
+                Some(remote) if remote.live => { pill(ui, "REMOTE · LIVE", theme.main); }
+                Some(remote) => { pill(ui, &format!("REMOTE · {}", remote.word.to_uppercase()), ui::CAUTION); }
+                None => { pill(ui, "LOCAL", theme.main); }
+            }
+            if !mon.failed_units.is_empty() {
+                pill(ui, &format!("{} FAILED", mon.failed_units.len()), ui::CAUTION)
+                    .on_hover_text(mon.failed_units.join("\n"));
+            }
+        });
+        let about = format!("{} · kernel {}", mon.os, mon.kernel.split(['-', '+']).next().unwrap_or(&mon.kernel));
+        let fit = ((ui.available_width() / 7.2) as usize).max(8);
+        ui::text(ui, &truncate(&about, fit), ui::mono(11.5), ui::SECONDARY).on_hover_text(format!("{} · kernel {}", mon.os, mon.kernel));
+        for unit in mon.failed_units.iter().take(2) {
+            ui::text(ui, &truncate(unit, fit), ui::mono(11.5), ui::CAUTION);
+        }
+    });
+}
+
 /// Keep the companion's footer independent of telemetry flow and clipping.
-pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon, pet: &mut crate::pet::Pet, widgets: &crate::widgets::Widgets) {
+pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon, pet: &mut crate::pet::Pet, widgets: &crate::widgets::Widgets, next: Option<&(String, chrono::NaiveDateTime)>) {
     let rect = ui.max_rect();
     let footer = pet.room().min(rect.height());
     let body = Rect::from_min_max(rect.min, pos2(rect.right(), (rect.bottom()-footer-if footer>0.0 {8.0}else{0.0}).max(rect.top()+1.0)));
@@ -101,7 +222,7 @@ pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon, pet: &mut crate::pet::Pet,
     if body.height() < 560.0 {
         left_compact(&mut instruments, theme, mon);
     } else {
-        left_instruments(&mut instruments, theme, mon, widgets);
+        left_instruments(&mut instruments, theme, mon, widgets, next);
     }
     if footer > 0.0 {
         let area = Rect::from_min_max(pos2(rect.left(), rect.bottom()-footer), rect.max);
@@ -111,186 +232,155 @@ pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon, pet: &mut crate::pet::Pet,
     }
 }
 
+/// On a short screen: the time, the processor and memory together, and the busiest
+/// processes for as far as they fit.
 fn left_compact(ui: &mut Ui, theme: &Theme, mon: &SysMon) {
     ui.spacing_mut().item_spacing.y = 5.0;
-    clock(ui, theme, if ui.max_rect().height() < 300.0 {38.0}else{48.0});
-    ui::text(ui, &chrono::Local::now().format("%a %d %b %Y").to_string().to_uppercase(), ui::mono(10.0), ui::SECONDARY);
-    ui.add_space(8.0);
-    ui::section(ui, "SYSTEM", |ui| ui::meta(ui, &truncate(&mon.os, 18), ui::LABEL));
+    clock(ui, theme, if ui.max_rect().height() < 300.0 {38.0}else{46.0});
+    date_line(ui, mon, ui::mono(10.5));
+    ui.add_space(6.0);
     let cpu = mon.cpu_hist.back().copied().unwrap_or(0.0);
-    ui::section(ui, "PROCESSOR", |ui| ui::meta(ui, &format!("{cpu:.0}%"), theme.main));
-    ui::bar_grid(ui, theme, &mon.cores, 100.0, 18.0, |i, usage| format!("Core {}: {usage:.0}%", i+1));
-    ui.add_space(8.0);
-    ui::section(ui, "MEMORY", |ui| ui::meta(ui, &format!("{:.1}/{:.1} GiB", mon.mem_used as f64/GIB, mon.mem_total as f64/GIB), ui::TEXT));
-    ui::bar(ui, theme, 8.0, mon.mem_used as f32/mon.mem_total.max(1) as f32, 0.0);
-    if ui.available_height() >= 56.0 {
-        ui.add_space(8.0);
-        ui::section(ui, "PROCESSES", |_| {});
-        for process in &mon.top {
-            if ui.available_height() < 23.0 { break; }
-            let (row,_) = ui.allocate_exact_size(vec2(ui.available_width(),23.0),Sense::hover());
-            ui.painter().text(row.left_center(),Align2::LEFT_CENTER,truncate(&process.name,14),ui::mono(11.0),ui::TEXT);
-            ui.painter().text(row.right_center(),Align2::RIGHT_CENTER,format!("{:.0}%",process.cpu),ui::mono(11.0),ui::SECONDARY);
+    card(ui, |ui| {
+        card_head(ui, "PROCESSOR", |ui| { ui::text(ui, &format!("{cpu:.0}%"), ui::mono(12.0), if cpu > ui::CAUTION_ABOVE * 100.0 { ui::CAUTION } else { ui::TEXT }); });
+        ui::bar_grid(ui, theme, &mon.cores, 100.0, 18.0, |i, usage| format!("Core {}: {usage:.0}%", i+1));
+        ui.add_space(2.0);
+        card_head(ui, "MEMORY", |ui| { ui::text(ui, &format!("{:.1}/{:.0} GiB", mon.mem_used as f64/GIB, mon.mem_total as f64/GIB), ui::mono(11.0), ui::TEXT); });
+        ui::bar(ui, theme, 6.0, mon.mem_used as f32/mon.mem_total.max(1) as f32, 0.0);
+        if let Some(temperature) = mon.cpu_temperature() {
+            reading_row(ui, "CPU TEMP", &format!("{temperature:.0}°"), if temperature >= 100.0 * ui::CAUTION_ABOVE { ui::CAUTION } else { ui::TEXT });
         }
+    });
+    if ui.available_height() >= CARD_CHROME + 24.0 {
+        let floor = ui.max_rect().bottom() - CARD_PAD - CARD_GAP;
+        card(ui, |ui| {
+            card_head(ui, "PROCESSES", |ui| ui::meta(ui, "CPU", ui::LABEL));
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for process in &mon.top {
+                if ui.cursor().top() + 24.0 > floor { break; }
+                let (row,_) = ui.allocate_exact_size(vec2(ui.available_width(),24.0),Sense::hover());
+                let busy = process.cpu > ui::CAUTION_ABOVE * 100.0 / 2.0;
+                ui.painter().text(row.left_center(),Align2::LEFT_CENTER,truncate(&process.name,16),ui::mono(11.5),ui::TEXT);
+                ui.painter().text(row.right_center(),Align2::RIGHT_CENTER,format!("{:.0}%",process.cpu),ui::mono(11.5),if busy { ui::CAUTION } else { ui::SECONDARY });
+            }
+        });
     }
 }
 
-fn left_instruments(ui: &mut Ui, theme: &Theme, mon: &SysMon, widgets: &crate::widgets::Widgets) {
+fn left_instruments(ui: &mut Ui, theme: &Theme, mon: &SysMon, widgets: &crate::widgets::Widgets, next: Option<&(String, chrono::NaiveDateTime)>) {
     // At the start of a session the column comes on with the rest of the frame.
     let stage = powerup::stage(ui.ctx());
     stage.apply(ui, Part::Left);
     ui.spacing_mut().item_spacing.y = 7.0;
-    let now = chrono::Local::now();
     // The clock is sized for a full-width column and shrinks with it.
-    clock(ui, theme, 68.0 * (ui.available_width() / 272.0).min(1.0));
-    ui.horizontal(|ui| {
-        let date = now.format("%a %d %b %Y").to_string().to_uppercase();
-        let date = ui::tracked(ui, &date, ui::display(13.0), ui::SECONDARY, 2.0);
-        let up = mon.uptime_shown();
-        let uptime = format!("UP {}D {}H", up / 86400, (up / 3600) % 24);
-        let uptime = ui::galley(ui, &uptime, ui::display(13.0), ui::SECONDARY, 2.0);
-        // On a narrow column the date alone has to do.
-        let column = ui.max_rect();
-        if date.rect.right() + 16.0 + uptime.size().x <= column.right() {
-            let at = pos2(column.right() - uptime.size().x, date.rect.top());
-            ui.painter().galley(at, uptime, ui::SECONDARY);
-        }
-    });
+    clock(ui, theme, 64.0 * (ui.available_width() / 272.0).min(1.0));
+    date_line(ui, mon, ui::display(12.5));
+    if let Some(next) = next { next_event(ui, next); }
+    ui.add_space(6.0);
 
-    ui.add_space(SECTION_GAP);
     // Following a host through ssh: its name, and whether its readings are the ones shown.
-    let title = if mon.remote.is_some() { "REMOTE" } else { "SYSTEM" };
-    ui::section(ui, title, |ui| {
-        match &mon.remote {
-            Some(remote) if remote.live => ui::meta(ui, &truncate(&mon.host, 18), theme.main),
-            Some(remote) => {
-                ui::meta(ui, remote.word, ui::CAUTION);
-                ui::meta(ui, &truncate(&remote.name, 14), ui::LABEL);
-            }
-            None => ui::meta(ui, &truncate(&mon.host, 18), ui::LABEL),
-        }
-        // Failed units are the one thing here that asks for a look.
-        if !mon.failed_units.is_empty() {
-            let count = mon.failed_units.len();
-            ui::meta(ui, &format!("{count} FAILED"), ui::CAUTION);
-        }
-    });
-    tile_pair(
-        ui,
-        |ui| ui::value_tile(ui, theme, "OS", &truncate(&mon.os, 14)),
-        |ui| ui::value_tile(ui, theme, "KERNEL", &truncate(&mon.kernel, 14)),
-    );
+    machine_card(ui, theme, mon);
 
-    ui.add_space(SECTION_GAP);
     let load = mon.cpu_hist.back().copied().unwrap_or(0.0);
-    ui::section(ui, "PROCESSOR", |ui| {
-        ui::meta(ui, &format!("{load:.0}%"), ui::TEXT);
-        if let Some(average) = mon.load {
-            ui::meta(ui, &format!("LOAD {:.2}", average[0]), ui::LABEL);
+    card(ui, |ui| {
+        card_head(ui, "PROCESSOR", |ui| {
+            if let Some(average) = mon.load { ui::meta(ui, &format!("LOAD {:.1} · {:.1} · {:.1}", average[0], average[1], average[2]), ui::LABEL); }
+        });
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 10.0;
+            let hot = load > ui::CAUTION_ABOVE * 100.0;
+            big_figure(ui, &format!("{load:.0}"), "%", if hot { ui::CAUTION } else { ui::TEXT });
+            let width = ui.available_width();
+            area_chart(ui, &stage.swept_values(&mon.cpu_hist).iter().copied().collect::<Vec<_>>(), 100.0, vec2(width, 38.0), theme.main);
+        });
+        // One bar per core, however many there are; the pointer reads any one of them.
+        ui::bar_grid(ui, theme, &stage.swept_slice(&mon.cores), 100.0, 26.0, |i, usage| format!("Core {}: {usage:.0}%", i + 1));
+        if let Some(gpu) = &mon.gpu {
+            ui::meter(ui, theme, "GPU", 44.0, stage.swept(gpu.busy as f32 / 100.0), &format!("{}%", gpu.busy));
         }
     });
-    ui::sparkline(ui, &stage.swept_values(&mon.cpu_hist), 100.0, vec2(ui.available_width(), 56.0), theme.main, true);
-    ui.add_space(3.0);
-    // One bar per core, however many there are; the pointer reads any one of them.
-    ui::bar_grid(ui, theme, &stage.swept_slice(&mon.cores), 100.0, 28.0, |i, usage| format!("Core {}: {usage:.0}%", i + 1));
-    if let Some(gpu) = &mon.gpu {
-        ui.add_space(3.0);
-        ui::meter(ui, theme, "GPU", 30.0, stage.swept(gpu.busy as f32 / 100.0), &format!("{}", gpu.busy));
-    }
 
-    ui.add_space(SECTION_GAP);
-    ui::section(ui, "MEMORY", |ui| {
-        let total = format!("/ {:.1} GiB", mon.mem_total as f64 / GIB);
-        ui::meta(ui, &total, ui::LABEL);
-        ui::meta(ui, &format!("{:.1}", mon.mem_used as f64 / GIB), ui::TEXT);
-    });
-    ui::sparkline(ui, &stage.swept_values(&mon.mem_hist), 100.0, vec2(ui.available_width(), 30.0), theme.main, true);
-    ui.add_space(3.0);
-    ui::bar(ui, theme, 10.0, stage.swept(mon.mem_used as f32 / mon.mem_total.max(1) as f32), 0.0);
-    ui.horizontal(|ui| {
-        ui::text(ui, "USED", ui::mono(11.0), ui::SECONDARY);
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let swap = format!("SWAP {:.1} GiB", mon.swap_used as f64 / GIB);
-            ui::text(ui, &swap, ui::mono(11.0), ui::SECONDARY);
+    card(ui, |ui| {
+        card_head(ui, "MEMORY", |ui| { if mon.swap_total > 0 { ui::meta(ui, &format!("SWAP {:.1} GiB", mon.swap_used as f64 / GIB), ui::LABEL); } });
+        let used = mon.mem_used as f32 / mon.mem_total.max(1) as f32;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            big_figure(ui, &format!("{:.1}", mon.mem_used as f64 / GIB), "", ui::TEXT);
+            ui::text(ui, &format!("/ {:.1} GiB used", mon.mem_total as f64 / GIB), ui::mono(11.5), ui::SECONDARY);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| { ui::text(ui, &format!("{:.0}%", used * 100.0), ui::mono(12.0), ui::TEXT); });
         });
+        ui::bar(ui, theme, 8.0, stage.swept(used), 0.0);
     });
 
     // The instruments that need hardware to speak, and room to be seen.
     let temps = mon.temps.len().min(4);
     let fans = mon.fans.len().min(2);
-    let thermal_height = if temps > 0 { SECTION_GAP + 24.0 + (temps + fans) as f32 * 23.0 } else { 0.0 };
+    let thermal_height = if temps > 0 { CARD_CHROME + (temps + fans) as f32 * 23.0 } else { 0.0 };
     let filesystems = mon.filesystems.len().min(3);
-    let storage_height = SECTION_GAP + 24.0 + 36.0 + 7.0 + filesystems as f32 * 23.0;
+    let storage_height = CARD_CHROME + filesystems as f32 * 23.0;
     // The user's own widgets come before the optional instruments, so they keep their room too.
     let widget_height = widgets.on(des_common::Panel::Left).count() as f32 * 60.0;
     let fitting = sections_that_fit(ui.available_height(), LEFT_RESERVE + widget_height, &[thermal_height, storage_height]);
     if temps > 0 && fitting >= 1 {
-        ui.add_space(SECTION_GAP);
         let hottest = mon.temps[0].degrees;
-        ui::section(ui, "THERMAL", |ui| {
-            let color = if hottest >= 100.0 * ui::CAUTION_ABOVE { ui::CAUTION } else { ui::TEXT };
-            ui::meta(ui, &format!("{hottest:.0}°C"), color);
-        });
-        for reading in mon.temps.iter().take(temps) {
-            ui::meter(ui, theme, &reading.label, 44.0, reading.degrees / 100.0, &format!("{:.0}°", reading.degrees));
-        }
-        for fan in mon.fans.iter().take(fans) {
-            ui.horizontal(|ui| {
-                ui::text(ui, &truncate(&fan.label, 12), ui::mono(12.0), ui::LABEL);
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let reading = if fan.rpm == 0 { "STILL".to_string() } else { format!("{} RPM", fan.rpm) };
-                    ui::text(ui, &reading, ui::mono(12.0), ui::TEXT);
-                });
+        card(ui, |ui| {
+            let hot = hottest >= 100.0 * ui::CAUTION_ABOVE;
+            card_head(ui, "THERMAL", |ui| {
+                if hot { pill(ui, &format!("{hottest:.0} °C · HOT"), ui::CAUTION); }
+                else { ui::meta(ui, &format!("{hottest:.0} °C"), ui::LABEL); }
             });
-        }
+            for reading in mon.temps.iter().take(temps) {
+                ui::meter(ui, theme, &truncate(&reading.label, 7), 56.0, reading.degrees / 100.0, &format!("{:.0}°", reading.degrees));
+            }
+            for fan in mon.fans.iter().take(fans) {
+                reading_row(ui, &truncate(&fan.label, 12), &if fan.rpm == 0 { "STILL".to_string() } else { format!("{} RPM", fan.rpm) }, ui::TEXT);
+            }
+        });
     }
     if fitting >= 2 {
-        ui.add_space(SECTION_GAP);
         let read = mon.disk_read_hist.back().copied().unwrap_or(0.0);
         let written = mon.disk_write_hist.back().copied().unwrap_or(0.0);
-        ui::section(ui, "STORAGE", |ui| {
-            ui::meta(ui, &format!("W {}/s", human_bytes(written as f64)), ui::SECONDARY);
-            ui::meta(ui, &format!("R {}/s", human_bytes(read as f64)), ui::TEXT);
+        card(ui, |ui| {
+            card_head(ui, "STORAGE", |ui| ui::meta(ui, &format!("R {}/s · W {}/s", human_bytes(read as f64), human_bytes(written as f64)), ui::LABEL));
+            for fs in mon.filesystems.iter().take(filesystems) {
+                ui::meter(ui, theme, &truncate(&fs.mount, 7), 56.0, stage.swept(fs.used), &format!("{:.0}%", fs.used * 100.0));
+            }
         });
-        // Reads above the line, writes below, on one scale.
-        let peak = mon
-            .disk_read_hist
-            .iter()
-            .chain(mon.disk_write_hist.iter())
-            .fold(1024.0_f32 * 1024.0, |a, b| a.max(*b));
-        ui::waterfall(ui, &stage.swept_values(&mon.disk_read_hist), &stage.swept_values(&mon.disk_write_hist), peak, vec2(ui.available_width(), 36.0), theme.main, ui::SECONDARY);
-        for fs in mon.filesystems.iter().take(filesystems) {
-            ui::meter(ui, theme, &truncate(&fs.mount, 9), 60.0, stage.swept(fs.used), &format!("{:.0}%", fs.used * 100.0));
-        }
     }
 
     if widget_height > 0.0 && ui.available_height() > widget_height + LEFT_RESERVE {
         crate::widgets::show(ui, theme, widgets, des_common::Panel::Left);
     }
 
-    ui.add_space(SECTION_GAP);
-    ui::section(ui, "PROCESSES", |ui| ui::meta(ui, "CPU · MEM", ui::LABEL));
-    ui.spacing_mut().item_spacing.y = 0.0;
     // The list stops short of the companion's strip, so the animal always has its room.
-    let floor = ui.max_rect().bottom();
-    for process in &mon.top {
-        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 27.0), Sense::hover());
-        if rect.bottom() > floor {
-            break;
+    if ui.available_height() < CARD_CHROME + 26.0 { return; }
+    let floor = ui.max_rect().bottom() - CARD_PAD - CARD_GAP;
+    card(ui, |ui| {
+        card_head(ui, "PROCESSES", |ui| ui::meta(ui, "CPU · MEMORY", ui::LABEL));
+        ui.spacing_mut().item_spacing.y = 0.0;
+        for process in &mon.top {
+            if ui.cursor().top() + 26.0 > floor { break; }
+            let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::hover());
+            let painter = ui.painter();
+            let busy = process.cpu > ui::CAUTION_ABOVE * 100.0 / 2.0;
+            let ink = if busy { ui::CAUTION } else { theme.main };
+            painter.text(rect.left_center(), Align2::LEFT_CENTER, truncate(&process.name, 13), ui::mono(12.0), ui::TEXT);
+            let memory_left = rect.right() - 64.0;
+            painter.text(rect.right_center(), Align2::RIGHT_CENTER, human_bytes(process.mem as f64), ui::mono(11.5), ui::SECONDARY);
+            painter.text(pos2(memory_left - 6.0, rect.center().y), Align2::RIGHT_CENTER, format!("{:.0}%", process.cpu), ui::mono(12.0), if busy { ui::CAUTION } else { ui::TEXT });
+            let track = Rect::from_min_size(pos2(memory_left - 82.0, rect.center().y - 2.0), vec2(36.0, 4.0));
+            painter.rect_filled(track, 2.0, ui::TRACK);
+            painter.rect_filled(Rect::from_min_size(track.min, vec2(track.width() * (process.cpu / 100.0).clamp(0.0, 1.0), 4.0)), 2.0, ink);
         }
-        let painter = ui.painter();
-        let busy = process.cpu > ui::CAUTION_ABOVE * 100.0 / 2.0;
-        painter.text(rect.left_center(), Align2::LEFT_CENTER, truncate(&process.name, 16), ui::mono(12.0), ui::TEXT);
-        painter.text(
-            rect.right_center() - vec2(70.0, 0.0),
-            Align2::RIGHT_CENTER,
-            format!("{:.0}%", process.cpu),
-            ui::mono(12.0),
-            if busy { ui::CAUTION } else { ui::TEXT },
-        );
-        painter.text(rect.right_center(), Align2::RIGHT_CENTER, human_bytes(process.mem as f64), ui::mono(12.0), ui::SECONDARY);
-        painter.hline(rect.x_range(), rect.bottom(), Stroke::new(1.0, ui::TRACK));
-    }
+    });
+}
+
+/// A large figure with a small unit after it, for the reading a card is about.
+fn big_figure(ui: &mut Ui, value: &str, unit: &str, color: eframe::egui::Color32) {
+    let number = ui::galley(ui, value, ui::display_bold(28.0), color, 0.0);
+    let unit = ui::galley(ui, unit, ui::display(14.0), ui::SECONDARY, 0.0);
+    let (rect, _) = ui.allocate_exact_size(vec2(number.size().x + unit.size().x + 2.0, 32.0), Sense::hover());
+    ui.painter().galley(pos2(rect.left(), rect.bottom() - number.size().y), number.clone(), color);
+    ui.painter().galley(pos2(rect.left() + number.size().x + 2.0, rect.bottom() - unit.size().y - 3.0), unit, ui::SECONDARY);
 }
 
 /// What each display is showing, for the right column.
@@ -1315,6 +1405,26 @@ pub fn collapsed_clock(ui: &mut Ui, theme: &Theme, rect: Rect) {
     ui.ctx().request_repaint_after(Duration::from_secs((60-now.second()) as u64));
 }
 
+/// The time for the dock: hours over minutes, read without tilting the head, and
+/// the day (or AM/PM) under them when there is room. Repaints on the next minute.
+pub fn stacked_clock(ui: &mut Ui, theme: &Theme, rect: Rect) {
+    if rect.width() < 8.0 || rect.height() < 16.0 { return; }
+    let now = chrono::Local::now();
+    let (hours, minutes, half) = crate::region::vertical_clock(&now);
+    let size = 22.0_f32.min(rect.width() * 0.5).min(rect.height() / 2.6);
+    let painter = ui.painter();
+    let line = size * 0.98;
+    let day = half.unwrap_or_else(|| now.format("%a %d").to_string().to_uppercase());
+    let room_for_day = rect.height() >= line * 2.0 + 16.0;
+    let total = line * 2.0 + if room_for_day { 14.0 } else { 0.0 };
+    let top = rect.center().y - total / 2.0;
+    painter.text(pos2(rect.center().x, top + line / 2.0), Align2::CENTER_CENTER, hours, ui::display(size), ui::TEXT);
+    painter.text(pos2(rect.center().x, top + line * 1.5), Align2::CENTER_CENTER, minutes, ui::display(size), theme.main);
+    if room_for_day { painter.text(pos2(rect.center().x, top + line * 2.0 + 9.0), Align2::CENTER_CENTER, day, ui::mono(9.0), ui::LABEL); }
+    use chrono::Timelike;
+    ui.ctx().request_repaint_after(Duration::from_secs((60 - now.second()) as u64));
+}
+
 /// A minimized side column stays clickable; its tooltip also names the global shortcut.
 pub fn collapsed_rail(ui: &mut Ui, theme: &Theme, panel: Panel) -> bool {
     let rect = ui.max_rect();
@@ -1426,7 +1536,7 @@ mod left_footer_tests {
                 eframe::egui::CentralPanel::default().show(ctx,|ui| {
                     let mut column = ui.new_child(eframe::egui::UiBuilder::new().max_rect(area));
                     column.set_clip_rect(area);
-                    left(&mut column,&theme,&mon,&mut pet,&widgets);
+                    left(&mut column,&theme,&mon,&mut pet,&widgets,None);
                 });
             });
             assert!(output.shapes.iter().any(|shape| match &shape.shape {

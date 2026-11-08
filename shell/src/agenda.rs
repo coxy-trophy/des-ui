@@ -583,6 +583,17 @@ impl Agenda {
         }
     }
 
+    /// What starts next today, for the clock in the left panel: its name and start.
+    pub fn next_today(&self) -> Option<(String, NaiveDateTime)> {
+        let now = Local::now().naive_local();
+        let midnight = now.date().and_hms_opt(23, 59, 59)?;
+        let events = self.events.lock().ok()?;
+        expand(&events, now, midnight).into_iter()
+            .filter(|o| !o.all_day && o.start >= now)
+            .min_by_key(|o| o.start)
+            .map(|o| (o.summary, o.start))
+    }
+
     /// Announces, once, what starts within the next quarter of an hour.
     pub fn pump(&mut self, notices: &mut Center) {
         if self.last_check.is_some_and(|at| at.elapsed() < StdDuration::from_secs(30)) {
