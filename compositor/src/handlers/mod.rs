@@ -131,6 +131,7 @@ impl smithay::wayland::idle_inhibit::IdleInhibitHandler for DesComp {
     fn inhibit(&mut self, surface: smithay::reexports::wayland_server::protocol::wl_surface::WlSurface) {
         if !self.idle_inhibitors.contains(&surface) {
             self.idle_inhibitors.push(surface);
+            self.dismiss_saver();
         }
     }
 

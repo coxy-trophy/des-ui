@@ -7,6 +7,7 @@
 
 mod handlers;
 mod input;
+mod saver;
 mod ipc;
 mod monitors;
 mod policy;

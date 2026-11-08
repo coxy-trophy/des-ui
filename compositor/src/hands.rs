@@ -238,10 +238,18 @@ impl DesComp {
         self.tell_hands(Hands::Failed);
     }
 
+    fn hand_button(&mut self, button: u32, pressed: bool, time: u32) {
+        use crate::saver::{Change, Control, Source};
+        let change = if pressed { Change::Begin } else { Change::End };
+        if !self.saver_input(Some(&Source::Hands), [(Control::Button(button), change)]) {
+            self.pointer_button(button, if pressed { ButtonState::Pressed } else { ButtonState::Released }, time);
+        }
+    }
+
     fn let_go(&mut self, held: Vec<u32>) {
         let time = self.start_time.elapsed().as_millis() as u32;
         for button in held {
-            self.pointer_button(button, ButtonState::Released, time);
+            self.hand_button(button, false, time);
         }
     }
 
@@ -311,11 +319,10 @@ impl DesComp {
                     }
                 }
                 self.hand_feedback.button(which, pressed, Instant::now());
-                self.input_activity();
-                self.pointer_button(button, if pressed { ButtonState::Pressed } else { ButtonState::Released }, time);
+                self.hand_button(button, pressed, time);
             }
             Message::Scroll(by) if self.overview_open().is_none() => {
-                self.input_activity();
+                if self.saver_input(None, []) { return; }
                 // As on a touchpad: with natural scrolling the page follows the hand.
                 let sign = if self.input_settings.touchpad_natural_scroll { -1.0 } else { 1.0 };
                 let amount = sign * by as f64 / 2.0 * SCROLL;
@@ -326,8 +333,7 @@ impl DesComp {
             Message::Scroll(_) => {}
             // As on a touchpad: towards the left is the next workspace.
             Message::Sweep(side) => {
-                if self.locked || self.picking { return; }
-                self.input_activity();
+                if self.saver_input(None, []) || self.locked || self.picking { return; }
                 match side {
                     Side::Left => self.switch_workspace(self.workspace + 1),
                     Side::Right if self.workspace > 0 => self.switch_workspace(self.workspace - 1),
@@ -372,7 +378,13 @@ impl DesComp {
 
     fn move_by_hand(&mut self, step: (f64, f64)) {
         let elapsed = self.start_time.elapsed();
-        self.input_activity();
+        if self.saver_input(None, []) {
+            if let Some(running) = self.hands.as_mut() {
+                running.pending = (0.0, 0.0);
+                running.glide_left = Duration::ZERO;
+            }
+            return;
+        }
         let delta = smithay::utils::Point::from(step);
         self.pointer_moved(delta, delta, elapsed.as_micros() as u64, elapsed.as_millis() as u32);
     }

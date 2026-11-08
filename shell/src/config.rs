@@ -24,6 +24,52 @@ pub enum Palette {
     Derived,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Saver {
+    #[default]
+    Off,
+    SilkInk,
+    SignalContour,
+    TerminalWeave,
+    NightTransit,
+    RisingLines,
+    EventHorizon,
+    PolarVeil,
+}
+
+impl Saver {
+    pub const ALL: [Self; 8] = [
+        Self::Off, Self::SilkInk, Self::SignalContour, Self::TerminalWeave,
+        Self::NightTransit, Self::RisingLines, Self::EventHorizon, Self::PolarVeil,
+    ];
+
+    pub fn value(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::SilkInk => "silk-ink",
+            Self::SignalContour => "signal-contour",
+            Self::TerminalWeave => "terminal-weave",
+            Self::NightTransit => "night-transit",
+            Self::RisingLines => "rising-lines",
+            Self::EventHorizon => "event-horizon",
+            Self::PolarVeil => "polar-veil",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::SilkInk => "Silk Fold · Ink",
+            Self::SignalContour => "Signal Contour",
+            Self::TerminalWeave => "Terminal Weave",
+            Self::NightTransit => "Night Transit",
+            Self::RisingLines => "Rising Lines",
+            Self::EventHorizon => "Event Horizon",
+            Self::PolarVeil => "Polar Veil",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub shortcuts: des_common::shortcuts::Bindings,
@@ -60,6 +106,8 @@ pub struct Config {
     pub location: Option<Place>,
     /// Whether the screen locks before the machine sleeps.
     pub lock_on_sleep: bool,
+    /// What the shell shows after the compositor locks an idle session.
+    pub screensaver: Saver,
     /// Whether a notification that shows also makes a sound.
     pub notification_sounds: bool,
     /// Whether processor heat threshold crossings produce notifications.
@@ -114,6 +162,7 @@ impl Default for Config {
             lookups: true,
             location: None,
             lock_on_sleep: true,
+            screensaver: Saver::Off,
             notification_sounds: true,
             processor_temperature_warnings: true,
             do_not_disturb: false,
@@ -200,6 +249,7 @@ impl Config {
                 "do_not_disturb" => config.do_not_disturb = value == "on",
                 "dnd_schedule" => config.dnd_schedule = crate::notify::parse_schedule(value),
                 "lock_on_sleep" => config.lock_on_sleep = value != "off",
+                "screensaver" => config.screensaver = Saver::ALL.into_iter().find(|scene| scene.value() == value).unwrap_or_default(),
                 "notification_sounds" => config.notification_sounds = value != "off",
                 "processor_temperature_warnings" => config.processor_temperature_warnings = value != "off",
                 "animate" => {
@@ -388,6 +438,35 @@ pub fn night_light_value((from, to, kelvin): (u8, u8, u32)) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn screensaver_defaults_off_and_rejects_unknown_scenes() {
+        assert_eq!(Config::parse("").screensaver, Saver::Off);
+        assert_eq!(Config::parse("screensaver = on").screensaver, Saver::Off);
+        assert_eq!(Config::parse("screensaver = ").screensaver, Saver::Off);
+        assert_eq!(Config::parse("screensaver = silk-ink\nscreensaver = off").screensaver, Saver::Off);
+    }
+
+    #[test]
+    fn screensaver_choices_round_trip_through_the_settings_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config");
+        for (value, scene) in [
+            ("silk-ink", Saver::SilkInk),
+            ("signal-contour", Saver::SignalContour),
+            ("terminal-weave", Saver::TerminalWeave),
+            ("night-transit", Saver::NightTransit),
+            ("rising-lines", Saver::RisingLines),
+            ("event-horizon", Saver::EventHorizon),
+            ("polar-veil", Saver::PolarVeil),
+        ] {
+            assert_eq!(scene.value(), value);
+            set_at(&path, "screensaver", Some(value)).unwrap();
+            assert_eq!(Config::parse(&std::fs::read_to_string(&path).unwrap()).screensaver, scene);
+        }
+        set_at(&path, "screensaver", None).unwrap();
+        assert_eq!(Config::parse(&std::fs::read_to_string(&path).unwrap()).screensaver, Saver::Off);
+    }
+
     #[test]
     fn shortcuts_post_rename_sync_failure_uses_the_committed_configuration() {
         let temp = tempfile::tempdir().unwrap(); let path = temp.path().join("config");

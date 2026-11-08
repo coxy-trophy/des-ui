@@ -80,8 +80,15 @@ impl DesComp {
         (outputs, candidates)
     }
 
+    fn scale_window_geometry(&self, window: &Window) -> Option<smithay::utils::Rectangle<i32, smithay::utils::Logical>> {
+        self.space.element_geometry(window).or_else(|| {
+            let entry = self.secondary_savers.iter().find(|entry| &entry.window == window)?;
+            self.screens.get(entry.screen).copied()
+        })
+    }
+
     fn preferred_output_for_window(&self, window: &Window) -> Option<Output> {
-        let geometry = self.space.element_geometry(window)?;
+        let geometry = self.scale_window_geometry(window)?;
         let (outputs, candidates) = self.scale_candidates();
         preferred_output_index(geometry, &candidates).map(|index| outputs[index].clone())
     }
@@ -90,9 +97,11 @@ impl DesComp {
     /// or whose display changed scale, hear of it. Smithay sends nothing it already sent.
     pub fn prefer_scales(&self) {
         let (outputs, candidates) = self.scale_candidates();
-        let windows = self.shell.iter().chain(self.backdrops.iter()).chain(self.apps.iter().map(|app| &app.window));
+        let windows = self.shell.iter().chain(self.backdrops.iter())
+            .chain(self.secondary_savers.iter().map(|entry| &entry.window))
+            .chain(self.apps.iter().map(|app| &app.window));
         for window in windows {
-            if let Some(index) = self.space.element_geometry(window).and_then(|geometry| preferred_output_index(geometry, &candidates)) {
+            if let Some(index) = self.scale_window_geometry(window).and_then(|geometry| preferred_output_index(geometry, &candidates)) {
                 prefer(window, &outputs[index]);
             }
         }

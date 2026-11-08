@@ -2,7 +2,7 @@
 //! the user asked for; applying and saving a change is the caller's job.
 
 use eframe::egui;
-use crate::config::{Config, LINE_HEIGHT_RANGE, MAX_FONT_SIZE, MIN_FONT_SIZE, Palette, SCROLLBACK_CHOICES};
+use crate::config::{Config, LINE_HEIGHT_RANGE, MAX_FONT_SIZE, MIN_FONT_SIZE, Palette, SCROLLBACK_CHOICES, Saver};
 use crate::radio::Radio;
 use crate::term::CursorShape;
 use des_common::input::{InputSettings, CURSOR_ARROW_POINTS, CURSOR_BASE_SIZE, CURSOR_SIZE_RANGE, DEFAULT_CURSOR_COLOR, REPEAT_DELAY_RANGE, REPEAT_RATE_RANGE};
@@ -46,6 +46,7 @@ pub enum Change {
     KeepDisplays,
     RevertDisplays,
     Lock,
+    PreviewSaver,
     LogOut,
     /// Use this picture on the lock and login screens; `None` goes back to none.
     Avatar(Option<std::path::PathBuf>),
@@ -161,7 +162,7 @@ const SETTINGS_CATALOG: [SectionInfo; 17] = [
     SectionInfo { section: Section::Bluetooth, group: SettingsGroup::Connections, title: "Bluetooth", summary: "Pair and connect wireless accessories", keywords: "bluetooth pair pairing wireless headphones headset speaker accessories" },
     SectionInfo { section: Section::Region, group: SettingsGroup::Personal, title: "Date & region", summary: "Clock, time zone and regional formats", keywords: "date region time timezone time zone clock 12 24 hour language locale calendar" },
     SectionInfo { section: Section::Users, group: SettingsGroup::Personal, title: "Users", summary: "Accounts, password and login picture", keywords: "user account avatar profile photo picture login password" },
-    SectionInfo { section: Section::Session, group: SettingsGroup::System, title: "Session & startup", summary: "Save, restore, autostart, lock and log out", keywords: "session startup autostart programs recovery reconnect terminal save restore lock logout log out sign out" },
+    SectionInfo { section: Section::Session, group: SettingsGroup::System, title: "Session & startup", summary: "Save, restore, autostart, lock and log out", keywords: "session startup autostart programs recovery reconnect terminal save restore lock logout log out sign out screensaver screen saver idle" },
     SectionInfo { section: Section::Health, group: SettingsGroup::System, title: "System health", summary: "Service status, diagnostics and music connection", keywords: "health system service diagnostics troubleshoot failure error connected music status" },
 ];
 fn section_info(section: Section) -> &'static SectionInfo {
@@ -1484,6 +1485,36 @@ impl Settings {
         ui.add_space(8.0);
         if switch_row(ui, theme, "Lock before sleep", "When the lid closes or the machine is put to sleep, it wakes to the lock screen", config.lock_on_sleep) {
             changes.push(Change::Set("lock_on_sleep", config.lock_on_sleep.then(|| "off".to_string())));
+        }
+        ui.add_space(22.0);
+
+        heading(ui, "SCREENSAVER", "Shows after the session locks from inactivity. Move the pointer or press a key to see the lock screen. The saver stops when the display turns off.");
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = ui::SPACE;
+            for scene in Saver::ALL {
+                let chosen = config.screensaver == scene;
+                if ui::chip(ui, theme, scene.label(), None, chosen).clicked() && !chosen {
+                    let value = (scene != Saver::Off).then(|| scene.value().to_string());
+                    changes.push(Change::Set("screensaver", value));
+                }
+            }
+        });
+        ui.add_space(ui::SPACE);
+        let enabled = config.screensaver != Saver::Off;
+        let preview = ui.add_enabled_ui(enabled, |ui| ui::button(ui, theme, "PREVIEW", None, false)).inner;
+        if preview.clicked() {
+            changes.push(Change::PreviewSaver);
+        }
+        if enabled {
+            let warning = match (input.lock_after, input.screen_off_after) {
+                (None, _) => Some("Automatic lock is set to Never. Choose a lock time to show the screensaver automatically."),
+                (Some(lock), Some(off)) if off <= lock => Some("The display turns off before the screensaver can start. Choose a shorter lock time or a longer screen-off time."),
+                _ => None,
+            };
+            if let Some(warning) = warning {
+                ui.add_space(ui::SPACE);
+                ui.add(egui::Label::new(egui::RichText::new(warning).font(ui::display(12.0)).color(ui::CAUTION)).wrap());
+            }
         }
         ui.add_space(22.0);
 

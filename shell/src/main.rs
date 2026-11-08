@@ -45,6 +45,8 @@ mod workflows;
 mod session_ready;
 mod live_terminals;
 mod screen_views;
+mod screensaver;
+mod saver_flow;
 mod scratchpad;
 mod quicklook;
 mod region;
@@ -190,6 +192,8 @@ struct App {
     /// Whether the compositor has confirmed the lock now showing.
     lock_confirmed: bool,
     unlock_pending: bool,
+    idle_saver: saver_flow::IdleSaver,
+    saver_preview: Option<Instant>,
     config: config::Config,
     wallpaper: wallpaper::Wallpaper,
     /// The keyboard, mouse and touchpad settings, as last saved.
@@ -406,6 +410,8 @@ impl App {
             lock: lock::Lock::new(),
             lock_confirmed: false,
             unlock_pending: false,
+            idle_saver: Default::default(),
+            saver_preview: None,
             geo: geo::Geo::start(config.lookups, config.location.clone()),
             world: globe::Explorer::default(),
             local_panels: config.panels,
@@ -681,6 +687,8 @@ impl App {
     }
 
     fn lock_now(&mut self) {
+        self.cancel_idle_saver();
+        self.close_saver_preview();
         self.companion.close();
         self.lock.prepare(&self.ctx);
     }
@@ -903,6 +911,13 @@ impl App {
             Change::KeepDisplays => self.send(Command::KeepDisplays),
             Change::RevertDisplays => self.send(Command::RevertDisplays),
             Change::Lock => self.lock_now(),
+            Change::PreviewSaver => {
+                if self.config.screensaver != config::Saver::Off {
+                    self.saver_preview = Some(Instant::now());
+                    self.companion.close();
+                    ctx.request_repaint();
+                }
+            }
             Change::OpenMusic => self.toggle_music(),
             Change::SaveSession => self.save_session(),
             Change::RestoreSession => self.restore_session(),

@@ -26,6 +26,7 @@ pub struct IpcServer {
     listener: UnixListener,
     path: PathBuf,
     clients: Vec<Client>,
+    shell_disconnected: bool,
     /// The most recent state line, sent to clients as they connect.
     last: String,
     /// Likewise for the displays line.
@@ -47,6 +48,7 @@ impl IpcServer {
             listener,
             path,
             clients: Vec::new(),
+            shell_disconnected: false,
             last: DesktopState::default().encode(),
             last_displays: String::new(),
             last_layouts: des_common::ipc::LayoutInfo::encode_all(&[]),
@@ -58,6 +60,10 @@ impl IpcServer {
 
     pub fn has_shell_client(&self) -> bool {
         !self.clients.is_empty()
+    }
+
+    pub fn take_shell_disconnect(&mut self) -> bool {
+        std::mem::take(&mut self.shell_disconnected)
     }
 
     pub fn path(&self) -> &Path {
@@ -98,6 +104,7 @@ impl IpcServer {
         }
 
         let mut commands = Vec::new();
+        let connected = self.clients.len();
         self.clients.retain_mut(|client| {
             // A restarted shell revokes its predecessor's connections too.
             if !is_shell(client.peer_pid, shell_pid) {
@@ -138,6 +145,7 @@ impl IpcServer {
             // A client that never finishes a line is not speaking the protocol.
             !gone && client.pending.len() < 4096
         });
+        self.shell_disconnected |= connected != self.clients.len();
         commands
     }
 
@@ -145,10 +153,12 @@ impl IpcServer {
     pub fn send(&mut self, line: &str) {
         if line.starts_with("recording ") { self.last_recording = line.to_string(); }
         if line.starts_with("hands ") { self.last_hands = line.to_string(); }
+        let connected = self.clients.len();
         self.clients.retain_mut(|client| {
             client.outgoing.enqueue(line.as_bytes()).is_ok()
                 && client.outgoing.flush(&mut client.stream).is_ok()
         });
+        self.shell_disconnected |= connected != self.clients.len();
     }
 
     /// Sends `state` to every client, unless it is what they already have.
@@ -205,7 +215,7 @@ mod tests {
 
     #[test]
     fn rejects_commands_from_other_processes_and_unknown_peers() {
-        for line in ["unlock", "lock", "record /tmp/private.mp4", "hold-idle on"] {
+        for line in ["unlock", "lock", "show-saver", "hide-saver", "record /tmp/private.mp4", "hold-idle on"] {
             assert_eq!(decode_command(line, Some(42), Some(7)), None, "{line}");
             assert_eq!(decode_command(line, None, Some(7)), None, "{line}");
             assert_eq!(decode_command(line, Some(7), None), None, "{line}");
@@ -236,6 +246,23 @@ mod tests {
         client.write_all(b"unlock\n").unwrap();
         assert!(server.poll(None).is_empty());
         assert!(server.clients.is_empty());
+    }
+
+    #[test]
+    fn shell_disconnect_is_detected_even_when_a_new_client_connects_in_the_same_poll() {
+        let path = std::env::temp_dir().join(format!("des-ipc-reconnect-{}.sock", std::process::id()));
+        let mut server = IpcServer::bind(path.clone()).unwrap();
+        let shell_pid = Some(std::process::id());
+        let old = UnixStream::connect(&path).unwrap();
+        assert!(server.poll(shell_pid).is_empty());
+        assert!(!server.take_shell_disconnect());
+
+        drop(old);
+        let _new = UnixStream::connect(&path).unwrap();
+        assert!(server.poll(shell_pid).is_empty());
+        assert!(server.has_shell_client());
+        assert!(server.take_shell_disconnect());
+        assert!(!server.take_shell_disconnect());
     }
 
     #[test]

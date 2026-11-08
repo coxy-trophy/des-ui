@@ -1,9 +1,9 @@
 use smithay::{
     backend::session::Session,
     backend::input::{
-        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent, GestureEndEvent,
+        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Device, Event, GestureBeginEvent, GestureEndEvent,
         GesturePinchUpdateEvent as _, GestureSwipeUpdateEvent as _, InputBackend, InputEvent, KeyState,
-        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
+        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, TouchEvent,
     },
     input::pointer as gesture,
     input::{
@@ -15,6 +15,7 @@ use smithay::{
 
 use crate::{
     overview::{OverviewKey, SwitchKey},
+    saver::{Change, Control, Source},
     state::DesComp,
 };
 use des_common::ipc::OverviewKind;
@@ -445,8 +446,97 @@ impl DesComp {
         }
     }
 
-    pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
+    /// Consume the first input and the rest of its wake sequence before it can
+    /// reach a Wayland client, change a hardware setting or run a shortcut.
+    pub(crate) fn saver_input(
+        &mut self,
+        source: Option<&Source>,
+        changes: impl IntoIterator<Item = (Control, Change)>,
+    ) -> bool {
         self.input_activity();
+        let (dismissed, swallowed) = self.saver.input(source, changes);
+        if dismissed {
+            self.tell(des_common::ipc::Event::saver(false));
+        }
+        swallowed
+    }
+
+    fn saver_device_input<I: InputBackend>(
+        &mut self,
+        event: &impl Event<I>,
+        changes: impl IntoIterator<Item = (Control, Change)>,
+    ) -> bool {
+        self.saver_input(Some(&Source::Device(event.device().id())), changes)
+    }
+
+    fn filter_saver_input<I: InputBackend>(&mut self, input: &InputEvent<I>) -> bool {
+        use Change::{Begin, End, Update};
+        let change = |pressed| if pressed { Begin } else { End };
+        match input {
+            InputEvent::DeviceRemoved { device } => {
+                if self.saver.needs_source() {
+                    self.saver.forget_source(&Source::Device(device.id()));
+                }
+                false
+            }
+            // No user activity is implied by a hotplug or a framing event.
+            InputEvent::DeviceAdded { .. } | InputEvent::TouchFrame { .. } => false,
+            _ if !self.saver.needs_source() => self.saver_input(None, []),
+            InputEvent::Keyboard { event } => self.saver_device_input(event, [
+                (Control::Key(event.key_code().raw()), change(event.state() == KeyState::Pressed))
+            ]),
+            InputEvent::PointerButton { event } => self.saver_device_input(event, [
+                (Control::Button(event.button_code()), change(event.state() == ButtonState::Pressed))
+            ]),
+            InputEvent::PointerAxis { event } if event.source() == AxisSource::Finger => {
+                let changes = [(Axis::Vertical, Control::ScrollVertical), (Axis::Horizontal, Control::ScrollHorizontal)]
+                    .into_iter().filter_map(|(axis, control)| {
+                        event.amount(axis).map(|amount| (control, if amount == 0.0 { End } else { Update }))
+                    });
+                self.saver_device_input(event, changes)
+            }
+            InputEvent::GestureSwipeBegin { event } => self.saver_device_input(event, [(Control::Swipe, Begin)]),
+            InputEvent::GestureSwipeUpdate { event } => self.saver_device_input(event, [(Control::Swipe, Update)]),
+            InputEvent::GestureSwipeEnd { event } => self.saver_device_input(event, [(Control::Swipe, End)]),
+            InputEvent::GesturePinchBegin { event } => self.saver_device_input(event, [(Control::Pinch, Begin)]),
+            InputEvent::GesturePinchUpdate { event } => self.saver_device_input(event, [(Control::Pinch, Update)]),
+            InputEvent::GesturePinchEnd { event } => self.saver_device_input(event, [(Control::Pinch, End)]),
+            InputEvent::GestureHoldBegin { event } => self.saver_device_input(event, [(Control::Hold, Begin)]),
+            InputEvent::GestureHoldEnd { event } => self.saver_device_input(event, [(Control::Hold, End)]),
+            InputEvent::TouchDown { event } => self.saver_device_input(event, [(Control::Touch(event.slot().into()), Begin)]),
+            InputEvent::TouchMotion { event } => self.saver_device_input(event, [(Control::Touch(event.slot().into()), Update)]),
+            InputEvent::TouchUp { event } => self.saver_device_input(event, [(Control::Touch(event.slot().into()), End)]),
+            InputEvent::TouchCancel { event } => {
+                let slot = i32::from(event.slot());
+                if slot >= 0 {
+                    self.saver_device_input(event, [(Control::Touch(slot), End)])
+                } else {
+                    let source = Source::Device(event.device().id());
+                    self.saver.cancel_touches(&source) | self.saver_input(None, [])
+                }
+            }
+            _ => self.saver_input(None, []),
+        }
+    }
+
+    pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
+        let waking_saver = self.saver.active();
+        if self.filter_saver_input(&event) {
+            // The physical power button deliberately suspends an already locked
+            // session. Keep the action, but never send the key or its release to
+            // the lock screen or allow ordinary media/desktop wake shortcuts.
+            if waking_saver && self.locked
+                && let InputEvent::Keyboard { event } = &event
+                && event.state() == KeyState::Pressed
+                && self.seat.get_keyboard().is_some_and(|keyboard| keyboard.with_xkb_state(self, |context| {
+                    let xkb = context.xkb().lock().unwrap();
+                    xkb.raw_syms_for_key_in_layout(event.key_code(), xkb.active_layout()).contains(&Keysym::XF86_PowerOff)
+                }))
+            {
+                run("systemctl", &["suspend"]);
+            }
+            return;
+        }
         match event {
             InputEvent::Keyboard { event, .. } => {
                 let serial = SERIAL_COUNTER.next_serial();

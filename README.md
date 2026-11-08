@@ -529,6 +529,12 @@ It also locks by itself:
   lock screen (this too can be turned off there);
 - when the system asks, as `loginctl lock-session` does.
 
+Choose a native **Screensaver** in **Settings → Session**. It plays after the
+automatic lock while the displays are on. **Preview** plays the selected scene
+without locking. Once locked, input dismisses the animation to the password
+prompt. The saver defaults to Off and follows the existing Reduce motion
+setting.
+
 Unlocking requires your password on the lock screen. Command-line clients cannot
 unlock the compositor; it accepts desktop commands only from its current shell.
 

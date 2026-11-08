@@ -219,3 +219,13 @@ capture automatically. Decode work exists only for an explicitly active session.
 CONNECT's Mirror screen action opens a compact USB chooser when needed. Display
 paired/unpaired status beside duplicate device names. Keep raw serial entry in
 manual setup and explain the cable/debugging requirement in the empty state.
+
+## Screensavers
+
+The native screensaver is edge to edge and has no desktop chrome, notifications
+or account details. The three pattern scenes and Rising Lines reveal the
+existing boot wordmark through the artwork; Night Transit, Event Horizon and
+Polar Veil place a subdued mark within the landscape. The palettes stay dark
+and distinct from the interactive desktop. The same scene renderer serves the Session
+preview and the locked displays. Only the preview shows a dismissal hint.
+Reduce motion holds an assembled, still composition.

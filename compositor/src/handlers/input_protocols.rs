@@ -9,15 +9,24 @@
 //! area is being picked, no constraint holds the pointer and no inhibitor holds back
 //! a shortcut.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::{collections::HashSet, sync::atomic::{AtomicU32, Ordering}};
 
 use smithay::{
     delegate_input_method_manager, delegate_keyboard_shortcuts_inhibit, delegate_pointer_constraints,
-    delegate_relative_pointer, delegate_text_input_manager, delegate_virtual_keyboard_manager,
+    delegate_relative_pointer, delegate_text_input_manager,
     backend::renderer::utils::RendererSurfaceStateUserData,
     desktop::{PopupKind, PopupManager},
     input::pointer::PointerHandle,
-    reexports::wayland_server::{DisplayHandle, Resource, protocol::wl_surface::WlSurface},
+    reexports::{
+        wayland_protocols_misc::zwp_virtual_keyboard_v1::server::{
+            zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
+            zwp_virtual_keyboard_v1::{Request as VirtualKeyRequest, ZwpVirtualKeyboardV1},
+        },
+        wayland_server::{
+            Client, DataInit, Dispatch, DisplayHandle, Resource, backend::{ClientId, ObjectId},
+            delegate_dispatch, delegate_global_dispatch, protocol::wl_surface::WlSurface,
+        },
+    },
     utils::{Logical, Point, Rectangle, Size},
     wayland::{
         compositor::with_states,
@@ -30,7 +39,7 @@ use smithay::{
         relative_pointer::RelativePointerManagerState,
         seat::WaylandFocus,
         text_input::TextInputManagerState,
-        virtual_keyboard::VirtualKeyboardManagerState,
+        virtual_keyboard::{VirtualKeyboardManagerGlobalData, VirtualKeyboardManagerState, VirtualKeyboardUserData},
     },
 };
 
@@ -54,6 +63,13 @@ fn input_method_allowed(_client: &smithay::reexports::wayland_server::Client) ->
 /// State the protocols keep beyond their globals.
 pub struct InputProtocols {
     pub shortcuts_inhibit: KeyboardShortcutsInhibitState,
+    virtual_keys_down: HashSet<(ObjectId, u32)>,
+}
+
+impl InputProtocols {
+    pub fn virtual_keys_held(&self) -> bool {
+        !self.virtual_keys_down.is_empty()
+    }
 }
 
 /// Announces the globals.
@@ -69,7 +85,10 @@ pub fn init(dh: &DisplayHandle) -> InputProtocols {
     VirtualKeyboardManagerState::new::<DesComp, _>(dh, move |client| {
         shell_client(client, SHELL_PID.load(Ordering::Relaxed))
     });
-    InputProtocols { shortcuts_inhibit: KeyboardShortcutsInhibitState::new::<DesComp>(dh) }
+    InputProtocols {
+        shortcuts_inhibit: KeyboardShortcutsInhibitState::new::<DesComp>(dh),
+        virtual_keys_down: HashSet::new(),
+    }
 }
 
 /// Whether an application may hold the pointer or the compositor's shortcuts now.
@@ -296,7 +315,60 @@ impl KeyboardShortcutsInhibitHandler for DesComp {
 }
 
 delegate_keyboard_shortcuts_inhibit!(DesComp);
-delegate_virtual_keyboard_manager!(DesComp);
+delegate_global_dispatch!(DesComp: [ZwpVirtualKeyboardManagerV1: VirtualKeyboardManagerGlobalData] => VirtualKeyboardManagerState);
+delegate_dispatch!(DesComp: [ZwpVirtualKeyboardManagerV1: ()] => VirtualKeyboardManagerState);
+
+// Smithay sends virtual keys directly to the focused client, bypassing backend
+// input. Apply the same wake filter before delegating to that implementation.
+impl Dispatch<ZwpVirtualKeyboardV1, VirtualKeyboardUserData<Self>> for DesComp {
+    fn request(
+        state: &mut Self,
+        client: &Client,
+        resource: &ZwpVirtualKeyboardV1,
+        request: VirtualKeyRequest,
+        data: &VirtualKeyboardUserData<Self>,
+        handle: &DisplayHandle,
+        data_init: &mut DataInit<'_, Self>,
+    ) {
+        use crate::saver::{Change, Control, Source};
+        if !shell_client(client, SHELL_PID.load(Ordering::Relaxed)) {
+            return;
+        }
+        let source = Source::Virtual(resource.id());
+        match &request {
+            VirtualKeyRequest::Key { key, state: pressed, .. } => {
+                let pressed = *pressed == 1;
+                let change = if pressed { Change::Begin } else { Change::End };
+                if state.saver_input(Some(&source), [(Control::Key(*key), change)]) {
+                    return;
+                }
+                let held = (resource.id(), *key);
+                if pressed {
+                    state.input_protocols.virtual_keys_down.insert(held);
+                } else {
+                    state.input_protocols.virtual_keys_down.remove(&held);
+                }
+            }
+            VirtualKeyRequest::Modifiers { .. } if state.saver.active() || state.saver.has_wake_keys(&source) => return,
+            _ => {}
+        }
+        <VirtualKeyboardManagerState as Dispatch<_, _, Self>>::request(
+            state, client, resource, request, data, handle, data_init,
+        );
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        client: ClientId,
+        resource: &ZwpVirtualKeyboardV1,
+        data: &VirtualKeyboardUserData<Self>,
+    ) {
+        let id = resource.id();
+        state.input_protocols.virtual_keys_down.retain(|(owner, _)| *owner != id);
+        state.saver.forget_source(&crate::saver::Source::Virtual(id));
+        <VirtualKeyboardManagerState as Dispatch<_, _, Self>>::destroyed(state, client, resource, data);
+    }
+}
 
 #[cfg(test)]
 mod tests {

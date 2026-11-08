@@ -295,3 +295,12 @@ an unpaired peer.
 
 Expand uses the terminal workspace with Minimize/Stop; other workspace actions
 close that enlarged view without closing or restarting terminal processes.
+
+Screensaver selection lives under Settings → Session. Off preserves the normal
+idle lock. Preview shows the selected scene on the primary shell display without
+locking; a click, key, scroll or focus loss exits to Settings. A live saver
+begins only after the compositor confirms the idle lock. Physical input first
+dismisses the saver to the existing lock screen without forwarding the wake
+action. Display off cancels the saver; manual lock and sleep use the normal
+password screen. Idle inhibitors and existing lock, blank and suspend timers
+retain their roles. Motion follows the existing accessibility preference.

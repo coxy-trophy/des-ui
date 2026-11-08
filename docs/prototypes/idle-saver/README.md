@@ -82,5 +82,15 @@ reuse these owners and preserve existing settings on upgrade.
   and critical battery. Measure CPU, GPU and RAM with the saver idle, visible,
   and off. Confirm no pre-lock desktop frame appears on any output at wake.
 
-The native implementation is intentionally pending a visual choice and
-agreement on the timing defaults.
+## Native desktop
+
+In **Settings → Session → Screensaver**, choose **Silk Fold · Ink**,
+**Signal Contour**, **Terminal Weave**, **Night Transit**, **Rising Lines**,
+**Event Horizon**, or **Polar Veil**. **Preview** plays the native scene without
+locking. Click or press a key to return to Settings.
+
+The saver runs after an automatic idle lock if the displays are still on.
+Moving the pointer or using the keyboard or touch reveals the password prompt.
+Manual lock and sleep use the usual lock screen. Existing timers are retained;
+the saver defaults to Off. Desktop animation and Reduce motion settings apply,
+and animation runs at a lower rate on battery.

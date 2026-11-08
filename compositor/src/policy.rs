@@ -8,7 +8,7 @@ use smithay::{
     desktop::Window,
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_toplevel,
-        wayland_server::protocol::wl_surface::WlSurface,
+        wayland_server::{Resource, protocol::wl_surface::WlSurface},
     },
     input::pointer::MotionEvent,
     utils::{Logical, Point, Rectangle, SERIAL_COUNTER},
@@ -135,7 +135,7 @@ fn companion_chat_should_blur(chat: bool, overlay: bool, locked: bool, picking: 
 
 fn command_allowed(locked: bool, picking:bool, command: &Command) -> bool {
     if let Command::DockKeyboard { active, .. } = command { return !*active || (!locked && !picking); }
-    (!locked || matches!(command, Command::Lock | Command::Unlock | Command::ReloadInput)) && (!picking || !matches!(command,Command::Dock(Some(_))|Command::DockOn(_,Some(_))|Command::Overlay(Some(_))|Command::DragFiles(_)|Command::Overview|Command::AppWindows(..)))
+    (!locked || matches!(command, Command::Lock | Command::Unlock | Command::ReloadInput | Command::ShowSaver | Command::HideSaver)) && (!picking || !matches!(command,Command::Dock(Some(_))|Command::DockOn(_,Some(_))|Command::Overlay(Some(_))|Command::DragFiles(_)|Command::Overview|Command::AppWindows(..)))
 }
 
 #[cfg(test)]
@@ -217,6 +217,8 @@ mod lock_command_tests {
     #[test]
     fn already_locked_requests_can_receive_their_confirmation() {
         assert!(command_allowed(true, false, &Command::Lock));
+        assert!(command_allowed(true, false, &Command::ShowSaver));
+        assert!(command_allowed(true, false, &Command::HideSaver));
         assert!(command_allowed(true, false, &Command::Unlock));
         assert!(!command_allowed(true, false, &Command::Activate(0)));
         assert!(!command_allowed(true, false, &Command::Dock(Some((0, 0, 100, 100)))));
@@ -303,6 +305,8 @@ impl DesComp {
         self.shell
             .iter()
             .chain(self.backdrops.iter())
+            .chain(self.pending_shell_windows.iter())
+            .chain(self.secondary_savers.iter().map(|entry| &entry.window))
             .chain(self.apps.iter().map(|app| &app.window))
             .find(|window| is_toplevel(window, surface))
             .cloned()
@@ -312,6 +316,9 @@ impl DesComp {
     pub fn screen_of(&self, window: &Window) -> usize {
         if let Some(app) = self.apps.iter().find(|app| &app.window == window) {
             return app.screen;
+        }
+        if let Some(entry) = self.secondary_savers.iter().find(|entry| &entry.window == window) {
+            return entry.screen;
         }
         self.backdrops
             .iter()
@@ -504,6 +511,11 @@ impl DesComp {
                 None => self.space.unmap_elem(&backdrop),
             }
         }
+        for entry in &self.secondary_savers {
+            if let Some(rect) = self.screens.get(entry.screen).copied() {
+                configure(&entry.window, rect, true, false);
+            }
+        }
         let areas: Vec<Vec<Rectangle<i32, Logical>>> = (0..self.screens.len()).map(|screen| self.slot_areas(screen)).collect();
         // While a divider is dragged, the windows on its display are told their sizes
         // only now and then, and drawn scaled into place in between.
@@ -572,6 +584,70 @@ impl DesComp {
         keyboard.set_focus(self, focus, SERIAL_COUNTER.next_serial());
     }
 
+    pub fn assign_shell_role(&mut self, surface: &WlSurface) {
+        use crate::saver::{ShellRole, shell_role};
+        let pid = surface.client()
+            .and_then(|client| client.get_data::<crate::state::ClientState>().and_then(|data| data.peer_pid));
+        if pid.is_none() || pid != self.shell_pid {
+            return;
+        }
+        let Some(index) = self.pending_shell_windows.iter().position(|window| is_toplevel(window, surface)) else {
+            return;
+        };
+        let role = shell_role(&window_app_id(&self.pending_shell_windows[index]));
+        match role {
+            ShellRole::Unassigned => {}
+            ShellRole::Desktop => {
+                let window = self.pending_shell_windows.remove(index);
+                self.add_window(window, true);
+                if self.locked { self.refresh_pointer_focus(true); }
+            }
+            ShellRole::SecondarySaver(screen) => {
+                let window = self.pending_shell_windows.remove(index);
+                if let Some(rect) = self.screens.get(screen).copied() {
+                    configure(&window, rect, true, false);
+                }
+                self.secondary_savers.push(crate::saver::SecondarySaver {
+                    screen,
+                    window,
+                    id: smithay::backend::renderer::element::Id::new(),
+                    cycle: (self.locked && self.saver.active()).then_some(self.saver_cycle),
+                });
+            }
+        }
+    }
+
+    /// The newest surface for each secondary output, only for this approval.
+    /// The returned rectangles also clip a client buffer to its intended output.
+    pub fn visible_secondary_savers(&self) -> Vec<(Window, Rectangle<i32, Logical>, smithay::backend::renderer::element::Id)> {
+        if !self.locked || !self.saver.active() {
+            return Vec::new();
+        }
+        self.screens.iter().copied().enumerate().skip(1).filter_map(|(screen, rect)| {
+            self.secondary_savers.iter().rev().find(|entry| entry.screen == screen
+                && crate::saver::secondary_visible(self.locked, Some(self.saver_cycle), entry.cycle))
+                .map(|entry| (entry.window.clone(), rect, entry.id.clone()))
+        }).collect()
+    }
+
+    /// Recompute Smithay's cached target when a full-screen surface changes
+    /// underneath a stationary pointer. Only the lock may break a grab.
+    fn refresh_pointer_focus(&mut self, release_grab: bool) {
+        let Some(pointer) = self.seat.get_pointer() else { return };
+        let location = pointer.current_location();
+        let serial = SERIAL_COUNTER.next_serial();
+        let time = self.start_time.elapsed().as_millis() as u32;
+        let motion = MotionEvent { location, serial, time };
+        if pointer.is_grabbed() {
+            if !release_grab { return; }
+            pointer.motion(self, None, &motion);
+            pointer.unset_grab(self, serial, time);
+        }
+        let focus = self.surface_under(location);
+        pointer.motion(self, focus, &motion);
+        pointer.frame(self);
+    }
+
     /// Registers a new toplevel: the shell's first window is the frame, its later ones
     /// are backdrops for further displays, and anything else is an application.
     pub fn add_window(&mut self, window: Window, from_shell: bool) {
@@ -626,6 +702,7 @@ impl DesComp {
         if self.shell.as_ref().is_some_and(|w| is_toplevel(w, surface)) {
             // Whether this ends the session is decided when the shell's process exits.
             tracing::info!("shell window closed");
+            self.dismiss_saver();
             self.toast = None;
             self.overlay = None;
             self.dock = None;
@@ -634,6 +711,12 @@ impl DesComp {
             if let Some(window) = self.shell.take() {
                 self.space.unmap_elem(&window);
             }
+        } else if let Some(index) = self.pending_shell_windows.iter().position(|w| is_toplevel(w, surface)) {
+            self.pending_shell_windows.remove(index);
+            return;
+        } else if let Some(index) = self.secondary_savers.iter().position(|entry| is_toplevel(&entry.window, surface)) {
+            self.secondary_savers.remove(index);
+            return;
         } else if let Some(index) = self.backdrops.iter().position(|w| is_toplevel(w, surface)) {
             let window = self.backdrops.remove(index);
             self.space.unmap_elem(&window);
@@ -1216,40 +1299,63 @@ impl DesComp {
     /// Asks the shell to lock the screen. It answers when it can show the lock screen,
     /// so that a shell unable to unlock is never locked.
     pub fn request_lock(&mut self) {
+        self.dismiss_saver();
         if let Some(ipc) = self.ipc.as_mut() {
             ipc.send(Event::LOCK_REQUESTED);
         }
     }
 
+    pub(crate) fn dismiss_saver(&mut self) {
+        if self.saver.cancel() {
+            self.tell(Event::saver(false));
+        }
+    }
+
+    fn idle_inhibited(&mut self) -> bool {
+        self.idle_inhibitors.retain(smithay::utils::IsAlive::alive);
+        self.idle_held || !self.idle_inhibitors.is_empty()
+    }
+
+    fn display_off_due(&self) -> bool {
+        self.input_settings.screen_off_after.is_some_and(|minutes| {
+            self.last_input.elapsed() >= std::time::Duration::from_secs(minutes as u64 * 60)
+        })
+    }
+
     /// Asks for the lock once the machine has been left alone for as long as the
     /// settings say, unless something on screen is being watched.
     pub fn check_idle(&mut self) {
-        self.idle_inhibitors.retain(smithay::utils::IsAlive::alive);
-        let watched = self.idle_held || !self.idle_inhibitors.is_empty();
-        if watched {
+        if self.idle_inhibited() {
+            self.dismiss_saver();
             // The wait starts over when the watching ends.
             self.last_input = std::time::Instant::now();
             return;
         }
-        if let Some(minutes) = self.input_settings.screen_off_after {
-            if !self.screens_off && self.last_input.elapsed() >= std::time::Duration::from_secs(minutes as u64 * 60) {
-                tracing::info!(minutes, "left alone: turning the screens off");
-                self.blank(true);
-            }
+        if !self.screens_off && self.display_off_due() {
+            tracing::info!("left alone: turning the screens off");
+            self.blank(true);
         }
         let Some(minutes) = self.input_settings.lock_after else {
             return;
         };
         let waited = self.last_input.elapsed() >= std::time::Duration::from_secs(minutes as u64 * 60);
         if waited && !self.locked && !self.idle_lock_asked && self.shell.is_some() {
+            let available = self.displays_available_for_saver();
+            let Some(ipc) = self.ipc.as_mut().filter(|ipc| ipc.has_shell_client()) else {
+                return;
+            };
             tracing::info!(minutes, "left alone: asking for the lock");
             self.idle_lock_asked = true;
-            self.request_lock();
+            if available {
+                self.saver.request();
+            }
+            ipc.send(Event::IDLE_LOCK_REQUESTED);
         }
     }
 
     /// Hides everything but the shell and gives it the keyboard, or undoes that.
     pub fn set_locked(&mut self, locked: bool) {
+        if !locked { self.dismiss_saver(); }
         if self.locked != locked {
             tracing::info!(locked, "screen lock");
             self.locked = locked;
@@ -1271,6 +1377,7 @@ impl DesComp {
                 self.focus_screen = 0;
             }
             self.arrange();
+            if locked { self.refresh_pointer_focus(true); }
         }
     }
 
@@ -1385,6 +1492,10 @@ impl DesComp {
             return;
         };
         let commands = ipc.poll(self.shell_pid);
+        if ipc.take_shell_disconnect() || !ipc.has_shell_client() {
+            self.dismiss_saver();
+            if !self.locked { self.idle_lock_asked = false; }
+        }
         if !ipc.has_shell_client() || self.locked || self.picking {
             self.companion_bubble = None;
             self.cursors.set_speaking(false, std::time::Instant::now());
@@ -1392,6 +1503,11 @@ impl DesComp {
         for command in commands {
             if self.modes.is_empty() {
                 break;
+            }
+            // A new shell hold invalidates saver permission even while locked.
+            // Existing locked-session rules still govern display-off inhibition.
+            if matches!(command, Command::HoldIdle(true)) {
+                self.dismiss_saver();
             }
             // Lock requests remain idempotent and acknowledged while already locked.
             if !command_allowed(self.locked, self.picking, &command) {
@@ -1455,6 +1571,7 @@ impl DesComp {
                     self.arrange();
                 },
                 Command::Lock => {
+                    if self.saver.active() { self.dismiss_saver(); }
                     self.set_locked(true);
                     self.tell(Event::locked(true));
                 }
@@ -1462,6 +1579,19 @@ impl DesComp {
                     self.set_locked(false);
                     self.tell(Event::locked(false));
                 }
+                Command::ShowSaver => {
+                    let eligible = ipc.has_shell_client() && self.shell.is_some() && !self.picking
+                        && self.displays_available_for_saver() && !self.display_off_due() && !self.idle_inhibited()
+                        // A wake release cannot be intercepted if its press already
+                        // reached Smithay; let a lock with held controls stay ordinary.
+                        && self.buttons_down == 0 && !self.input_protocols.virtual_keys_held()
+                        && self.seat.get_keyboard().is_some_and(|keyboard| keyboard.pressed_keys().is_empty());
+                    if let Some(active) = self.saver.approve(self.locked, eligible) {
+                        if active { self.saver_cycle = self.saver_cycle.wrapping_add(1); }
+                        self.tell(Event::saver(active));
+                    }
+                }
+                Command::HideSaver => self.dismiss_saver(),
                 Command::Shot(mode) => self.take_shot(mode),
                 Command::ShotRequest { id, mode } => self.take_requested_shot(mode, Some(id)),
                 Command::Record(path) => self.start_recording(&path),
@@ -1503,10 +1633,19 @@ impl DesComp {
                 Command::AppWindows(screen,id) => self.open_app_windows(screen,&id),
                 Command::Overlay(area) => {
                     if area.is_none() { self.companion_chat = false; }
+                    let old = self.overlay;
                     self.overlay = area.map(|(x, y, w, h)| Rectangle::new((x, y).into(), (w, h).into()));
                     // The keyboard goes to the shell while the overlay shows, and back after.
                     if !self.picking {
                         self.arrange();
+                        let full_screen = self.screens.first().is_some_and(|screen| {
+                            [old, self.overlay].into_iter().flatten().any(|area| {
+                                area.contains_rect(Rectangle::from_size(screen.size))
+                            })
+                        });
+                        if old != self.overlay && full_screen {
+                            self.refresh_pointer_focus(false);
+                        }
                     }
                 }
                 Command::Toast(area) => {

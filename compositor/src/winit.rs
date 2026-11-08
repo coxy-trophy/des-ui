@@ -4,6 +4,7 @@ use smithay::{
     backend::{
         allocator::{Fourcc, dmabuf::Dmabuf},
         egl::EGLDevice,
+        input::Device,
         renderer::{
             ExportMem, ImportDma, damage::OutputDamageTracker,
             gles::GlesRenderer,
@@ -145,12 +146,18 @@ pub fn init_winit(
                 state.set_screens(screens_of(logical(size).w, logical(size).h, state.split));
             }
             WinitEvent::Input(event) => state.process_input_event(event),
+            WinitEvent::Focus(false) => {
+                // The host may take the rest of an input sequence.
+                state.saver.forget_source(&crate::saver::Source::Device(winit::WinitVirtualDevice.id()));
+            }
             WinitEvent::Redraw => {
                 if !state.before_frame() {
                     return;
                 }
 
                 let capture = state.screenshot.is_some() && state.start_time.elapsed() > Duration::from_millis(crate::state::test_millis("DES_TEST_SHOT_MS", 5000));
+                let secondary_savers = state.visible_secondary_savers();
+                let output_rect = state.space.output_geometry(&output);
                 let toast_area = state.toast_area();
                 let companion_bubble_area = state.companion_bubble_area();
                 let overlay_area = state.overlay_area();
@@ -164,12 +171,18 @@ pub fn init_winit(
                 {
                     let (renderer, mut framebuffer) = backend.bind().unwrap();
                     let mut toasts: Vec<crate::splash::TopElements> = Vec::new();
-                    if state.splash.is_none() {
+                    if state.splash.is_none() && !state.saver.active() {
                         if let Some(pointer) = state.seat.get_pointer() {
                             let status = crate::udev::effective_cursor_status(&state.cursor_status, state.resize_hover);
                             toasts.extend(crate::udev::cursor_elements::<crate::splash::TopElements>(renderer,
                                 &mut state.cursors, &status, pointer.current_location(), scale,
                                 crate::motion::allowed(state.motions.enabled, state.locked, state.picking), std::time::Instant::now()));
+                        }
+                    }
+                    if let Some(output_rect) = output_rect {
+                        for (window, rect, id) in &secondary_savers {
+                            toasts.extend(crate::toast::elements(renderer, Some(window), rect.intersection(output_rect),
+                                Some(rect.loc), id, output_rect.loc, scale).into_iter().map(crate::splash::TopElements::Toast));
                         }
                     }
                     if let Some(splash) = state.splash.as_mut() {

@@ -302,6 +302,9 @@ pub fn init_udev(
     event_loop
         .handle()
         .insert_source(session_notifier, move |event, _, data| {
+            if matches!(&event, SessionEvent::PauseSession) {
+                data.dismiss_saver();
+            }
             let Some(udev) = data.udev.as_mut() else {
                 return;
             };
@@ -1016,9 +1019,14 @@ impl DesComp {
         self.rescan_monitors();
     }
 
+    pub(crate) fn displays_available_for_saver(&self) -> bool {
+        !self.screens_off && self.udev.as_ref().is_none_or(|udev| udev.active)
+    }
+
     /// Turns every screen off, or back on. Off, nothing is drawn; on, the next frame
     /// lights them again.
     pub fn blank(&mut self, off: bool) {
+        if off { self.dismiss_saver(); }
         self.screens_off = off;
         let Some(udev) = self.udev.as_mut() else {
             tracing::info!(off, "screens would be switched, were this not a window");
@@ -1041,6 +1049,7 @@ impl DesComp {
         if self.screens_off {
             return;
         }
+        let secondary_savers = self.visible_secondary_savers();
         let toast_area = self.toast_area();
         let companion_bubble_area = self.companion_bubble_area();
         let overlay_area = self.overlay_area();
@@ -1089,7 +1098,7 @@ impl DesComp {
             // The splash covers everything, the pointer included.
             if let Some(splash) = self.splash.as_mut() {
                 elements.extend(splash_elements(splash, renderer, geometry.size, scale));
-            } else if geometry.to_f64().contains(pointer) {
+            } else if !self.saver.active() && geometry.to_f64().contains(pointer) {
                 let position = pointer - geometry.loc.to_f64();
                 // Over a divider between windows, or dragging one, the double arrow.
                 let status = effective_cursor_status(&self.cursor_status, self.resize_hover);
@@ -1100,6 +1109,10 @@ impl DesComp {
                         .into_iter().map(OutputElements::Solid));
                 }
                 elements.extend(crate::dnd::icon_elements::<OutputElements>(renderer,self.drag_icon.as_ref(),position,scale));
+            }
+            for (window, rect, id) in &secondary_savers {
+                elements.extend(crate::toast::elements(renderer, Some(window), rect.intersection(geometry),
+                    Some(rect.loc), id, geometry.loc, scale).into_iter().map(OutputElements::Toast));
             }
             // The overview, or the switcher's strip, above all but the pointer. The
             // overview is everything on its display; the switcher sits over the desktop.

@@ -37,7 +37,16 @@ impl XdgShellHandler for DesComp {
             .and_then(|client| client.get_credentials(&self.display_handle).ok())
             .map(|credentials| credentials.pid as u32);
         let from_shell = pid.is_some() && pid == self.shell_pid;
-        self.add_window(Window::new_wayland_window(surface), from_shell);
+        let window = Window::new_wayland_window(surface);
+        if from_shell {
+            self.pending_shell_windows.push(window);
+        } else {
+            self.add_window(window, false);
+        }
+    }
+
+    fn app_id_changed(&mut self, surface: ToplevelSurface) {
+        self.assign_shell_role(surface.wl_surface());
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {

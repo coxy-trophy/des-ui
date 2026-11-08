@@ -68,7 +68,7 @@ impl eframe::App for App {
             companion_controls=std::mem::take(&mut desktop.companion_controls);
             companion_voice_requested=std::mem::take(&mut desktop.companion_voice_requested);
             companion_requested = std::mem::take(&mut desktop.companion_requested);
-            if !desktop.connected() || desktop.locked || desktop.lock_requested || desktop.shots.iter().any(|shot| !companion::Companion::accepts_capture(shot.request)) {self.companion.close();}
+            if !desktop.connected() || desktop.locked || desktop.lock_requested || desktop.idle_lock_requested || desktop.shots.iter().any(|shot| !companion::Companion::accepts_capture(shot.request)) {self.companion.close();}
             else if desktop.launcher_requested || desktop.settings_requested || desktop.music_requested || desktop.notifications_requested || desktop.quick_requested || desktop.power_requested {self.companion.blur_text();}
             shortcut_requested = std::mem::take(&mut desktop.shortcuts_requested);
             if desktop.launcher_requested || desktop.settings_requested || desktop.music_requested || desktop.notifications_requested || desktop.quick_requested || desktop.power_requested { self.shortcut_reference.close(); }
@@ -176,29 +176,62 @@ impl eframe::App for App {
 
         // The lock screen comes before everything else, and while it is up nothing
         // else is drawn or given any input.
-        let (asked, compositor_locked, security_confirmed) = match &mut self.desktop {
+        let (asked, idle, compositor_locked, security_confirmed, saver_approved) = match &mut self.desktop {
             Some(desktop) => {
                 let asked = std::mem::take(&mut desktop.lock_requested);
+                let idle = std::mem::take(&mut desktop.idle_lock_requested);
                 if !desktop.connected() { self.lock_confirmed = false; }
-                (asked, desktop.connected().then_some(desktop.locked), desktop.security_confirmed.take())
+                (asked, idle, desktop.connected().then_some(desktop.locked),
+                    desktop.security_confirmed.take(), desktop.saver_active)
             }
-            None => (false, None, None),
+            None => (false, false, None, None, false),
         };
-        if asked && !self.lock.locked {
-            self.lock_now();
+        if compositor_locked.is_none() {
+            self.idle_saver.cancel();
+        }
+        let system_lock = self.power.lock_wanted();
+        let sleep_waiting = self.power.sleep_waiting();
+        if asked || system_lock || sleep_waiting {
+            self.cancel_idle_saver();
+        }
+        if !self.lock.locked {
+            if asked || (system_lock && (!sleep_waiting || self.config.lock_on_sleep)) {
+                self.lock_now();
+            } else if idle && !sleep_waiting && !self.lock.preparing() {
+                self.close_saver_preview();
+                self.companion.close();
+                if self.config.screensaver != config::Saver::Off {
+                    self.idle_saver.begin();
+                }
+                self.lock.prepare(ctx);
+            }
         }
         if let Some(prepared) = self.lock.take_prepared() {
             match prepared {
                 Ok(()) => self.finish_lock(),
-                Err(why) => self.notices.post("Screen could not be locked", &why, true),
+                Err(why) => {
+                    self.cancel_idle_saver();
+                    self.notices.post("Screen could not be locked", &why, true);
+                }
             }
         }
         match reconcile_lock(self.lock.locked, self.lock_confirmed, self.unlock_pending, security_confirmed == Some(false), compositor_locked) {
             LockStep::Engage => self.lock.engage(),
             LockStep::Confirm => self.lock_confirmed = true,
-            LockStep::Release => { self.lock.release(); self.unlock_pending = false; self.lock_confirmed = false; }
+            LockStep::Release => {
+                self.lock.release();
+                self.unlock_pending = false;
+                self.lock_confirmed = false;
+                self.idle_saver.cancel();
+            }
             LockStep::Request => self.send(Command::Lock),
             LockStep::Wait => {},
+        }
+        let saver_can_show = self.lock.locked && self.lock_confirmed && !self.unlock_pending;
+        match self.idle_saver.update(saver_can_show, saver_approved, now) {
+            saver_flow::Action::Show => self.send(Command::ShowSaver),
+            saver_flow::Action::Dismiss => self.send(Command::HideSaver),
+            saver_flow::Action::None => {}
         }
         self.notices.pump();
         // What starts within a quarter of an hour is announced, once.
@@ -219,14 +252,7 @@ impl eframe::App for App {
         let saved = self.capture.report(&mut self.notices);
         let called_off = self.capture.take_called_off();
         self.answer_held(Some(saved), called_off);
-        // Sleep is on its way, or the session was told to lock.
-        if self.power.lock_wanted() && !self.lock.locked {
-            let for_sleep = self.power.sleep_waiting();
-            if !for_sleep || self.config.lock_on_sleep {
-                self.lock_now();
-            }
-        }
-        if self.power.sleep_waiting() {
+        if sleep_waiting {
             // The machine may sleep once the lock is what is on screen, or at once if
             // there is to be no lock.
             let up = self.lock.locked && (self.lock_confirmed || self.desktop.is_none());
@@ -246,6 +272,7 @@ impl eframe::App for App {
             power::Act::Suspend.run();
         }
         if self.lock.locked {
+            self.close_saver_preview();
             self.companion.close();
             self.shortcut_reference.close();
             self.settings.appearance_editor.sync_visibility(false);
@@ -271,13 +298,17 @@ impl eframe::App for App {
                 self.send(Command::Toast(None));
             }
             let theme = self.theme.clone();
-            let music = &mut self.music;
-            if self.lock.show(ctx, &theme, |ui, within| music.lock_card(ui, &theme, within)) {
-                if self.desktop.is_some() {
-                    self.unlock_pending = true;
-                    self.lock.await_unlock();
+            if let Some(started) = self.idle_saver.started() {
+                self.draw_saver(ctx, started);
+            } else {
+                let music = &mut self.music;
+                if self.lock.show(ctx, &theme, |ui, within| music.lock_card(ui, &theme, within)) {
+                    if self.desktop.is_some() {
+                        self.unlock_pending = true;
+                        self.lock.await_unlock();
+                    }
+                    self.send(Command::Unlock);
                 }
-                self.send(Command::Unlock);
             }
             self.powerup.publish(ctx, self.config.animate, true);
             // A password request waits; nothing is drawn over the lock.
@@ -285,6 +316,41 @@ impl eframe::App for App {
             self.checkpoint_live_terminals();
             if self.desktop.as_ref().is_some_and(|desktop| desktop.connected()) { self.readiness.notify(); }
             return;
+        }
+        if let Some(started) = self.saver_preview {
+            if !self.settings.open || self.polkit.active() || self.capture.marking()
+                || self.desktop.as_ref().is_some_and(|desktop| desktop.overview.is_some())
+            {
+                self.close_saver_preview();
+            } else {
+                let exit = ctx.input(|input| !input.focused || input.events.iter().any(|event| matches!(
+                    event,
+                    Event::Key { pressed: true, repeat: false, .. }
+                    | Event::PointerButton { pressed: true, .. }
+                    | Event::Touch { phase: egui::TouchPhase::Start, .. }
+                    | Event::MouseWheel { .. }
+                )));
+                let state = self.desktop.as_ref().map(|desktop| desktop.state.clone());
+                self.secondary_views(ctx, state.as_ref(), false);
+                self.draw_saver(ctx, started);
+                if exit {
+                    self.close_saver_preview();
+                    // End this frame here; the dismissal is not a Settings action.
+                    ctx.input_mut(|input| input.events.clear());
+                    ctx.request_repaint();
+                } else {
+                    let area = Some(scratchpad::area(ctx.screen_rect()));
+                    if scratchpad::changed(&mut self.overlay_area, area) {
+                        self.send(Command::Overlay(area));
+                    }
+                    ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("saver-preview-hint"))).text(
+                        ctx.screen_rect().center_bottom() - vec2(0.0, 24.0),
+                        egui::Align2::CENTER_BOTTOM, "Click or press a key to exit preview",
+                        ui::display(14.0), ui::TEXT,
+                    );
+                }
+                return;
+            }
         }
         if let Some(error) = self.wallpaper.update(ctx, &self.config.appearance) {
             self.notices.post("Wallpaper unavailable", &format!("{error}. Choose another image in Settings → Appearance."), false);
@@ -833,7 +899,7 @@ impl eframe::App for App {
         }
         if self.companion.take_capture_request() {
             let id = self.companion.begin_capture();
-            if self.lock.locked || self.lock.preparing() || self.desktop.as_ref().is_some_and(|desktop| desktop.locked || desktop.lock_requested) || self.capture.marking() {
+            if self.lock.locked || self.lock.preparing() || self.desktop.as_ref().is_some_and(|desktop| desktop.locked || desktop.lock_requested || desktop.idle_lock_requested) || self.capture.marking() {
                 self.companion.capture_failed(id, "Screen capture is unavailable right now.");
             } else if let Some(desktop) = self.desktop.as_mut() {
                 if desktop.send(Command::ShotRequest { id, mode: des_common::ipc::ShotMode::Screen }).is_err() {
@@ -858,6 +924,28 @@ impl eframe::App for App {
 }
 
 impl App {
+    pub(super) fn draw_saver(&self, ctx: &egui::Context, started: Instant) {
+        screensaver::show(
+            ctx,
+            self.config.screensaver,
+            started.elapsed(),
+            !self.config.animate || self.config.appearance.reduce_motion,
+            self.mon.power.is_some_and(|battery| !battery.plugged),
+        );
+    }
+
+    pub(super) fn cancel_idle_saver(&mut self) {
+        if self.idle_saver.cancel() {
+            self.send(Command::HideSaver);
+        }
+    }
+
+    pub(super) fn close_saver_preview(&mut self) {
+        if self.saver_preview.take().is_some() && self.overlay_area.take().is_some() {
+            self.send(Command::Overlay(None));
+        }
+    }
+
     /// Answers what `des-ui-ctl` asked. Locked, only the lock itself, `ping` and
     /// `state` are allowed, so no script opens anything over the lock screen.
     fn answer_control(&mut self) {
@@ -881,7 +969,7 @@ impl App {
                     locked,
                 )),
                 Request::Lock => {
-                    if !locked { self.lock_now(); }
+                    if locked { self.cancel_idle_saver(); } else { self.lock_now(); }
                     Answer::Ok
                 }
                 _ if locked => Answer::Error("locked".into()),

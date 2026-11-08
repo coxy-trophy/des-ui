@@ -882,8 +882,12 @@ pub enum Event {
     Hands(Hands),
     /// The lock shortcut was pressed.
     LockRequested,
+    /// The idle timer is asking the shell to lock the session.
+    IdleLockRequested,
     /// The screen is now locked, or no longer.
     Locked(bool),
+    /// The compositor approved the saver or returned to the ordinary lock screen.
+    Saver(bool),
     Displays(Displays),
     /// The layouts that are not the plain one, on every display and workspace.
     Layouts(Vec<LayoutInfo>),
@@ -937,6 +941,11 @@ impl Event {
         format!("hands {}\n", state.word())
     }
     pub const LOCK_REQUESTED: &str = "lock\n";
+    pub const IDLE_LOCK_REQUESTED: &str = "idle-lock\n";
+
+    pub fn saver(active: bool) -> String {
+        format!("saver {}\n", active as u8)
+    }
 
     pub fn locked(locked: bool) -> String {
         format!("locked {}\n", locked as u8)
@@ -979,6 +988,9 @@ impl Event {
             "hands following" => return Some(Event::Hands(Hands::Following)),
             "hands failed" => return Some(Event::Hands(Hands::Failed)),
             "lock" => return Some(Event::LockRequested),
+            "idle-lock" => return Some(Event::IdleLockRequested),
+            "saver 0" => return Some(Event::Saver(false)),
+            "saver 1" => return Some(Event::Saver(true)),
             "locked 0" => return Some(Event::Locked(false)),
             "locked 1" => return Some(Event::Locked(true)),
             _ => {}
@@ -1065,6 +1077,10 @@ pub enum Command {
     KeyboardHeight(u16),
     /// Hide everything but the shell, which is showing the lock screen.
     Lock,
+    /// Ask to show the saver after the compositor confirms an idle lock.
+    ShowSaver,
+    /// Retire idle saver permission and uncover the ordinary lock screen.
+    HideSaver,
     /// The password was given: bring everything back.
     Unlock,
     /// The shell is showing notifications in this part of its window (x, y, width,
@@ -1147,6 +1163,8 @@ impl Command {
             Command::ReloadFrame => "reload-frame\n".to_string(),
             Command::KeyboardHeight(height) => format!("keyboard-height {height}\n"),
             Command::Lock => "lock\n".to_string(),
+            Command::ShowSaver => "show-saver\n".to_string(),
+            Command::HideSaver => "hide-saver\n".to_string(),
             Command::Unlock => "unlock\n".to_string(),
             Command::DockKeyboard { screen, active } => format!("dock-keyboard {screen} {}\n", *active as u8),
             Command::DockOn(screen,None) => format!("dock-screen {screen} none\n"),
@@ -1333,6 +1351,8 @@ impl Command {
             ("hands-toggle", None) => Command::ToggleHands,
             ("reload-frame", None) => Command::ReloadFrame,
             ("lock", None) => Command::Lock,
+            ("show-saver", None) => Command::ShowSaver,
+            ("hide-saver", None) => Command::HideSaver,
             ("unlock", None) => Command::Unlock,
             _ => return None,
         };
@@ -1678,6 +1698,12 @@ mod tests {
         );
         assert_eq!(Event::decode("shot region 1920 1080 - "), None);
         assert_eq!(Event::decode("shot pick 1920 1080 1,2,3 /run/a.rgba"), None);
+        assert_eq!(Event::decode(Event::IDLE_LOCK_REQUESTED), Some(Event::IdleLockRequested));
+        assert_eq!(Event::decode(&Event::saver(true)), Some(Event::Saver(true)));
+        assert_eq!(Event::decode(&Event::saver(false)), Some(Event::Saver(false)));
+        assert_eq!(Event::decode("saver 2\n"), None);
+        assert_eq!(Command::decode("show-saver\n"), Some(Command::ShowSaver));
+        assert_eq!(Command::decode("show-saver 1\n"), None);
         assert_eq!(Event::decode(Event::LOCK_REQUESTED), Some(Event::LockRequested));
         assert_eq!(Event::decode(&Event::locked(true)), Some(Event::Locked(true)));
         assert_eq!(Event::decode(&Event::locked(false)), Some(Event::Locked(false)));
@@ -1705,6 +1731,8 @@ mod tests {
             Command::ToggleHands,
             Command::ReloadFrame,
             Command::Lock,
+            Command::ShowSaver,
+            Command::HideSaver,
             Command::Unlock,
             Command::Toast(None),
             Command::HoldIdle(true),

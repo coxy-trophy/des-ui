@@ -8,7 +8,28 @@ impl App {
         self.secondary_areas.retain(|screen,_|*screen<count);
         let mut actions=Vec::new();let mut areas=Vec::new();
         let overview=self.desktop.as_ref().and_then(|d|d.overview.clone());
+        let saver = if locked { self.idle_saver.started() } else { None };
+        let (style, reduced, on_battery) = (
+            self.config.screensaver,
+            !self.config.animate || self.config.appearance.reduce_motion,
+            self.mon.power.is_some_and(|battery| !battery.plugged),
+        );
         for screen in 1..count {
+            if let Some(started) = saver {
+                // This surface has never painted desktop content. The compositor
+                // keeps ordinary secondary viewports unmapped during the lock.
+                ctx.show_viewport_immediate(
+                    egui::ViewportId::from_hash_of(("des-saver-display", screen)),
+                    ViewportBuilder::default()
+                        .with_title(format!("DEs-UI screensaver — display {}", screen + 1))
+                        .with_app_id(format!("des-ui-saver-{screen}")),
+                    |ctx, class| {
+                        if class != egui::ViewportClass::Embedded {
+                            screensaver::show(ctx, style, started.elapsed(), reduced, on_battery);
+                        }
+                    },
+                );
+            }
             let dock=self.secondary_docks.entry(screen).or_default();
             let mut output=None;
             let suppress=locked || self.capture.marking();

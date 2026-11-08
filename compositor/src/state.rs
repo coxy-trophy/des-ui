@@ -123,6 +123,7 @@ pub struct DesComp {
     pub screens_off: bool,
     /// Whether the lock was already asked for since then.
     pub idle_lock_asked: bool,
+    pub saver: crate::saver::Saver,
     /// Whether the shell says an application is showing something to watch.
     pub idle_held: bool,
     /// Windows that asked, themselves, that the screen be left alone.
@@ -149,6 +150,10 @@ pub struct DesComp {
     pub pin_focused: bool,
     /// The shell's backdrop windows: the nth covers display n + 1 behind its applications.
     pub backdrops: Vec<Window>,
+    /// A new authenticated toplevel has no privileges until its app ID arrives.
+    pub pending_shell_windows: Vec<Window>,
+    pub secondary_savers: Vec<crate::saver::SecondarySaver>,
+    pub saver_cycle: u64,
     /// Application windows, in the order they were opened.
     pub apps: Vec<App>,
     /// The displays, in logical coordinates; the first is the one with the frame.
@@ -327,6 +332,7 @@ impl DesComp {
             picking: false,
             screens_off: false,
             idle_lock_asked: false,
+            saver: crate::saver::Saver::default(),
             idle_held: false,
             idle_inhibitors: Vec::new(),
             toast: None,
@@ -345,6 +351,9 @@ impl DesComp {
             overlay_id: smithay::backend::renderer::element::Id::new(),
             pin_focused: false,
             backdrops: Vec::new(),
+            pending_shell_windows: Vec::new(),
+            secondary_savers: Vec::new(),
+            saver_cycle: 0,
             apps: Vec::new(),
             screens: Vec::new(),
             physical_screens: Vec::new(),
@@ -499,6 +508,7 @@ impl DesComp {
         if let Some(child) = self.shell_child.as_mut() {
             if let Ok(Some(status)) = child.try_wait() {
                 self.shell_child = None;
+                self.dismiss_saver();
                 let restarting = std::mem::take(&mut self.shell_restarting);
                 // The session ends when the user quits the shell. A shell that crashed
                 // is started again instead: the applications are still running.
@@ -595,6 +605,7 @@ impl DesComp {
     /// Replaces the running shell with a fresh one, which picks up a newly installed
     /// build. Managed terminals reconnect through the compositor-owned backend.
     pub fn restart_shell(&mut self) {
+        self.dismiss_saver();
         self.dock = None;
         self.docks.clear();
         self.dock_keyboard = false;
@@ -621,7 +632,7 @@ impl DesComp {
         // The shell draws all of its windows in one pass and waits for each to be shown.
         // A backdrop whose display has just gone is on no screen, and without this the
         // shell would wait on it forever, freezing the whole frame.
-        for backdrop in &self.backdrops {
+        for backdrop in self.backdrops.iter().chain(self.secondary_savers.iter().map(|entry| &entry.window)) {
             backdrop.send_frame(&output, elapsed, Some(Duration::ZERO), |_, _| Some(output.clone()));
         }
         // Applications out of view are kept ticking slowly: enough that none waits

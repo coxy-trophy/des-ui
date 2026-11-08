@@ -57,6 +57,8 @@ pub struct Desktop {
     pub hands: des_common::ipc::Hands,
     /// Set when the compositor's lock shortcut was pressed.
     pub lock_requested: bool,
+    pub idle_lock_requested: bool,
+    pub saver_active: bool,
     /// Whether the compositor has the screen locked.
     pub locked: bool,
     /// The monitors, as last reported.
@@ -114,6 +116,8 @@ impl Desktop {
             recording_news: Vec::new(),
             hands: des_common::ipc::Hands::Off,
             lock_requested: false,
+            idle_lock_requested: false,
+            saver_active: false,
             locked: false,
             displays: Displays::default(),
             layouts: Vec::new(),
@@ -131,7 +135,15 @@ impl Desktop {
             let Ok(message) = self.rx.try_recv() else { break };
             let event = match message {
                 Message::Ready => { self.heard = true; continue; }
-                Message::Disconnected => { self.heard = false; self.overview = None; self.window_shelf = false; self.companion_pointer = None; continue; }
+                Message::Disconnected => {
+                    self.heard = false;
+                    self.overview = None;
+                    self.window_shelf = false;
+                    self.companion_pointer = None;
+                    self.idle_lock_requested = false;
+                    self.saver_active = false;
+                    continue;
+                }
                 Message::SecurityConfirmed(generation, locked) => {
                     if generation == self.security_generation { self.security_confirmed = Some(locked); }
                     continue;
@@ -167,7 +179,16 @@ impl Desktop {
                 Event::Displays(displays) => self.displays = displays,
                 Event::Layouts(layouts) => self.layouts = layouts,
                 Event::LockRequested => self.lock_requested = true,
-                Event::Locked(locked) => { self.locked = locked; if locked { self.companion_pointer = None; } },
+                Event::IdleLockRequested => self.idle_lock_requested = true,
+                Event::Saver(active) => self.saver_active = active,
+                Event::Locked(locked) => {
+                    self.locked = locked;
+                    if locked {
+                        self.companion_pointer = None;
+                    } else {
+                        self.saver_active = false;
+                    }
+                }
                 Event::Overview(layout) => self.overview = layout,
             }
         }
