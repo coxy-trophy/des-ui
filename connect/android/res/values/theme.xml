@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Native Android adapter for DESIGN.md, shell/src/ui.rs and themes/signal.json. -->
+    <color name="ground">#06080B</color>
+    <color name="panel">#0A0E12</color>
+    <color name="track">#141B22</color>
+    <color name="line">#1A232B</color>
+    <color name="line_strong">#2A3742</color>
+    <color name="field_line">#536775</color>
+    <color name="text">#DCE7EC</color>
+    <color name="secondary">#8FA3B0</color>
+    <color name="accent">#4FE3D8</color>
+    <color name="accent_track">#122B2C</color>
+    <color name="caution">#F5B85A</color>
+    <color name="caution_track">#302416</color>
+    <style name="Theme.DESConnect" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/ground</item>
+        <item name="android:colorBackground">@color/ground</item>
+        <item name="android:colorAccent">@color/accent</item>
+        <item name="android:textColorPrimary">@color/text</item>
+        <item name="android:textColorSecondary">@color/secondary</item>
+        <item name="android:statusBarColor">@color/ground</item>
+        <item name="android:navigationBarColor">@color/ground</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item type="id" name="desktop_address" />
+    <item type="id" name="desktop_port" />
+    <item type="id" name="connect" />
+    <item type="id" name="reconnect" />
+    <item type="id" name="disconnect" />
+    <item type="id" name="pair" />
+    <item type="id" name="accept" />
+    <item type="id" name="reject" />
+    <item type="id" name="ping" />
+    <item type="id" name="unpair" />
+    <item type="id" name="forget" />
+    <item type="id" name="confirm_unpair" />
+    <item type="id" name="cancel_unpair" />
+    <item type="id" name="verification_code" />
+    <item type="id" name="link_status" />
+    <item type="id" name="link_detail" />
+    <item type="id" name="desktop_name" />
+    <item type="id" name="nearby_desktops" />
+    <item type="id" name="discovered_desktop" />
+</resources>

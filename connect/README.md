@@ -2,9 +2,11 @@
 
 The MIT Rust service implements LAN discovery, protocol-8 mutual TLS, explicit
 pairing, durable certificate pins, battery/ping, explicit file transfers, owner-only local IPC and an opt-in
-screen bridge. It does not start automatically with the desktop. The Android
-companion is the separate GPL fork at ../des-connect-android; no GPL implementation
-was copied into this crate.
+screen bridge. It does not start automatically with the desktop. The standalone
+[DES Connect Preview](android/README.md) supports foreground pairing, battery and
+ping. The separate GPL fork at `../des-connect-android` remains available for
+features the preview does not yet offer. The native crate and preview contain no
+implementation copied from the fork.
 
 ```sh
 cargo build -p des-connect

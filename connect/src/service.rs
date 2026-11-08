@@ -206,6 +206,8 @@ impl Actor {
    let wants=np.body.get("pair").and_then(Value::as_bool).ok_or("invalid pairing packet")?;
    if !wants {self.shared.cancel_peer_files(&self.view.id);self.shared.store.lock().unwrap().forget(&self.view.id)?;self.pair.unpair(self.session)?;self.timestamp=None;}
    else if self.pair.state()==State::Outgoing {
+    // A simultaneous v8 request carries a timestamp; only a bare response is consent.
+    if np.body.contains_key("timestamp"){return Ok(());}
     let attempt=self.pair.pending().ok_or("no pairing attempt")?;self.pair.peer_accepts(self.session,attempt,self.now())?;
     if let Err(e)=self.persist(){self.pair.unpair(self.session)?;return Err(e);}
     self.request_battery()?;

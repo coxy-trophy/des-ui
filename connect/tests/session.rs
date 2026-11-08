@@ -29,6 +29,14 @@ fn connect(port:u16,peer:&Store)->SslStream<TcpStream>{
  std::thread::sleep(Duration::from_millis(300));assert!(dev(&call(&socket,"state",None),id).unwrap()["battery"].is_null());
  let sent=call(&socket,"pair",Some(id));assert_eq!(sent["ok"],true);let pair=read(&mut stream);assert_eq!(pair.kind,"kdeconnect.pair");let stamp=pair.body["timestamp"].as_i64().unwrap();
  assert_eq!(dev(&sent,id).unwrap()["verification_key"],des_connect::identity::verification_key(&desktop.certificate,&peer.certificate,stamp).unwrap());
+ // A simultaneous request is not consent. An acknowledgement has no timestamp.
+ send(&mut stream,packet("kdeconnect.pair",json!({"pair":true,"timestamp":stamp})));
+ stream.get_ref().set_read_timeout(Some(Duration::from_millis(700))).unwrap();
+ let mut byte=[0];let early=stream.read(&mut byte).unwrap_err();
+ assert!(matches!(early.kind(),std::io::ErrorKind::WouldBlock|std::io::ErrorKind::TimedOut));
+ assert_eq!(dev(&call(&socket,"state",None),id).unwrap()["pair_state"],"outgoing");
+ assert!(Store::open(&state).unwrap().pin(id).unwrap().is_none());
+ stream.get_ref().set_read_timeout(Some(Duration::from_secs(5))).unwrap();
  send(&mut stream,packet("kdeconnect.pair",json!({"pair":true})));wait(&socket,|s|dev(s,id).is_some_and(|d|d["paired"]==true));assert_eq!(read(&mut stream).kind,"kdeconnect.battery.request");
  send(&mut stream,packet("kdeconnect.battery",json!({"currentCharge":82,"isCharging":true})));send(&mut stream,packet("kdeconnect.ping",json!({"message":"fixture"})));
  wait(&socket,|s|dev(s,id).is_some_and(|d|d["battery"]==82&&!d["last_ping"].is_null()));

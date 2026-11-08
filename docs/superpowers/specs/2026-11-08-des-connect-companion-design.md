@@ -1,6 +1,6 @@
 # First-party DES Connect Android companion
 
-Status: proposed. This replaces the Android fork decision in the November 3
+Status: approved. This replaces the Android fork decision in the November 3
 design. The native desktop service and CONNECT panel remain the foundation.
 
 ## Goal
