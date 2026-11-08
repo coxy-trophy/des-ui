@@ -5,6 +5,7 @@
 //! control. The shell starts the service when it is not running, and offers the
 //! sign-in when the service says nobody is signed in.
 
+mod chrome;
 mod lyrics_view;
 
 use crate::theme::Theme;
@@ -721,6 +722,9 @@ pub struct Music {
     /// Stable lyric layout and the playback-follow animation state.
     lyrics_view: lyrics_view::View,
     lyrics_motion: bool,
+    /// What the column beside the library shows, and the span of the top tracks.
+    side_tab: chrome::SideTab,
+    top_range: &'static str,
 }
 
 impl Music {
@@ -765,6 +769,7 @@ impl Music {
             devices_asked: None,
             lyrics_asked: None,
             lyrics_view: Default::default(), lyrics_motion: true,
+            side_tab: Default::default(), top_range: "short_term",
         }
     }
 
@@ -1167,7 +1172,8 @@ impl Music {
             )
         };
 
-        let transport_height = if ui.available_width() < 480.0 { 246.0 } else { 200.0 };
+        let transport_height = if ui.available_width() >= 1068.0 { 88.0 } else { 186.0 };
+        let wide_column = ui.available_width() >= 1180.0;
         let problem_height = if problem.is_some() { 40.0 } else { 0.0 };
         let body_height = (ui.available_height() - transport_height - 12.0 - problem_height).max(80.0);
         let unconnected = matches!(&playlists, Some((_, Some(why))) if why.starts_with("Your library is not connected"));
@@ -1179,7 +1185,7 @@ impl Music {
                 self.connect_library(ui, theme);
             });
             ui.add_space(12.0);
-            self.transport(ui, theme, now, transport_height);
+            self.player_bar(ui, theme, now, transport_height, false);
             return;
         }
         let rail_width = (ui.available_width() * 0.23).clamp(152.0, 224.0);
@@ -1195,77 +1201,22 @@ impl Music {
             ui.spacing_mut().item_spacing.x = 20.0;
             // Left: search, then the library.
             if wide { ui.allocate_ui_with_layout(vec2(rail_width, body_height), Layout::top_down(Align::Min), |ui| {
-                ui.spacing_mut().item_spacing.y = 4.0;
-                let (field, _) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::hover());
-                ui.painter().rect_filled(field, ui::CONTROL_RADIUS, ui::PANEL);
-                ui.painter().rect_stroke(field, ui::CONTROL_RADIUS, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
-                let edit = ui.put(
-                    Rect::from_min_max(field.min + vec2(10.0, 7.0), field.max - vec2(48.0, 7.0)),
-                    TextEdit::singleline(&mut self.query).vertical_align(eframe::egui::Align::Center)
-                        .frame(false)
-                        .font(ui::display(13.0))
-                        .text_color(ui::TEXT)
-                        .hint_text(crate::ui::hint("search Spotify")),
-                );
-                if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !self.query.trim().is_empty() {
-                    self.go(Source::Search(self.query.trim().to_string()), false);
-                }
-                if !self.query.is_empty() && ui.put(Rect::from_min_size(field.right_top() - vec2(44.0, 0.0), vec2(44.0, 36.0)), egui::Button::new("Clear").wrap_mode(egui::TextWrapMode::Extend)).on_hover_text("Clear search").clicked() {
-                    self.query.clear();
-                    self.go(Source::Home, false);
-                    edit.request_focus();
-                }
-                ui.add_space(10.0);
-                if side_row(ui, theme, "HOME", self.source == Source::Home) { self.go(Source::Home, false); }
-                if side_row(ui, theme, "LIKED SONGS", self.source == Source::Liked) {
-                    self.go(Source::Liked, false);
-                }
-                if side_row(ui, theme, "ALBUMS", self.source == Source::Albums) {
-                    self.go(Source::Albums, false);
-                }
-                if side_row(ui, theme, "UP NEXT", self.source == Source::Queue) {
-                    self.go(Source::Queue, false);
-                    self.queue_as_of = None;
-                }
-                if side_row(ui, theme, "LYRICS", self.source == Source::Lyrics) {
-                    self.go(Source::Lyrics, false);
-                    self.lyrics_view.reset();
-                }
-                if side_row(ui, theme, "DEVICES", self.source == Source::Devices) {
-                    self.go(Source::Devices, false);
-                    self.devices_asked = None;
-                }
-                ui.add_space(8.0);
-                ui::tracked(ui, "PLAYLISTS", ui::display_bold(11.0), ui::LABEL, 3.0);
-                match playlists {
-                    None => {
-                        ui::text(ui, "Loading…", ui::display(12.0), ui::LABEL);
+                ui.set_width(rail_width);
+                self.sidebar(ui, theme, body_height, playlists.clone());
+            }); }
+            // Middle: the list chosen; right, on wide screens: up next, lyrics, devices.
+            let column = if wide_column { 290.0 } else { 0.0 };
+            let middle = (ui.available_width() - if wide_column { column + 20.0 } else { 0.0 }).max(40.0);
+            ui.allocate_ui_with_layout(vec2(middle, body_height), Layout::top_down(Align::Min), |ui| {
+                ui.set_width(middle);
+                if source == Source::Home {
+                    match &list {
+                        Some((items, None)) => self.home(ui, theme, now, items, body_height),
+                        Some((_, Some(why))) => { ui::text(ui, why, ui::display(12.0), ui::CAUTION); },
+                        None => { ui::text(ui, "Loading…", ui::display(12.0), ui::LABEL); },
                     }
-                    Some((_, Some(why))) => {
-                        ui::text(ui, &why, ui::display(11.0), ui::CAUTION);
-                    }
-                    Some((items, None)) => {
-                        ScrollArea::vertical().max_height((body_height - 300.0).max(24.0)).id_salt("playlists").auto_shrink([false, false]).show(ui, |ui| {
-                            ui.spacing_mut().item_spacing.y = 2.0;
-                            for playlist in &items {
-                                let chosen = matches!(&self.source, Source::Playlist { id, .. } if *id == playlist.id);
-                                if side_row(ui, theme, &playlist.name, chosen) {
-                                    let to = Source::Playlist {
-                                        id: playlist.id.clone(),
-                                        name: playlist.name.clone(),
-                                        uri: playlist.uri.clone(),
-                                    };
-                                    self.go(to, false);
-                                }
-                            }
-                        });
-                    }
+                    return;
                 }
-            });
-
-            }
-            // Right: the list chosen.
-            ui.allocate_ui_with_layout(vec2(ui.available_width(), body_height), Layout::top_down(Align::Min), |ui| {
                 let title = match &source {
                     Source::Home => "YOUR MUSIC".to_string(),
                     Source::Liked => "LIKED SONGS".to_string(),
@@ -1445,6 +1396,12 @@ impl Music {
                     }
                 }
             });
+            if wide_column {
+                ui.allocate_ui_with_layout(vec2(column, body_height), Layout::top_down(Align::Min), |ui| {
+                    ui.set_width(column);
+                    self.side_column(ui, theme, now, body_height);
+                });
+            }
         });
 
         if let Some(problem) = problem {
@@ -1459,7 +1416,7 @@ impl Music {
             });
         }
         ui.add_space(12.0);
-        self.transport(ui, theme, now, transport_height);
+        self.player_bar(ui, theme, now, transport_height, wide_column);
     }
 
     /// Narrow workspaces retain every destination without squeezing a permanent rail.
@@ -1567,61 +1524,6 @@ impl Music {
         });
     }
 
-    /// The strip along the bottom of the view: the track, the controls, the position.
-    fn transport(&mut self, ui: &mut Ui, theme: &Theme, now: &Now, height: f32) {
-        let (strip, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
-        crate::material::paint(ui.ctx(), ui.painter(), strip, ui::CONTROL_RADIUS, crate::material::Role::Panel);
-        ui.painter().rect_stroke(strip, ui::CONTROL_RADIUS, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
-        let mut inner = ui.new_child(UiBuilder::new().max_rect(strip.shrink(10.0)).layout(Layout::top_down(Align::Min)));
-        inner.set_clip_rect(strip.intersect(ui.clip_rect()));
-        let ui = &mut inner;
-        ui.spacing_mut().item_spacing = vec2(8.0, 4.0);
-        let Some(track) = &now.track else {
-            ui::text(ui, "Your next listen starts here", ui::display_bold(16.0), ui::TEXT);
-            ui::text(ui, "Choose a playlist, album or song to start playback.", ui::display(12.0), ui::SECONDARY);
-            return;
-        };
-        ui.horizontal(|ui| {
-            self.draw_cover(ui, 44.0, track.cover.as_deref());
-            ui.vertical(|ui| {
-                let fit = (ui.available_width() / 8.5).max(0.0) as usize;
-                ui::text(ui, &crate::panels::truncate(&track.name, fit), ui::display_bold(15.0), ui::TEXT).on_hover_text(&track.name);
-                ui::text(ui, &crate::panels::truncate(&track.artists, fit), ui::display(12.0), ui::SECONDARY).on_hover_text(&track.artists);
-            });
-        });
-        ui.horizontal_wrapped(|ui| {
-            if control(ui, theme, Control::Previous, 30.0, false).clicked() { self.send(json!({ "cmd": "prev" })); }
-            if control(ui, theme, if now.playing { Control::Pause } else { Control::Play }, 32.0, true).clicked() { self.send(json!({ "cmd": "toggle" })); }
-            if control(ui, theme, Control::Next, 30.0, false).clicked() { self.send(json!({ "cmd": "next" })); }
-            let state = now.device.as_deref().map(|device| format!("On {device}")).unwrap_or_else(|| if now.playing { "Playing on this desktop" } else { "Paused" }.to_string());
-            if ui.add(egui::Button::new(egui::RichText::new(crate::panels::truncate(&state, ((ui.available_width() / 7.8) as usize).max(4))).font(ui::display(11.0))).frame(false)).on_hover_text("Choose playback device").clicked() {
-                self.go(Source::Devices, false); self.devices_asked = None;
-            }
-        });
-        ui.horizontal(|ui| {
-            ui::text(ui, &clock(now.position_ms()), ui::mono(11.0), ui::SECONDARY);
-            let width = (ui.available_width() - 54.0).max(12.0);
-            if let Some(to) = ui::slider(ui, theme, width, now.position_ms() as f32 / track.duration_ms.max(1) as f32, "Playback position") {
-                if ui.input(|i| i.pointer.any_released()) || !ui.input(|i| i.pointer.any_down()) { self.send(json!({ "cmd": "seek", "ms": (to * track.duration_ms as f32) as u32 })); }
-            }
-            ui::text(ui, &clock(track.duration_ms), ui::mono(11.0), ui::SECONDARY);
-        });
-        ui.horizontal_wrapped(|ui| {
-            if ui::chip(ui, theme, "SHUFFLE", None, now.shuffle).clicked() { self.send(json!({ "cmd": "shuffle", "on": !now.shuffle })); }
-            let (label, next) = match now.repeat.as_str() { "all" => ("REPEAT", "one"), "one" => ("REPEAT 1", "off"), _ => ("REPEAT", "all") };
-            if ui::chip(ui, theme, label, None, now.repeat != "off").clicked() { self.send(json!({ "cmd": "repeat", "mode": next })); }
-            let liked = now.liked == Some(true);
-            if ui::chip(ui, theme, if liked { "LIKED" } else { "LIKE" }, None, liked).clicked() { self.send(json!({ "cmd": "like", "on": !liked })); }
-            ui.menu_button(egui::RichText::new("MORE").font(ui::display(11.0)), |ui| {
-                if ui.button("Lyrics").clicked() { self.go(Source::Lyrics, true); self.lyrics_view.reset(); ui.close_menu(); }
-                if ui.button("Devices").clicked() { self.go(Source::Devices, true); self.devices_asked = None; ui.close_menu(); }
-
-            });
-        });
-        self.volume_control(ui, theme, now);
-        if now.playing { ui.ctx().request_repaint_after(Duration::from_millis(500)); }
-    }
-
 }
 
 /// Read only the explicitly selected image; encode a bounded JPEG for Spotify.
@@ -1646,21 +1548,6 @@ pub const PANEL_HEIGHT: f32 = 136.0;
 const CAUTION_FREE: f32 = ui::CAUTION_ABOVE;
 
 /// A row in the left list. Returns true when clicked.
-fn side_row(ui: &mut Ui, theme: &Theme, name: &str, chosen: bool) -> bool {
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::SelectableLabel, ui.is_enabled(), name));
-    let painter = ui.painter_at(rect);
-    if chosen {
-        painter.rect_filled(rect, ui::CONTROL_RADIUS, theme.tint());
-        painter.rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside);
-    } else if response.hovered() {
-        painter.rect_filled(rect, ui::CONTROL_RADIUS, ui::TRACK);
-    }
-    if response.has_focus() { painter.rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
-    let (font, ink) = if chosen { (ui::display_bold(13.0), ui::TEXT) } else { (ui::display(13.0), ui::TEXT) };
-    painter.text(rect.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, crate::panels::truncate(name, 26), font, ink);
-    response.clicked()
-}
 
 /// What was clicked on a row: the row itself, or its way into the queue.
 #[derive(Clone, Copy, PartialEq)]
@@ -1886,6 +1773,7 @@ mod tests {
             commands, source: Source::Home, query: String::new(), browser_open: None, editor: None, add_to: None, client_id: String::new(),
             queue_as_of: None, queued: None, asked: Vec::new(), asked_further: None, trail: Vec::new(),
             covers: Covers { wanted, ready, pending_workers: None, held: HashMap::new(), recent: VecDeque::new() }, devices_asked: None, lyrics_asked: None, lyrics_view: Default::default(), lyrics_motion: true,
+            side_tab: Default::default(), top_range: "short_term",
         }
     }
 
@@ -2136,8 +2024,19 @@ mod tests {
         let mode=std::env::var("DESUI_MUSIC_PREVIEW_MODE").unwrap_or_default();
         let width=std::env::var("DESUI_MUSIC_PREVIEW_WIDTH").ok().and_then(|s|s.parse::<f32>().ok()).unwrap_or(1100.0);
         let mut music=fixture(Now::parse(&json!({"volume":75,"playing":false,"track":{"uri":"spotify:track:fixture","name":"Sample track","artists":"Sample artist","duration_ms":240000}})));
+        if mode=="home" {
+            let tracks=|names:&[(&str,&str)]| parse_items(&json!({"items":names.iter().enumerate().map(|(i,(n,a))| json!({"uri":format!("spotify:track:{n}{i}"),"name":n,"artists":a,"duration_ms":200_000+i*13_000})).collect::<Vec<_>>()}));
+            let playlists=parse_items(&json!({"items":(["Signal Flare","Late shift","Focus · no words","Road north","Sunday low","Made for running","Evening favourites"]).iter().enumerate().map(|(i,n)| json!({"kind":"playlist","uri":format!("spotify:playlist:{i}"),"id":format!("p{i}"),"name":n,"owner":"you"})).collect::<Vec<_>>()}));
+            let mut shared=music.shared.lock().unwrap();
+            shared.lists.insert("playlists:".into(),(playlists,None));
+            shared.lists.insert("top_tracks:short_term".into(),(tracks(&[("Night Transit","Holloway Signal"),("Glass Harbour","Mira Okonkwo"),("Second Sun","The Quiet Engines"),("Low Orbit","Holloway Signal"),("Paper Lanterns","Ida Brekke")]),None));
+            shared.lists.insert("recent:".into(),(tracks(&[("Fold the Map","Ida Brekke"),("Static Bloom","Kestrel Row"),("Last Light","The Quiet Engines"),("Undertow","Mira Okonkwo"),("Long Exposure","Holloway Signal"),("Coastline","Kestrel Row")]),None));
+            shared.lists.insert("queue:".into(),(tracks(&[("Glass Harbour","Mira Okonkwo"),("Second Sun","The Quiet Engines"),("Low Orbit","Holloway Signal"),("Fold the Map","Ida Brekke")]),None));
+            drop(shared);
+            music.source=Source::Home; music.queue_as_of=Some("spotify:track:fixture".into());
+        }
         if mode.starts_with("editor") {music.editor=Some(PlaylistEditor{name:"Evening favourites".into(),description:"A personal playlist".into(),..Default::default()});if mode=="editor-error"{music.editor.as_mut().unwrap().error=Some("Spotify refused this edit. Your draft is preserved; reconnect the library to approve permissions.".into());}else if mode=="editor-pending"{music.editor.as_mut().unwrap().begin(&mut music.shared.lock().unwrap(),"playlist_save",Instant::now());}}
-        else if mode!="compact" {music.source=Source::Browse{kind:"shows".into(),key:String::new(),name:"Podcasts".into(),range:"medium_term".into()};music.shared.lock().unwrap().lists.insert("shows:".into(),(parse_items(&json!({"items":[{"kind":"show","uri":"spotify:show:fixture","id":"fixture","name":"A sample podcast","artists":"Sample publisher"}]})),None));}
+        else if mode!="compact" && mode!="home" {music.source=Source::Browse{kind:"shows".into(),key:String::new(),name:"Podcasts".into(),range:"medium_term".into()};music.shared.lock().unwrap().lists.insert("shows:".into(),(parse_items(&json!({"items":[{"kind":"show","uri":"spotify:show:fixture","id":"fixture","name":"A sample podcast","artists":"Sample publisher"}]})),None));}
         let options=eframe::NativeOptions{viewport:egui::ViewportBuilder::default().with_inner_size([width,800.0]),event_loop_builder:Some(Box::new(|builder|{builder.with_x11().with_any_thread(true);})),..Default::default()};
         eframe::run_native("DEs-UI music fixture",options,Box::new(move |cc|{ui::install_fonts(&cc.egui_ctx,None,None);crate::apply_style(&cc.egui_ctx,&Theme::load("signal"));Ok(Box::new(Preview{music,frames:0,output,mode}))})).unwrap();
     }
