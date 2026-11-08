@@ -40,7 +40,11 @@ native CONNECT panel. A PC click opened Network & internet. Rotation replaced
 the old geometry and restored control. The desktop Stop button, a simulated
 desktop lock, and Android screen-off each stopped the cast; Android unlock did
 not resume it. A separate native input fixture verified drag mapping and refusal
-in view-only mode and outside the picture. The Android 14 realme paired with
-the isolated service over Wi-Fi; this did not by itself validate physical-phone
-capture or gesture injection. Four JVM suites, 99 desktop service tests and
-32 focused shell tests passed. The desktop binaries and signed APK built.
+in view-only mode and outside the picture. The physical Android 14 realme
+paired over Wi-Fi, showed Calculator in the native CONNECT panel, accepted a
+desktop click that entered `7`, and stopped from the panel. During device
+testing, avoid `uiautomator dump` while control is live: Android's default
+[UiAutomation flags](https://developer.android.com/reference/android/app/UiAutomation#FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
+suppress accessibility services, correctly revoking the control session.
+Four JVM suites, 99 desktop service tests and 32 focused shell tests passed.
+The desktop binaries and signed APK built.
