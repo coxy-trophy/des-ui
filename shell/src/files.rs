@@ -113,7 +113,7 @@ enum View { List, Grid }
 
 /// What a click, key or menu asked for this frame; one place carries them out.
 #[derive(Default)]
-struct Act { open: bool, new_folder: bool, rename: bool, copy: bool, cut: bool, paste: bool, trash: bool, restore: bool, undo: bool, terminal: Option<PathBuf> }
+struct Act { open: bool, new_folder: bool, rename: bool, copy: bool, cut: bool, paste: bool, trash: bool, restore: bool, undo: bool, properties: bool, terminal: Option<PathBuf> }
 
 pub struct Browser {
     path: PathBuf, path_text: String, entries: Vec<Entry>,
@@ -139,6 +139,12 @@ pub struct Browser {
     ejecting: Option<(Option<PathBuf>, std::sync::mpsc::Receiver<Result<(), String>>)>,
     /// A passing word in the status line, such as that a drive can be pulled out.
     message: Option<(String, Instant)>,
+    /// A search of everything under this folder, what it found as entries, and the
+    /// line of text each matched on.
+    search: Option<crate::deep_search::Search>, found: Vec<Entry>, lines: std::collections::HashMap<PathBuf, String>,
+    /// An entry to select once its folder has been read.
+    reveal_after: Option<PathBuf>,
+    renaming: Option<crate::file_dialogs::BatchRename>, properties: Option<crate::file_dialogs::Properties>,
 }
 pub fn home() -> PathBuf { std::env::var_os("HOME").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| PathBuf::from("/")) }
 fn image_path(path: &Path) -> bool { matches!(path.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg") }
@@ -199,7 +205,7 @@ impl Browser {
             clipboard: None, transfers: Default::default(), transfers_open: false, clash_all: true, dialog: None, menu_open: false, paste_chord_handled: false, labels: Default::default(),
             sort: SortKey::Name, descending: false, editing_path: false, focus_path: false, focus_filter: false,
             places, free: None, look: Default::default(), look_path: None, list_offset: 0.0, list_height: 0.0, reveal: false,
-            view: if mode == Mode::ImagePicker { View::Grid } else { View::List }, grid_columns: 1, thumbs: Default::default(), mounting: None, ejecting: None, message: None }
+            view: if mode == Mode::ImagePicker { View::Grid } else { View::List }, grid_columns: 1, thumbs: Default::default(), mounting: None, ejecting: None, message: None, search: None, found: Vec::new(), lines: Default::default(), reveal_after: None, renaming: None, properties: None }
     }
     fn navigate(&mut self, ctx: &egui::Context, path: PathBuf, navigation: Navigation) {
         if !path.is_absolute() { self.error = Some("Use an absolute folder path".into()); return; }
@@ -234,10 +240,29 @@ impl Browser {
                     if !self.selected.as_ref().is_some_and(present) { self.selected = None; }
                 } else {
                     self.selected = None; self.marked.clear(); self.anchor = None; self.filter.clear(); self.list_offset = 0.0; self.thumbs.clear();
+                    self.search = None; self.found.clear(); self.lines.clear();
+                    if let Some(path) = self.reveal_after.take().filter(|p| self.entries.iter().any(|e| &e.path == p)) { self.select_only(path); self.reveal = true; }
                 }
             },
             Err(error) => { self.pending = None; self.error = Some(error); self.path_text = self.path.to_string_lossy().into_owned(); },
         }
+    }
+    /// What the list shows: the folder, or what a search found.
+    fn items(&self) -> &[Entry] { if self.search.is_some() { &self.found } else { &self.entries } }
+    fn start_search(&mut self, ctx: &egui::Context) {
+        let query = self.filter.trim();
+        if query.chars().count() < 2 { return; }
+        self.search = Some(crate::deep_search::Search::start(self.path.clone(), query, self.hidden, ctx));
+        self.found.clear(); self.lines.clear(); self.selected = None; self.marked.clear(); self.list_offset = 0.0;
+    }
+    fn end_search(&mut self) {
+        if self.search.take().is_some() { self.found.clear(); self.lines.clear(); self.selected = None; self.marked.clear(); }
+    }
+    /// Where a found entry is, from the folder searched.
+    fn location_of(&self, entry: &Entry) -> Option<String> {
+        let search = self.search.as_ref()?;
+        let parent = entry.path.parent()?;
+        Some(match parent.strip_prefix(&search.root) { Ok(rest) if rest.as_os_str().is_empty() => "here".into(), Ok(rest) => rest.display().to_string(), Err(_) => parent.display().to_string() })
     }
     fn name_of(&self, entry: &Entry) -> String {
         self.labels.get(&entry.path).cloned().unwrap_or_else(|| entry.path.file_name().unwrap_or_default().to_string_lossy().into_owned())
@@ -245,13 +270,13 @@ impl Browser {
     /// The entries shown, filtered, then sorted with folders first.
     fn visible(&self) -> Vec<usize> {
         let needle = self.filter.to_lowercase();
-        let mut shown: Vec<usize> = self.entries.iter().enumerate().filter(|(_, e)| {
+        let mut shown: Vec<usize> = self.items().iter().enumerate().filter(|(_, e)| {
             let name = self.name_of(e);
-            (self.hidden || !name.starts_with('.')) && name.to_lowercase().contains(&needle)
+            (self.hidden || !name.starts_with('.')) && (self.search.is_some() || name.to_lowercase().contains(&needle))
                 && (self.mode == Mode::Browse || e.directory || image_path(&e.path))
         }).map(|(i, _)| i).collect();
         shown.sort_by(|&a, &b| {
-            let (x, y) = (&self.entries[a], &self.entries[b]);
+            let (x, y) = (&self.items()[a], &self.items()[b]);
             let name = || self.name_of(x).to_lowercase().cmp(&self.name_of(y).to_lowercase());
             let order = match self.sort {
                 SortKey::Name => name(),
@@ -264,17 +289,17 @@ impl Browser {
         shown
     }
     fn can_choose(&self) -> bool {
-        self.selected.as_ref().is_some_and(|path| self.entries.iter().any(|e| &e.path == path && !e.directory && (self.mode == Mode::Browse || image_path(path))))
+        self.selected.as_ref().is_some_and(|path| self.items().iter().any(|e| &e.path == path && !e.directory && (self.mode == Mode::Browse || image_path(path))))
     }
     fn activate(&mut self, ctx: &egui::Context) -> Option<Event> {
-        let index = self.entries.iter().position(|e| Some(&e.path) == self.selected.as_ref())?;
+        let index = self.items().iter().position(|e| Some(&e.path) == self.selected.as_ref())?;
         if !self.visible().contains(&index) { return None; }
-        let entry = self.entries[index].clone();
+        let entry = self.items()[index].clone();
         if entry.directory { self.navigate(ctx, entry.path, Navigation::New); None }
         else if self.can_choose() { Some(if self.mode == Mode::ImagePicker { Event::Choose(entry.path) } else { Event::Open(entry.path) }) }
         else { None }
     }
-    pub fn captures_keyboard(&self) -> bool { self.dialog.is_some() || self.menu_open || self.transfers.clash.is_some() }
+    pub fn captures_keyboard(&self) -> bool { self.dialog.is_some() || self.menu_open || self.transfers.clash.is_some() || self.renaming.is_some() || self.properties.is_some() }
     /// Reads the folder again, as after another tab changed it.
     pub fn refresh(&mut self, ctx: &egui::Context) { if self.loaded { self.navigate(ctx, self.path.clone(), Navigation::Refresh); } }
     /// What a tab showing this is called.
@@ -297,11 +322,11 @@ impl Browser {
         }
     }
     fn selected_visible(&self) -> Option<PathBuf> {
-        self.selected.as_ref().filter(|path| self.visible().iter().any(|&i| &self.entries[i].path == *path)).cloned()
+        self.selected.as_ref().filter(|path| self.visible().iter().any(|&i| &self.items()[i].path == *path)).cloned()
     }
     /// Everything selected and shown, in list order; at least the focused entry.
     fn chosen(&self) -> Vec<PathBuf> {
-        let shown: Vec<PathBuf> = self.visible().into_iter().map(|i| self.entries[i].path.clone()).collect();
+        let shown: Vec<PathBuf> = self.visible().into_iter().map(|i| self.items()[i].path.clone()).collect();
         let marked: Vec<PathBuf> = shown.iter().filter(|p| self.marked.contains(p)).cloned().collect();
         if marked.is_empty() { self.selected_visible().into_iter().collect() } else { marked }
     }
@@ -331,7 +356,16 @@ impl Browser {
         if self.mode != Mode::Browse { return None; }
         let chosen = self.chosen();
         if act.new_folder && !self.in_trash && !self.loading { self.dialog = Some(OperationDialog::new(DialogKind::NewFolder, String::new())); }
-        if act.rename && !self.in_trash {
+        if act.properties {
+            if let Some(path) = self.selected_visible().or_else(|| Some(self.path.clone())) {
+                let kind = self.items().iter().find(|e| e.path == path).map_or("Folder", kind_of).to_string();
+                self.properties = crate::file_dialogs::Properties::new(path, kind, ctx);
+            }
+        }
+        if act.rename && !self.in_trash && chosen.len() > 1 {
+            let items = chosen.iter().map(|path| (path.clone(), self.items().iter().find(|e| &e.path == path).and_then(|e| e.modified))).collect();
+            self.renaming = Some(crate::file_dialogs::BatchRename::new(items));
+        } else if act.rename && !self.in_trash {
             if let Some(source) = self.selected_visible() {
                 self.dialog = Some(OperationDialog::new(DialogKind::Rename(source.clone()), source.file_name().unwrap_or_default().to_string_lossy().into_owned()));
             }
@@ -353,7 +387,7 @@ impl Browser {
     }
     /// Keys for the list and for operations, when nothing else has the keyboard.
     fn keys(&mut self, ui: &mut egui::Ui, act: &mut Act, target: &mut Option<(PathBuf, Navigation)>, close: &mut bool) {
-        let shown: Vec<PathBuf> = self.visible().into_iter().map(|i| self.entries[i].path.clone()).collect();
+        let shown: Vec<PathBuf> = self.visible().into_iter().map(|i| self.items()[i].path.clone()).collect();
         let pressed = |ui: &mut egui::Ui, modifiers, key| ui.input_mut(|i| i.consume_key(modifiers, key));
         let at = self.selected.as_ref().and_then(|p| shown.iter().position(|s| s == p));
         // egui lets a pattern without Shift or Alt match a key pressed with them, so
@@ -376,11 +410,17 @@ impl Browser {
             self.reveal = true;
         }
         if pressed(ui, Modifiers::COMMAND, Key::A) { self.marked = shown.clone(); if self.selected.is_none() { self.selected = shown.first().cloned(); } }
+        if self.search.is_some() && pressed(ui, Modifiers::COMMAND, Key::Enter) {
+            if let Some(found) = self.selected.clone() {
+                if let Some(parent) = found.parent() { self.reveal_after = Some(found.clone()); *target = Some((parent.to_path_buf(), Navigation::New)); }
+            }
+        }
+        if pressed(ui, Modifiers::ALT, Key::Enter) { act.properties = true; }
         if pressed(ui, Modifiers::NONE, Key::Enter) { act.open = true; }
         if pressed(ui, Modifiers::NONE, Key::Backspace) {
             *target = self.path.parent().map(|p| (p.to_path_buf(), Navigation::New));
         }
-        if pressed(ui, Modifiers::NONE, Key::F5) { *target = Some((self.path.clone(), Navigation::Refresh)); }
+        if pressed(ui, Modifiers::NONE, Key::F5) || pressed(ui, Modifiers::COMMAND, Key::R) { *target = Some((self.path.clone(), Navigation::Refresh)); }
         if pressed(ui, Modifiers::COMMAND, Key::H) { self.hidden = !self.hidden; }
         if pressed(ui, Modifiers::COMMAND, Key::L) { self.editing_path = true; self.focus_path = true; }
         if pressed(ui, Modifiers::COMMAND, Key::F) { self.focus_filter = true; }
@@ -462,11 +502,22 @@ impl Browser {
     }
     pub fn show(&mut self, ui: &mut egui::Ui, theme: &Theme) -> Option<Event> { self.show_with_keyboard(ui, theme, true) }
     pub fn show_with_keyboard(&mut self, ui: &mut egui::Ui, theme: &Theme, active: bool) -> Option<Event> {
+        // A side without the keyboard still takes clicks; only its keys are off.
         let owns = active && ui.is_enabled();
-        let base_enabled = owns && self.dialog.is_none();
-        let mut event = ui.add_enabled_ui(base_enabled, |ui| self.show_inner(ui, theme, base_enabled)).inner;
+        let enabled = ui.is_enabled() && self.dialog.is_none();
+        let mut event = ui.add_enabled_ui(enabled, |ui| self.show_inner(ui, theme, owns && self.dialog.is_none())).inner;
         if owns { event = self.operation_dialog(ui.ctx(), theme).or(event); }
         if owns && self.dialog.is_none() { event = self.clash_dialog(ui.ctx(), theme).or(event); }
+        if owns {
+            if let Some(renaming) = &mut self.renaming {
+                match renaming.show(ui.ctx(), theme) {
+                    Some(crate::file_dialogs::Outcome::Run(operations)) => { self.renaming = None; event = Some(Event::Operate(operations)); },
+                    Some(crate::file_dialogs::Outcome::Cancel) => self.renaming = None,
+                    None => {},
+                }
+            }
+            if self.properties.as_mut().is_some_and(|properties| properties.show(ui.ctx(), theme)) { self.properties = None; self.refresh(ui.ctx()); }
+        }
         event
     }
     fn show_inner(&mut self, ui: &mut egui::Ui, theme: &Theme, keyboard_active: bool) -> Option<Event> {
@@ -476,6 +527,14 @@ impl Browser {
         let mut act = Act::default();
         let mut target = None;
         let mut close = false;
+        if let Some(search) = &mut self.search {
+            if search.pump() {
+                for hit in &search.hits[self.found.len()..] {
+                    if let Some(line) = &hit.line { self.lines.insert(hit.path.clone(), line.clone()); }
+                    self.found.push(Entry { path: hit.path.clone(), directory: hit.directory, bytes: hit.bytes, modified: hit.modified });
+                }
+            }
+        }
         if let Some(result) = self.mounting.as_ref().and_then(|answer| answer.try_recv().ok()) {
             self.mounting = None;
             match result { Ok(folder) => target = Some((folder, Navigation::New)), Err(error) => self.error = Some(format!("Could not open the drive: {error}")) }
@@ -558,20 +617,26 @@ impl Browser {
         typing
     }
     fn filter_field(&mut self, ui: &mut egui::Ui, width: f32) -> bool {
-        let field = ui.add_sized(egui::vec2(width, ui::CONTROL_HEIGHT), egui::TextEdit::singleline(&mut self.filter).id(egui::Id::new("native-files-filter")).margin(egui::vec2(10.0, 4.0)).vertical_align(egui::Align::Center).char_limit(256).hint_text(ui::hint("Filter this folder  Ctrl+F")));
+        let field = ui.add_sized(egui::vec2(width, ui::CONTROL_HEIGHT), egui::TextEdit::singleline(&mut self.filter).id(ui.id().with("native-files-filter")).margin(egui::vec2(10.0, 4.0)).vertical_align(egui::Align::Center).char_limit(256).hint_text(ui::hint(if self.mode == Mode::Browse { "Filter · Enter searches inside" } else { "Filter this folder  Ctrl+F" })));
         field.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Filter this folder"));
         if self.focus_filter { field.request_focus(); self.focus_filter = false; }
-        if field.has_focus() && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+        // egui lets go of the field on Escape before this sees the key, so the frame
+        // it lets go counts too; the key must not reach the shell and close Files.
+        if (field.has_focus() || field.lost_focus()) && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             if self.filter.is_empty() { field.surrender_focus(); } else { self.filter.clear(); }
+            self.end_search();
         }
-        if field.has_focus() || field.lost_focus() { ui.input_mut(|i| { i.consume_key(Modifiers::NONE, Key::Enter); }); }
+        if (field.has_focus() || field.lost_focus()) && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)) && self.mode == Mode::Browse {
+            self.start_search(ui.ctx());
+        }
+        if field.changed() && self.filter.trim().is_empty() { self.end_search(); }
         field.has_focus() || field.lost_focus()
     }
     /// The folder as a row of places to click; click the bar itself, or press
     /// Ctrl+L, to type a path instead.
     fn path_bar(&mut self, ui: &mut egui::Ui, theme: &Theme, width: f32, keyboard_active: bool, target: &mut Option<(PathBuf, Navigation)>) -> bool {
         if self.editing_path {
-            let field = ui.add_sized(egui::vec2(width, ui::CONTROL_HEIGHT), egui::TextEdit::singleline(&mut self.path_text).id(egui::Id::new("native-files-path")).margin(egui::vec2(10.0, 4.0)).vertical_align(egui::Align::Center).font(ui::mono(12.0)).char_limit(4096).hint_text(ui::hint("/path/to/folder")));
+            let field = ui.add_sized(egui::vec2(width, ui::CONTROL_HEIGHT), egui::TextEdit::singleline(&mut self.path_text).id(ui.id().with("native-files-path")).margin(egui::vec2(10.0, 4.0)).vertical_align(egui::Align::Center).font(ui::mono(12.0)).char_limit(4096).hint_text(ui::hint("/path/to/folder")));
             field.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Folder path"));
             if self.focus_path { field.request_focus(); self.focus_path = false; }
             let typed = field.has_focus() || field.lost_focus();
@@ -580,7 +645,7 @@ impl Browser {
                 let path = match text.strip_prefix("~") { Some(rest) => home().join(rest.trim_start_matches('/')), None => PathBuf::from(text) };
                 *target = Some((if path == self.path { self.path.clone() } else { path }, Navigation::New));
                 self.editing_path = false;
-            } else if field.has_focus() && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            } else if typed && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
                 self.editing_path = false; self.path_text = self.path.to_string_lossy().into_owned();
             } else if field.lost_focus() {
                 self.editing_path = false; self.path_text = self.path.to_string_lossy().into_owned();
@@ -684,7 +749,7 @@ impl Browser {
         let chosen = self.chosen();
         let width = ui.available_width();
         if chosen.len() > 1 {
-            let bytes: u64 = self.entries.iter().filter(|e| chosen.contains(&e.path)).map(|e| e.bytes).sum();
+            let bytes: u64 = self.items().iter().filter(|e| chosen.contains(&e.path)).map(|e| e.bytes).sum();
             ui.add(egui::Label::new(egui::RichText::new(format!("{} items selected", chosen.len())).font(ui::display_bold(17.0)).color(ui::TEXT)).wrap());
             ui.label(egui::RichText::new(format!("{} in files", file_size(bytes))).font(ui::mono(12.0)).color(ui::SECONDARY));
             ui.add_space(14.0);
@@ -712,7 +777,7 @@ impl Browser {
         inside.set_clip_rect(frame.shrink(2.0));
         self.look.show_inline(&mut inside, theme);
         ui.add_space(12.0);
-        let entry = self.entries.iter().find(|e| e.path == path).cloned();
+        let entry = self.items().iter().find(|e| e.path == path).cloned();
         let name = entry.as_ref().map(|e| self.name_of(e)).unwrap_or_default();
         ui.add(egui::Label::new(egui::RichText::new(name).font(ui::display_bold(16.0)).color(ui::TEXT)).wrap());
         if let Some(entry) = &entry {
@@ -720,6 +785,11 @@ impl Browser {
             ui.label(egui::RichText::new(format!("{}{size}", kind_of(entry))).font(ui::mono(12.0)).color(ui::SECONDARY));
             let changed = when(entry.modified);
             if !changed.is_empty() { ui.label(egui::RichText::new(format!("Modified {changed}")).font(ui::mono(12.0)).color(ui::SECONDARY)); }
+            if let Some(location) = self.location_of(entry) { ui.label(egui::RichText::new(format!("In {location}")).font(ui::mono(12.0)).color(ui::SECONDARY)); }
+            if let Some(line) = self.lines.get(&entry.path) {
+                ui.add_space(6.0);
+                ui.add(egui::Label::new(egui::RichText::new(format!("“{line}”")).font(ui::mono(11.5)).color(ui::TEXT)).wrap());
+            }
         }
         ui.add_space(12.0);
         self.actions(ui, theme, act, entry.as_ref().is_some_and(|e| e.directory));
@@ -778,12 +848,13 @@ impl Browser {
                 } else {
                     if menu_item(ui, "Copy", "Ctrl+C", true).clicked() { act.copy = true; ui.close_menu(); }
                     if menu_item(ui, "Cut", "Ctrl+X", true).clicked() { act.cut = true; ui.close_menu(); }
-                    if count == 1 && menu_item(ui, "Rename", "F2", true).clicked() { act.rename = true; ui.close_menu(); }
+                    if menu_item(ui, if count == 1 { "Rename" } else { "Rename all…" }, "F2", true).clicked() { act.rename = true; ui.close_menu(); }
                     menu_separator(ui);
                     if menu_item(ui, "Copy path", "", true).clicked() {
                         let paths: Vec<String> = self.chosen().iter().map(|p| p.to_string_lossy().into_owned()).collect();
                         ui.ctx().copy_text(paths.join("\n")); ui.close_menu();
                     }
+                    if count == 1 && menu_item(ui, "Properties", "Alt+Enter", true).clicked() { act.properties = true; ui.close_menu(); }
                     menu_separator(ui);
                     if menu_item_caution(ui, "Move to Trash", "Del").clicked() { act.trash = true; ui.close_menu(); }
                 }
@@ -909,7 +980,7 @@ impl Browser {
         let columns = Columns::for_width(width);
         let grid = self.view == View::Grid;
         let (head, _) = ui.allocate_exact_size(egui::vec2(width, 26.0), egui::Sense::hover());
-        let heads = if grid { sort_labels(head) } else { columns.headers(head) };
+        let heads = if grid { sort_labels(head) } else { columns.headers(head, self.search.is_some()) };
         for (key, label, rect, right) in heads {
             let response = ui.interact(rect, ui.id().with(("sort", label)), egui::Sense::click());
             let on = self.sort == key;
@@ -924,7 +995,7 @@ impl Browser {
         ui.painter().hline(head.x_range(), head.bottom(), egui::Stroke::new(1.0, ui::LINE));
         ui.add_space(4.0);
 
-        let shown: Vec<PathBuf> = self.visible().into_iter().map(|i| self.entries[i].path.clone()).collect();
+        let shown: Vec<PathBuf> = self.visible().into_iter().map(|i| self.items()[i].path.clone()).collect();
         let status_height = 34.0;
         let panel = if self.transfers_open && self.mode == Mode::Browse { 196.0_f32.min((ui.available_height() - status_height - 120.0).max(0.0)) } else { 0.0 };
         let list_height = (ui.available_height() - status_height - panel).max(60.0);
@@ -970,7 +1041,7 @@ impl Browser {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = GRID_GAP;
                         for at in row * per_row..((row + 1) * per_row).min(shown.len()) {
-                            let Some(entry) = self.entries.iter().find(|e| e.path == shown[at]).cloned() else { continue };
+                            let Some(entry) = self.items().iter().find(|e| e.path == shown[at]).cloned() else { continue };
                             let name = self.name_of(&entry);
                             let marked = self.is_marked(&entry.path);
                             let focused = self.selected.as_ref() == Some(&entry.path) && self.marked.len() > 1;
@@ -980,11 +1051,13 @@ impl Browser {
                         }
                     });
                 } else {
-                    let Some(entry) = self.entries.iter().find(|e| e.path == shown[row]).cloned() else { continue };
+                    let Some(entry) = self.items().iter().find(|e| e.path == shown[row]).cloned() else { continue };
                     let name = self.name_of(&entry);
                     let marked = self.is_marked(&entry.path);
                     let focused = self.selected.as_ref() == Some(&entry.path) && self.marked.len() > 1;
-                    let response = entry_row(ui, theme, &entry, &name, columns, marked, focused);
+                    let location = self.location_of(&entry);
+                    let mut response = entry_row(ui, theme, &entry, &name, location.as_deref(), columns, marked, focused);
+                    if let Some(line) = self.lines.get(&entry.path) { response = response.on_hover_text(line.as_str()); }
                     self.entry_events(ui, response, &entry, &name, marked, &shown, draggable, &mut event, &mut opened, act, menu_drawn);
                 }
             }
@@ -1029,7 +1102,14 @@ impl Browser {
         }
         line.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
             let chosen = self.chosen();
-            let mut text = if self.loading { "Loading…".to_string() } else { items(shown.len()) };
+            let mut text = if self.loading { "Loading…".to_string() } else if let Some(search) = &self.search {
+                let place = search.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "/".into());
+                match (search.done, search.limited) {
+                    (false, _) => format!("Searching {place} for “{}”… {} found", search.query, shown.len()),
+                    (true, false) => format!("{} found in {place} · Ctrl+Enter opens its folder", shown.len()),
+                    (true, true) => format!("{} found in {place}, stopped early", shown.len()),
+                }
+            } else { items(shown.len()) };
             if chosen.len() > 1 { text += &format!(" · {} selected", chosen.len()); }
             if self.limited { text += " · limited listing"; }
             if self.mounting.is_some() { text += " · opening the drive…"; }
@@ -1061,17 +1141,17 @@ impl Columns {
         let kind = take(self.kind, Self::KIND);
         (egui::Rect::from_min_max(egui::pos2(rect.left() + 10.0, rect.top()), egui::pos2(right.max(rect.left() + 20.0), rect.bottom())), kind, modified, size)
     }
-    fn headers(self, rect: egui::Rect) -> Vec<(SortKey, &'static str, egui::Rect, bool)> {
+    fn headers(self, rect: egui::Rect, searching: bool) -> Vec<(SortKey, &'static str, egui::Rect, bool)> {
         let (name, kind, modified, size) = self.split(rect);
         let mut out = vec![(SortKey::Name, "NAME", egui::Rect::from_min_max(egui::pos2(name.left() + 28.0, name.top()), name.max), false)];
-        if let Some(r) = kind { out.push((SortKey::Kind, "KIND", r, false)); }
+        if let Some(r) = kind { out.push((SortKey::Kind, if searching { "FOLDER" } else { "KIND" }, r, false)); }
         if let Some(r) = modified { out.push((SortKey::Modified, "MODIFIED", r, false)); }
         if let Some(r) = size { out.push((SortKey::Size, "SIZE", r, true)); }
         out
     }
 }
 
-fn entry_row(ui: &mut egui::Ui, theme: &Theme, entry: &Entry, name: &str, columns: Columns, marked: bool, focused: bool) -> egui::Response {
+fn entry_row(ui: &mut egui::Ui, theme: &Theme, entry: &Entry, name: &str, location: Option<&str>, columns: Columns, marked: bool, focused: bool) -> egui::Response {
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, ROW), egui::Sense::click_and_drag());
     let painter = ui.painter();
@@ -1093,7 +1173,7 @@ fn entry_row(ui: &mut egui::Ui, theme: &Theme, entry: &Entry, name: &str, column
         let x = if right { rect.right() - galley.size().x } else { rect.left() };
         painter.galley(egui::pos2(x, rect.center().y - galley.size().y / 2.0), galley, ui::SECONDARY);
     };
-    if let Some(r) = kind { small(r, kind_of(entry).to_string(), false); }
+    if let Some(r) = kind { small(r, location.map_or_else(|| kind_of(entry).to_string(), str::to_string), false); }
     if let Some(r) = modified { small(r, when(entry.modified), false); }
     if let Some(r) = size { small(r, if entry.directory { "—".into() } else { file_size(entry.bytes) }, true); }
     response
@@ -1260,19 +1340,26 @@ fn menu_heading(ui: &mut egui::Ui, text: &str) {
 }
 
 /// The file manager: browsers in tabs, sharing the clipboard and the work queue.
-pub struct Window { tabs: Vec<Browser>, active: usize }
+pub struct Window {
+    tabs: Vec<Browser>, active: usize,
+    /// A second folder beside the first, and whether it has the keyboard.
+    split: Option<Browser>, right_focus: bool,
+}
 const MAX_FILE_TABS: usize = 12;
 impl Window {
-    pub fn new(path: PathBuf) -> Self { Window { tabs: vec![Browser::new(path, Mode::Browse)], active: 0 } }
-    pub fn captures_keyboard(&self) -> bool { self.tabs[self.active].captures_keyboard() }
+    pub fn new(path: PathBuf) -> Self { Window { tabs: vec![Browser::new(path, Mode::Browse)], active: 0, split: None, right_focus: false } }
+    pub fn captures_keyboard(&self) -> bool { self.tabs[self.active].captures_keyboard() || self.split.as_ref().is_some_and(Browser::captures_keyboard) }
     pub fn configure_operations(&mut self, clipboard: Option<Clipboard>, transfers: crate::transfers::View) {
-        for tab in &mut self.tabs { tab.configure_operations(clipboard.clone(), transfers.clone()); }
+        for tab in self.tabs.iter_mut().chain(self.split.as_mut()) { tab.configure_operations(clipboard.clone(), transfers.clone()); }
     }
     /// The active tab gets the answer; the others look again, as the change may show there.
     pub fn operation_result(&mut self, ctx: &egui::Context, result: Result<&str, &str>) {
-        let active = self.active;
+        let focused = if self.split.is_some() && self.right_focus { usize::MAX } else { self.active };
         for (index, tab) in self.tabs.iter_mut().enumerate() {
-            if index == active { tab.operation_result(ctx, result); } else if result.is_ok() { tab.refresh(ctx); }
+            if index == focused { tab.operation_result(ctx, result); } else if result.is_ok() { tab.refresh(ctx); }
+        }
+        if let Some(split) = &mut self.split {
+            if focused == usize::MAX { split.operation_result(ctx, result); } else if result.is_ok() { split.refresh(ctx); }
         }
     }
     fn open_tab(&mut self, path: PathBuf) {
@@ -1299,6 +1386,22 @@ impl Window {
             }
             if pressed(ui, Modifiers::COMMAND, Key::T) { let path = self.tabs[self.active].path.clone(); self.open_tab(path); }
             if pressed(ui, Modifiers::COMMAND, Key::W) { close = self.close_tab(self.active); }
+            if pressed(ui, Modifiers::NONE, Key::F3) {
+                self.split = match self.split.take() { Some(_) => None, None => Some(Browser::new(self.tabs[self.active].path.clone(), Mode::Browse)) };
+                self.right_focus = self.split.is_some();
+            }
+            if let Some(split) = &self.split {
+                let copy = pressed(ui, Modifiers::NONE, Key::F5);
+                let send = pressed(ui, Modifiers::NONE, Key::F6);
+                if copy || send {
+                    let (from, to) = if self.right_focus { (split, &self.tabs[self.active]) } else { (&self.tabs[self.active], split) };
+                    let directory = to.path.clone();
+                    let operations: Vec<crate::file_ops::Operation> = from.chosen().into_iter().filter(|_| !from.in_trash).map(|source| if send {
+                        crate::file_ops::Operation::Move { source, directory: directory.clone(), conflict: Default::default() }
+                    } else { crate::file_ops::Operation::Copy { source, directory: directory.clone(), conflict: Default::default() } }).collect();
+                    if !operations.is_empty() { return Some(Event::Operate(operations)); }
+                }
+            }
         }
         if close { return Some(Event::Close); }
         // The strip of tabs; with one, just the place for a new one.
@@ -1320,7 +1423,30 @@ impl Window {
         if let Some(index) = select { self.active = index; }
         if let Some(index) = shut { if self.close_tab(index) { return Some(Event::Close); } }
         if add { let path = self.tabs[self.active].path.clone(); self.open_tab(path); }
-        match self.tabs[self.active].show_with_keyboard(ui, theme, active) {
+        let event = match &mut self.split {
+            None => self.tabs[self.active].show_with_keyboard(ui, theme, active),
+            Some(split) => {
+                let full = ui.available_rect_before_wrap();
+                let gap = 14.0;
+                let half = ((full.width() - gap) / 2.0).max(1.0);
+                let left = egui::Rect::from_min_size(full.min, egui::vec2(half, full.height()));
+                let right = egui::Rect::from_min_size(egui::pos2(full.left() + half + gap, full.top()), egui::vec2(half, full.height()));
+                // A press inside a side gives it the keyboard.
+                if let Some(at) = ui.input(|i| i.pointer.any_pressed().then(|| i.pointer.interact_pos()).flatten()) {
+                    if left.contains(at) { self.right_focus = false; } else if right.contains(at) { self.right_focus = true; }
+                }
+                let mut left_ui = ui.new_child(egui::UiBuilder::new().id_salt("files-left").max_rect(left).layout(egui::Layout::top_down(egui::Align::Min)));
+                let from_left = self.tabs[self.active].show_with_keyboard(&mut left_ui, theme, active && !self.right_focus);
+                let mut right_ui = ui.new_child(egui::UiBuilder::new().id_salt("files-right").max_rect(right).layout(egui::Layout::top_down(egui::Align::Min)));
+                let from_right = split.show_with_keyboard(&mut right_ui, theme, active && self.right_focus);
+                let focused = if self.right_focus { right } else { left };
+                ui.painter().rect_stroke(focused.expand(5.0), ui::SURFACE_RADIUS, egui::Stroke::new(1.0, theme.main.gamma_multiply(0.7)), egui::StrokeKind::Inside);
+                ui.painter().vline(full.left() + half + gap / 2.0, full.y_range(), egui::Stroke::new(1.0, ui::LINE));
+                ui.allocate_rect(full, egui::Sense::hover());
+                from_left.or(from_right)
+            },
+        };
+        match event {
             Some(Event::NewTab(path)) => { self.open_tab(path); None },
             other => other,
         }
@@ -1761,6 +1887,78 @@ mod interaction_tests {
         assert!(matches!(key(&mut browser, &ctx, Key::B, Modifiers::NONE, 900.0), Some(Event::Resolve(crate::file_ops::Conflict::KeepBoth, true))));
         assert!(matches!(key(&mut browser, &ctx, Key::Escape, Modifiers::NONE, 900.0), Some(Event::ClearTransfers)));
         assert!(browser.transfers_open, "the panel comes up with the question");
+    }
+    #[test]
+    fn enter_in_the_filter_searches_inside_and_clearing_it_returns() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("Work")).unwrap();
+        std::fs::write(dir.path().join("Work/budget.ods"), b"x").unwrap();
+        let ctx = egui::Context::default(); crate::ui::install_fonts(&ctx, None, None);
+        let mut browser = Browser::new(dir.path().into(), Mode::Browse);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while browser.entries.is_empty() { render(&mut browser, &ctx, Vec::new(), 900.0); assert!(Instant::now() < deadline); std::thread::sleep(Duration::from_millis(5)); }
+        browser.filter = "budget".into();
+        browser.focus_filter = true;
+        render(&mut browser, &ctx, Vec::new(), 900.0);
+        key(&mut browser, &ctx, Key::Enter, Modifiers::NONE, 900.0);
+        assert!(browser.search.is_some(), "Enter in the filter searches inside");
+        while browser.search.as_ref().is_some_and(|s| !s.done) { render(&mut browser, &ctx, Vec::new(), 900.0); assert!(Instant::now() < deadline); std::thread::sleep(Duration::from_millis(5)); }
+        render(&mut browser, &ctx, Vec::new(), 900.0);
+        assert_eq!(browser.items().len(), 1);
+        assert_eq!(browser.location_of(&browser.items()[0].clone()).as_deref(), Some("Work"));
+        browser.end_search();
+        assert!(browser.search.is_none() && browser.items().len() == 1 && browser.items()[0].directory, "back to the folder");
+    }
+    #[test]
+    fn f2_on_many_renames_them_together_and_alt_enter_shows_properties() {
+        let dir = tempfile::tempdir().unwrap();
+        for n in ["a.txt", "b.txt"] { std::fs::write(dir.path().join(n), b"x").unwrap(); }
+        let ctx = egui::Context::default(); crate::ui::install_fonts(&ctx, None, None);
+        let mut browser = Browser::new(dir.path().into(), Mode::Browse); browser.loaded = true;
+        browser.entries = ["a.txt", "b.txt"].map(|n| Entry { path: dir.path().join(n), directory: false, bytes: 1, modified: None }).to_vec();
+        render(&mut browser, &ctx, Vec::new(), 900.0);
+        key(&mut browser, &ctx, Key::A, Modifiers::COMMAND, 900.0);
+        key(&mut browser, &ctx, Key::F2, Modifiers::NONE, 900.0);
+        assert!(browser.renaming.is_some(), "F2 on two items renames them together");
+        browser.renaming = None;
+        key(&mut browser, &ctx, Key::ArrowDown, Modifiers::NONE, 900.0);
+        key(&mut browser, &ctx, Key::Enter, Modifiers::ALT, 900.0);
+        assert!(browser.properties.is_some(), "Alt+Enter shows properties, and does not open");
+    }
+    #[test]
+    fn f3_splits_and_f5_copies_to_the_other_side() {
+        let ctx = egui::Context::default(); crate::ui::install_fonts(&ctx, None, None);
+        let mut window = Window::new("/tmp/left".into());
+        let run = |window: &mut Window, events: Vec<egui::Event>| {
+            let mut action = None;
+            let _ = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 700.0))), events, ..Default::default() },
+                |ctx| { egui::CentralPanel::default().show(ctx, |ui| action = window.show_with_keyboard(ui, &Theme::load("signal"), true)); });
+            action
+        };
+        let press = |key| vec![egui::Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers: Modifiers::NONE }];
+        run(&mut window, press(Key::F3));
+        assert!(window.split.is_some() && window.right_focus);
+        window.split.as_mut().unwrap().path = "/tmp/right".into();
+        window.right_focus = false;
+        let left = &mut window.tabs[0];
+        left.entries = vec![Entry { path: "/tmp/left/a.txt".into(), directory: false, bytes: 1, modified: None }];
+        left.select_only("/tmp/left/a.txt".into());
+        let event = run(&mut window, press(Key::F5));
+        assert!(matches!(event.as_ref().map(|e| match e { Event::Operate(ops) => ops.as_slice(), _ => &[] }),
+            Some([crate::file_ops::Operation::Copy { source, directory, .. }]) if *source == PathBuf::from("/tmp/left/a.txt") && *directory == PathBuf::from("/tmp/right")));
+        run(&mut window, press(Key::F3));
+        assert!(window.split.is_none());
+    }
+    #[test]
+    fn escape_in_the_filter_clears_it_without_closing_files() {
+        let ctx = egui::Context::default(); crate::ui::install_fonts(&ctx, None, None);
+        let mut browser = Browser::new("/tmp".into(), Mode::Browse); browser.loaded = true;
+        browser.filter = "budget".into(); browser.focus_filter = true;
+        render(&mut browser, &ctx, Vec::new(), 900.0);
+        render(&mut browser, &ctx, Vec::new(), 900.0);
+        let event = key(&mut browser, &ctx, Key::Escape, Modifiers::NONE, 900.0);
+        assert!(event.is_none(), "Escape in the filter must not close Files");
+        assert!(browser.filter.is_empty());
     }
     #[test]
     fn native_files_sort_keeps_folders_first_and_reverses() {
