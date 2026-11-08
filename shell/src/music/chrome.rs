@@ -292,7 +292,7 @@ impl Music {
 
     /// Pictures with a name and who made them, a few to a row; a click plays a track
     /// or opens the rest.
-    fn cover_shelf(&mut self, ui: &mut Ui, theme: &Theme, items: &[Item], columns: usize) {
+    pub(super) fn cover_shelf(&mut self, ui: &mut Ui, theme: &Theme, items: &[Item], columns: usize) {
         let width = ui.available_width();
         let tile = ((width - 10.0 * (columns as f32 - 1.0)) / columns as f32).max(40.0);
         for row in items.chunks(columns) {

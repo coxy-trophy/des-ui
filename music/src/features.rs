@@ -143,7 +143,8 @@ async fn handle_inner(session:&Session,request:Feature)->String {
                 let user=web::send(session,Method::GET,"/me",None).await.ok();
                 let owner=user.as_ref().and_then(|u|u["id"].as_str()).is_some_and(|id|v["owner"]["id"].as_str()==Some(id));
                 let editable=v["collaborative"]==true || owner;
-                format!("{}\n",json!({"type":"playlist_details","id":id,"name":v["name"],"description":v["description"],"public":v["public"],"snapshot":v["snapshot_id"],"editable":editable,"owner":owner}))
+                format!("{}\n",json!({"type":"playlist_details","id":id,"name":v["name"],"description":v["description"],"public":v["public"],"snapshot":v["snapshot_id"],"editable":editable,"owner":owner,
+                    "owner_name":v["owner"]["display_name"],"cover":v["images"][0]["url"],"total":v["tracks"]["total"],"followers":v["followers"]["total"]}))
             },Err(e)=>problem_line(&e)},
         Feature::Cover{id,jpeg,..}=>completed(web::send_raw(session,Method::PUT,&format!("/playlists/{id}/images"),"image/jpeg",jpeg.into()).await),
     }
