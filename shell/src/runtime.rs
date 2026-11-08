@@ -411,6 +411,9 @@ impl eframe::App for App {
         let keys_top = frame_layout.keyboard.map(|rect| on_screen(rect).top()).unwrap_or(status_top);
         let mut apps_output = dock::Output::default();
         let mut left_rail_output=None;
+        // What the right panel's quick settings asked for, done once the frame is drawn.
+        let mut panel_actions: Vec<quick::Action> = Vec::new();
+        let mut open_network = false;
         ctx.data_mut(|data| data.insert_temp(egui::Id::new("window-shelf-capable"), self.desktop.as_ref().is_some_and(|d| d.connected() && d.window_shelf)));
         // While the scratchpad is down it has the keyboard, not the panes.
         let mut scratch_keys = self.companion.open || self.shortcut_reference.open || self.scratchpad.visible() || self.polkit.active() || self.fs.has_keyboard() || self.connect.has_keyboard() || self.quick.open;
@@ -472,8 +475,11 @@ impl eframe::App for App {
                     let rect = on_screen(frame_layout.right.expect("open right panel"));
                     frame_region(ui, rect, column, Layout::top_down(Align::Min), |ui| {
                         ui.horizontal_wrapped(|ui| {
-                            if ui.selectable_label(!self.right_connect, "SYSTEM").clicked() {self.right_connect=false;self.connect.expanded=false;self.connect.suspend_preview();self.dock.dismiss_keyboard(ctx);}
-                            if ui.selectable_label(self.right_connect, "CONNECT").clicked() {self.right_connect=true;self.dock.dismiss_keyboard(ctx);}
+                            match panels::tabs(ui, &theme, &["SYSTEM", "CONNECT"], usize::from(self.right_connect)) {
+                                Some(0) if self.right_connect => {self.right_connect=false;self.connect.expanded=false;self.connect.suspend_preview();self.dock.dismiss_keyboard(ctx);}
+                                Some(1) if !self.right_connect => {self.right_connect=true;self.dock.dismiss_keyboard(ctx);}
+                                _ => {}
+                            }
                             if !self.right_connect && self.connect.sharing() && crate::ui::button(ui,&theme,"Stop",None,false).clicked() { self.connect.stop_sharing(ctx); }
                         });
                         ui.add_space(12.0);
@@ -492,9 +498,23 @@ impl eframe::App for App {
                         let music = &mut self.music;
                         let world_was_open = self.world.expanded;
                         let mut wanted = false;
-                        panels::right(ui, &theme, &self.mon, state.as_ref(), &mut self.world, rotating, &places, &self.widgets, music_height, |ui| {
-                            wanted = music.panel(ui, &theme);
-                        });
+                        let readings = quick::Readings {
+                            volume: self.mon.volume(),
+                            brightness: self.mon.brightness,
+                            night_light: self.config.night_light,
+                            do_not_disturb: self.notices.quiet,
+                            keyboard: self.osk.open,
+                            battery: None,
+                            power: self.mon.power,
+                            battery_health: self.mon.battery_health,
+                        };
+                        let quick_card = &mut self.quick;
+                        let mut asked = Vec::new();
+                        let choose_network = panels::right(ui, &theme, &self.mon, state.as_ref(), &mut self.world, rotating, &places, &self.widgets, music_height,
+                            |ui, room| { asked = quick_card.panel_card(ui, &theme, &readings, room); },
+                            |ui| { wanted = music.panel(ui, &theme); });
+                        panel_actions = asked;
+                        if choose_network { panel_actions.push(quick::Action::Settings); open_network = true; }
                         if !world_was_open && self.world.expanded {
                             self.files_browser = None;
                             self.settings.open = false; self.files_browser = None;
@@ -774,6 +794,15 @@ impl eframe::App for App {
             });
         // Only one lifted dock surface is active at a time. Never union disjoint
         // left/right rectangles: doing so would cover native windows between them.
+        for action in panel_actions {
+            if open_network && action == quick::Action::Settings {
+                self.launcher.open = false; self.music.open = false; self.notices.open = false; self.power_menu.open = false;
+                self.settings.open_at(&self.config, "wifi");
+                self.send(Command::Terminal);
+            } else {
+                self.quick_action(ctx, action);
+            }
+        }
         if let Some(rail)=left_rail_output {
             if rail.action.is_some() || rail.overlay.is_some() {apps_output=rail;}
         }
@@ -795,6 +824,8 @@ impl eframe::App for App {
             do_not_disturb: self.notices.quiet,
             keyboard: self.osk.open,
             battery: self.mon.power.map(crate::power::battery_line),
+            power: self.mon.power,
+            battery_health: self.mon.battery_health,
         };
         for action in self.quick.show(ctx, &theme, screen, keys_top, &readings) {
             self.quick_action(ctx, action);

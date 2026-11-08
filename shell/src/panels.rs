@@ -433,107 +433,70 @@ fn display_tiles(ui: &mut Ui, theme: &Theme, desktop: &DesktopState) {
     }
 }
 
-/// Footer headings have explicit geometry: a horizontal egui layout otherwise
-/// inherits the global 30px interaction height before adding section spacing.
-fn right_heading(ui: &mut Ui, title: &str, meta: &str) {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
-    let painter = ui.painter_at(rect);
-    let title = ui::galley(ui, title, ui::display_bold(13.0), ui::SECONDARY, 0.8);
-    let meta = ui::galley(ui, meta, ui::mono(10.0), ui::LABEL, 0.0);
-    painter.galley(rect.left_center() - vec2(0.0, title.size().y / 2.0), title.clone(), ui::SECONDARY);
-    painter.galley(rect.right_center() - vec2(meta.size().x, meta.size().y / 2.0), meta.clone(), ui::LABEL);
-    let start = rect.left() + title.size().x + 10.0;
-    let end = rect.right() - meta.size().x - 10.0;
-    if end > start { painter.hline(start..=end, rect.center().y, Stroke::new(1.0, ui::LINE)); }
-}
-
-fn right_levels(ui: &mut Ui, theme: &Theme, readings: [(&str, Option<u8>); 3], remote: bool, battery_health: Option<u8>, charging: bool) {
-    let area = ui.max_rect();
-    let levels = readings.iter().filter(|(_, value)| value.is_some()).count();
-    let full_height = 28.0 + levels as f32 * 23.0 + if remote { 18.0 } else { 0.0 };
-    let compact = area.height() < full_height;
-    if compact {
-        if remote && area.height() >= 34.0 {
-            ui.painter().text(area.left_top(), Align2::LEFT_TOP, "LOCAL", ui::mono(10.0), ui::LABEL);
-        }
-    } else {
-        right_heading(ui, "CONTROLS", if remote { "LOCAL" } else { "" });
+/// Two or more choices side by side in a rounded well, one of them chosen. Returns
+/// the one clicked.
+pub fn tabs(ui: &mut Ui, theme: &Theme, labels: &[&str], chosen: usize) -> Option<usize> {
+    let font = ui::display_bold(12.0);
+    let galleys: Vec<_> = labels.iter().map(|label| ui::galley(ui, label, font.clone(), ui::SECONDARY, 1.2)).collect();
+    let widths: Vec<f32> = galleys.iter().map(|g| g.size().x + 28.0).collect();
+    let (well, _) = ui.allocate_exact_size(vec2(widths.iter().sum::<f32>() + 6.0 + 4.0 * (labels.len() as f32 - 1.0), 36.0), Sense::hover());
+    ui.painter().rect_filled(well, ui::SURFACE_RADIUS, ui::TRACK);
+    let mut x = well.left() + 3.0;
+    let mut clicked = None;
+    for (index, (galley, width)) in galleys.into_iter().zip(widths).enumerate() {
+        let rect = Rect::from_min_size(pos2(x, well.top() + 3.0), vec2(width, 30.0));
+        let response = ui.interact(rect, ui.id().with(("panel-tab", labels[index])), Sense::click());
+        response.widget_info(|| eframe::egui::WidgetInfo::selected(eframe::egui::WidgetType::SelectableLabel, true, index == chosen, labels[index]));
+        let on = index == chosen;
+        if on { ui.painter().rect_filled(rect, ui::SURFACE_RADIUS - 2.0, theme.main.gamma_multiply(0.22)); ui.painter().rect_stroke(rect, ui::SURFACE_RADIUS - 2.0, Stroke::new(1.0, theme.main.gamma_multiply(0.6)), StrokeKind::Inside); }
+        else if response.hovered() { ui.painter().rect_filled(rect, ui::SURFACE_RADIUS - 2.0, ui::LINE); }
+        if response.has_focus() { ui.painter().rect_stroke(rect, ui::SURFACE_RADIUS - 2.0, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
+        ui.painter().galley(rect.center() - galley.size() / 2.0, galley, if on || response.hovered() { ui::TEXT } else { ui::SECONDARY });
+        if response.clicked() { clicked = Some(index); }
+        x += width + 4.0;
     }
-    let values: Vec<_> = readings.into_iter().filter_map(|(label, value)| value.map(|value| (label, value))).collect();
-    let width = area.width() / values.len().max(1) as f32;
-    let row_top = if compact { area.top() + if remote && area.height() >= 34.0 { 18.0 } else { 0.0 } } else { area.top() + 28.0 };
-    for (index, (label, value)) in values.into_iter().enumerate() {
-        let row = if compact {
-            Rect::from_min_size(pos2(area.left() + index as f32 * width, row_top), vec2(width, 16.0))
-        } else {
-            Rect::from_min_size(pos2(area.left(), row_top + index as f32 * 23.0), vec2(area.width(), 16.0))
-        };
-        let response = ui.interact(row, ui.id().with(label), Sense::hover());
-        let hint = match (label, battery_health) {
-            ("BATTERY", Some(health)) => format!("BATTERY: {value}% · holds {health}% of its original capacity"),
-            _ => format!("{label}: {value}%"),
-        };
-        response.on_hover_text(if remote { format!("Local {hint}") } else { hint });
-        let painter = ui.painter_at(row);
-        let symbol = match label { "VOLUME" if value == 0 => Icon::Muted, "VOLUME" => Icon::Volume, "BRIGHTNESS" => Icon::Brightness, _ if charging => Icon::Charging, _ => Icon::Battery };
-        let icon_size = if compact { 12.0 } else { 16.0 };
-        ui::paint_icon(&painter, Rect::from_center_size(row.left_center() + vec2(icon_size / 2.0, 0.0), vec2(icon_size, icon_size)), symbol, ui::LABEL, false);
-        if compact {
-            painter.text(row.left_center() + vec2(16.0, 0.0), Align2::LEFT_CENTER, format!("{value}%"), ui::mono(10.0), ui::TEXT);
-        } else {
-            painter.text(row.right_center(), Align2::RIGHT_CENTER, format!("{value}%"), ui::mono(12.0), ui::TEXT);
-            let track = Rect::from_min_max(pos2(row.left() + 30.0, row.center().y - 3.0), pos2((row.right() - 44.0).max(row.left() + 30.0), row.center().y + 3.0));
-            painter.rect_filled(track, 0.0, ui::TRACK);
-            let mut filled = track;
-            filled.set_width(track.width() * (value as f32 / 100.0).clamp(0.0, 1.0));
-            painter.rect_filled(filled, 0.0, theme.main);
+    clicked
+}
+
+/// The network: on line or not, the interface and address, traffic both ways, and
+/// on a tall panel how it went lately. Offline, a way to choose a network.
+fn network_card(ui: &mut Ui, theme: &Theme, mon: &SysMon, chart: bool) -> bool {
+    let stage = powerup::stage(ui.ctx());
+    let online = !mon.ip.is_empty();
+    let mut choose = false;
+    card(ui, |ui| {
+        card_head(ui, "NETWORK", |ui| { pill(ui, if online { "ONLINE" } else { "OFFLINE" }, if online { theme.main } else { ui::CAUTION }); });
+        reading_row(ui, if mon.iface.is_empty() { "no interface" } else { &mon.iface }, if online { &mon.ip } else { "—" }, ui::TEXT);
+        if !online {
+            let link = ui.add(eframe::egui::Label::new(eframe::egui::RichText::new("Choose a network").font(ui::display(12.5)).color(theme.main)).sense(Sense::click()));
+            choose = link.on_hover_cursor(eframe::egui::CursorIcon::PointingHand).clicked();
+            return;
         }
-        // Record the actual painted rows as content geometry for parent sizing
-        // and the headless budget checks, even though no flow layout is needed.
-        ui.expand_to_include_rect(row);
-    }
+        if chart {
+            let peak = mon.rx_hist.iter().chain(mon.tx_hist.iter()).fold(1024.0_f32, |a, b| a.max(*b));
+            ui::waterfall(ui, &stage.swept_values(&mon.rx_hist), &stage.swept_values(&mon.tx_hist), peak, vec2(ui.available_width(), 40.0), theme.main, ui::SECONDARY);
+        }
+        let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 16.0), Sense::hover());
+        let painter = ui.painter();
+        ui::paint_icon(painter, Rect::from_center_size(rect.left_center() + vec2(6.0, 0.0), vec2(13.0, 13.0)), Icon::Download, theme.main, false);
+        painter.text(rect.left_center() + vec2(16.0, 0.0), Align2::LEFT_CENTER, format!("{}/s", human_bytes(mon.rx_hist.back().copied().unwrap_or(0.0) as f64)), ui::mono(11.5), theme.main);
+        painter.text(rect.right_center(), Align2::RIGHT_CENTER, format!("{}/s", human_bytes(mon.tx_hist.back().copied().unwrap_or(0.0) as f64)), ui::mono(11.5), ui::SECONDARY);
+        let up = painter.layout_no_wrap(format!("{}/s", human_bytes(mon.tx_hist.back().copied().unwrap_or(0.0) as f64)), ui::mono(11.5), ui::SECONDARY);
+        ui::paint_icon(painter, Rect::from_center_size(rect.right_center() - vec2(up.size().x + 10.0, 0.0), vec2(13.0, 13.0)), Icon::Upload, ui::SECONDARY, false);
+        response.on_hover_text(format!("Downloaded {} · uploaded {}", human_bytes(mon.rx_total as f64), human_bytes(mon.tx_total as f64)));
+    });
+    choose
 }
 
-/// Space assigned before rendering, so an optional instrument cannot move playback
-/// or local readings beyond the physical card.
-#[derive(Debug, Clone, Copy)]
-struct RightBudget {
-    instruments: f32,
-    displays: f32,
-    controls: f32,
-    music: f32,
-}
+/// Rows of display tiles, two to a row.
+fn display_rows(screens: usize) -> usize { screens.div_ceil(2) }
+/// A display tile's height and the space under it.
+const DISPLAY_ROW: f32 = 54.0 + 7.0;
 
-fn right_budget(height: f32, music: f32, levels: usize, remote: bool, screens: usize) -> RightBudget {
-    let height = height.max(0.0);
-    let music = music.max(0.0).min(height);
-    let mut remaining = (height - music - if music > 0.0 { 8.0 } else { 0.0 }).max(0.0);
-    let requested_controls = if levels == 0 { 0.0 } else if height < 320.0 { 48.0 } else { 28.0 + levels as f32 * 23.0 + if remote { 18.0 } else { 0.0 } };
-    let controls = requested_controls.min(remaining);
-    remaining = (remaining - controls - if controls > 0.0 { 8.0 } else { 0.0 }).max(0.0);
-    let displays = if screens == 0 || remaining < 92.0 { 0.0 } else if screens <= 2 && remaining >= 300.0 { 90.0 } else { 32.0 };
-    remaining = (remaining - displays - if displays > 0.0 { 8.0 } else { 0.0 }).max(0.0);
-    RightBudget { instruments: remaining, displays, controls, music }
-}
-
-/// Fixed regions paint and interact only inside their reservation. They never
-/// advance the enclosing column's cursor or expand its minimum rectangle. The
-/// returned painted extent lets following sections avoid unused reservation space.
-fn right_region(ui: &mut Ui, rect: Rect, id: &'static str, draw: impl FnOnce(&mut Ui)) -> f32 {
-    if rect.height() <= 0.0 || rect.width() <= 0.0 { return rect.top(); }
-    let mut child = ui.new_child(eframe::egui::UiBuilder::new().id_salt(id).max_rect(rect).layout(Layout::top_down(Align::Min)));
-    child.set_clip_rect(rect.intersect(ui.clip_rect()));
-    child.spacing_mut().item_spacing = vec2(8.0, 7.0);
-    draw(&mut child);
-    child.min_rect().bottom().min(rect.bottom())
-}
-
-fn right_footer_top(content_bottom: f32, reserved_bottom: f32) -> f32 {
-    content_bottom.min(reserved_bottom) + 8.0
-}
-
-/// The right column. Its bottom reservations are independent of the globe and
-/// optional widgets. `desktop` is absent in an ordinary application window.
+/// The right column on the System tab: the quick settings `quick` draws, the
+/// network, the world, the displays, and playback anchored to the floor. Optional
+/// cards appear only where they fit whole, so none can push playback off the panel.
+/// True when "Choose a network" was clicked.
 pub fn right(
     ui: &mut Ui,
     theme: &Theme,
@@ -544,207 +507,125 @@ pub fn right(
     geo: &Snapshot,
     widgets: &crate::widgets::Widgets,
     music_height: f32,
+    quick: impl FnOnce(&mut Ui, f32),
     playing: impl FnOnce(&mut Ui),
-) {
+) -> bool {
     let stage = powerup::stage(ui.ctx());
     stage.apply(ui, Part::Right);
     let area = ui.available_rect_before_wrap();
-    let readings = [("VOLUME", mon.volume()), ("BRIGHTNESS", mon.brightness), ("BATTERY", mon.battery)];
-    let remote = mon.remote.as_ref().is_some_and(|remote| remote.live);
-    let levels = readings.iter().filter(|(_, value)| value.is_some()).count();
-    let budget = right_budget(area.height(), music_height, levels, remote, desktop.map_or(0, |desktop| desktop.screens));
-    let bottom = area.bottom();
-    if budget.music > 0.0 {
-        let rect = Rect::from_min_max(pos2(area.left(), bottom - budget.music), pos2(area.right(), bottom));
-        right_region(ui, rect, "right-playback", playing);
+    let music = music_height.max(0.0).min(area.height());
+    if music > 0.0 {
+        let rect = Rect::from_min_max(pos2(area.left(), area.bottom() - music), area.max);
+        let mut child = ui.new_child(eframe::egui::UiBuilder::new().id_salt("right-playback").max_rect(rect).layout(Layout::top_down(Align::Min)));
+        child.set_clip_rect(rect.intersect(ui.clip_rect()));
+        playing(&mut child);
     }
-    let instruments = Rect::from_min_size(area.min, vec2(area.width(), budget.instruments));
-    let content_bottom = right_region(ui, instruments, "right-instruments", |ui| {
-        let online = !mon.ip.is_empty();
-        ui::section(ui, "NETWORK", |ui| ui::meta(ui, if online { "ONLINE" } else { "OFFLINE" }, if online { theme.main } else { ui::CAUTION }));
-        if budget.instruments < 42.0 { return; }
-        ui.horizontal(|ui| {
-            ui::text(ui, if mon.iface.is_empty() { "no interface" } else { &mon.iface }, ui::mono(11.0), ui::LABEL);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui::text(ui, if online { &mon.ip } else { "—" }, ui::mono(11.0), ui::TEXT);
-            });
-        });
-        if budget.instruments < 76.0 { return; }
-        ui.horizontal(|ui| {
-            ui::icon(ui, Icon::Download, 13.0, theme.main);
-            ui::text(ui, &format!("{}/s", human_bytes(mon.rx_hist.back().copied().unwrap_or(0.0) as f64)), ui::mono(11.0), ui::TEXT);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui::text(ui, &format!("{}/s", human_bytes(mon.tx_hist.back().copied().unwrap_or(0.0) as f64)), ui::mono(11.0), ui::SECONDARY);
-                ui::icon(ui, Icon::Upload, 13.0, ui::SECONDARY);
-            });
-        }).response.on_hover_text(format!("Downloaded {} · uploaded {}", human_bytes(mon.rx_total as f64), human_bytes(mon.tx_total as f64)));
-        if budget.instruments >= 270.0 {
-            let peak = mon.rx_hist.iter().chain(mon.tx_hist.iter()).fold(1024.0_f32, |a, b| a.max(*b));
-            ui::waterfall(ui, &stage.swept_values(&mon.rx_hist), &stage.swept_values(&mon.tx_hist), peak, vec2(ui.available_width(), 40.0), theme.main, ui::SECONDARY);
-        }
-        let remaining = instruments.bottom() - ui.cursor().min.y;
-        if remaining < 90.0 { return; }
-        ui::section(ui, "WORLD VIEW", |ui| {
-            if !geo.links.is_empty() { ui::meta(ui, &format!("{} LINKS", geo.links.len()), ui::LABEL); }
-        });
-        // Optional readings get a bounded block only when there is enough room for
-        // all of them and a useful globe. Their output cannot move the footer.
-        let widget_count = widgets.on(des_common::Panel::Right).count();
-        let widget_height = widget_count as f32 * 100.0;
-        let remaining = instruments.bottom() - ui.cursor().min.y;
-        if widget_count > 0 && remaining >= widget_height + 224.0 {
-            let rect = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), widget_height));
-            right_region(ui, rect, "right-optional-widgets", |ui| crate::widgets::show(ui, theme, widgets, des_common::Panel::Right));
-            ui.add_space(widget_height + 8.0);
-        }
-        // Home and a possible selected destination stay within this allocation.
-        let remaining = instruments.bottom() - ui.cursor().min.y;
-        let size = (remaining - if geo.home.is_some() { 26.0 } else { 0.0 }).min(ui.available_width()).min(224.0).max(0.0);
-        if size >= 72.0 { world.panel(ui, theme, size, geo, rotating); }
-        if let Some(home) = &geo.home {
-            if instruments.bottom() - ui.cursor().min.y >= 18.0 {
-                let label = format!("{} · {}", home.label.to_uppercase(), if geo.home_is_set { "SET BY YOU" } else { "BY IP" });
-                ui::text(ui, &label, ui::mono(10.0), ui::SECONDARY).on_hover_text(&home.label);
-            }
-        }
-    });
-    // The budget is a ceiling, not a spacer: place ordinary sections after the
-    // content actually painted. Playback alone stays anchored to the card floor.
-    let mut top = right_footer_top(content_bottom, instruments.bottom());
-    if budget.displays > 0.0 {
-        let rect = Rect::from_min_max(pos2(area.left(), top), pos2(area.right(), top + budget.displays));
-        right_region(ui, rect, "right-displays", |ui| {
-            if let Some(desktop) = desktop {
-                right_heading(ui, "DISPLAYS", &format!("{} CONNECTED", desktop.screens));
-                if budget.displays > 40.0 {
-                    display_tiles(ui, theme, desktop);
-                } else {
-                    let summary = (0..desktop.screens).map(|index| format!("Display {}", index + 1)).collect::<Vec<_>>().join(" · ");
-                    ui.interact(ui.min_rect(), ui.id().with("display-summary"), Sense::hover()).on_hover_text(summary);
-                }
-            }
-        });
-        top = rect.bottom() + 8.0;
-    }
-    if budget.controls > 0.0 {
-        let rect = Rect::from_min_max(pos2(area.left(), top), pos2(area.right(), top + budget.controls));
-        right_region(ui, rect, "right-local-controls", |ui| {
-            right_levels(ui, theme, readings, remote, mon.battery_health, mon.power.is_some_and(|power| power.plugged));
-        });
+    let top = Rect::from_min_max(area.min, pos2(area.right(), (area.bottom() - music - if music > 0.0 { 8.0 } else { 0.0 }).max(area.top())));
+    let mut column = ui.new_child(eframe::egui::UiBuilder::new().id_salt("right-cards").max_rect(top).layout(Layout::top_down(Align::Min)));
+    column.set_clip_rect(top.intersect(ui.clip_rect()));
+    let ui = &mut column;
+    ui.spacing_mut().item_spacing.y = 7.0;
+    let left = |ui: &Ui| top.bottom() - ui.cursor().top();
+
+    let room = left(ui);
+    quick(ui, room);
+
+    let mut choose = false;
+    let network_short = CARD_CHROME + 16.0 + 7.0 + 16.0;
+    if left(ui) >= network_short {
+        choose = network_card(ui, theme, mon, top.height() >= 640.0);
     }
 
+    let screens = desktop.map_or(0, |desktop| desktop.screens);
+    let displays_height = if screens == 0 { 0.0 } else if screens <= 2 { CARD_CHROME + display_rows(screens) as f32 * DISPLAY_ROW } else { CARD_CHROME + 16.0 };
+    let widget_count = widgets.on(des_common::Panel::Right).count();
+    let widget_height = widget_count as f32 * 100.0;
+    let label = if geo.home.is_some() { 22.0 } else { 0.0 };
+    let globe_room = left(ui) - displays_height - CARD_CHROME - label;
+    if widget_count > 0 && globe_room - widget_height >= 96.0 {
+        let rect = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), widget_height));
+        let mut child = ui.new_child(eframe::egui::UiBuilder::new().id_salt("right-optional-widgets").max_rect(rect).layout(Layout::top_down(Align::Min)));
+        child.set_clip_rect(rect.intersect(ui.clip_rect()));
+        crate::widgets::show(&mut child, theme, widgets, des_common::Panel::Right);
+        ui.add_space(widget_height + CARD_GAP);
+    }
+    let globe_room = left(ui) - displays_height - CARD_CHROME - label;
+    let size = globe_room.min(ui.available_width() - 2.0 * CARD_PAD).min(224.0);
+    if size >= 96.0 {
+        card(ui, |ui| {
+            card_head(ui, "WORLD VIEW", |ui| { if !geo.links.is_empty() { ui::meta(ui, &format!("{} LINKS", geo.links.len()), ui::LABEL); } });
+            ui.vertical_centered(|ui| world.panel(ui, theme, size, geo, rotating));
+            if let Some(home) = &geo.home {
+                let place = format!("{} · {}", home.label.to_uppercase(), if geo.home_is_set { "SET BY YOU" } else { "BY IP" });
+                ui::text(ui, &truncate(&place, ((ui.available_width() / 7.0) as usize).max(8)), ui::mono(10.5), ui::SECONDARY).on_hover_text(&home.label);
+            }
+        });
+    }
+    if let Some(desktop) = desktop.filter(|_| screens > 0 && left(ui) >= displays_height) {
+        card(ui, |ui| {
+            card_head(ui, "DISPLAYS", |ui| ui::meta(ui, &format!("{} CONNECTED", desktop.screens), ui::LABEL));
+            if screens <= 2 {
+                display_tiles(ui, theme, desktop);
+            } else {
+                let summary = (0..desktop.screens).map(|index| format!("Display {}", index + 1)).collect::<Vec<_>>().join(" · ");
+                ui::text(ui, &truncate(&summary, ((ui.available_width() / 7.0) as usize).max(8)), ui::mono(11.0), ui::SECONDARY).on_hover_text(summary);
+            }
+        });
+    }
+    choose
 }
 
 #[cfg(test)]
-mod right_budget_tests {
+mod right_column_tests {
     use super::*;
+    use eframe::egui;
 
-    #[test]
-    fn footer_follows_content_instead_of_unused_instrument_height() {
-        for available_bottom in [540.0, 760.0, 1040.0] {
-            assert_eq!(right_footer_top(520.0, available_bottom), 528.0);
-        }
-        // Even an overflowing optional widget must respect the footer reservation.
-        assert_eq!(right_footer_top(900.0, 540.0), 548.0);
+    /// Draws the column into `area` with a stand-in quick settings card of `quick`
+    /// points, and returns where each piece of text was painted.
+    fn painted(area: Rect, quick: f32, music: f32, screens: usize) -> Vec<(String, Rect)> {
+        let ctx = egui::Context::default();
+        ui::install_fonts(&ctx, None, None);
+        ctx.style_mut(|style| style.spacing.interact_size = vec2(30.0, 30.0));
+        let theme = Theme::load("signal");
+        let mon = SysMon::new();
+        let widgets = crate::widgets::Widgets::new(ctx.clone());
+        let mut world = globe::Explorer::default();
+        let geo = Snapshot { home: Some(crate::geo::Place { lat: 5.6, lon: -0.2, label: "Accra".into() }), ..Default::default() };
+        let output = ctx.run(egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), area.max.to_vec2() + vec2(20.0, 20.0))), ..Default::default() }, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let mut column = ui.new_child(egui::UiBuilder::new().max_rect(area));
+                column.set_clip_rect(area);
+                right(&mut column, &theme, &mon, Some(&DesktopState { screens, ..Default::default() }), &mut world, false, &geo, &widgets, music,
+                    |ui, room| { card(ui, |ui| { ui.allocate_exact_size(vec2(10.0, quick.min(room - 60.0).max(0.0)), Sense::hover()); ui::text(ui, "QUICK", ui::mono(10.0), ui::TEXT); }); },
+                    |ui| { ui::text(ui, "PLAYBACK", ui::mono(10.0), ui::TEXT); });
+            });
+        });
+        output.shapes.iter().filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) => Some((text.galley.job.text.clone(), Rect::from_min_size(text.pos, text.galley.size()))),
+            _ => None,
+        }).collect()
     }
 
     #[test]
-    fn rendered_system_sections_follow_globe_and_stay_above_playback() {
-        use eframe::egui;
-        for height in [480.0, 720.0, 1000.0] {
+    fn cards_never_reach_into_playback_and_drop_whole_when_short() {
+        for height in [300.0, 480.0, 720.0, 1000.0] {
             for width in [192.0, 292.0] {
                 for music in [0.0, crate::music::PANEL_HEIGHT] {
-                    let ctx = egui::Context::default();
-                    ui::install_fonts(&ctx, None, None);
-                    let theme = Theme::load("signal");
-                    let mut mon = SysMon::new();
-                    mon.brightness = Some(79);
-                    mon.battery = Some(87);
-                    let widgets = crate::widgets::Widgets::new(ctx.clone());
-                    let mut world = globe::Explorer::default();
-                    let geo = Snapshot { home: Some(crate::geo::Place { lat: 5.6, lon: -0.2, label: "Accra".into() }), ..Default::default() };
-                    let area = Rect::from_min_size(pos2(20.0, 20.0), vec2(width, height));
-                    let output = ctx.run(egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(width+40.0, height+40.0))), ..Default::default() }, |ctx| {
-                        egui::CentralPanel::default().show(ctx, |ui| {
-                            let mut column = ui.new_child(egui::UiBuilder::new().max_rect(area));
-                            column.set_clip_rect(area);
-                            right(&mut column, &theme, &mon, Some(&DesktopState { screens: 1, ..Default::default() }), &mut world, false, &geo, &widgets, music, |_| {});
-                        });
-                    });
-                    let text_rect = |needle: &str| output.shapes.iter().find_map(|shape| match &shape.shape {
-                        egui::Shape::Text(text) if text.galley.job.text == needle => Some(Rect::from_min_size(text.pos, text.galley.size())),
-                        _ => None,
-                    });
-                    let displays = text_rect("DISPLAYS").expect("display heading");
-                    if let Some(home) = text_rect("ACCRA · BY IP") {
-                        assert!(displays.top() - home.bottom() < 40.0, "stretched blank gap at {width}x{height}: {home:?} / {displays:?}");
-                        assert!(displays.top() >= home.bottom());
+                    for screens in [1, 2, 6] {
+                        let area = Rect::from_min_size(pos2(10.0, 10.0), vec2(width, height));
+                        let texts = painted(area, 150.0, music, screens);
+                        let floor = area.bottom() - music - if music > 0.0 { 8.0 } else { 0.0 };
+                        for (text, rect) in &texts {
+                            if text == "PLAYBACK" { continue; }
+                            assert!(rect.bottom() <= floor + 0.5, "{text:?} at {rect:?} crosses {floor} at {width}x{height}, music {music}, {screens} screens");
+                            assert!(rect.right() <= area.right() + 0.5, "{text:?} too wide at {width}");
+                        }
+                        let has = |needle: &str| texts.iter().any(|(text, _)| text == needle);
+                        assert!(has("QUICK"));
+                        if height >= 480.0 { assert!(has("NETWORK"), "network missing at {width}x{height}"); }
+                        if height >= 1000.0 { assert!(has("DISPLAYS"), "displays missing at {width}x{height}"); assert!(has("WORLD VIEW")); }
+                        if music > 0.0 { assert!(has("PLAYBACK")); }
                     }
-                    let last_control = text_rect("87%").expect("battery reading");
-                    let floor = area.bottom() - music - if music > 0.0 { 8.0 } else { 0.0 };
-                    assert!(last_control.bottom() <= floor, "controls overlap playback at {width}x{height}: {last_control:?} / {floor}");
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn actual_footer_paint_fits_at_narrow_widths() {
-        use eframe::egui;
-        let theme = Theme::parse(include_str!("../../themes/signal.json")).unwrap();
-        for width in [192.0, 292.0] {
-            for remote in [false, true] {
-                for levels in [2, 3] {
-                    let readings = [("VOLUME", if levels == 3 { Some(100) } else { None }), ("BRIGHTNESS", Some(79)), ("BATTERY", Some(87))];
-                    let height = right_budget(720.0, crate::music::PANEL_HEIGHT, levels, remote, 1).controls;
-                    let ctx = egui::Context::default();
-                    ui::install_fonts(&ctx, None, None);
-                    // Match the app's 30px minimum native interaction target. A
-                    // flow section inherited this height and clipped the last row.
-                    ctx.style_mut(|style| style.spacing.interact_size = vec2(30.0, 30.0));
-                    let _ = ctx.run(egui::RawInput::default(), |ctx| {
-                        egui::CentralPanel::default().show(ctx, |ui| {
-                            let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(width, height));
-                            let mut controls = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Min)));
-                            controls.spacing_mut().item_spacing = vec2(8.0, 7.0);
-                            right_levels(&mut controls, &theme, readings, remote, Some(92), false);
-                            assert!(controls.min_rect().bottom() <= rect.bottom(), "last local reading clipped: {:?} / {rect:?}", controls.min_rect());
-                            assert!(controls.min_rect().width() <= width);
-                            for screens in [1, 2] {
-                                let display_rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(width, 90.0));
-                                let mut displays = ui.new_child(egui::UiBuilder::new().max_rect(display_rect).layout(Layout::top_down(Align::Min)));
-                                displays.spacing_mut().item_spacing = vec2(8.0, 7.0);
-                                right_heading(&mut displays, "DISPLAYS", &format!("{screens} CONNECTED"));
-                                display_tiles(&mut displays, &theme, &DesktopState { screens, ..Default::default() });
-                                assert!(displays.min_rect().bottom() <= display_rect.bottom(), "display border clipped: {:?}", displays.min_rect());
-                                assert!(displays.min_rect().width() <= width + 0.5);
-                            }
-                        });
-                    });
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn right_regions_fit_even_with_playback_and_many_displays() {
-        for height in [0.0, 180.0, 240.0, 320.0, 480.0, 720.0, 1080.0] {
-            for music in [0.0, crate::music::PANEL_HEIGHT] {
-                for screens in [0, 1, 2, 8] {
-                    let budget = right_budget(height, music, 3, true, screens);
-                    let gaps = [budget.music, budget.controls, budget.displays].iter().filter(|height| **height > 0.0).count() as f32 * 8.0;
-                    assert!(budget.instruments + budget.displays + budget.controls + budget.music <= height + 0.01);
-                    if height == 240.0 && music > 0.0 {
-                        assert_eq!(budget.controls, 48.0);
-                        assert!(budget.instruments >= 40.0, "short panels keep network and local readings");
-                    }
-                    if height >= 320.0 {
-                        assert_eq!(budget.music, music);
-                        assert_eq!(budget.controls, 115.0);
-                        assert!(budget.instruments >= 40.0);
-                        assert!(budget.instruments + budget.displays + budget.controls + budget.music + gaps <= height + 0.01);
-                    }
-                    if screens > 2 { assert!(budget.displays <= 32.0); }
                 }
             }
         }

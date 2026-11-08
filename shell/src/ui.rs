@@ -538,6 +538,9 @@ pub enum Icon {
     Keyboard,
     /// Three sliders: the quick settings.
     Quick,
+    Bluetooth,
+    /// A crescent: do not disturb.
+    Moon,
 }
 
 impl Icon {
@@ -613,6 +616,7 @@ impl Icon {
             Self::LayoutSingle => "One application", Self::LayoutSplit => "Two side by side",
             Self::LayoutColumns => "Three columns", Self::LayoutMaster => "Master and stack",
             Self::Keyboard => "On-screen keyboard", Self::Quick => "Quick settings",
+            Self::Bluetooth => "Bluetooth", Self::Moon => "Do not disturb",
         }
     }
 }
@@ -735,6 +739,40 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color3
             painter.rect_stroke(Rect::from_center_size(c - vec2(1.0,0.0), vec2(12.0,8.0)), 0.0, stroke, StrokeKind::Inside);
             line((6.0,-1.0),(6.0,1.0));
             if matches!(icon, Icon::Charging) { path(&[(0.0,-3.0),(-2.0,0.5),(1.0,0.5),(-1.0,3.0)]); }
+        }
+        Icon::Bluetooth => {
+            path(&[(-4.5,-3.5),(4.5,3.5),(0.0,7.0),(0.0,-7.0),(4.5,-3.5),(-4.5,3.5)]);
+        }
+        Icon::Moon => {
+            // A crescent: the part of a disc not covered by a second one up and to the left.
+            let (outer, inner, shift) = (6.5_f32, 5.2_f32, vec2(-3.4, -2.6));
+            let outside = |a: f32| (vec2(a.cos(), a.sin()) * outer - shift).length() > inner;
+            let steps = 240;
+            let angle = |i: usize| i as f32 * std::f32::consts::TAU / steps as f32;
+            // The visible stretch of the outer edge starts where the covered stretch ends.
+            let start = (0..steps).find(|&i| !outside(angle(i)) && outside(angle((i + 1) % steps))).map_or(0, |i| i + 1);
+            let lit_arc: Vec<f32> = (0..steps).map(|k| angle((start + k) % steps) + if start + k >= steps { std::f32::consts::TAU } else { 0.0 }).take_while(|&a| outside(a)).collect();
+            if lit_arc.len() >= 2 {
+                let (first, last) = (c + vec2(lit_arc[0].cos(), lit_arc[0].sin()) * outer, c + vec2(lit_arc[lit_arc.len() - 1].cos(), lit_arc[lit_arc.len() - 1].sin()) * outer);
+                let toward = |p: egui::Pos2| (p - (c + shift)).angle();
+                let (from, mut to) = (toward(last), toward(first));
+                while to < from { to += std::f32::consts::TAU; }
+                // The hollow edge lies inside the disc; going round the other way it would not.
+                let middle = (from + to) / 2.0;
+                if (shift + vec2(middle.cos(), middle.sin()) * inner).length() > outer { to -= std::f32::consts::TAU; }
+                let n = lit_arc.len();
+                let rim: Vec<egui::Pos2> = lit_arc.iter().map(|a| c + vec2(a.cos(), a.sin()) * outer).collect();
+                // The inner edge runs back from the last rim point to the first.
+                let hollow: Vec<egui::Pos2> = (0..n).map(|k| { let a = from + (to - from) * k as f32 / (n - 1) as f32; c + shift + vec2(a.cos(), a.sin()) * inner }).collect();
+                if lit {
+                    let mut mesh = egui::Mesh::default();
+                    for k in 0..n { mesh.colored_vertex(rim[k], color); mesh.colored_vertex(hollow[n - 1 - k], color); }
+                    for k in 0..n as u32 - 1 { mesh.add_triangle(2 * k, 2 * k + 1, 2 * k + 2); mesh.add_triangle(2 * k + 1, 2 * k + 3, 2 * k + 2); }
+                    painter.add(egui::Shape::mesh(mesh));
+                }
+                let mut outline = rim; outline.extend(hollow); outline.push(outline[0]);
+                painter.line(outline, stroke);
+            }
         }
         Icon::Wifi => {
             path(&[(-7.0,-2.0),(-4.0,-5.0),(0.0,-6.0),(4.0,-5.0),(7.0,-2.0)]);
