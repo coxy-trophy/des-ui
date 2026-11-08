@@ -59,7 +59,7 @@ impl Reference {
             ui.label(RichText::new("Your current mappings, across the desktop.").font(ui::display(13.0)).color(ui::SECONDARY));
             ui.add_space(ui::SPACE);
             ui.vertical(|ui| {
-                let search = ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("Find an action or shortcut").desired_width(ui.available_width()));
+                let search = ui.add(egui::TextEdit::singleline(&mut self.search).margin(eframe::egui::vec2(10.0, 4.0)).vertical_align(eframe::egui::Align::Center).hint_text(crate::ui::hint("Find an action or shortcut")).desired_width(ui.available_width()));
                 if !self.focused { search.request_focus(); self.focused = true; }
                 if ui.button("Clear").clicked() { self.search.clear(); search.request_focus(); }
             });
@@ -177,13 +177,13 @@ impl Editor {
         ui.label("Choose Change to enter a shortcut. Changes save immediately after Apply.");
         ui.add_space(ui::SPACE);
         ui.horizontal(|ui| {
-            let search = ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("Find an action").desired_width((ui.available_width() - 64.0).max(1.0)));
+            let search = ui.add(egui::TextEdit::singleline(&mut self.search).margin(eframe::egui::vec2(10.0, 4.0)).vertical_align(eframe::egui::Align::Center).hint_text(crate::ui::hint("Find an action")).desired_width((ui.available_width() - 64.0).max(1.0)));
             if ui.add_enabled(!self.search.is_empty(), egui::Button::new("Clear")).clicked() { self.search.clear(); search.request_focus(); }
         });
         if let Some(id) = self.capture {
             let label = DEFINITIONS.iter().find(|def| def.id == id).map_or(id, |def| def.label);
             ui.label(RichText::new(format!("New shortcut for {label}")).color(theme.main));
-            let edit = ui.add_enabled(!self.recording, egui::TextEdit::singleline(&mut self.draft).hint_text("Super+Space").desired_width(ui.available_width()));
+            let edit = ui.add_enabled(!self.recording, egui::TextEdit::singleline(&mut self.draft).margin(eframe::egui::vec2(10.0, 4.0)).vertical_align(eframe::egui::Align::Center).hint_text(crate::ui::hint("Super+Space")).desired_width(ui.available_width()));
             if self.focus_draft { edit.request_focus(); self.focus_draft = false; }
             ui.label("Enter Super+… for desktop shortcuts. Escape cancels.");
             if self.recording {

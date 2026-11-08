@@ -298,8 +298,8 @@ impl Explorer {
         self.hovered |= ui.rect_contains_pointer(ui.max_rect());
         let search_label = ui::text(ui, "SEARCH DESTINATIONS", ui::mono(11.0), ui::LABEL);
         let search = ui.horizontal(|ui| {
-            let response = ui.add_sized([(ui.available_width() - 90.0).clamp(40.0, 300.0), 28.0], TextEdit::singleline(&mut self.query)
-                .font(ui::mono(12.0)).hint_text("Name of a destination")).labelled_by(search_label.id);
+            let response = ui.add_sized([(ui.available_width() - 90.0).clamp(40.0, 300.0), 28.0], TextEdit::singleline(&mut self.query).margin(eframe::egui::vec2(10.0, 4.0)).vertical_align(eframe::egui::Align::Center)
+                .font(ui::mono(12.0)).hint_text(crate::ui::hint("Name of a destination"))).labelled_by(search_label.id);
             if !self.query.is_empty() && ui::button(ui, theme, "CLEAR", None, false).clicked() {
                 self.query.clear(); response.request_focus();
             }

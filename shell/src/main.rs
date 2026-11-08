@@ -1481,6 +1481,25 @@ fn apply_style(ctx: &egui::Context, theme: &Theme) {
     style.spacing.item_spacing = vec2(ui::SPACE, ui::SPACE);
     style.spacing.button_padding = vec2(12.0, 6.0);
     style.spacing.interact_size.y = ui::CONTROL_HEIGHT;
+    // egui's floating bar paints its handle in the text colour, near white here, over
+    // a black box. Keep a thin, quiet rail instead: hidden until the area is pointed
+    // at, a faint handle then, and a clearer one while held. No box behind it.
+    style.spacing.scroll = egui::style::ScrollStyle {
+        floating: true,
+        bar_width: 6.0,
+        floating_width: 3.0,
+        floating_allocated_width: 0.0,
+        handle_min_length: 24.0,
+        bar_inner_margin: 2.0,
+        bar_outer_margin: 2.0,
+        foreground_color: true,
+        dormant_background_opacity: 0.0,
+        active_background_opacity: 0.0,
+        interact_background_opacity: 0.0,
+        dormant_handle_opacity: 0.0,
+        active_handle_opacity: 0.22,
+        interact_handle_opacity: 0.45,
+    };
     let mut visuals = Visuals::dark();
     visuals.override_text_color = Some(ui::TEXT);
     visuals.panel_fill = ui::GROUND;

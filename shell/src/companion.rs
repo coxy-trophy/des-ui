@@ -134,9 +134,9 @@ impl Companion {
                 if ui.checkbox(&mut social,"Social text approaches").changed(){self.send(json!({"type":"configure","social":social}));}
                 if ui.button("Quiet now").clicked(){self.send(json!({"type":"configure","social":false}));}
                 ui.separator();
-                    ui.label("OpenAI API key");ui.add(egui::TextEdit::singleline(&mut self.key).password(!self.show_key).desired_width(ui.available_width()));ui.checkbox(&mut self.show_key,"Show API key");
+                    ui.label("OpenAI API key");ui.add(egui::TextEdit::singleline(&mut self.key).margin(eframe::egui::vec2(10.0, 4.0)).vertical_align(eframe::egui::Align::Center).password(!self.show_key).desired_width(ui.available_width()));ui.checkbox(&mut self.show_key,"Show API key");
                     if ui.button("Remove saved key").clicked(){self.send(json!({"type":"remove_saved_key"}));self.key.clear();self.remember_key=Some(false);}
-                    ui.label("Responses model");ui.add(egui::TextEdit::singleline(&mut self.model).desired_width(ui.available_width()));
+                    ui.label("Responses model");ui.add(egui::TextEdit::singleline(&mut self.model).margin(eframe::egui::vec2(10.0, 4.0)).vertical_align(eframe::egui::Align::Center).desired_width(ui.available_width()));
                     if ui.button("Apply setup").clicked(){let mut setup=json!({"type":"configure","model":self.model,"persist_key":remember});if !self.key.is_empty(){setup["api_key"]=json!(self.key);}self.error.clear();self.send(setup);if self.bridge.is_some(){self.key.clear();}}
                     let mut requests=self.snapshot["daily_requests"].as_u64().unwrap_or(100) as u32;
                     let mut minutes=self.snapshot["daily_voice_minutes"].as_u64().unwrap_or(15) as u32;
@@ -147,7 +147,7 @@ impl Companion {
                     let identities=self.snapshot["identities"].as_array().cloned().unwrap_or_default();
                     ui.collapsing("Previous identity versions",|ui|{for identity in identities {ui.horizontal_wrapped(|ui|{ui.label(identity["text"].as_str().unwrap_or(""));if ui.button("Restore version").clicked(){self.send(json!({"type":"restore_identity","version":identity["id"]}));self.identity=identity["text"].as_str().unwrap_or("").into();}});}});
                     ui.label("Saved memories can be included in AI requests.");
-                    ui.label("Remember an approved fact or preference");ui.add(egui::TextEdit::singleline(&mut self.memory).desired_width(ui.available_width()));if ui.button("Remember").clicked()&&!self.memory.trim().is_empty(){self.send(json!({"type":"remember","text":self.memory}));self.memory.clear();}
+                    ui.label("Remember an approved fact or preference");ui.add(egui::TextEdit::singleline(&mut self.memory).margin(eframe::egui::vec2(10.0, 4.0)).vertical_align(eframe::egui::Align::Center).desired_width(ui.available_width()));if ui.button("Remember").clicked()&&!self.memory.trim().is_empty(){self.send(json!({"type":"remember","text":self.memory}));self.memory.clear();}
                     let memories=self.snapshot["memories"].as_array().cloned().unwrap_or_default();
                     if memories.is_empty() { ui.label(RichText::new("No saved memories.").color(ui::SECONDARY)); }
                     for memory in memories {
@@ -157,7 +157,7 @@ impl Companion {
                             let saving=self.memory_edit_saving.is_some();
                             if let Some((_,draft))=&mut self.memory_edit {
                                 let width=ui.available_width();
-                                ui.add_enabled_ui(!saving, |ui| ui.add_sized(egui::vec2(width, ui::CONTROL_HEIGHT), egui::TextEdit::singleline(draft).char_limit(1000).hint_text("Memory")));
+                                ui.add_enabled_ui(!saving, |ui| ui.add_sized(egui::vec2(width, ui::CONTROL_HEIGHT), egui::TextEdit::singleline(draft).margin(eframe::egui::vec2(10.0, 4.0)).vertical_align(eframe::egui::Align::Center).char_limit(1000).hint_text(crate::ui::hint("Memory"))));
                                 ui.horizontal_wrapped(|ui| { save=ui.add_enabled(!saving && !draft.trim().is_empty(),egui::Button::new(if saving {"Saving…"} else {"Save memory"})).clicked(); cancel=ui.add_enabled(!saving,egui::Button::new("Cancel")).clicked(); });
                             }
                             if save { if let Some((id,draft))=self.memory_edit.clone() { self.send(json!({"type":"edit_memory","memory_id":id,"text":draft})); if self.bridge.is_some() {self.memory_edit_saving=Some((id,draft.trim().to_owned()));} } }
@@ -438,7 +438,7 @@ impl Companion {
         ui.horizontal(|ui|{
             let edit=ui.add_sized(egui::vec2((width-70.0).max(1.0),56.0),
                 egui::TextEdit::multiline(&mut self.input).id(input_id).desired_rows(2)
-                    .char_limit(8000).hint_text(if active{"Voice conversation active"}else{"Message…  Shift+Enter for a new line"}));
+                    .char_limit(8000).hint_text(crate::ui::hint(if active{"Voice conversation active"}else{"Message…  Shift+Enter for a new line"})));
             if self.focus_input {edit.request_focus();self.focus_input=false;}
             if edit.has_focus() && !escaped {self.open=true;}
             send_clicked=ui.add_enabled(ready&&!self.input.trim().is_empty(),egui::Button::new("Send").min_size(egui::vec2(56.0,56.0))).clicked();
@@ -577,7 +577,7 @@ mod tests {
         for frame in 0..2 {
             if frame == 1 { ctx.memory_mut(|memory|memory.request_focus(focus)); }
             let _=ctx.run(egui::RawInput {screen_rect:Some(screen),..Default::default()},|ctx|{
-                egui::CentralPanel::default().show(ctx,|ui|{ui.add(egui::TextEdit::singleline(&mut text).id(focus));});
+                egui::CentralPanel::default().show(ctx,|ui|{ui.add(egui::TextEdit::singleline(&mut text).margin(eframe::egui::vec2(10.0, 4.0)).vertical_align(eframe::egui::Align::Center).id(focus));});
                 rect=companion.voice_bubble(ctx,&Theme::load("signal"),false);
             });
         }

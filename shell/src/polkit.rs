@@ -540,7 +540,7 @@ impl Polkit {
                     ui.painter().rect_stroke(rect, 0.0, Stroke::new(1.0, theme.main), StrokeKind::Inside);
                     let edit = ui.put(
                         rect.shrink2(vec2(8.0, 4.0)),
-                        TextEdit::singleline(&mut dialog.password)
+                        TextEdit::singleline(&mut dialog.password).vertical_align(eframe::egui::Align::Center)
                             .id(Id::new("polkit-password"))
                             .password(!echo)
                             .frame(false)

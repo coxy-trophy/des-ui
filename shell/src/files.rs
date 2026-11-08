@@ -261,7 +261,7 @@ impl Browser {
                 DialogKind::Trash(source) => { ui.label(format!("Move “{}” to Trash?", source.file_name().unwrap_or_default().to_string_lossy())); ui.label("You can restore it from Trash."); },
                 _ => {
                     let width = ui.available_width();
-                    let field = ui.add_enabled_ui(!dialog.pending, |ui| ui.add_sized(egui::vec2(width, ui::CONTROL_HEIGHT), egui::TextEdit::singleline(&mut dialog.name).vertical_align(egui::Align::Center).char_limit(255).hint_text("Name"))).inner;
+                    let field = ui.add_enabled_ui(!dialog.pending, |ui| ui.add_sized(egui::vec2(width, ui::CONTROL_HEIGHT), egui::TextEdit::singleline(&mut dialog.name).margin(eframe::egui::vec2(10.0, 4.0)).vertical_align(egui::Align::Center).char_limit(255).hint_text(crate::ui::hint("Name")))).inner;
                     field.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "File or folder name"));
                     if !dialog.focused { field.request_focus(); dialog.focused = true; }
                     submit = !dialog.pending && (field.has_focus() || field.lost_focus()) && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter));
@@ -323,12 +323,12 @@ impl Browser {
                 if let Some(trash) = crate::file_ops::trash_files() { if ui.selectable_label(self.in_trash, "Trash").clicked() { target = Some((trash, Navigation::New)); } }
             }
         });
-        let path_field = ui.add_sized(egui::vec2(ui.available_width(), ui::CONTROL_HEIGHT), egui::TextEdit::singleline(&mut self.path_text).vertical_align(egui::Align::Center).font(ui::mono(12.0)).char_limit(4096).hint_text("Folder path"));
+        let path_field = ui.add_sized(egui::vec2(ui.available_width(), ui::CONTROL_HEIGHT), egui::TextEdit::singleline(&mut self.path_text).margin(eframe::egui::vec2(10.0, 4.0)).vertical_align(egui::Align::Center).font(ui::mono(12.0)).char_limit(4096).hint_text(crate::ui::hint("Folder path")));
         path_field.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Folder path"));
         if controls_active && (path_field.has_focus() || path_field.lost_focus()) && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)) { target = Some((if self.path_text == self.path.to_string_lossy() { self.path.clone() } else { PathBuf::from(&self.path_text) }, Navigation::New)); }
         let search_field = ui.horizontal(|ui| {
             let clear_width = 48.0 + ui.spacing().item_spacing.x;
-            let field = ui.add_sized(egui::vec2((ui.available_width() - clear_width).max(48.0), ui::CONTROL_HEIGHT), egui::TextEdit::singleline(&mut self.filter).vertical_align(egui::Align::Center).char_limit(256).hint_text("Search this folder"));
+            let field = ui.add_sized(egui::vec2((ui.available_width() - clear_width).max(48.0), ui::CONTROL_HEIGHT), egui::TextEdit::singleline(&mut self.filter).margin(eframe::egui::vec2(10.0, 4.0)).vertical_align(egui::Align::Center).char_limit(256).hint_text(crate::ui::hint("Search this folder")));
             if ui.add_enabled(!self.filter.is_empty(), egui::Button::new("Clear")).clicked() { self.filter.clear(); field.request_focus(); }
             field
         }).inner;

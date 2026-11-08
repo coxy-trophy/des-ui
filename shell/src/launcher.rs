@@ -178,7 +178,7 @@ impl Launcher {
             });
             if self.edit_folders {
                 ui::text(ui,"Local file search folders · absolute paths separated by semicolons",ui::mono(11.0),ui::SECONDARY);
-                ui.add(TextEdit::singleline(&mut self.folders).char_limit(32768).font(ui::mono(12.0)).desired_width(f32::INFINITY));
+                ui.add(TextEdit::singleline(&mut self.folders).margin(eframe::egui::vec2(10.0, 4.0)).vertical_align(eframe::egui::Align::Center).char_limit(32768).font(ui::mono(12.0)).desired_width(f32::INFINITY));
                 if ui::button(ui,theme,"SAVE FOLDERS",None,false).clicked(){match file_search::parse_roots(&self.folders){
                     Ok(roots)=>match crate::config::set("search_folders",Some(&serde_json::to_string(&roots).unwrap())){Ok(_)=>{self.roots=roots;self.edit_folders=false;self.focus_query=true;self.error=None;self.invalidate();},Err(e)=>self.error=Some(e.to_string())},
                     Err(e)=>self.error=Some(e.into()),
@@ -187,7 +187,7 @@ impl Launcher {
             let before=self.query.clone();
             let query_id=ui.id().with("palette-query");
             ui.horizontal(|ui|{
-                let field=ui.add_sized(vec2((ui.available_width()-38.0).max(40.0),38.0),TextEdit::singleline(&mut self.query).char_limit(4096).id(query_id).font(ui::display(18.0)).hint_text("Search applications, files and actions"));
+                let field=ui.add_sized(vec2((ui.available_width()-38.0).max(40.0),38.0),TextEdit::singleline(&mut self.query).margin(eframe::egui::vec2(10.0, 4.0)).vertical_align(eframe::egui::Align::Center).char_limit(4096).id(query_id).font(ui::display(18.0)).hint_text(crate::ui::hint("Search applications, files and actions")));
                 if self.focus_query && !self.edit_folders {field.request_focus();self.focus_query=false;}
                 if field.clicked(){self.grid_navigation=false;}
                 let clear=ui.add_enabled_ui(!self.query.is_empty(),|ui|ui::icon_button(ui,theme,ui::Icon::Close,30.0,false)).inner.on_hover_text("Clear search");

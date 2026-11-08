@@ -1009,7 +1009,7 @@ fn row(ui: &mut Ui, theme: &Theme, notice: &Notice, typing: Option<&mut String>)
                 ui.horizontal(|ui| {
                     ui.add_space(10.0);
                     ui.spacing_mut().item_spacing.x = 8.0;
-                    let field = ui.add(egui::TextEdit::singleline(text).hint_text("Reply").desired_width((width - 120.0).max(80.0)).font(ui::mono(12.0)));
+                    let field = ui.add(egui::TextEdit::singleline(text).margin(eframe::egui::vec2(10.0, 4.0)).vertical_align(eframe::egui::Align::Center).hint_text(crate::ui::hint("Reply")).desired_width((width - 120.0).max(80.0)).font(ui::mono(12.0)));
                     if !field.has_focus() && text.is_empty() {
                         field.request_focus();
                     }

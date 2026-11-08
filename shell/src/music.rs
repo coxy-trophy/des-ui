@@ -1033,7 +1033,7 @@ impl Music {
         ui.painter().rect_stroke(field, ui::CONTROL_RADIUS, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
         ui.put(
             field.shrink2(vec2(10.0, 7.0)),
-            TextEdit::singleline(&mut self.client_id).frame(false).font(ui::mono(13.0)).text_color(ui::TEXT).hint_text("client ID"),
+            TextEdit::singleline(&mut self.client_id).vertical_align(eframe::egui::Align::Center).frame(false).font(ui::mono(13.0)).text_color(ui::TEXT).hint_text(crate::ui::hint("client ID")),
         );
         ui.add_space(10.0);
         let id = self.client_id.trim().to_string();
@@ -1115,7 +1115,7 @@ impl Music {
             }
             ui::text(ui,if editor.id.is_empty(){"New playlist"}else{"Edit playlist"},ui::display_bold(18.0),ui::TEXT);
             ui.add_enabled_ui(editor.pending.is_none(),|ui| {
-            ui.label("Name");ui.add_sized(vec2(ui.available_width(),ui::CONTROL_HEIGHT),TextEdit::singleline(&mut editor.name).char_limit(200));
+            ui.label("Name");ui.add_sized(vec2(ui.available_width(),ui::CONTROL_HEIGHT),TextEdit::singleline(&mut editor.name).margin(eframe::egui::vec2(10.0, 4.0)).vertical_align(eframe::egui::Align::Center).char_limit(200));
             ui.label("Description");ui.add_sized(vec2(ui.available_width(),72.0),TextEdit::multiline(&mut editor.description).char_limit(300));
             ui.checkbox(&mut editor.public,"Public playlist");
             });
@@ -1201,11 +1201,11 @@ impl Music {
                 ui.painter().rect_stroke(field, ui::CONTROL_RADIUS, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
                 let edit = ui.put(
                     Rect::from_min_max(field.min + vec2(10.0, 7.0), field.max - vec2(48.0, 7.0)),
-                    TextEdit::singleline(&mut self.query)
+                    TextEdit::singleline(&mut self.query).vertical_align(eframe::egui::Align::Center)
                         .frame(false)
                         .font(ui::display(13.0))
                         .text_color(ui::TEXT)
-                        .hint_text("search Spotify"),
+                        .hint_text(crate::ui::hint("search Spotify")),
                 );
                 if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !self.query.trim().is_empty() {
                     self.go(Source::Search(self.query.trim().to_string()), false);
@@ -1465,7 +1465,7 @@ impl Music {
     /// Narrow workspaces retain every destination without squeezing a permanent rail.
     fn compact_navigation(&mut self, ui: &mut Ui, theme: &Theme) {
         ui.horizontal(|ui| {
-            let edit = ui.add_sized(vec2((ui.available_width() - 76.0).max(48.0), 30.0), TextEdit::singleline(&mut self.query).font(ui::display(13.0)).hint_text("Search Spotify · Enter"));
+            let edit = ui.add_sized(vec2((ui.available_width() - 76.0).max(48.0), 30.0), TextEdit::singleline(&mut self.query).margin(eframe::egui::vec2(10.0, 4.0)).vertical_align(eframe::egui::Align::Center).font(ui::display(13.0)).hint_text(crate::ui::hint("Search Spotify · Enter")));
             if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !self.query.trim().is_empty() {
                 self.go(Source::Search(self.query.trim().to_string()), false);
             }

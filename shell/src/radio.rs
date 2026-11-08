@@ -993,7 +993,7 @@ fn field(ui: &mut Ui, theme: &Theme, text: &mut String, hint: &str, secret: bool
     ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside);
     let edit = ui.put(
         rect.shrink2(vec2(8.0, 4.0)),
-        TextEdit::singleline(text).password(secret).frame(false).font(ui::mono(13.0)).text_color(ui::TEXT).hint_text(hint),
+        TextEdit::singleline(text).vertical_align(eframe::egui::Align::Center).password(secret).frame(false).font(ui::mono(13.0)).text_color(ui::TEXT).hint_text(crate::ui::hint(hint)),
     );
     edit.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter))
 }

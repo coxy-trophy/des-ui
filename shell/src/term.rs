@@ -662,8 +662,8 @@ impl TermTab {
                 ui.set_clip_rect(bar);
                 ui.horizontal_wrapped(|ui| {
                     ui.label(egui::RichText::new("FIND").font(crate::ui::display(12.0)).color(crate::ui::SECONDARY));
-                    let field = ui.add(egui::TextEdit::singleline(&mut self.search.query)
-                        .hint_text("Search scrollback").char_limit(4096).font(crate::ui::mono(12.0))
+                    let field = ui.add(egui::TextEdit::singleline(&mut self.search.query).margin(eframe::egui::vec2(10.0, 4.0)).vertical_align(eframe::egui::Align::Center)
+                        .hint_text(crate::ui::hint("Search scrollback")).char_limit(4096).font(crate::ui::mono(12.0))
                         .desired_width((bar.width() - 320.0).max(60.0)));
                     if self.search.focus { field.request_focus(); self.search.focus = false; }
                     if field.changed() { self.search.restart(self.parser.screen()); self.search.revision = self.revision; }

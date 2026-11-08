@@ -573,7 +573,7 @@ impl Connect {
         let label = ui.label(RichText::new("Path from Files panel").font(ui::display(13.0)).color(ui::TEXT));
         let mut path = self.file_paths.get(&device.id).cloned().unwrap_or_default();
         ui.add_enabled_ui(!busy, |ui| {
-            let response = ui.add(egui::TextEdit::singleline(&mut path).min_size(egui::vec2(0.0, ui::CONTROL_HEIGHT)).id_salt(("connect-file-path", &device.id)).char_limit(4096).desired_width(ui.available_width()).hint_text("/absolute/path/to/file")).labelled_by(label.id);
+            let response = ui.add(egui::TextEdit::singleline(&mut path).margin(eframe::egui::vec2(10.0, 4.0)).vertical_align(eframe::egui::Align::Center).min_size(egui::vec2(0.0, ui::CONTROL_HEIGHT)).id_salt(("connect-file-path", &device.id)).char_limit(4096).desired_width(ui.available_width()).hint_text(crate::ui::hint("/absolute/path/to/file"))).labelled_by(label.id);
             self.keyboard |= response.has_focus();
             if response.changed() {
                 self.file_paths.insert(device.id.clone(), path.clone());
@@ -820,9 +820,9 @@ impl Connect {
         let serial = self.usb_serials.entry(device.id.clone()).or_default();
         let label = ui.label(RichText::new("USB serial").font(ui::display(13.0)).color(ui::TEXT));
         ui.add_enabled_ui(enabled, |ui| {
-            let response = ui.add(egui::TextEdit::singleline(serial).min_size(egui::vec2(0.0, ui::CONTROL_HEIGHT))
+            let response = ui.add(egui::TextEdit::singleline(serial).margin(eframe::egui::vec2(10.0, 4.0)).vertical_align(eframe::egui::Align::Center).min_size(egui::vec2(0.0, ui::CONTROL_HEIGHT))
                 .id_salt(("connect-usb-serial", &device.id)).char_limit(128).desired_width(ui.available_width())
-                .hint_text("Authorized USB serial")).labelled_by(label.id);
+                .hint_text(crate::ui::hint("Authorized USB serial"))).labelled_by(label.id);
             self.keyboard |= response.has_focus();
         });
     }

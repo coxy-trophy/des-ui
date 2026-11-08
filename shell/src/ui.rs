@@ -146,6 +146,12 @@ pub fn galley(ui: &Ui, text: &str, font: FontId, color: Color32, tracking: f32) 
 }
 
 /// Adds one line of text as a widget.
+/// A text field's placeholder. The style's override colour would otherwise paint it
+/// as bright as typed text, so it carries its own quieter colour.
+pub fn hint(text: impl Into<String>) -> egui::RichText {
+    egui::RichText::new(text.into()).color(LABEL)
+}
+
 pub fn text(ui: &mut Ui, text: &str, font: FontId, color: Color32) -> Response {
     tracked(ui, text, font, color, 0.0)
 }
@@ -486,7 +492,7 @@ pub fn list_button(ui: &mut Ui, theme: &Theme, label: &str, width: f32) -> Respo
 pub fn search_field(ui: &mut Ui, theme: &Theme, value: &mut String, id: egui::Id, hint: &str) -> Response {
     ui.horizontal(|ui| {
         let width = (ui.available_width() - CONTROL_HEIGHT - ui.spacing().item_spacing.x).max(20.0);
-        let response = ui.add_sized(vec2(width, CONTROL_HEIGHT), egui::TextEdit::singleline(value).id(id).hint_text(hint).vertical_align(Align::Center));
+        let response = ui.add_sized(vec2(width, CONTROL_HEIGHT), egui::TextEdit::singleline(value).margin(eframe::egui::vec2(10.0, 4.0)).id(id).hint_text(self::hint(hint)).vertical_align(Align::Center));
         let clear = ui.add_enabled_ui(!value.is_empty(), |ui| icon_button(ui, theme, Icon::Close, CONTROL_HEIGHT, false)).inner.on_hover_text("Clear search");
         clear.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, !value.is_empty(), "Clear search"));
         if clear.clicked() { value.clear(); response.request_focus(); }
@@ -830,6 +836,10 @@ mod tests {
         assert_eq!(style.override_font_id, Some(display(13.0)));
         assert_eq!(style.spacing.interact_size.y, 30.0);
         assert!(style.visuals.widgets.hovered.corner_radius.nw >= 6);
+        // Scroll bars are a quiet rail, never a bright handle over a black box.
+        assert!(style.spacing.scroll.bar_width <= 6.0);
+        assert_eq!(style.spacing.scroll.interact_background_opacity, 0.0);
+        assert!(style.spacing.scroll.interact_handle_opacity < 0.5);
     }
 
     #[test]
