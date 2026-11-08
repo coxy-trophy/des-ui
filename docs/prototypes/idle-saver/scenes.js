@@ -246,11 +246,92 @@ globalThis.desSaverScenes = (() => {
     }
   }
 
+  // These lines are independent seeded particles. A volley adds a short-lived
+  // group without changing the underlying field or keeping an unbounded queue.
+  const volleys=[];
+  function launchRise(x,t){
+    if(volleys.length>=6)volleys.shift();
+    volleys.push({x,t});
+  }
+  function rising({ctx,w,h,t,p,px,energy,inside,motion,brand}) {
+    ground(ctx,w,h,"#07060b","#090610");
+    const horizon=h*.895, center=w*.50;
+    const reveal=motion?Math.min(1,.25+t*.7):1, strength=.44+p*.54;
+    ctx.save();ctx.translate(center,horizon);ctx.scale(w*.52,h*.29);
+    const haze=ctx.createRadialGradient(0,0,0,0,0,1);
+    haze.addColorStop(0,rgba("171,65,235",strength*.68));
+    haze.addColorStop(.27,rgba("134,40,204",strength*.29));
+    haze.addColorStop(.67,rgba("77,32,150",strength*.09));
+    haze.addColorStop(1,"transparent");
+    ctx.fillStyle=haze;ctx.fillRect(-1,-1,2,2);ctx.restore();
+
+    const half=w*.47*reveal;
+    const beam=ctx.createLinearGradient(center-half,0,center+half,0);
+    beam.addColorStop(0,"transparent");beam.addColorStop(.20,rgba("121,57,208",.35));
+    beam.addColorStop(.5,"#f5c4ff");beam.addColorStop(.8,rgba("121,57,208",.35));beam.addColorStop(1,"transparent");
+    ctx.fillStyle=beam;ctx.fillRect(center-half,horizon,half*2,Math.max(1,h*.0036));
+
+    function streak(x,head,base,length,wide,alpha){
+      if(alpha<.015||head>=base)return;
+      const tail=Math.min(base,head+length);
+      const g=ctx.createLinearGradient(0,head,0,tail);
+      g.addColorStop(0,rgba("255,244,255",alpha));
+      g.addColorStop(.10,rgba("255,169,246",alpha*.78));
+      g.addColorStop(.37,rgba("203,93,236",alpha*.47));
+      g.addColorStop(1,rgba("113,45,196",0));
+      ctx.fillStyle=g;ctx.fillRect(x-wide*.5,head,wide,tail-head);
+      if(wide>1){ctx.fillStyle=rgba("248,199,255",alpha*.13);ctx.fillRect(x-wide*1.5,head-1,wide*3,4);}
+    }
+
+    const total=Math.round((95+135*p)*Math.min(1,w/670));
+    for(let i=0;i<total;i++){
+      const u=(rand(i*11)-.5)*.98, near=rand(i*11+1), tall=rand(i*11+3);
+      const x=center+u*w*reveal;
+      const life=frac(rand(i*11+2)+t*(.076+near*.098));
+      const base=horizon-h*(1-near)*.026;
+      const head=base-h*(.10+.81*tall**2.35)*life;
+      const shade=(1-Math.abs(u)*1.42)*(.15+near*.81);
+      const fade=Math.min(1,life*10,(1-life)*5);
+      streak(x,head,base,h*(.024+near*.33*tall),.30+near**3*1.42,fade*shade*(.48+p*.52));
+    }
+
+    // Soft, tiny sparks and denser filaments close to the emitter.
+    for(let i=0;i<72;i++){
+      const u=(rand(i*7+2)-.5)*.88,x=center+u*w*reveal;
+      const s=frac(rand(i*7+3)+t*(.08+rand(i*7+4)*.20));
+      const y=horizon-s*h*(.04+rand(i*7+5)**2.6*.61);
+      const a=(1-Math.abs(u)*2)*Math.sin(s*Math.PI)*strength;
+      ctx.fillStyle=rgba("217,126,248",a*.56);dot(ctx,x,y,.36+rand(i*7+6)*.86);
+    }
+    if(inside){
+      const centerX=Math.min(.97,Math.max(.03,px))*w;
+      for(let i=0;i<17;i++){
+        const z=frac(rand(i*9+161)+t*(.19+.20*rand(i*9+162)));
+        const x=centerX+(rand(i*9+163)-.5)*Math.min(w*.14,86);
+        const height=h*(.2+.57*rand(i*9+164));
+        streak(x,horizon-height*z,horizon,height*.43,.55+rand(i*9+165)*1.3,
+          Math.sin(z*Math.PI)*(.25+.48*p+.18*energy));
+      }
+    }
+    for(const wave of volleys){
+      const age=t-wave.t;
+      if(age<0||age>2.7)continue;
+      for(let i=0;i<18;i++){
+        const rise=age*(.42+rand(i*13+93)*.56);
+        const x=wave.x*w+(rand(i*13+98)-.5)*Math.min(w*.22,155)*(1+age*.16);
+        streak(x,horizon-rise*h*.62,horizon,h*(.14+.23*rand(i*13+100)),1+rand(i*13+101),
+          clamp(1-age/2.7)*(.67+.31*rand(i*13+103)));
+      }
+    }
+    brand(center,horizon+h*.064,Math.min(w*.15,155),"#e3b3ee",.55);
+  }
+
   return {
     "polar-veil": {name:"Polar Veil", description:"A soft violet, blue and mint aurora fades above a quiet mountain horizon.", control:"Glow", hint:"Move the pointer to lean the aurora", level:.55, draw:polar},
     "event-horizon": {name:"Event Horizon", description:"An ember corona crawls around a dark eclipse in a quiet star field.", control:"Corona", hint:"Move the pointer to shift the eclipse", level:.55, draw:eclipse},
     "night-transit": {name:"Night Transit", description:"Rose and cyan traffic trails trace a highway into a neon horizon.", control:"Speed", hint:"Move the pointer to steer the view", level:.47, draw:transit},
     "liquid-prism": {name:"Liquid Prism", description:"Bands of rose, jade and lilac glass slide past the DEs-UI wordmark.", control:"Sheen", hint:"Move the pointer to bend the ribbons", level:.62, draw:prism},
-    "phosphor-sweep": {name:"Phosphor Sweep", description:"A green radar sweep leaves fading contacts and a phosphor trail.", control:"Trail", hint:"Move the pointer over the scope to mark a contact", level:.56, draw:radar}
+    "phosphor-sweep": {name:"Phosphor Sweep", description:"A green radar sweep leaves fading contacts and a phosphor trail.", control:"Trail", hint:"Move the pointer over the scope to mark a contact", level:.56, draw:radar},
+    "rising-lines": {name:"Rising Lines", description:"Pink-white filaments rise from a violet horizon and fade into the dark.", control:"Density", hint:"Hover for an updraft · click to launch a volley", level:.57, draw:rising, click:launchRise, reset:()=>{volleys.length=0}}
   };
 })();

@@ -1,9 +1,9 @@
 # Screen savers and sleep — design study
 
-Open [index.html](index.html) locally. Choose any of the nine previews, or use
+Open [index.html](index.html) locally. Choose any of the ten previews, or use
 the arrow buttons to compare them in place, including in **Fullscreen**. In
 the pattern studies, drag **Morph** to inspect the assembled logo, or choose
-[Ink](index.html#silk-ink) and scrub from Soft to Deep. Each of the five new
+[Ink](index.html#silk-ink) and scrub from Soft to Deep. Each of the six
 scenes has its own tuning slider. The lower timeline switches between example
 AC and battery profiles. The page does not lock, blank or suspend the machine.
 
@@ -12,7 +12,7 @@ The studies use the actual DEs-UI boot wordmark from
 fonts. [React Bits PatternWaves](https://reactbits.dev/backgrounds/pattern-waves?color=ff00f1)
 informed the appearance and pointer behavior. The prototype is its own Canvas
 renderer; it installs no React, OGL, or browser runtime in the desktop. The
-new scenes likewise use original Canvas drawing, with five React Bits
+new scenes likewise use original Canvas drawing, with React Bits
 references as starting points:
 
 | Study | Starting point | What we changed |
@@ -22,6 +22,7 @@ references as starting points:
 | [Night Transit](index.html#night-transit) | [Hyperspeed](https://reactbits.dev/backgrounds/hyperspeed) | A rose and cyan night drive with a low skyline, curved lanes and adjustable speed. |
 | [Liquid Prism](index.html#liquid-prism) | [Iridescence](https://reactbits.dev/backgrounds/iridescence) | Shaded ribbons of rose, jade and lilac glass that bend slightly under the pointer. |
 | [Phosphor Sweep](index.html#phosphor-sweep) | [Radar](https://reactbits.dev/backgrounds/radar) | A green scope with fading contacts, an adjustable afterglow and a pointer marker. |
+| [Rising Lines](index.html#rising-lines) | [Rising Lines](https://pro.reactbits.dev/docs/components/rising-lines) | An original recreation from the public preview: white-tipped lines rise from a violet horizon. Hover to lift a column, click for a short volley, and use Density to tune the field. |
 
 ## Product direction for review
 

@@ -29,7 +29,7 @@ const motionAllowed=()=>!reduce.matches||motionOverride;
 let logoDots=[],logoRuns=[];
 let logoMask, brandMask;
 const brandTints=new Map();
-const pointer={x:0,y:0,energy:0};
+const pointer={x:0,y:0,energy:0,inside:false};
 
 function logoAt(step) {
   const image=document.createElement("canvas");
@@ -200,7 +200,7 @@ function draw(){
   const p=presets[mode], k=smooth(0,1,phase);
   if(p.draw){
     ctx.save();
-    p.draw({ctx,w,h,t:elapsed,p:sceneLevels.get(mode),px:pointer.x/w,py:pointer.y/h,energy:pointer.energy,brand:drawBrand});
+    p.draw({ctx,w,h,t:elapsed,p:sceneLevels.get(mode),px:pointer.x/w,py:pointer.y/h,energy:pointer.energy,inside:pointer.inside,motion:motionAllowed(),brand:drawBrand});
     ctx.restore();return;
   }
   background(p);
@@ -256,9 +256,12 @@ for(const type of ["pointermove","pointerdown"])screen.addEventListener(type,e=>
   if(!motionAllowed())return;
   const rect=screen.getBoundingClientRect();
   pointer.x=e.clientX-rect.left;pointer.y=e.clientY-rect.top;
+  pointer.inside=true;
   pointer.energy=type==="pointerdown"?1:.65;
+  if(type==="pointerdown"&&e.button===0&&!paused)scenes[mode]?.click?.(clamp(pointer.x/w),elapsed);
   invalidate();
 });
+screen.addEventListener("pointerleave",()=>{pointer.inside=false;invalidate()});
 get("pause").addEventListener("click",()=>{
   paused=!paused;
   if(!paused){motionOverride=reduce.matches;cycle=mix(1.8,5,phase);}
@@ -270,12 +273,12 @@ slider.addEventListener("input",()=>{
   else {phase=value;paused=true;}
   invalidate();
 });
-get("replay").addEventListener("click",()=>{cycle=0;phase=0;elapsed=0;paused=false;last=0;invalidate()});
+get("replay").addEventListener("click",()=>{cycle=0;phase=0;elapsed=0;paused=false;last=0;scenes[mode]?.reset?.();invalidate()});
 const studies=[...document.querySelectorAll("[data-style]")];
 function selectMode(id){
   const button=studies.find(study=>study.dataset.style===id);
   if(!button)return;
-  if(mode!==id){mode=id;elapsed=0;last=0;pointer.energy=0;}
+  if(mode!==id){mode=id;elapsed=0;last=0;pointer.energy=0;pointer.inside=false;scenes[mode]?.reset?.();}
   for(const item of studies)item.setAttribute("aria-pressed",String(item===button));
   get("preview-name").textContent=presets[mode].name;get("canvas-description").textContent=presets[mode].description;
   updateControls();invalidate();
