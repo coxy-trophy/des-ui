@@ -7,12 +7,15 @@ const ctx = canvas.getContext("2d", { alpha: false });
 const studio = get("studio"), screen = get("screen");
 const slider = get("phase"), phaseLabel = get("phase-label");
 const reduce = matchMedia("(prefers-reduced-motion: reduce)");
+const scenes=globalThis.desSaverScenes;
 const presets = {
   silk: {name:"Silk Fold", description:"Magenta dots travel across folds of silk and gather into the DEs-UI wordmark.", ink:"#ff00f1", highlight:"#ff9ce0", background:"#050208"},
   "silk-ink": {name:"Silk Fold · Ink", description:"A deep magenta DEs-UI wordmark stays woven into the moving field of silk dots.", ink:"#ad227b", highlight:"#d765ac", background:"#050208"},
   contour: {name:"Signal Contour", description:"Fine pink contour lines bend and become slices of the DEs-UI wordmark.", ink:"#ed56be", highlight:"#ffd1ec", background:"#06040a"},
-  terminal: {name:"Terminal Weave", description:"Magenta and pale cyan glyphs drift across a grid and assemble the DEs-UI wordmark.", ink:"#d44ab6", highlight:"#9ef5e1", background:"#040609"}
+  terminal: {name:"Terminal Weave", description:"Magenta and pale cyan glyphs drift across a grid and assemble the DEs-UI wordmark.", ink:"#d44ab6", highlight:"#9ef5e1", background:"#040609"},
+  ...scenes
 };
+const sceneLevels=new Map(Object.entries(scenes).map(([key,scene])=>[key,scene.level]));
 const clamp = (n,a=0,b=1) => Math.min(b,Math.max(a,n));
 const mix = (a,b,t) => a + (b-a)*t;
 const smooth = (a,b,t) => {const p=clamp((t-a)/(b-a));return p*p*(3-2*p)};
@@ -24,7 +27,8 @@ let paused=reduce.matches, inView=true, frame=0, last=0, elapsed=0;
 let motionOverride=false;
 const motionAllowed=()=>!reduce.matches||motionOverride;
 let logoDots=[],logoRuns=[];
-let logoMask;
+let logoMask, brandMask;
+const brandTints=new Map();
 const pointer={x:0,y:0,energy:0};
 
 function logoAt(step) {
@@ -36,6 +40,12 @@ function logoAt(step) {
     m.drawImage(logo,0,0);
     const samples=m.getImageData(0,0,642,126).data;
     logoMask=samples;
+    const mask=m.createImageData(642,126);
+    for(let i=0;i<samples.length;i+=4){
+      mask.data[i]=mask.data[i+1]=mask.data[i+2]=255;
+      mask.data[i+3]=samples[i];
+    }
+    m.putImageData(mask,0,0);brandMask=image;
     const filled=(x,y)=>samples[(y*642+x)*4]>115;
     for(let y=2;y<126;y+=step){
       for(let x=2;x<642;x+=step) {
@@ -55,6 +65,21 @@ function logoAt(step) {
     invalidate();
   };
   logo.src=WORDMARK;
+}
+
+function drawBrand(x,y,width,color,opacity){
+  if(!brandMask)return;
+  if(!brandTints.has(color)){
+    const tinted=document.createElement("canvas");
+    tinted.width=brandMask.width;tinted.height=brandMask.height;
+    const paint=tinted.getContext("2d");
+    paint.drawImage(brandMask,0,0);paint.globalCompositeOperation="source-in";
+    paint.fillStyle=color;paint.fillRect(0,0,tinted.width,tinted.height);
+    brandTints.set(color,tinted);
+  }
+  const height=width*126/642;
+  ctx.save();ctx.globalAlpha=opacity;
+  ctx.drawImage(brandTints.get(color),x-width/2,y-height/2,width,height);ctx.restore();
 }
 
 function surface(x,y,t) {
@@ -173,19 +198,25 @@ function logo(p,k){
 }
 function draw(){
   const p=presets[mode], k=smooth(0,1,phase);
+  if(p.draw){
+    ctx.save();
+    p.draw({ctx,w,h,t:elapsed,p:sceneLevels.get(mode),px:pointer.x/w,py:pointer.y/h,energy:pointer.energy,brand:drawBrand});
+    ctx.restore();return;
+  }
   background(p);
   if(mode==="contour")contours(p,k);else field(p,k);
   if(mode!=="silk-ink")logo(p,k);
   ctx.globalAlpha=1;
 }
 function updateControls(){
+  const scene=scenes[mode];
   get("pause").setAttribute("aria-pressed",String(paused));
   get("pause-label").textContent=paused?"Play":"Pause";
   get("replay").disabled=!motionAllowed();
-  slider.value=Math.round(phase*100);
-  get("phase-caption").textContent=mode==="silk-ink"?"Ink":"Morph";
-  phaseLabel.value=mode==="silk-ink"?(phase>.5?"Deep":"Soft"):(phase>.94?"Logo":phase>.06?"Forming":"Wave");
-  get("motion-note").textContent=!motionAllowed()?"Reduced motion · scrub to explore":"Move your pointer to ripple the preview";
+  slider.value=Math.round((scene?sceneLevels.get(mode):phase)*100);
+  get("phase-caption").textContent=scene?.control??(mode==="silk-ink"?"Ink":"Morph");
+  phaseLabel.value=scene?slider.value+"%":mode==="silk-ink"?(phase>.5?"Deep":"Soft"):(phase>.94?"Logo":phase>.06?"Forming":"Wave");
+  get("motion-note").textContent=!motionAllowed()?"Reduced motion · adjust the slider to explore":scene?.hint??"Move your pointer to ripple the preview";
 }
 function tick(now){
   frame=0;
@@ -193,8 +224,11 @@ function tick(now){
   const dt=last?Math.min((now-last)/1000,.066):.033;
   last=now;
   if(!paused&&motionAllowed()){
-    elapsed+=dt;cycle=(cycle+dt)%13;
-    phase=smooth(2,5.0,cycle)*(1-smooth(9.3,12.5,cycle));
+    elapsed+=dt;
+    if(!scenes[mode]){
+      cycle=(cycle+dt)%13;
+      phase=smooth(2,5.0,cycle)*(1-smooth(9.3,12.5,cycle));
+    }
   }
   pointer.energy=Math.max(0,pointer.energy-dt*2.1);
   draw();updateControls();
@@ -230,14 +264,29 @@ get("pause").addEventListener("click",()=>{
   if(!paused){motionOverride=reduce.matches;cycle=mix(1.8,5,phase);}
   last=0;invalidate();
 });
-slider.addEventListener("input",()=>{phase=Number(slider.value)/100;paused=true;invalidate()});
-get("replay").addEventListener("click",()=>{cycle=0;phase=0;elapsed=0;paused=false;last=0;invalidate()});
-for(const button of document.querySelectorAll("[data-style]"))button.addEventListener("click",()=>{
-  mode=button.dataset.style;
-  for(const item of document.querySelectorAll("[data-style]"))item.setAttribute("aria-pressed",String(item===button));
-  get("preview-name").textContent=presets[mode].name;get("canvas-description").textContent=presets[mode].description;
+slider.addEventListener("input",()=>{
+  const value=Number(slider.value)/100;
+  if(scenes[mode])sceneLevels.set(mode,value);
+  else {phase=value;paused=true;}
   invalidate();
 });
+get("replay").addEventListener("click",()=>{cycle=0;phase=0;elapsed=0;paused=false;last=0;invalidate()});
+const studies=[...document.querySelectorAll("[data-style]")];
+function selectMode(id){
+  const button=studies.find(study=>study.dataset.style===id);
+  if(!button)return;
+  if(mode!==id){mode=id;elapsed=0;last=0;pointer.energy=0;}
+  for(const item of studies)item.setAttribute("aria-pressed",String(item===button));
+  get("preview-name").textContent=presets[mode].name;get("canvas-description").textContent=presets[mode].description;
+  updateControls();invalidate();
+}
+for(const button of studies)button.addEventListener("click",()=>selectMode(button.dataset.style));
+function browseBy(delta){
+  const i=studies.findIndex(study=>study.dataset.style===mode);
+  selectMode(studies[(i+delta+studies.length)%studies.length].dataset.style);
+}
+get("previous").addEventListener("click",()=>browseBy(-1));
+get("next").addEventListener("click",()=>browseBy(1));
 get("full").addEventListener("click",async()=>{
   try{
     if(document.fullscreenElement===studio)await document.exitFullscreen();
@@ -252,4 +301,5 @@ for(const button of document.querySelectorAll("[data-power]"))button.addEventLis
   get("policy-note").textContent=battery?"On battery, show the saver briefly or skip it entirely. Critical battery and lid-close sleep still take priority.":"Times count from your last input. Video playback or presentation mode can hold off automatic stages. Manual lock and lid-close sleep still work.";
 });
 logoAt(5);resize();updateControls();
-if(location.hash==="#silk-ink")document.querySelector('[data-style="silk-ink"]').click();
+selectMode(location.hash.slice(1));
+window.addEventListener("hashchange",()=>selectMode(location.hash.slice(1)));

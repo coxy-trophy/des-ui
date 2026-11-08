@@ -6,6 +6,7 @@
 <meta name="theme-color" content="#08080b">
 <title>DEs-UI · Screen savers</title>
 <link rel="stylesheet" href="saver.css">
+<script src="scenes.js" defer></script>
 <script src="saver.js" defer></script>
 </head>
 <body>
@@ -18,12 +19,14 @@
   </header>
   <section class="intro" aria-labelledby="title">
     <div><p class="eyebrow">DEs-UI · IDLE EXPERIENCE</p><h1 id="title">Screen savers</h1></div>
-    <p>Four ways for the desktop to fade into its own mark.</p>
+    <p>Nine ways to wind down, from folded silk to the edge of space.</p>
   </section>
   <section class="studio" id="studio" aria-label="Interactive screensaver preview">
     <div class="toolbar">
       <span class="preview-label"><i></i> <span id="preview-name">Silk Fold</span></span>
       <div class="tools">
+        <button id="previous" type="button" aria-label="Previous screensaver" title="Previous screensaver">‹</button>
+        <button id="next" type="button" aria-label="Next screensaver" title="Next screensaver">›</button>
         <button id="pause" type="button" aria-pressed="false"><span aria-hidden="true">Ⅱ</span> <span id="pause-label">Pause</span></button>
         <button id="full" type="button"><span aria-hidden="true">⛶</span> <span id="full-label">Fullscreen</span></button>
       </div>
@@ -40,6 +43,7 @@
       <button id="replay" type="button"><span aria-hidden="true">↺</span> Replay</button>
     </div>
   </section>
+  <p class="group-title">01–04 <span>Pattern studies</span></p>
   <section class="studies" aria-label="Screensaver studies">
     <button class="study" type="button" data-style="silk" aria-pressed="true">
       <svg class="sample" viewBox="0 0 52 40" aria-hidden="true"><path d="M3 25C13 35 18 9 29 16s12 15 20 2M3 18C13 28 18 2 29 9s12 15 20 2M3 32C13 42 18 16 29 23s12 15 20 2"/></svg>
@@ -56,6 +60,29 @@
     <button class="study" type="button" data-style="terminal" aria-pressed="false">
       <svg class="sample terminal" viewBox="0 0 52 40" aria-hidden="true"><text x="2" y="14">.:+*</text><text x="2" y="28">*#%=</text></svg>
       <span><span class="study-title">Terminal Weave</span><span class="study-copy">Characters assemble the logo.</span></span><span class="number">04</span>
+    </button>
+  </section>
+  <p class="group-title">05–09 <span>New scenes</span></p>
+  <section class="studies scene-studies" aria-label="New screensaver scenes">
+    <button class="study" type="button" data-style="polar-veil" aria-pressed="false">
+      <svg class="sample" style="--sample:#76f1c0" viewBox="0 0 52 40" aria-hidden="true"><path d="M3 18C11 6 23 7 26 15s11 12 23 2M3 26c9-13 18-13 24-3s14 6 22-1M4 37l12-8 6 3 8-4 18 9"/></svg>
+      <span><span class="study-title">Polar Veil</span><span class="study-copy">Aurora over a quiet ridge.</span></span><span class="number">05</span>
+    </button>
+    <button class="study" type="button" data-style="event-horizon" aria-pressed="false">
+      <svg class="sample" style="--sample:#f38b80" viewBox="0 0 52 40" aria-hidden="true"><circle cx="26" cy="20" r="12"/><path d="M31 5l1-3m7 8 5-4m-2 11 7-1m-7 9 4 2M13 28l-4 3"/></svg>
+      <span><span class="study-title">Event Horizon</span><span class="study-copy">An eclipse with an ember rim.</span></span><span class="number">06</span>
+    </button>
+    <button class="study" type="button" data-style="night-transit" aria-pressed="false">
+      <svg class="sample" style="--sample:#fa70ab" viewBox="0 0 52 40" aria-hidden="true"><path d="M26 9 3 37m23-28 23 28M26 9l-9 28m9-28 9 28M5 9h42M26 22v6m0 4v5"/></svg>
+      <span><span class="study-title">Night Transit</span><span class="study-copy">A highway made of light.</span></span><span class="number">07</span>
+    </button>
+    <button class="study" type="button" data-style="liquid-prism" aria-pressed="false">
+      <svg class="sample" style="--sample:#dba3f5" viewBox="0 0 52 40" aria-hidden="true"><path d="M4 28 19 7l29 5-15 20-29-4Zm15-21 14 25m-22-6 15-14 16 2m-25 15 11-12 10 1"/></svg>
+      <span><span class="study-title">Liquid Prism</span><span class="study-copy">Rose, jade and lilac glass.</span></span><span class="number">08</span>
+    </button>
+    <button class="study" type="button" data-style="phosphor-sweep" aria-pressed="false">
+      <svg class="sample" style="--sample:#a4eab8" viewBox="0 0 52 40" aria-hidden="true"><circle cx="26" cy="20" r="16"/><circle cx="26" cy="20" r="9"/><path d="m26 20 11-12M26 4v32M10 20h32"/><circle cx="31" cy="15" r="1.8"/></svg>
+      <span><span class="study-title">Phosphor Sweep</span><span class="study-copy">Radar with a soft afterglow.</span></span><span class="number">09</span>
     </button>
   </section>
   <section class="policy" aria-labelledby="policy-title">

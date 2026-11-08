@@ -1,17 +1,27 @@
 # Screen savers and sleep — design study
 
-Open [index.html](index.html) locally. Choose Silk Fold, Silk Fold · Ink,
-Signal Contour or Terminal Weave. Drag **Morph** to inspect the assembled
-logo, or choose [Ink](index.html#silk-ink) and scrub from Soft to Deep to see
-the wordmark dyed into the moving dots. **Fullscreen** shows the effect at
-monitor scale. The lower timeline switches between example AC and battery
-profiles. This prototype does not lock, blank or suspend the machine.
+Open [index.html](index.html) locally. Choose any of the nine previews, or use
+the arrow buttons to compare them in place, including in **Fullscreen**. In
+the pattern studies, drag **Morph** to inspect the assembled logo, or choose
+[Ink](index.html#silk-ink) and scrub from Soft to Deep. Each of the five new
+scenes has its own tuning slider. The lower timeline switches between example
+AC and battery profiles. The page does not lock, blank or suspend the machine.
 
 The studies use the actual DEs-UI boot wordmark from
 `compositor/assets/wordmark.la`, with local Chakra Petch and JetBrains Mono
 fonts. [React Bits PatternWaves](https://reactbits.dev/backgrounds/pattern-waves?color=ff00f1)
 informed the appearance and pointer behavior. The prototype is its own Canvas
-renderer; it installs no React, OGL, or browser runtime in the desktop.
+renderer; it installs no React, OGL, or browser runtime in the desktop. The
+new scenes likewise use original Canvas drawing, with five React Bits
+references as starting points:
+
+| Study | Starting point | What we changed |
+| --- | --- | --- |
+| [Polar Veil](index.html#polar-veil) | [Aurora](https://reactbits.dev/backgrounds/aurora) | A blended violet, blue and mint glow with the reference's soft edge, above the mountain silhouette. The light follows the pointer gently. |
+| [Event Horizon](index.html#event-horizon) | [Orb](https://reactbits.dev/backgrounds/orb) | A dark eclipse with a slow ember corona, an offset highlight and sparse stars. |
+| [Night Transit](index.html#night-transit) | [Hyperspeed](https://reactbits.dev/backgrounds/hyperspeed) | A rose and cyan night drive with a low skyline, curved lanes and adjustable speed. |
+| [Liquid Prism](index.html#liquid-prism) | [Iridescence](https://reactbits.dev/backgrounds/iridescence) | Shaded ribbons of rose, jade and lilac glass that bend slightly under the pointer. |
+| [Phosphor Sweep](index.html#phosphor-sweep) | [Radar](https://reactbits.dev/backgrounds/radar) | A green scope with fading contacts, an adjustable afterglow and a pointer marker. |
 
 ## Product direction for review
 
