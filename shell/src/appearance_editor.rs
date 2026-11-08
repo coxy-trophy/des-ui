@@ -79,8 +79,7 @@ impl Editor {
                 self.finish_import(path, self.loader.requested_blur);
             }
         }
-        ui.label(egui::RichText::new("Desktop appearance").font(ui::display_bold(20.0)).color(ui::TEXT));
-        ui.add_space(8.0);
+        // The settings page already titles this; the preview leads.
         let (preview, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 160.0), egui::Sense::hover());
         crate::material::preview(ui.painter(), preview, &self.draft, self.loader.view.as_ref());
         let panel = preview.shrink(16.0);
@@ -100,7 +99,7 @@ impl Editor {
             }
         });
         egui::CollapsingHeader::new("Enter image path").show(ui, |ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.path).font(ui::mono(13.0)).hint_text("/home/you/Pictures/wallpaper.jpg").desired_width(ui.available_width()).id_salt("wallpaper-path"))
+            ui.add(egui::TextEdit::singleline(&mut self.path).margin(eframe::egui::vec2(10.0, 4.0)).vertical_align(eframe::egui::Align::Center).font(ui::mono(13.0)).hint_text(crate::ui::hint("/home/you/Pictures/wallpaper.jpg")).desired_width(ui.available_width()).id_salt("wallpaper-path"))
                 .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Wallpaper image path"));
             if ui.button("Load image path").clicked() { self.choose(ui.ctx(), PathBuf::from(&self.path)); }
         });

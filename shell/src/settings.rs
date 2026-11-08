@@ -105,13 +105,15 @@ enum Section {
     Pointer,
     Globe,
     Sound,
+    Notifications,
+    Screensaver,
     Region,
     Users,
     Session,
     Health,
 }
 
-const SECTIONS: [(Section, &str); 17] = [
+const SECTIONS: [(Section, &str); 19] = [
     (Section::Appearance, "APPEARANCE"),
     (Section::Terminal, "TERMINAL"),
     (Section::Frame, "FRAME"),
@@ -125,13 +127,16 @@ const SECTIONS: [(Section, &str); 17] = [
     (Section::Pointer, "MOUSE & TOUCHPAD"),
     (Section::Globe, "GLOBE"),
     (Section::Sound, "SOUND & SCREEN"),
+    (Section::Notifications, "NOTIFICATIONS"),
+    (Section::Screensaver, "SCREENSAVER"),
     (Section::Region, "DATE & REGION"),
     (Section::Users, "USERS"),
     (Section::Session, "SESSION"),
     (Section::Health, "HEALTH"),
 ];
 
-// Keep protocol names in SECTIONS stable. Navigation and search share this catalog.
+// Keep protocol names in SECTIONS stable. Navigation and search share this catalog,
+// and its order is the order of the sidebar.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum SettingsGroup { Desktop, Hardware, Connections, Personal, System }
 const SETTINGS_GROUPS: [(SettingsGroup, &str); 5] = [
@@ -146,27 +151,32 @@ struct SectionInfo {
     summary: &'static str,
     keywords: &'static str,
 }
-const SETTINGS_CATALOG: [SectionInfo; 17] = [
+const SETTINGS_CATALOG: [SectionInfo; 19] = [
     SectionInfo { section: Section::Appearance, group: SettingsGroup::Desktop, title: "Appearance", summary: "Wallpaper, theme, accent and visual effects", keywords: "background color colour transparency frosted blur glow scanlines night light reduce motion" },
     SectionInfo { section: Section::Frame, group: SettingsGroup::Desktop, title: "Desktop & panels", summary: "Panel visibility, application shelf and pet", keywords: "frame dock sidebar sidebars taskbar apps minimized collapsed animal companion pet" },
     SectionInfo { section: Section::Terminal, group: SettingsGroup::Desktop, title: "Terminal", summary: "Font, text size, cursor and scrollback", keywords: "console shell typeface line height copy select clipboard blink" },
+    SectionInfo { section: Section::Screensaver, group: SettingsGroup::Desktop, title: "Screensaver", summary: "The scene shown after the desktop locks itself", keywords: "screensaver screen saver idle scene preview animation" },
     SectionInfo { section: Section::Globe, group: SettingsGroup::Desktop, title: "World view", summary: "Globe rotation and your location", keywords: "globe map earth latitude longitude geolocation lookup" },
     SectionInfo { section: Section::Companion, group: SettingsGroup::Desktop, title: "AI companion", summary: "Chat, voice, connection and private memory", keywords: "cursor companion assistant api key model identity social quiet microphone speech" },
-    SectionInfo { section: Section::Devices, group: SettingsGroup::Hardware, title: "Connected devices", summary: "Cameras, USB, storage and hardware status", keywords: "devices webcam camera video microphone audio speaker headphones disk drive input monitor bluetooth inventory" },
-    SectionInfo { section: Section::Displays, group: SettingsGroup::Hardware, title: "Displays", summary: "Resolution, scaling and monitor arrangement", keywords: "screen monitor display resolution scaling scale refresh rate rotation orientation" },
-    SectionInfo { section: Section::Sound, group: SettingsGroup::Hardware, title: "Sound & screen", summary: "Volume, brightness and notifications", keywords: "audio speaker headphones microphone mute output input alert notification temperature warning screen brightness" },
+    SectionInfo { section: Section::Displays, group: SettingsGroup::Hardware, title: "Displays", summary: "Brightness, resolution, scaling and monitor arrangement", keywords: "screen monitor display resolution scaling scale refresh rate rotation orientation brightness backlight dim" },
+    SectionInfo { section: Section::Sound, group: SettingsGroup::Hardware, title: "Sound", summary: "Speakers, microphones and what is playing", keywords: "audio volume speaker headphones microphone mute output input applications" },
     SectionInfo { section: Section::Pointer, group: SettingsGroup::Hardware, title: "Mouse & touchpad", summary: "Cursor, scrolling and webcam hand control", keywords: "pointer trackpad mouse cursor size color colour speed sensitivity pinch gesture drag camera webcam hands" },
     SectionInfo { section: Section::Keyboard, group: SettingsGroup::Hardware, title: "Keyboard", summary: "Layout, key repeat and on-screen keyboard", keywords: "typing input language repeat delay rate virtual touch touchscreen onscreen on screen keyboard" },
     SectionInfo { section: Section::Shortcuts, group: SettingsGroup::Hardware, title: "Keyboard shortcuts", summary: "Find, remap or reset action bindings", keywords: "shortcuts hotkeys keybindings binding keys super ctrl record shortcut keyboard" },
+    SectionInfo { section: Section::Devices, group: SettingsGroup::Hardware, title: "Connected devices", summary: "Cameras, USB, storage and hardware status", keywords: "devices webcam camera video microphone audio speaker headphones disk drive input monitor bluetooth inventory" },
     SectionInfo { section: Section::Network, group: SettingsGroup::Connections, title: "Network & Wi-Fi", summary: "Wireless networks and wired connections", keywords: "network wifi wi fi internet ethernet wireless connection ip address" },
     SectionInfo { section: Section::Bluetooth, group: SettingsGroup::Connections, title: "Bluetooth", summary: "Pair and connect wireless accessories", keywords: "bluetooth pair pairing wireless headphones headset speaker accessories" },
+    SectionInfo { section: Section::Notifications, group: SettingsGroup::Personal, title: "Notifications", summary: "Alert sounds, warnings and quiet hours", keywords: "notification notifications alert alerts sound quiet hours do not disturb dnd temperature warning" },
     SectionInfo { section: Section::Region, group: SettingsGroup::Personal, title: "Date & region", summary: "Clock, time zone and regional formats", keywords: "date region time timezone time zone clock 12 24 hour language locale calendar" },
     SectionInfo { section: Section::Users, group: SettingsGroup::Personal, title: "Users", summary: "Accounts, password and login picture", keywords: "user account avatar profile photo picture login password" },
-    SectionInfo { section: Section::Session, group: SettingsGroup::System, title: "Session & startup", summary: "Save, restore, autostart, lock and log out", keywords: "session startup autostart programs recovery reconnect terminal save restore lock logout log out sign out screensaver screen saver idle" },
+    SectionInfo { section: Section::Session, group: SettingsGroup::System, title: "Session & startup", summary: "Save, restore, autostart, lock and log out", keywords: "session startup autostart programs recovery reconnect terminal save restore lock logout log out sign out idle screen off sleep" },
     SectionInfo { section: Section::Health, group: SettingsGroup::System, title: "System health", summary: "Service status, diagnostics and music connection", keywords: "health system service diagnostics troubleshoot failure error connected music status" },
 ];
 fn section_info(section: Section) -> &'static SectionInfo {
     SETTINGS_CATALOG.iter().find(|info| info.section == section).expect("every section has navigation metadata")
+}
+fn group_title(group: SettingsGroup) -> &'static str {
+    SETTINGS_GROUPS.iter().find(|(candidate, _)| *candidate == group).expect("every group has a title").1
 }
 fn normalized_settings_query(query: &str) -> String {
     query.to_lowercase().replace(['-', '_', '&'], " ").split_whitespace().collect::<Vec<_>>().join(" ")
@@ -176,12 +186,117 @@ fn settings_matches(query: &str) -> Vec<&'static SectionInfo> {
     if query.is_empty() { return Vec::new(); }
     let mut matches = SETTINGS_CATALOG.iter().filter_map(|info| {
         let title = normalized_settings_query(info.title);
-        let group = SETTINGS_GROUPS.iter().find(|(group, _)| *group == info.group).unwrap().1;
-        let haystack = normalized_settings_query(&format!("{} {} {} {}", info.title, info.summary, info.keywords, group));
+        let haystack = normalized_settings_query(&format!("{} {} {} {}", info.title, info.summary, info.keywords, group_title(info.group)));
         query.split_whitespace().all(|word| haystack.contains(word)).then_some((if title == query { 0 } else if title.starts_with(&query) { 1 } else { 2 }, info))
     }).collect::<Vec<_>>();
     matches.sort_by_key(|(rank, _)| *rank);
     matches.into_iter().map(|(_, info)| info).collect()
+}
+
+/// One setting that search can land on: where it lives, and what it is called there.
+struct SettingEntry {
+    section: Section,
+    tab: Option<AppearanceTab>,
+    label: &'static str,
+    about: &'static str,
+}
+const fn entry(section: Section, label: &'static str, about: &'static str) -> SettingEntry {
+    SettingEntry { section, tab: None, label, about }
+}
+const fn look(tab: AppearanceTab, label: &'static str, about: &'static str) -> SettingEntry {
+    SettingEntry { section: Section::Appearance, tab: Some(tab), label, about }
+}
+const SETTING_INDEX: &[SettingEntry] = &[
+    look(AppearanceTab::Wallpaper, "Wallpaper", "A picture behind the desktop, filled or fitted"),
+    look(AppearanceTab::Wallpaper, "Dim", "Darkens the wallpaper"),
+    look(AppearanceTab::Wallpaper, "Surface style", "Frosted or opaque panels"),
+    look(AppearanceTab::Wallpaper, "Blur strength", "How much the wallpaper blurs behind frosted panels"),
+    look(AppearanceTab::Wallpaper, "Surface opacity", "How solid panels are"),
+    look(AppearanceTab::Wallpaper, "Reduce transparency", "Solid panels everywhere"),
+    look(AppearanceTab::Wallpaper, "Reduce motion", "Transitions and smears stay still"),
+    look(AppearanceTab::Theme, "Theme", "The accent colour and the terminal's colours"),
+    look(AppearanceTab::Theme, "Accent colour", "A custom colour for what is live or selected"),
+    look(AppearanceTab::Theme, "Derive the palette from the accent", "Terminal colours that agree with the accent"),
+    look(AppearanceTab::Effects, "Glow", "A glow on bright text and the accent"),
+    look(AppearanceTab::Effects, "Scanlines", "Faint lines across every display"),
+    look(AppearanceTab::Effects, "Night light", "Warmer colours in the evening"),
+    entry(Section::Terminal, "Font", "The typeface the terminal is drawn in"),
+    entry(Section::Terminal, "Text size", "How large terminal text is"),
+    entry(Section::Terminal, "Line height", "Space between terminal lines"),
+    entry(Section::Terminal, "Bold text in bright colours", "As most terminals do"),
+    entry(Section::Terminal, "Cursor shape", "Block, bar or underline"),
+    entry(Section::Terminal, "Cursor blink", "The text cursor flashes"),
+    entry(Section::Terminal, "Terminal cursor smear", "Smooth motion when the text cursor moves"),
+    entry(Section::Terminal, "Command suggestions", "Local suggestions at bash and zsh prompts"),
+    entry(Section::Terminal, "Copy on select", "Selected text goes to the clipboard at once"),
+    entry(Section::Terminal, "Scrollback", "How many lines the terminal keeps"),
+    entry(Section::Frame, "Panels", "Which parts of the frame are open"),
+    entry(Section::Screensaver, "Screensaver scene", "Which scene shows after the session locks"),
+    entry(Section::Screensaver, "Preview screensaver", "See the chosen scene now"),
+    entry(Section::Globe, "Globe rotation", "The globe turns by itself"),
+    entry(Section::Globe, "Location", "Where you are on the globe"),
+    entry(Section::Displays, "Brightness", "The built-in screen; the brightness keys do the same"),
+    entry(Section::Displays, "Resolution", "Size and refresh rate of each monitor"),
+    entry(Section::Displays, "Scale", "How large everything is drawn"),
+    entry(Section::Displays, "Arrangement", "Where monitors sit beside one another"),
+    entry(Section::Sound, "Output device", "Speakers or headphones to play through, and their volume"),
+    entry(Section::Sound, "Input device", "The microphone to record from, and its level"),
+    entry(Section::Sound, "Application volume", "The level of each app that is playing"),
+    entry(Section::Pointer, "Cursor size", "How large the pointer is drawn"),
+    entry(Section::Pointer, "Cursor colour", "The pointer's colour"),
+    entry(Section::Pointer, "Natural scrolling", "Content follows your fingers or the wheel"),
+    entry(Section::Pointer, "Tap to click", "A light tap on the touchpad counts as a click"),
+    entry(Section::Pointer, "Ignore touchpad while typing", "Stops a resting palm from moving the pointer"),
+    entry(Section::Pointer, "Pointer speed", "How fast the pointer moves"),
+    entry(Section::Pointer, "Left-handed", "Swaps the left and right buttons"),
+    entry(Section::Pointer, "Hand control", "Move the pointer with your hand in front of the webcam"),
+    entry(Section::Pointer, "Pinch sensitivity", "How firm a pinch must be to click"),
+    entry(Section::Keyboard, "On-screen keyboard", "Keys on the screen, for touch"),
+    entry(Section::Keyboard, "Keyboard layout", "Which characters the keys produce"),
+    entry(Section::Keyboard, "Key repeat", "Delay before repeating and repeats per second"),
+    entry(Section::Notifications, "Notification sounds", "A notification also makes a sound"),
+    entry(Section::Notifications, "Processor temperature warnings", "Notify when the processor runs hot"),
+    entry(Section::Notifications, "Quiet hours", "Do not disturb between set hours"),
+    entry(Section::Session, "Keep terminals across shell restarts", "Running commands survive a shell restart"),
+    entry(Section::Session, "Save session", "Remember window placement and terminal folders"),
+    entry(Section::Session, "Restore session", "Bring back the saved placement"),
+    entry(Section::Session, "Autostart", "Programs that start with every session"),
+    entry(Section::Session, "Login picture", "The picture on the lock and login screens"),
+    entry(Section::Session, "Lock automatically", "Lock when the machine is left alone"),
+    entry(Section::Session, "Turn the screen off", "Blank the screen when the machine is left alone"),
+    entry(Section::Session, "Lock before sleep", "Wake to the lock screen"),
+    entry(Section::Session, "Log out", "End the session"),
+];
+fn setting_entry_matches(query: &str) -> Vec<&'static SettingEntry> {
+    let query = normalized_settings_query(query);
+    if query.is_empty() { return Vec::new(); }
+    let mut matches = SETTING_INDEX.iter().filter_map(|entry| {
+        let label = normalized_settings_query(entry.label);
+        let haystack = normalized_settings_query(&format!("{} {}", entry.label, entry.about));
+        query.split_whitespace().all(|word| haystack.contains(word)).then_some((if label.starts_with(&query) { 0 } else if label.contains(&query) { 1 } else { 2 }, entry))
+    }).collect::<Vec<_>>();
+    matches.sort_by_key(|(rank, _)| *rank);
+    matches.into_iter().map(|(_, entry)| entry).collect()
+}
+
+/// Sections a reader of this one often goes looking for next, with the reason.
+fn related(section: Section) -> &'static [(Section, &'static str)] {
+    match section {
+        Section::Sound => &[(Section::Displays, "Brightness"), (Section::Notifications, "Alert sounds"), (Section::Bluetooth, "Bluetooth headphones"), (Section::Shortcuts, "Volume keys")],
+        Section::Displays => &[(Section::Appearance, "Night light"), (Section::Screensaver, "Screensaver"), (Section::Session, "Screen off timing")],
+        Section::Notifications => &[(Section::Sound, "Output volume")],
+        Section::Screensaver => &[(Section::Session, "Lock timing"), (Section::Appearance, "Wallpaper")],
+        Section::Session => &[(Section::Screensaver, "Screensaver"), (Section::Users, "Accounts")],
+        Section::Appearance => &[(Section::Terminal, "Terminal font"), (Section::Frame, "Panels"), (Section::Screensaver, "Screensaver")],
+        Section::Terminal => &[(Section::Appearance, "Theme colours"), (Section::Shortcuts, "Terminal shortcuts")],
+        Section::Pointer => &[(Section::Keyboard, "Keyboard"), (Section::Devices, "Cameras")],
+        Section::Keyboard => &[(Section::Shortcuts, "Shortcuts"), (Section::Pointer, "Mouse & touchpad")],
+        Section::Network => &[(Section::Bluetooth, "Bluetooth")],
+        Section::Bluetooth => &[(Section::Sound, "Audio output"), (Section::Network, "Network & Wi-Fi")],
+        Section::Users => &[(Section::Session, "Lock and log out")],
+        Section::Devices => &[(Section::Displays, "Displays"), (Section::Sound, "Sound")],
+        _ => &[],
+    }
 }
 
 /// Canonical settings destinations used by the command palette.
@@ -205,8 +320,9 @@ pub struct Settings {
     pub appearance_editor: crate::appearance_editor::Editor,
     location_text: String,
     location_error: bool,
+    /// On a narrow workspace: the list of sections rather than one section.
+    narrow_list: bool,
     /// A level the user just set, shown until the system reports it back.
-    volume_held: Option<(u8, Instant)>,
     brightness_held: Option<(u8, Instant)>,
     /// Logging out takes two clicks; this is when the first one happened.
     log_out_armed: Option<Instant>,
@@ -244,7 +360,7 @@ impl Default for Settings {
             appearance_editor: Default::default(),
             location_text: String::new(),
             location_error: false,
-            volume_held: None,
+            narrow_list: false,
             brightness_held: None,
             log_out_armed: None,
             draft: Vec::new(),
@@ -347,6 +463,7 @@ impl Settings {
         };
         self.location_error = false;
         self.log_out_armed = None;
+        self.narrow_list = true;
         self.open = true;
     }
 
@@ -359,6 +476,7 @@ impl Settings {
         } else if let Some(info) = settings_matches(name).first() {
             self.section = info.section;
         }
+        self.narrow_list = false;
     }
 
     pub fn shortcut_capture_active(&self) -> bool {
@@ -420,7 +538,10 @@ impl Settings {
                             }
                             Section::Keyboard => settings.keyboard(ui, theme, config, input, &mut changes),
                             Section::Pointer => settings.pointer(ui, theme, input, &mut changes),
-                            Section::Displays => settings.displays(ui, theme, displays, &mut changes),
+                            Section::Displays => {
+                                settings.brightness(ui, theme, mon, &mut changes);
+                                settings.displays(ui, theme, displays, &mut changes);
+                            }
                             Section::Devices => {
                                 let devices = settings.devices.get_or_insert_with(|| crate::devices::Devices::new(ui.ctx().clone()));
                                 if let Some(destination) = devices.show(ui, theme) {
@@ -434,7 +555,9 @@ impl Settings {
                                 }
                             },
                             Section::Globe => settings.globe(ui, theme, config, geo, &mut changes),
-                            Section::Sound => settings.sound(ui, theme, config, mon, &mut changes),
+                            Section::Sound => settings.sound(ui, theme),
+                            Section::Notifications => settings.notifications(ui, theme, config, &mut changes),
+                            Section::Screensaver => settings.screensaver(ui, theme, config, input, &mut changes),
                             Section::Region => settings.region.get_or_insert_with(|| crate::region::Region::new(ui.ctx().clone())).show(ui, theme, config.twelve_hour, &mut changes),
                             Section::Users => settings.users.get_or_insert_with(|| crate::users::Users::new(ui.ctx().clone())).show(ui, theme),
                             Section::Session => settings.session(ui, theme, config, input, &mut changes),
@@ -445,122 +568,248 @@ impl Settings {
         changes
     }
 
-    /// One responsive page owner for every Settings section. Narrow workspaces
-    /// use a section selector; wide ones keep navigation beside the content.
+    /// One responsive page owner for every Settings section. Wide workspaces keep
+    /// every section in a sidebar beside the content; narrow ones show the list of
+    /// sections first, then one section with a way back to the list.
     fn page(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme, draw: impl FnOnce(&mut Self, &mut Ui)) {
         let padding = (rect.width() * 0.025).clamp(12.0, 28.0);
         let area = rect.shrink2(vec2(padding, 16.0));
+        let wide = area.width() >= 720.0;
+        let searching = !self.search.trim().is_empty();
+        // "/" goes to search, as in a browser, when nothing else has the keyboard.
+        let focus_search = !self.shortcut_capture_active()
+            && ui.memory(|memory| memory.focused().is_none())
+            && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Slash));
         ui.allocate_new_ui(UiBuilder::new().max_rect(area), |ui| {
-            ui.horizontal(|ui| {
-                ui::tracked(ui, "SETTINGS", ui::display_bold(22.0), ui::TEXT, 0.6);
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui::button(ui, theme, "DONE", Some("ESC"), false).clicked() {
-                        self.open = false;
-                    }
-                });
-            });
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                let clear_width = if self.search.is_empty() { 0.0 } else { 64.0 };
-                let search_width = (ui.available_width() - clear_width).max(60.0);
-                let hint = if search_width >= 520.0 { "Search settings: Wi-Fi, camera, volume…" } else { "Search settings…" };
-                let response = ui.add_sized(vec2(search_width, ui::CONTROL_HEIGHT),
-                    TextEdit::singleline(&mut self.search).hint_text(hint));
-                response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Search settings"));
-                if !self.search.is_empty() && ui.button("Clear").on_hover_text("Clear settings search").clicked() {
-                    self.search.clear(); response.request_focus();
-                }
-            });
-            ui.add_space(12.0);
-            if !self.search.trim().is_empty() {
-                let matches = settings_matches(&self.search);
-                ui.label(egui::RichText::new(format!("{} matching sections", matches.len())).font(ui::display(12.0)).color(ui::SECONDARY));
-                ui.add_space(8.0);
-                ScrollArea::vertical().id_salt("settings-search-results").auto_shrink([false, false]).show(ui, |ui| {
-                    if matches.is_empty() {
-                        heading(ui, "No matching settings", "Try a shorter term, such as camera, Wi-Fi, volume or shortcuts. Clear search to browse categories.");
-                    }
-                    for info in matches {
-                        let group = SETTINGS_GROUPS.iter().find(|(group, _)| *group == info.group).unwrap().1;
-                        if ui.add_sized(vec2(ui.available_width(), ui::CONTROL_HEIGHT),
-                            egui::Button::new(format!("{group}  /  {}", info.title)).wrap()).clicked() {
-                            self.section = info.section; self.log_out_armed = None; self.search.clear();
-                        }
-                        note(ui, info.summary);
-                        ui.add_space(12.0);
-                    }
-                });
-                return;
-            }
-            let wide = ui.available_width() >= 720.0;
+            self.header(ui, theme, wide, searching);
+            ui.add_space(14.0);
             if wide {
-                let navigation = 196.0;
-                let content = (ui.available_width() - navigation - 24.0).max(1.0);
+                const NAVIGATION: f32 = 232.0;
                 ui.horizontal_top(|ui| {
-                    ui.spacing_mut().item_spacing.x = 24.0;
-                    ui.allocate_ui_with_layout(vec2(navigation, ui.available_height()), Layout::top_down(Align::Min), |ui| {
-                        ScrollArea::vertical().id_salt("settings-sections").auto_shrink([false, false]).show(ui, |ui| {
-                            ui.spacing_mut().item_spacing.y = 4.0;
-                            let mut group = section_info(self.section).group;
-                            for (candidate, title) in SETTINGS_GROUPS {
-                                if ui.add_sized(vec2(navigation, ui::CONTROL_HEIGHT), egui::Button::new(title).selected(group == candidate)).clicked() && group != candidate {
-                                    group = candidate;
-                                    self.section = SETTINGS_CATALOG.iter().find(|info| info.group == group).unwrap().section;
-                                    self.log_out_armed = None;
-                                }
-                            }
-                            ui.add_space(8.0); ui.separator(); ui.add_space(8.0);
-                            for info in SETTINGS_CATALOG.iter().filter(|info| info.group == group) {
-                                if ui.add_sized(vec2(navigation, ui::CONTROL_HEIGHT), egui::Button::new(info.title).wrap().selected(self.section == info.section))
-                                    .on_hover_text(info.summary).clicked() {
-                                    self.section = info.section; self.log_out_armed = None;
-                                }
-                            }
-                        });
+                    ui.spacing_mut().item_spacing.x = 28.0;
+                    ui.allocate_ui_with_layout(vec2(NAVIGATION, ui.available_height()), Layout::top_down(Align::Min), |ui| {
+                        ui.set_width(NAVIGATION);
+                        self.search_field(ui, NAVIGATION, focus_search);
+                        ui.add_space(4.0);
+                        self.sidebar(ui, theme, NAVIGATION, searching);
                     });
-                    ui.allocate_ui_with_layout(vec2(content, ui.available_height()), Layout::top_down(Align::Min), |ui| self.page_content(ui, draw));
+                    let width = ui.available_width().max(1.0);
+                    ui.allocate_ui_with_layout(vec2(width, ui.available_height()), Layout::top_down(Align::Min), |ui| {
+                        ui.set_width(width);
+                        if searching { self.search_results(ui, theme); } else { self.page_content(ui, theme, draw); }
+                    });
                 });
             } else {
-                let mut group = section_info(self.section).group;
-                let previous = group;
-                let group_title = SETTINGS_GROUPS.iter().find(|(candidate, _)| *candidate == group).unwrap().1;
-                ui.label(egui::RichText::new("Category").font(ui::display(12.0)).color(ui::SECONDARY));
-                egui::ComboBox::from_id_salt("settings-category").width(ui.available_width()).selected_text(group_title).show_ui(ui, |ui| {
-                    for (candidate, title) in SETTINGS_GROUPS { ui.selectable_value(&mut group, candidate, title); }
-                });
-                if group != previous {
-                    self.section = SETTINGS_CATALOG.iter().find(|info| info.group == group).unwrap().section;
-                    self.log_out_armed = None;
-                }
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new("Section").font(ui::display(12.0)).color(ui::SECONDARY));
-                egui::ComboBox::from_id_salt("settings-section").width(ui.available_width()).selected_text(section_info(self.section).title).show_ui(ui, |ui| {
-                    for info in SETTINGS_CATALOG.iter().filter(|info| info.group == group) {
-                        if ui.selectable_value(&mut self.section, info.section, info.title).changed() { self.log_out_armed = None; }
-                    }
-                });
+                self.search_field(ui, ui.available_width(), focus_search);
                 ui.add_space(12.0);
-                self.page_content(ui, draw);
+                if searching {
+                    self.search_results(ui, theme);
+                } else if self.narrow_list {
+                    self.section_list(ui, theme);
+                } else {
+                    if ui::button(ui, theme, "ALL SECTIONS", None, false).clicked() {
+                        self.narrow_list = true;
+                        self.log_out_armed = None;
+                    }
+                    ui.add_space(12.0);
+                    self.page_content(ui, theme, draw);
+                }
             }
         });
     }
-    fn page_content(&mut self, ui: &mut Ui, draw: impl FnOnce(&mut Self, &mut Ui)) {
-        let info = section_info(self.section);
-        heading(ui, info.title, info.summary);
-        ui.add_space(12.0);
-        if self.section == Section::Appearance {
-        ui.horizontal_wrapped(|ui| {
-            for (tab, title) in [(AppearanceTab::Wallpaper, "Wallpaper"), (AppearanceTab::Theme, "Theme"), (AppearanceTab::Effects, "Effects")] {
-                ui.selectable_value(&mut self.appearance_tab, tab, title);
+
+    /// The title, where in Settings this is, and the way out.
+    fn header(&mut self, ui: &mut Ui, theme: &Theme, wide: bool, searching: bool) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 16.0;
+            ui::tracked(ui, "SETTINGS", ui::display_bold(22.0), ui::TEXT, 0.6);
+            let info = section_info(self.section);
+            let place = if searching {
+                Some("SEARCH".to_string())
+            } else if wide || !self.narrow_list {
+                Some(format!("{} / {}", group_title(info.group), info.title).to_uppercase())
+            } else {
+                None
+            };
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui::button(ui, theme, "DONE", Some("ESC"), false).clicked() {
+                    self.open = false;
+                }
+                if let Some(place) = place.filter(|_| ui.available_width() > 120.0) {
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        ui.add(egui::Label::new(egui::RichText::new(place).font(ui::mono(12.0)).color(ui::LABEL)).truncate());
+                    });
+                }
+            });
+        });
+    }
+
+    fn search_field(&mut self, ui: &mut Ui, width: f32, focus: bool) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            let clear_width = if self.search.is_empty() { 0.0 } else { 58.0 };
+            let field_width = (width - clear_width).max(60.0);
+            let hint = if field_width >= 520.0 { "Search settings: Wi-Fi, camera, volume…  ( / )" } else { "Search settings  ( / )" };
+            let response = ui.add_sized(vec2(field_width, ui::CONTROL_HEIGHT), TextEdit::singleline(&mut self.search).margin(eframe::egui::vec2(10.0, 4.0)).vertical_align(eframe::egui::Align::Center).hint_text(crate::ui::hint(hint)));
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Search settings"));
+            if focus { response.request_focus(); }
+            if !self.search.is_empty() && ui.button("Clear").on_hover_text("Clear settings search").clicked() {
+                self.search.clear();
+                response.request_focus();
             }
         });
+    }
+
+    /// Every section at once, under the name of its group. While searching, the
+    /// sections with results are lit and say how many they hold.
+    fn sidebar(&mut self, ui: &mut Ui, theme: &Theme, width: f32, searching: bool) {
+        let hits: Vec<(Section, usize)> = if searching {
+            let sections = settings_matches(&self.search);
+            let entries = setting_entry_matches(&self.search);
+            SETTINGS_CATALOG.iter().map(|info| {
+                let count = sections.iter().filter(|hit| hit.section == info.section).count()
+                    + entries.iter().filter(|hit| hit.section == info.section).count();
+                (info.section, count)
+            }).collect()
+        } else {
+            Vec::new()
+        };
+        ScrollArea::vertical().id_salt("settings-sections").auto_shrink([false, false]).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            for (group, title) in SETTINGS_GROUPS {
+                ui.add_space(10.0);
+                group_label(ui, title);
+                for info in SETTINGS_CATALOG.iter().filter(|info| info.group == group) {
+                    let count = hits.iter().find(|(section, _)| *section == info.section).map_or(0, |(_, count)| *count);
+                    let hint = if count > 0 { count.to_string() } else { String::new() };
+                    let current = !searching && self.section == info.section;
+                    let dim = searching && count == 0;
+                    if nav_item(ui, theme, width - SCROLL_GUTTER, info.title, &hint, current, dim).on_hover_text(info.summary).clicked() {
+                        self.go(info.section, None);
+                    }
+                }
+            }
+        });
+    }
+
+    /// The list a narrow workspace starts on.
+    fn section_list(&mut self, ui: &mut Ui, theme: &Theme) {
+        ScrollArea::vertical().id_salt("settings-section-list").auto_shrink([false, false]).show(ui, |ui| {
+            ui.set_max_width(ui.available_width() - SCROLL_GUTTER);
+            ui.spacing_mut().item_spacing.y = 2.0;
+            for (group, title) in SETTINGS_GROUPS {
+                ui.add_space(10.0);
+                group_label(ui, title);
+                for info in SETTINGS_CATALOG.iter().filter(|info| info.group == group) {
+                    if entry_row(ui, theme, None, info.title, info.summary).clicked() {
+                        self.go(info.section, None);
+                    }
+                }
+            }
+        });
+    }
+
+    /// Sections whose names match, then the single settings that do, each of which
+    /// opens where it lives.
+    fn search_results(&mut self, ui: &mut Ui, theme: &Theme) {
+        let sections = settings_matches(&self.search);
+        let entries = setting_entry_matches(&self.search);
+        let title = match sections.len() + entries.len() {
+            0 => "No matching settings".to_string(),
+            1 => "1 result".to_string(),
+            count => format!("{count} results"),
+        };
+        ui.add(egui::Label::new(egui::RichText::new(title).font(ui::display_bold(24.0)).color(ui::TEXT)).wrap());
+        ui.add_space(10.0);
+        ScrollArea::vertical().id_salt("settings-search-results").auto_shrink([false, false]).show(ui, |ui| {
+            ui.set_max_width((ui.available_width() - SCROLL_GUTTER).min(860.0));
+            ui.spacing_mut().item_spacing.y = 2.0;
+            if sections.is_empty() && entries.is_empty() {
+                note(ui, "Try a shorter term, such as camera, Wi-Fi, volume or shortcuts. Clear search to browse every section.");
+            }
+            if !sections.is_empty() {
+                group_label(ui, "Sections");
+                for info in sections {
+                    let crumb = group_title(info.group).to_uppercase();
+                    if entry_row(ui, theme, Some(&crumb), info.title, info.summary).clicked() {
+                        self.go(info.section, None);
+                    }
+                }
+                ui.add_space(14.0);
+            }
+            if !entries.is_empty() {
+                group_label(ui, "Settings");
+                for entry in entries {
+                    let info = section_info(entry.section);
+                    let tab = match entry.tab {
+                        Some(AppearanceTab::Wallpaper) => " / WALLPAPER",
+                        Some(AppearanceTab::Theme) => " / THEME",
+                        Some(AppearanceTab::Effects) => " / EFFECTS",
+                        None => "",
+                    };
+                    let crumb = format!("{} / {}{tab}", group_title(info.group), info.title).to_uppercase();
+                    if entry_row(ui, theme, Some(&crumb), entry.label, entry.about).clicked() {
+                        self.go(entry.section, entry.tab);
+                    }
+                }
+            }
+        });
+    }
+
+    /// Opens a section, leaving search and the narrow list.
+    fn go(&mut self, section: Section, tab: Option<AppearanceTab>) {
+        self.section = section;
+        if let Some(tab) = tab { self.appearance_tab = tab; }
+        self.search.clear();
+        self.narrow_list = false;
+        self.log_out_armed = None;
+    }
+
+    fn page_content(&mut self, ui: &mut Ui, theme: &Theme, draw: impl FnOnce(&mut Self, &mut Ui)) {
+        const RAIL: f32 = 220.0;
+        const GAP: f32 = 36.0;
+        let related = related(self.section);
+        let rail = !related.is_empty() && ui.available_width() >= 760.0 + GAP + RAIL;
+        if rail {
+            let width = (ui.available_width() - GAP - RAIL).min(860.0);
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = GAP;
+                ui.allocate_ui_with_layout(vec2(width, ui.available_height()), Layout::top_down(Align::Min), |ui| {
+                    ui.set_width(width);
+                    self.section_body(ui, theme, draw);
+                });
+                ui.allocate_ui_with_layout(vec2(RAIL, ui.available_height()), Layout::top_down(Align::Min), |ui| {
+                    ui.set_width(RAIL);
+                    group_label(ui, "Related");
+                    ui.add_space(4.0);
+                    for (section, label) in related {
+                        let title = section_info(*section).title;
+                        let about = if *label == title { "" } else { title };
+                        if entry_row(ui, theme, None, label, about).clicked() {
+                            self.go(*section, None);
+                        }
+                    }
+                });
+            });
+        } else {
+            self.section_body(ui, theme, draw);
+        }
+    }
+
+    fn section_body(&mut self, ui: &mut Ui, theme: &Theme, draw: impl FnOnce(&mut Self, &mut Ui)) {
+        let info = section_info(self.section);
+        ui.add(egui::Label::new(egui::RichText::new(info.title).font(ui::display_bold(26.0)).color(ui::TEXT)).wrap());
+        ui.add_space(2.0);
+        ui.add(egui::Label::new(egui::RichText::new(info.summary).font(ui::display(14.0)).color(ui::SECONDARY)).wrap());
         ui.add_space(16.0);
-        ui.separator();
-        ui.add_space(12.0);
+        if self.section == Section::Appearance {
+            segmented(ui, theme, &mut self.appearance_tab, &[(AppearanceTab::Wallpaper, "Wallpaper"), (AppearanceTab::Theme, "Theme"), (AppearanceTab::Effects, "Effects")]);
+            ui.add_space(18.0);
         }
         ScrollArea::vertical().id_salt(("settings-content", self.section as u8, self.appearance_tab as u8))
             .auto_shrink([false, false]).show(ui, |ui| {
-                ui.set_max_width(ui.available_width().min(960.0));
+                // Leave a gutter for the floating scroll bar so it never sits on a switch.
+                ui.set_max_width((ui.available_width() - SCROLL_GUTTER).min(860.0));
                 ui.spacing_mut().item_spacing = vec2(10.0, 8.0);
                 draw(self, ui);
             });
@@ -768,10 +1017,10 @@ impl Settings {
             ui.spacing_mut().item_spacing.x = 10.0;
             let edit = ui.add_sized(
                 vec2(200.0_f32.min(ui.available_width()), ui::CONTROL_HEIGHT),
-                TextEdit::singleline(&mut self.layout_text)
+                TextEdit::singleline(&mut self.layout_text).margin(eframe::egui::vec2(10.0, 4.0)).vertical_align(eframe::egui::Align::Center)
                     .font(ui::mono(13.0))
                     .text_color(ui::TEXT)
-                    .hint_text("us dvorak"),
+                    .hint_text(crate::ui::hint("us dvorak")),
             );
             let entered = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
             if (ui::button(ui, theme, "USE", None, false).clicked() || entered) && !self.layout_text.trim().is_empty() {
@@ -1216,10 +1465,10 @@ impl Settings {
             ui.spacing_mut().item_spacing.x = 10.0;
             let edit = ui.add_sized(
                 vec2(360.0_f32.min(ui.available_width()), ui::CONTROL_HEIGHT),
-                TextEdit::singleline(&mut self.location_text)
+                TextEdit::singleline(&mut self.location_text).margin(eframe::egui::vec2(10.0, 4.0)).vertical_align(eframe::egui::Align::Center)
                     .font(ui::mono(13.0))
                     .text_color(ui::TEXT)
-                    .hint_text("latitude, longitude, name"),
+                    .hint_text(crate::ui::hint("latitude, longitude, name")),
             );
             if self.location_error {
                 ui.painter().rect_stroke(edit.rect, ui::CONTROL_RADIUS, Stroke::new(1.0, ui::CAUTION), StrokeKind::Inside);
@@ -1254,57 +1503,44 @@ impl Settings {
         }
     }
 
-    fn sound(&mut self, ui: &mut Ui, theme: &Theme, config: &Config, mon: &SysMon, changes: &mut Vec<Change>) {
-        heading(ui, "SOUND & SCREEN", "The volume and brightness keys do the same.");
-        let volume = held(&mut self.volume_held, mon.volume());
-        let brightness = held(&mut self.brightness_held, mon.brightness);
-        let level = |ui: &mut Ui, name: &str, value: Option<u8>| -> Option<u8> {
-            let mut picked = None;
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 14.0;
-                let (label, _) = ui.allocate_exact_size(vec2(110.0, 20.0), Sense::hover());
-                ui.painter().text(label.left_center(), Align2::LEFT_CENTER, name, ui::display(14.0), ui::TEXT);
-                match value {
-                    Some(value) => {
-                        if let Some(frac) = ui::slider(ui, theme, (ui.available_width() - 60.0).clamp(40.0, 300.0), value.min(100) as f32 / 100.0, name) {
-                            let new = (frac * 100.0).round() as u8;
-                            if new != value {
-                                picked = Some(new);
-                            }
-                        }
-                        ui::text(ui, &format!("{value}"), ui::mono(12.0), ui::TEXT);
-                    }
-                    None => {
-                        ui::text(ui, "not available on this machine", ui::mono(12.0), ui::LABEL);
+    /// Output, input and per-application sound. The level of the output is the
+    /// volume the keys change, so it is not repeated above the devices.
+    fn sound(&mut self, ui: &mut Ui, theme: &Theme) {
+        self.sound.get_or_insert_with(|| crate::sound::Sound::new(ui.ctx().clone())).show(ui, theme);
+    }
+
+    /// The built-in screen's backlight, at the top of Displays.
+    fn brightness(&mut self, ui: &mut Ui, theme: &Theme, mon: &SysMon, changes: &mut Vec<Change>) {
+        heading(ui, "BRIGHTNESS", "The brightness keys do the same.");
+        match held(&mut self.brightness_held, mon.brightness) {
+            Some(value) => {
+                if let Some(frac) = slider_row(ui, theme, "Brightness", value.min(100) as f32 / 100.0, &format!("{value}")) {
+                    // Never all the way down: on many panels that is a black screen.
+                    let new = ((frac * 100.0).round() as u8).max(5);
+                    if new != value {
+                        self.brightness_held = Some((new, Instant::now()));
+                        changes.push(Change::Brightness(new));
                     }
                 }
-            });
-            ui.add_space(14.0);
-            picked
-        };
-        if let Some(new) = level(ui, "Volume", volume) {
-            self.volume_held = Some((new, Instant::now()));
-            changes.push(Change::Volume(new));
-        }
-        if let Some(new) = level(ui, "Brightness", brightness) {
-            // Never all the way down: on many panels that is a black screen.
-            let new = new.max(5);
-            self.brightness_held = Some((new, Instant::now()));
-            changes.push(Change::Brightness(new));
+            }
+            None => note(ui, "This machine has no screen whose brightness can be set."),
         }
         if let Some(battery) = mon.battery {
             note(ui, &format!("Battery at {battery}%."));
         }
         ui.add_space(22.0);
-        self.sound.get_or_insert_with(|| crate::sound::Sound::new(ui.ctx().clone())).show(ui, theme);
-        ui.add_space(26.0);
-        heading(ui, "NOTIFICATIONS", "");
-        if switch_row(ui, theme, "Sounds", "A notification that shows also makes a sound, unless it asks not to", config.notification_sounds) {
+    }
+
+    fn notifications(&mut self, ui: &mut Ui, theme: &Theme, config: &Config, changes: &mut Vec<Change>) {
+        heading(ui, "ALERTS", "");
+        if switch_row(ui, theme, "Notification sounds", "A notification that shows also makes a sound, unless it asks not to", config.notification_sounds) {
             changes.push(Change::Set("notification_sounds", config.notification_sounds.then(|| "off".to_string())));
         }
         if switch_row(ui, theme, "Processor temperature warnings", "Notify when the processor is running hot. Turning this off keeps other alerts enabled", config.processor_temperature_warnings) {
             changes.push(Change::Set("processor_temperature_warnings", config.processor_temperature_warnings.then(|| "off".to_string())));
         }
+        ui.add_space(18.0);
+        heading(ui, "QUIET HOURS", "What is not urgent waits in the list until they end.");
         // Do not disturb by the clock: what is not urgent waits in the list.
         let schedule = config.dnd_schedule;
         if switch_row(ui, theme, "Quiet hours", "Do not disturb every day between these hours; urgent ones still show", schedule.is_some()) {
@@ -1391,7 +1627,7 @@ impl Settings {
             ui.spacing_mut().item_spacing.x = 8.0;
             let edit = ui.add_sized(
                 vec2(420.0_f32.min((ui.available_width() - 80.0).max(1.0)), ui::CONTROL_HEIGHT),
-                egui::TextEdit::singleline(&mut faces.path).font(ui::mono(13.0)).text_color(ui::TEXT).hint_text("or the path to any picture"),
+                egui::TextEdit::singleline(&mut faces.path).margin(eframe::egui::vec2(10.0, 4.0)).vertical_align(eframe::egui::Align::Center).font(ui::mono(13.0)).text_color(ui::TEXT).hint_text(crate::ui::hint("or the path to any picture")),
             );
             let entered = edit.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
             let ready = !faces.path.trim().is_empty();
@@ -1405,6 +1641,39 @@ impl Settings {
                 changes.push(Change::Avatar(Some(path)));
             }
         });
+    }
+
+    fn screensaver(&mut self, ui: &mut Ui, theme: &Theme, config: &Config, input: &InputSettings, changes: &mut Vec<Change>) {
+        heading(ui, "SCENE", "Shows after the session locks from inactivity. Move the pointer or press a key to see the lock screen. The saver stops when the display turns off.");
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = ui::SPACE;
+            for scene in Saver::ALL {
+                let chosen = config.screensaver == scene;
+                if ui::chip(ui, theme, scene.label(), None, chosen).clicked() && !chosen {
+                    let value = (scene != Saver::Off).then(|| scene.value().to_string());
+                    changes.push(Change::Set("screensaver", value));
+                }
+            }
+        });
+        ui.add_space(ui::SPACE);
+        let enabled = config.screensaver != Saver::Off;
+        let preview = ui.add_enabled_ui(enabled, |ui| ui::button(ui, theme, "PREVIEW", None, false)).inner;
+        if preview.clicked() {
+            changes.push(Change::PreviewSaver);
+        }
+        if enabled {
+            let warning = match (input.lock_after, input.screen_off_after) {
+                (None, _) => Some("Automatic lock is set to Never. Choose a lock time to show the screensaver automatically."),
+                (Some(lock), Some(off)) if off <= lock => Some("The display turns off before the screensaver can start. Choose a shorter lock time or a longer screen-off time."),
+                _ => None,
+            };
+            if let Some(warning) = warning {
+                ui.add_space(ui::SPACE);
+                ui.add(egui::Label::new(egui::RichText::new(warning).font(ui::display(12.0)).color(ui::CAUTION)).wrap());
+            }
+        }
+        ui.add_space(18.0);
+        note(ui, "When the session locks and when the screen turns off are set in Session & startup.");
     }
 
     fn session(&mut self, ui: &mut Ui, theme: &Theme, config: &Config, input: &InputSettings, changes: &mut Vec<Change>) {
@@ -1485,36 +1754,6 @@ impl Settings {
         ui.add_space(8.0);
         if switch_row(ui, theme, "Lock before sleep", "When the lid closes or the machine is put to sleep, it wakes to the lock screen", config.lock_on_sleep) {
             changes.push(Change::Set("lock_on_sleep", config.lock_on_sleep.then(|| "off".to_string())));
-        }
-        ui.add_space(22.0);
-
-        heading(ui, "SCREENSAVER", "Shows after the session locks from inactivity. Move the pointer or press a key to see the lock screen. The saver stops when the display turns off.");
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = ui::SPACE;
-            for scene in Saver::ALL {
-                let chosen = config.screensaver == scene;
-                if ui::chip(ui, theme, scene.label(), None, chosen).clicked() && !chosen {
-                    let value = (scene != Saver::Off).then(|| scene.value().to_string());
-                    changes.push(Change::Set("screensaver", value));
-                }
-            }
-        });
-        ui.add_space(ui::SPACE);
-        let enabled = config.screensaver != Saver::Off;
-        let preview = ui.add_enabled_ui(enabled, |ui| ui::button(ui, theme, "PREVIEW", None, false)).inner;
-        if preview.clicked() {
-            changes.push(Change::PreviewSaver);
-        }
-        if enabled {
-            let warning = match (input.lock_after, input.screen_off_after) {
-                (None, _) => Some("Automatic lock is set to Never. Choose a lock time to show the screensaver automatically."),
-                (Some(lock), Some(off)) if off <= lock => Some("The display turns off before the screensaver can start. Choose a shorter lock time or a longer screen-off time."),
-                _ => None,
-            };
-            if let Some(warning) = warning {
-                ui.add_space(ui::SPACE);
-                ui.add(egui::Label::new(egui::RichText::new(warning).font(ui::display(12.0)).color(ui::CAUTION)).wrap());
-            }
         }
         ui.add_space(22.0);
 
@@ -1660,6 +1899,115 @@ pub(crate) fn heading(ui: &mut Ui, title: &str, about: &str) {
 
 pub(crate) fn note(ui: &mut Ui, text: &str) {
     ui.add(egui::Label::new(egui::RichText::new(text).font(ui::display(12.0)).color(ui::SECONDARY)).wrap());
+}
+
+/// Room kept clear on the right of scrolling content for the floating scroll bar.
+const SCROLL_GUTTER: f32 = 12.0;
+
+/// The small spaced capitals over a group of sidebar entries.
+fn group_label(ui: &mut Ui, title: &str) {
+    ui.horizontal(|ui| {
+        ui.add_space(10.0);
+        ui::tracked(ui, &title.to_uppercase(), ui::mono(10.5), ui::LABEL, 1.4);
+    });
+    ui.add_space(2.0);
+}
+
+/// One section in the sidebar: its name, and on the right a short reading such as
+/// a count of search results. The open section sits on a tint of the accent.
+fn nav_item(ui: &mut Ui, theme: &Theme, width: f32, title: &str, hint: &str, current: bool, dim: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(width, ui::CONTROL_HEIGHT), Sense::click());
+    let lit = response.hovered() || response.has_focus();
+    let fill = if current { theme.main.gamma_multiply(0.16) } else if lit { ui::TRACK } else { Color32::TRANSPARENT };
+    ui.painter().rect_filled(rect, ui::CONTROL_RADIUS, fill);
+    if response.has_focus() {
+        ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside);
+    }
+    let color = if current || lit { ui::TEXT } else if dim { ui::LABEL } else { ui::SECONDARY };
+    let hint_width = if hint.is_empty() { 0.0 } else {
+        let hint = ui.painter().layout_no_wrap(hint.to_owned(), ui::mono(11.0), theme.main);
+        let width = hint.size().x;
+        ui.painter().galley(egui::pos2(rect.right() - 10.0 - width, rect.center().y - hint.size().y / 2.0), hint, theme.main);
+        width + 8.0
+    };
+    let mut job = egui::text::LayoutJob::simple_singleline(title.to_owned(), ui::display(13.0), color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width((width - 20.0 - hint_width).max(1.0));
+    let name = ui.painter().layout_job(job);
+    ui.painter().galley(egui::pos2(rect.left() + 10.0, rect.center().y - name.size().y / 2.0), name, color);
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, current, title));
+    response
+}
+
+/// A row that opens something: where it lives (when that is not obvious), its
+/// name, and a line about it, wrapped to fit.
+fn entry_row(ui: &mut Ui, theme: &Theme, crumb: Option<&str>, title: &str, about: &str) -> egui::Response {
+    const PAD: f32 = 10.0;
+    let width = ui.available_width();
+    let text_width = (width - 2.0 * PAD).max(1.0);
+    let crumb = crumb.map(|crumb| ui.painter().layout(crumb.to_owned(), ui::mono(10.5), ui::LABEL, text_width));
+    let name = ui.painter().layout(title.to_owned(), ui::display(14.0), ui::TEXT, text_width);
+    let about = (!about.is_empty()).then(|| ui.painter().layout(about.to_owned(), ui::display(12.0), ui::SECONDARY, text_width));
+    let crumb_height = crumb.as_ref().map_or(0.0, |crumb| crumb.size().y + 3.0);
+    let about_height = about.as_ref().map_or(0.0, |about| about.size().y + 2.0);
+    let height = crumb_height + name.size().y + about_height + 2.0 * 8.0;
+    let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
+    if response.hovered() || response.has_focus() {
+        ui.painter().rect_filled(rect, ui::CONTROL_RADIUS, ui::TRACK);
+    }
+    if response.has_focus() {
+        ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside);
+    }
+    let mut top = rect.left_top() + vec2(PAD, 8.0);
+    if let Some(crumb) = crumb {
+        let height = crumb.size().y;
+        ui.painter().galley(top, crumb, ui::LABEL);
+        top.y += height + 3.0;
+    }
+    let name_height = name.size().y;
+    ui.painter().galley(top, name, ui::TEXT);
+    top.y += name_height + 2.0;
+    if let Some(about) = about {
+        ui.painter().galley(top, about, ui::SECONDARY);
+    }
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title));
+    response
+}
+
+/// A row of joined choices, one of them chosen. Returns true when the choice changed.
+fn segmented<T: PartialEq + Copy>(ui: &mut Ui, theme: &Theme, current: &mut T, options: &[(T, &str)]) -> bool {
+    const INSET: f32 = 3.0;
+    const PAD: f32 = 14.0;
+    let galleys: Vec<_> = options.iter().map(|(_, label)| ui.painter().layout_no_wrap((*label).to_owned(), ui::display(13.0), ui::TEXT)).collect();
+    let height = ui::CONTROL_HEIGHT + 2.0 * INSET;
+    let width = galleys.iter().map(|galley| galley.size().x + 2.0 * PAD).sum::<f32>() + 2.0 * INSET;
+    let (outer, _) = ui.allocate_exact_size(vec2(width.min(ui.available_width()), height), Sense::hover());
+    ui.painter().rect_filled(outer, ui::CONTROL_RADIUS + INSET, ui::GROUND);
+    ui.painter().rect_stroke(outer, ui::CONTROL_RADIUS + INSET, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
+    let mut changed = false;
+    let mut left = outer.left() + INSET;
+    for ((value, label), galley) in options.iter().zip(galleys) {
+        let rect = Rect::from_min_size(egui::pos2(left, outer.top() + INSET), vec2(galley.size().x + 2.0 * PAD, ui::CONTROL_HEIGHT));
+        left = rect.right();
+        let response = ui.interact(rect, ui.id().with(("segment", *label)), Sense::click());
+        let chosen = *current == *value;
+        if chosen {
+            ui.painter().rect_filled(rect, ui::CONTROL_RADIUS, ui::TRACK);
+            ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
+        } else if response.hovered() {
+            ui.painter().rect_filled(rect, ui::CONTROL_RADIUS, ui::PANEL);
+        }
+        if response.has_focus() {
+            ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside);
+        }
+        let color = if chosen || response.hovered() { ui::TEXT } else { ui::SECONDARY };
+        ui.painter().galley_with_override_text_color(rect.center() - galley.size() / 2.0, galley, color);
+        response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, chosen, *label));
+        if response.clicked() && !chosen {
+            *current = *value;
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// A named switch with a line of explanation. Returns true when it was clicked.
@@ -1890,10 +2238,69 @@ mod tests {
             }).collect::<Vec<_>>();
             assert!(texts.iter().any(|text| text.galley.job.text.contains("Connected devices")));
             assert!(texts.iter().any(|text| text.galley.job.text.contains("Mouse & touchpad")));
-            for text in texts.iter().filter(|text| text.galley.job.text.starts_with("Hardware  /")) {
+            for text in texts.iter().filter(|text| text.galley.job.text.starts_with("HARDWARE /")) {
                 assert!(text.pos.x + text.galley.size().x <= width, "result wraps inside {width}");
             }
         }
+    }
+
+    fn page_texts(settings: &mut Settings, width: f32, draw: impl FnOnce(&mut Settings, &mut Ui)) -> Vec<String> {
+        let ctx = egui::Context::default();
+        crate::ui::install_fonts(&ctx, None, None);
+        let rect = Rect::from_min_size(egui::Pos2::ZERO, vec2(width, 900.0));
+        let mut draw = Some(draw);
+        let output = ctx.run(egui::RawInput { screen_rect: Some(rect), ..Default::default() }, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                settings.page(ui, rect, &Theme::load("signal"), |settings, ui| (draw.take().unwrap())(settings, ui));
+            });
+        });
+        output.shapes.iter().filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) => Some(text.galley.job.text.clone()), _ => None,
+        }).collect()
+    }
+
+    #[test]
+    fn a_wide_sidebar_lists_every_section_at_once() {
+        let mut settings = Settings { section: Section::Sound, ..Default::default() };
+        let texts = page_texts(&mut settings, 1400.0, |_, _| {});
+        for info in &SETTINGS_CATALOG {
+            assert!(texts.iter().any(|text| text == info.title), "missing {} from the sidebar", info.title);
+        }
+        assert!(texts.iter().any(|text| text == "HARDWARE / SOUND"), "the header says where this is");
+        assert!(texts.iter().any(|text| text == "Brightness"), "a wide page shows related sections");
+    }
+
+    #[test]
+    fn a_narrow_workspace_starts_on_the_list_and_returns_to_it() {
+        let config = Config::default();
+        let mut settings = Settings::default();
+        settings.open(&config);
+        let texts = page_texts(&mut settings, 420.0, |_, _| panic!("the list comes first"));
+        assert!(texts.iter().any(|text| text == "Notifications"));
+        assert!(texts.iter().any(|text| text == "Alert sounds, warnings and quiet hours"));
+        settings.go(Section::Notifications, None);
+        let mut drawn = false;
+        let texts = page_texts(&mut settings, 420.0, |_, _| drawn = true);
+        assert!(drawn);
+        assert!(texts.iter().any(|text| text == "ALL SECTIONS"));
+        settings.open_at(&config, "displays");
+        assert!(!settings.narrow_list, "a named section opens on that section");
+    }
+
+    #[test]
+    fn search_lands_on_single_settings_and_their_tab() {
+        let labels = |query: &str| setting_entry_matches(query).iter().map(|entry| (entry.section, entry.label)).collect::<Vec<_>>();
+        assert_eq!(labels("brightness").first(), Some(&(Section::Displays, "Brightness")));
+        assert!(labels("quiet").contains(&(Section::Notifications, "Quiet hours")));
+        assert!(labels("tap").contains(&(Section::Pointer, "Tap to click")));
+        let night = setting_entry_matches("night light")[0];
+        let mut settings = Settings { search: "night light".into(), ..Default::default() };
+        settings.go(night.section, night.tab);
+        assert!(settings.section == Section::Appearance && settings.appearance_tab == AppearanceTab::Effects);
+        assert!(settings.search.is_empty());
+        let texts = page_texts(&mut Settings { search: "bright".into(), ..Default::default() }, 1200.0, |_, _| panic!("search owns the body"));
+        assert!(texts.iter().any(|text| text == "HARDWARE / DISPLAYS"));
+        assert!(texts.iter().any(|text| text == "DESKTOP / APPEARANCE / EFFECTS"), "glow is about bright text");
     }
 
 
