@@ -278,7 +278,10 @@ and one reusable texture. Capture never auto-resumes after unlock or reconnect.
 CONNECT offers Cast on a connected, paired phone that supports it. It uses the
 existing preview, status, expand and Stop controls. The phone offers view-only
 sharing and a separate control option before showing Android's capture prompt.
-Clicks, drags and navigation are available only with control granted; pointer
+The live screen sits directly in the panel, with small horizontal insets and
+about 70% of the panel height when its aspect ratio allows. Waiting and offline
+states use compact text instead of an empty canvas. Clicks, drags and navigation
+are available only with control granted; pointer
 coordinates map to the visible image, excluding its letterbox. Changing capture
 geometry invalidates old coordinates. Lock, peer loss, or explicit Stop ends
 the cast. A closed preview stops renewing its three-second viewer lease; after

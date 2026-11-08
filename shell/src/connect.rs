@@ -10,6 +10,8 @@ const POLL: Duration = Duration::from_secs(2);
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
 const SCREEN_START_TIMEOUT: Duration = Duration::from_secs(6);
 const MAX_REPLY: u64 = 1024 * 1024;
+const PANEL_PREVIEW_HEIGHT: f32 = 0.70;
+const PREVIEW_INSET: f32 = 4.0;
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
@@ -660,7 +662,10 @@ impl Connect {
             ui.add_space(ui::SPACE);
             if let Some(snapshot) = self.snapshot.clone() {
                 let device = snapshot.screens.as_ref().and_then(|screen| screen.device_id.as_ref()).and_then(|owner| snapshot.devices.iter().find(|device| &device.id == owner));
-                if let Some(device) = device { self.mirror_canvas(ui, theme, &snapshot, device, self.pending.is_some(), true); }
+                if let Some(device) = device {
+                    let height = ui.available_height();
+                    self.mirror_canvas(ui, theme, &snapshot, device, self.pending.is_some(), true, height);
+                }
                 else { copy(ui, "Device unavailable · sharing stopped", ui::SECONDARY); }
             }
         });
@@ -668,6 +673,7 @@ impl Connect {
 
     pub fn panel(&mut self, ui: &mut egui::Ui, theme: &Theme) {
         self.keyboard = false;
+        let preview_height = ui.available_height() * PANEL_PREVIEW_HEIGHT;
         self.tick(ui.ctx(), true);
         let busy = self.pending.as_ref().is_some_and(|pending| !pending.passive);
         let snapshot = self.snapshot.clone().filter(|s| s.running);
@@ -770,7 +776,7 @@ impl Connect {
                     if ui::button(ui, theme, "Device settings", None, false).clicked() { self.settings_open = true; self.send_open = false; self.expanded = false; self.suspend_preview(); }
                 }
             } else {
-                self.mirror_canvas(ui, theme, snapshot, device, busy, !self.expanded);
+                self.mirror_canvas(ui, theme, snapshot, device, busy, !self.expanded, preview_height);
                 ui.add_space(ui::SPACE);
                 ui.horizontal_wrapped(|ui| {
                     ui.add_enabled_ui(device.paired && device.connected, |ui| {
@@ -918,7 +924,7 @@ impl Connect {
         }
     }
 
-    fn mirror_canvas(&mut self, ui: &mut egui::Ui, theme: &Theme, snapshot: &Snapshot, device: &Device, busy: bool, interactive: bool) {
+    fn mirror_canvas(&mut self, ui: &mut egui::Ui, theme: &Theme, snapshot: &Snapshot, device: &Device, busy: bool, interactive: bool, preview_height: f32) {
         let running = self.sharing();
         let screen = snapshot.screens.as_ref();
         let cast = screen.is_some_and(|s| s.running && s.mode == "wireless") || self.pending.as_ref().is_some_and(|p| p.op == "cast_phone");
@@ -931,16 +937,14 @@ impl Connect {
                 else { "DEVICE SCREEN" };
             ui::meta(ui, status, if target.is_some() { theme.main } else { ui::SECONDARY });
         });
-        let width = ui.available_width().max(1.0);
-        let limit = (ui.available_height() - 106.0).clamp(120.0, if self.expanded { 520.0 } else { 340.0 });
-        let preferred = self.preview.texture.as_ref().map(|texture| { let size = texture.size_vec2(); width * size.y / size.x }).unwrap_or(if running { 220.0 } else { 178.0 });
-        let height = preferred.clamp(120.0, limit);
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
-        ui.painter().rect_filled(rect, ui::SURFACE_RADIUS, ui::GROUND);
-        ui.painter().rect_stroke(rect, ui::SURFACE_RADIUS, egui::Stroke::new(1.0, ui::LINE), egui::StrokeKind::Inside);
         if let Some(texture) = &self.preview.texture {
+            let width = ui.available_width().max(1.0);
+            let image_width = (width - 2.0 * PREVIEW_INSET).max(1.0);
+            // Leave room for navigation and file controls; the body can scroll in a short panel.
+            let height = preview_height.min((ui.available_height() - 84.0).max(120.0)).max(1.0);
             let size = texture.size_vec2();
-            let fit = size * (rect.width() / size.x).min(rect.height() / size.y);
+            let fit = size * (image_width / size.x).min(height / size.y);
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(width, fit.y), egui::Sense::hover());
             let image = egui::Rect::from_center_size(rect.center(), fit);
             ui.painter().image(texture.id(), image, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0,1.0)), egui::Color32::WHITE);
             if interactive {
@@ -955,8 +959,7 @@ impl Connect {
                 else if cast { "Approve the cast on your phone" }
                 else if running { "Waiting for device screen…" }
                 else if !device.connected { "Device offline" } else { "Your device screen appears here" });
-            let galley = ui.painter().layout(message.into(), ui::display(13.0), ui::SECONDARY, (width - 24.0).max(1.0));
-            ui.painter().galley(rect.center() - galley.size() * 0.5, galley, ui::SECONDARY);
+            copy(ui, message, ui::SECONDARY);
         }
         if interactive && let Some(target) = &target {
             ui.horizontal_wrapped(|ui| {
@@ -1469,7 +1472,7 @@ mod tests {
             let snapshot = connect.snapshot.as_mut().unwrap();
             snapshot.devices.retain(|device| device.paired && device.connected);
             snapshot.screen_capabilities = Some(ScreenCapabilities { phone_mirror: true, extended_output: mode != "screen-unavailable", message: if mode == "screen-unavailable" { "Extended USB display unavailable: this desktop has no virtual-output support.".into() } else { "USB screen sharing available.".into() } });
-            if mode == "screen-active" {
+            if matches!(mode.as_str(), "screen-active" | "screen-active-portrait") {
                 snapshot.screens = Some(Screens { device_id: Some("phone".into()), mode: "phone".into(), serial: Some("USB-123456".into()), running: true, control: false, message: "Disconnecting or locking stops sharing.".into() });
             }
         }
@@ -1518,9 +1521,9 @@ mod tests {
             crate::apply_style(&cc.egui_ctx, &Theme::load("signal"));
             if mode != "live" && !interactive {
                 connect.preview.fixture = true;
-                if mode == "screen-active" {
+                if matches!(mode.as_str(), "screen-active" | "screen-active-portrait") {
                     // Explicit native rendering test pattern; never substitutes for live IPC.
-                    let (width, height) = (480, 270);
+                    let (width, height) = if mode == "screen-active-portrait" { (344, 768) } else { (480, 270) };
                     let mut rgb = Vec::with_capacity(width * height * 3);
                     for y in 0..height { for x in 0..width { rgb.extend_from_slice(&[(x * 255 / width) as u8, (y * 255 / height) as u8, 90]); } }
                     connect.preview.texture = Some(cc.egui_ctx.load_texture("TEST ONLY · color bars", egui::ColorImage::from_rgb([width,height], &rgb), egui::TextureOptions::LINEAR));
