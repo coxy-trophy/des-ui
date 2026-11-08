@@ -26,6 +26,7 @@ let w=1,h=1,dpr=1,mode="silk",phase=reduce.matches?1:0,cycle=0.4;
 let paused=reduce.matches, inView=true, frame=0, last=0, elapsed=0;
 let motionOverride=false;
 const motionAllowed=()=>!reduce.matches||motionOverride;
+const fullscreenSaver=()=>document.fullscreenElement===studio&&scenes[mode]?.dismissFullscreenOnClick;
 let logoDots=[],logoRuns=[];
 let logoMask, brandMask;
 const brandTints=new Map();
@@ -216,7 +217,7 @@ function updateControls(){
   slider.value=Math.round((scene?sceneLevels.get(mode):phase)*100);
   get("phase-caption").textContent=scene?.control??(mode==="silk-ink"?"Ink":"Morph");
   phaseLabel.value=scene?slider.value+"%":mode==="silk-ink"?(phase>.5?"Deep":"Soft"):(phase>.94?"Logo":phase>.06?"Forming":"Wave");
-  get("motion-note").textContent=!motionAllowed()?"Reduced motion · adjust the slider to explore":scene?.hint??"Move your pointer to ripple the preview";
+  get("motion-note").textContent=fullscreenSaver()?"Click or press Esc to exit preview":!motionAllowed()?"Reduced motion · adjust the slider to explore":scene?.hint??"Move your pointer to ripple the preview";
 }
 function tick(now){
   frame=0;
@@ -253,13 +254,18 @@ new IntersectionObserver(([entry])=>{inView=entry.isIntersecting;last=0;if(inVie
 document.addEventListener("visibilitychange",()=>{last=0;invalidate()});
 reduce.addEventListener("change",()=>{motionOverride=false;paused=reduce.matches;if(paused)phase=1;invalidate()});
 for(const type of ["pointermove","pointerdown"])screen.addEventListener(type,e=>{
-  if(!motionAllowed())return;
+  if(fullscreenSaver()||!motionAllowed())return;
   const rect=screen.getBoundingClientRect();
   pointer.x=e.clientX-rect.left;pointer.y=e.clientY-rect.top;
   pointer.inside=true;
   pointer.energy=type==="pointerdown"?1:.65;
   if(type==="pointerdown"&&e.button===0&&!paused)scenes[mode]?.click?.(clamp(pointer.x/w),elapsed);
   invalidate();
+});
+screen.addEventListener("click",event=>{
+  if(!fullscreenSaver())return;
+  event.preventDefault();event.stopPropagation();
+  document.exitFullscreen().catch(()=>{});
 });
 screen.addEventListener("pointerleave",()=>{pointer.inside=false;invalidate()});
 get("pause").addEventListener("click",()=>{
@@ -296,7 +302,11 @@ get("full").addEventListener("click",async()=>{
     else if(studio.requestFullscreen)await studio.requestFullscreen();
   }catch{get("motion-note").textContent="Fullscreen is unavailable in this browser"};
 });
-document.addEventListener("fullscreenchange",()=>{get("full-label").textContent=document.fullscreenElement===studio?"Exit fullscreen":"Fullscreen";resize()});
+document.addEventListener("fullscreenchange",()=>{
+  get("full-label").textContent=document.fullscreenElement===studio?"Exit fullscreen":"Fullscreen";
+  if(fullscreenSaver()){pointer.energy=0;pointer.inside=false;scenes[mode]?.reset?.();}
+  resize();
+});
 for(const button of document.querySelectorAll("[data-power]"))button.addEventListener("click",()=>{
   const battery=button.dataset.power==="battery";
   for(const item of document.querySelectorAll("[data-power]"))item.setAttribute("aria-pressed",String(item===button));

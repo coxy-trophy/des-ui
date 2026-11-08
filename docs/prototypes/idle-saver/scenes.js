@@ -248,10 +248,11 @@ globalThis.desSaverScenes = (() => {
 
   // These lines are independent seeded particles. A volley adds a short-lived
   // group without changing the underlying field or keeping an unbounded queue.
+  const riseRate=1.18;
   const volleys=[];
   function launchRise(x,t){
     if(volleys.length>=6)volleys.shift();
-    volleys.push({x,t});
+    volleys.push({x,t:t*riseRate});
   }
   const riseLoop=14;
   const ease=n=>{const a=clamp(n);return a*a*(3-2*a)};
@@ -282,7 +283,8 @@ globalThis.desSaverScenes = (() => {
     }
     ctx.globalAlpha=1;
   }
-  function rising({ctx,w,h,t,p,px,energy,inside,motion,brandPoints}) {
+  function rising({ctx,w,h,t:elapsed,p,px,energy,inside,motion,brandPoints}) {
+    const t=elapsed*riseRate;
     ground(ctx,w,h,"#07060b","#090610");
     const horizon=h*.895, center=w*.50;
     const reveal=motion?Math.min(1,.25+t*.7):1, strength=.44+p*.54;
@@ -361,6 +363,6 @@ globalThis.desSaverScenes = (() => {
     "night-transit": {name:"Night Transit", description:"Rose and cyan traffic trails trace a highway into a neon horizon.", control:"Speed", hint:"Move the pointer to steer the view", level:.47, draw:transit},
     "liquid-prism": {name:"Liquid Prism", description:"Bands of rose, jade and lilac glass slide past the DEs-UI wordmark.", control:"Sheen", hint:"Move the pointer to bend the ribbons", level:.62, draw:prism},
     "phosphor-sweep": {name:"Phosphor Sweep", description:"A green radar sweep leaves fading contacts and a phosphor trail.", control:"Trail", hint:"Move the pointer over the scope to mark a contact", level:.56, draw:radar},
-    "rising-lines": {name:"Rising Lines", description:"Pink-white sparks rise from a violet horizon, trace the DEs-UI wordmark, and drift away.", control:"Density", hint:"Hover for an updraft · click to launch a volley", level:.57, draw:rising, click:launchRise, reset:()=>{volleys.length=0}}
+    "rising-lines": {name:"Rising Lines", description:"Pink-white sparks rise from a violet horizon, trace the DEs-UI wordmark, and drift away.", control:"Density", hint:"Hover for an updraft · click to launch a volley", level:.57, draw:rising, click:launchRise, reset:()=>{volleys.length=0}, dismissFullscreenOnClick:true}
   };
 })();
