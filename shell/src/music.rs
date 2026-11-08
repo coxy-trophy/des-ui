@@ -1110,7 +1110,7 @@ impl Music {
             ui.set_width((ctx.screen_rect().width()-64.0).clamp(200.0,480.0));
             if let Some(picker)=editor.picker.as_mut() {
                 ui.set_height((ctx.screen_rect().height()-120.0).clamp(180.0,480.0));
-                match picker.show(ui) {Some(crate::files::Event::Choose(path))=>{editor.cover_path=path.to_string_lossy().into_owned();editor.picker=None;},Some(crate::files::Event::Close)=>editor.picker=None,_=>{}}
+                match picker.show(ui, theme) {Some(crate::files::Event::Choose(path))=>{editor.cover_path=path.to_string_lossy().into_owned();editor.picker=None;},Some(crate::files::Event::Close)=>editor.picker=None,_=>{}}
                 return;
             }
             ui::text(ui,if editor.id.is_empty(){"New playlist"}else{"Edit playlist"},ui::display_bold(18.0),ui::TEXT);

@@ -292,6 +292,13 @@ impl QuickLook {
         }
     }
 
+    /// Draws the preview into `ui`, as a pane rather than over the workspace.
+    pub fn show_inline(&mut self, ui: &mut egui::Ui, theme: &Theme) {
+        self.pump(ui.ctx());
+        let slow = self.pending.as_ref().is_some_and(|(_, since)| since.elapsed() > HELPER_TIME);
+        body_view(ui, self.preview.as_ref(), self.texture.as_ref(), slow, theme);
+    }
+
     /// Draws it over `area`, above the frame.
     pub fn show(&mut self, ctx: &egui::Context, area: Rect, theme: &Theme) {
         if !self.is_open() {

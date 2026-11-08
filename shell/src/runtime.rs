@@ -602,18 +602,17 @@ impl eframe::App for App {
                 }
                 if self.files_browser.is_some() {
                     let action = region(ui, mine, vec2(20.0, 16.0), Layout::top_down(Align::Min), |ui| {
-                        ui::tracked(ui, "FILES", ui::display_bold(20.0), ui::TEXT, 2.0);
-                        ui.add_space(12.0);
                         let progress = self.file_job.as_ref().map(|task| task.progress.load(std::sync::atomic::Ordering::Relaxed));
                         let browser = self.files_browser.as_mut().unwrap();
-                        browser.configure_operations(self.file_clipboard.clone(), progress);
-                        browser.show_with_keyboard(ui, !scratch_keys && !self.dock.captures_keyboard())
+                        browser.configure_operations(self.file_clipboard.clone(), progress, self.file_queue.len());
+                        browser.show_with_keyboard(ui, &theme, !scratch_keys && !self.dock.captures_keyboard())
                     });
                     match action {
                         Some(files::Event::Close) => self.files_browser = None,
                         Some(files::Event::Clipboard(clipboard)) => self.file_clipboard = Some(clipboard),
                         Some(files::Event::Drag(path)) => self.start_file_drag(ctx, &path),
-                        Some(files::Event::Operate(operation)) => self.start_file_operation(operation),
+                        Some(files::Event::Operate(operations)) => for operation in operations { self.start_file_operation(operation) },
+                        Some(files::Event::Terminal(folder)) => { self.files_browser = None; self.new_tab_in(folder); },
                         Some(files::Event::CancelOperation) => { if let Some(task) = &self.file_job { task.cancel(); } },
                         Some(files::Event::Open(path)) => {
                             if self.document_openers.len() < 32 { self.document_openers.push(apps::open_document(path, ctx.clone())); }

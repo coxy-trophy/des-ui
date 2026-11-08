@@ -152,6 +152,8 @@ struct App {
     files_browser: Option<files::Browser>,
     file_clipboard: Option<files::Clipboard>,
     file_job: Option<files::Task>,
+    /// File operations waiting for the one running, in order.
+    file_queue: std::collections::VecDeque<file_ops::Operation>,
     /// The compositor connection; `None` when running as an ordinary window.
     desktop: Option<Desktop>,
     launcher: Launcher,
@@ -377,6 +379,7 @@ impl App {
             files_browser: None,
             file_clipboard: None,
             file_job: None,
+            file_queue: Default::default(),
             desktop,
             launcher,
             dock: dock::Dock::default(),
@@ -498,14 +501,19 @@ impl App {
 
     /// Opens a new tab in the active tab's working directory.
     fn new_tab(&mut self) {
-        if self.tabs.len() >= MAX_TABS {
-            return;
-        }
         let cwd = self
             .tabs
             .get(self.focus_tab())
             .and_then(|t| t.cwd())
             .unwrap_or_else(|| PathBuf::from("/"));
+        self.new_tab_in(cwd);
+    }
+
+    /// Opens a new tab in `cwd`.
+    fn new_tab_in(&mut self, cwd: PathBuf) {
+        if self.tabs.len() >= MAX_TABS {
+            return;
+        }
         let preserve = self.config.keep_terminal_sessions && self.live_terminal_lease.is_some();
         match TermTab::spawn_managed(&self.shell, &cwd, self.ctx.clone(), self.config.scrollback,
             preserve, term::SessionRole::Tab) {

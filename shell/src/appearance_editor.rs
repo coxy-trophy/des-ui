@@ -51,15 +51,15 @@ impl Editor {
     pub fn sync_visibility(&mut self, visible: bool) {
         if !visible { self.picker = None; self.picker_focus = None; }
     }
-    fn picker(&mut self, ctx: &egui::Context) {
+    fn picker(&mut self, ctx: &egui::Context, theme: &crate::theme::Theme) {
         if self.picker.is_none() { return; }
         let screen = ctx.screen_rect();
         let response = egui::Modal::new(egui::Id::new("wallpaper-file-picker")).show(ctx, |ui| {
-            ui.set_width((screen.width() - 48.0).clamp(240.0, 780.0));
-            ui.set_height((screen.height() - 64.0).clamp(240.0, 560.0));
+            ui.set_width((screen.width() - 48.0).clamp(240.0, 1180.0));
+            ui.set_height((screen.height() - 64.0).clamp(240.0, 720.0));
             ui.label(egui::RichText::new("Choose wallpaper").font(ui::display_bold(20.0)));
             ui.add_space(12.0);
-            self.picker.as_mut().unwrap().show(ui)
+            self.picker.as_mut().unwrap().show(ui, theme)
         });
         let close = response.should_close();
         match response.inner {
@@ -150,7 +150,7 @@ impl Editor {
         });
         crate::settings::note(ui, "Preview only. Apply saves these controls together; your theme and accent stay separate.");
         ui.add_space(24.0);
-        self.picker(ui.ctx());
+        self.picker(ui.ctx(), theme);
         requested
     }
 }

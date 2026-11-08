@@ -51,10 +51,8 @@ impl App {
         }
     }
     pub(super) fn start_file_operation(&mut self, operation: file_ops::Operation) {
-        if self.file_job.is_some() {
-            if let Some(browser) = &mut self.files_browser { browser.operation_result(&self.ctx, Err("Wait for the current operation to finish")); }
-            return;
-        }
+        // One at a time: later ones wait their turn, in order.
+        if self.file_job.is_some() { self.file_queue.push_back(operation); return; }
         match files::Task::start(operation, self.ctx.clone()) {
             Ok(task) => self.file_job = Some(task),
             Err(error) => {
@@ -73,24 +71,30 @@ impl App {
                         file_ops::Operation::CreateFolder { .. } => None,
                         file_ops::Operation::Rename { source, .. } | file_ops::Operation::Copy { source, .. } |
                         file_ops::Operation::Move { source, .. } | file_ops::Operation::Trash { source } |
-                        file_ops::Operation::Restore { source } => Some(source),
+                        file_ops::Operation::Restore { source } => Some(source.clone()),
                     };
-                    if self.file_clipboard.as_ref().is_some_and(|clip| Some(&clip.source) == source) {
-                        match task.operation {
-                            file_ops::Operation::Rename { .. } | file_ops::Operation::Restore { .. } => {
-                                if let Some(clip) = &mut self.file_clipboard { clip.source = completed.path.clone(); }
-                            },
-                            file_ops::Operation::Move { .. } | file_ops::Operation::Trash { .. } => self.file_clipboard = None,
-                            _ => {},
+                    if let (Some(source), Some(clip)) = (source, self.file_clipboard.as_mut()) {
+                        if let Some(at) = clip.sources.iter().position(|s| *s == source) {
+                            match task.operation {
+                                file_ops::Operation::Rename { .. } | file_ops::Operation::Restore { .. } => clip.sources[at] = completed.path.clone(),
+                                file_ops::Operation::Move { .. } | file_ops::Operation::Trash { .. } => { clip.sources.remove(at); },
+                                _ => {},
+                            }
+                            if clip.sources.is_empty() { self.file_clipboard = None; }
                         }
                     }
                     if let Some(browser) = &mut self.files_browser { browser.operation_result(ctx, Ok(&completed.message)); }
-                    let detail = match &task.operation { file_ops::Operation::Trash { source } => source.display().to_string(), _ => completed.path.display().to_string() };
-                    self.notices.post(&completed.message, &detail, false);
+                    if self.file_queue.is_empty() {
+                        let detail = match &task.operation { file_ops::Operation::Trash { source } => source.display().to_string(), _ => completed.path.display().to_string() };
+                        self.notices.post(&completed.message, &detail, false);
+                    }
+                    if let Some(next) = self.file_queue.pop_front() { self.start_file_operation(next); }
                 },
                 Err(error) => {
+                    let skipped = std::mem::take(&mut self.file_queue).len();
                     if let Some(browser) = &mut self.files_browser { browser.operation_result(ctx, Err(&error)); }
-                    self.notices.post("File operation failed", &error, false);
+                    let detail = if skipped > 0 { format!("{error} · {skipped} more not done") } else { error };
+                    self.notices.post("File operation failed", &detail, false);
                 },
             }
         }
