@@ -22,6 +22,7 @@ mod overview;
 mod commands;
 mod clipboard;
 mod file_search;
+mod drives;
 mod files;
 mod file_ops;
 mod lock;
@@ -63,6 +64,7 @@ mod appearance_editor;
 mod sysmon;
 mod term;
 mod theme;
+mod thumbs;
 mod ui;
 
 use eframe::egui::{
@@ -149,7 +151,7 @@ struct App {
     /// The animal at the foot of the left column.
     pet: pet::Pet,
     fs: FsView,
-    files_browser: Option<files::Browser>,
+    files_browser: Option<files::Window>,
     file_clipboard: Option<files::Clipboard>,
     file_job: Option<files::Task>,
     /// File operations waiting for the one running, in order.
@@ -1051,7 +1053,7 @@ impl App {
     /// Focused editors and modals own input before registry shortcuts.
     fn take_shortcuts(&mut self, ctx: &egui::Context) -> Vec<Event> {
         if self.companion.open || self.dock.captures_keyboard() || self.connect.has_keyboard() { return Vec::new(); }
-        let files_modal = self.files_browser.as_ref().is_some_and(files::Browser::captures_keyboard) && !self.scratchpad.visible() && !self.quick.open;
+        let files_modal = self.files_browser.as_ref().is_some_and(files::Window::captures_keyboard) && !self.scratchpad.visible() && !self.quick.open;
         if self.polkit.active() || self.shortcut_reference.open || self.settings.shortcut_capture_active() || files_modal || (self.settings.open && self.settings.appearance_editor.picker_open()) {
             return Vec::new();
         }

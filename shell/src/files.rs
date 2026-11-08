@@ -94,12 +94,16 @@ pub enum Event {
     CancelOperation,
     /// Open a terminal tab in this folder.
     Terminal(PathBuf),
+    /// Open this folder in a new tab.
+    NewTab(PathBuf),
 }
 enum DialogKind { NewFolder, Rename(PathBuf), Trash(Vec<PathBuf>) }
 struct OperationDialog { kind: DialogKind, name: String, pending: bool, focused: bool, error: Option<String> }
 impl OperationDialog { fn new(kind: DialogKind, name: String) -> Self { Self { kind, name, pending: false, focused: false, error: None } } }
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum SortKey { Name, Kind, Modified, Size }
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum View { List, Grid }
 
 /// What a click, key or menu asked for this frame; one place carries them out.
 #[derive(Default)]
@@ -123,6 +127,12 @@ pub struct Browser {
     look: crate::quicklook::QuickLook, look_path: Option<PathBuf>,
     /// The list's scroll and height last frame, to keep the focused row in view.
     list_offset: f32, list_height: f32, reveal: bool,
+    view: View, grid_columns: usize, thumbs: crate::thumbs::Thumbs,
+    /// A drive being mounted, to open when it is, or ejected.
+    mounting: Option<std::sync::mpsc::Receiver<Result<PathBuf, String>>>,
+    ejecting: Option<(Option<PathBuf>, std::sync::mpsc::Receiver<Result<(), String>>)>,
+    /// A passing word in the status line, such as that a drive can be pulled out.
+    message: Option<(String, Instant)>,
 }
 pub fn home() -> PathBuf { std::env::var_os("HOME").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| PathBuf::from("/")) }
 fn image_path(path: &Path) -> bool { matches!(path.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg") }
@@ -182,7 +192,8 @@ impl Browser {
             loading: false, loaded: false, error: None, limited: false, in_trash: false,
             clipboard: None, operation_progress: None, queued: 0, dialog: None, menu_open: false, paste_chord_handled: false, labels: Default::default(),
             sort: SortKey::Name, descending: false, editing_path: false, focus_path: false, focus_filter: false,
-            places, free: None, look: Default::default(), look_path: None, list_offset: 0.0, list_height: 0.0, reveal: false }
+            places, free: None, look: Default::default(), look_path: None, list_offset: 0.0, list_height: 0.0, reveal: false,
+            view: if mode == Mode::ImagePicker { View::Grid } else { View::List }, grid_columns: 1, thumbs: Default::default(), mounting: None, ejecting: None, message: None }
     }
     fn navigate(&mut self, ctx: &egui::Context, path: PathBuf, navigation: Navigation) {
         if !path.is_absolute() { self.error = Some("Use an absolute folder path".into()); return; }
@@ -216,7 +227,7 @@ impl Browser {
                     self.marked.retain(|p| self.entries.iter().any(|e| &e.path == p));
                     if !self.selected.as_ref().is_some_and(present) { self.selected = None; }
                 } else {
-                    self.selected = None; self.marked.clear(); self.anchor = None; self.filter.clear(); self.list_offset = 0.0;
+                    self.selected = None; self.marked.clear(); self.anchor = None; self.filter.clear(); self.list_offset = 0.0; self.thumbs.clear();
                 }
             },
             Err(error) => { self.pending = None; self.error = Some(error); self.path_text = self.path.to_string_lossy().into_owned(); },
@@ -258,6 +269,13 @@ impl Browser {
         else { None }
     }
     pub fn captures_keyboard(&self) -> bool { self.dialog.is_some() || self.menu_open }
+    /// Reads the folder again, as after another tab changed it.
+    pub fn refresh(&mut self, ctx: &egui::Context) { if self.loaded { self.navigate(ctx, self.path.clone(), Navigation::Refresh); } }
+    /// What a tab showing this is called.
+    pub fn title(&self) -> String {
+        if self.in_trash { "Trash".into() } else if self.path == home() { "Home".into() }
+        else { self.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "File system".into()) }
+    }
     pub fn configure_operations(&mut self, clipboard: Option<Clipboard>, progress: Option<u64>, queued: usize) {
         self.clipboard = clipboard; self.operation_progress = progress; self.queued = queued;
     }
@@ -335,7 +353,10 @@ impl Browser {
         if pressed(ui, Modifiers::ALT, Key::ArrowLeft) && self.history_at > 0 { *target = Some((self.history[self.history_at - 1].clone(), Navigation::History(self.history_at - 1))); }
         if pressed(ui, Modifiers::ALT, Key::ArrowRight) && self.history_at + 1 < self.history.len() { *target = Some((self.history[self.history_at + 1].clone(), Navigation::History(self.history_at + 1))); }
         let mut step: Option<isize> = None; let mut extend = false;
-        for (key, by) in [(Key::ArrowDown, 1), (Key::ArrowUp, -1), (Key::PageDown, 12), (Key::PageUp, -12), (Key::End, isize::MAX / 2), (Key::Home, -(isize::MAX / 2))] {
+        let across = if self.view == View::Grid { self.grid_columns.max(1) as isize } else { 1 };
+        let mut moves = vec![(Key::ArrowDown, across), (Key::ArrowUp, -across), (Key::PageDown, 12 * across), (Key::PageUp, -12 * across), (Key::End, isize::MAX / 2), (Key::Home, -(isize::MAX / 2))];
+        if self.view == View::Grid { moves.extend([(Key::ArrowRight, 1), (Key::ArrowLeft, -1)]); }
+        for (key, by) in moves {
             if pressed(ui, Modifiers::SHIFT, key) { step = Some(by); extend = true; }
             else if pressed(ui, Modifiers::NONE, key) { step = Some(by); }
         }
@@ -444,6 +465,20 @@ impl Browser {
         let mut act = Act::default();
         let mut target = None;
         let mut close = false;
+        if let Some(result) = self.mounting.as_ref().and_then(|answer| answer.try_recv().ok()) {
+            self.mounting = None;
+            match result { Ok(folder) => target = Some((folder, Navigation::New)), Err(error) => self.error = Some(format!("Could not open the drive: {error}")) }
+        }
+        if let Some(result) = self.ejecting.as_ref().and_then(|(_, answer)| answer.try_recv().ok()) {
+            let (folder, _) = self.ejecting.take().unwrap();
+            match result {
+                Ok(()) => {
+                    if folder.is_some_and(|folder| self.path.starts_with(folder)) { target = Some((home(), Navigation::New)); }
+                    self.message = Some(("The drive can be unplugged now.".into(), Instant::now()));
+                },
+                Err(error) => self.error = Some(format!("Could not eject: {error}")),
+            }
+        }
         let width = ui.available_width();
         let narrow = width < 640.0;
         let typing = self.header(ui, theme, narrow, keyboard_active, &mut target, &mut act, &mut close);
@@ -602,6 +637,26 @@ impl Browser {
             let here = !self.in_trash && self.path == path;
             if place_item(ui, theme, width, name, "", here).clicked() && !here { *target = Some((path, Navigation::New)); }
         }
+        let drives = crate::drives::snapshot(ui.ctx());
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs(3));
+        if !drives.is_empty() {
+            ui.add_space(10.0);
+            side_label(ui, "DEVICES");
+            for drive in drives {
+                let here = drive.mountpoint.as_ref().is_some_and(|m| self.path.starts_with(m));
+                let busy = self.mounting.is_some() || self.ejecting.is_some();
+                let (open, eject) = drive_item(ui, theme, width, &drive, here, busy);
+                if open.clicked() && !busy {
+                    match &drive.mountpoint {
+                        Some(folder) => { if !here || self.path != *folder { *target = Some((folder.clone(), Navigation::New)); } },
+                        None => { self.error = None; self.mounting = Some(crate::drives::mount(drive.device.clone(), ui.ctx())); },
+                    }
+                }
+                if eject.is_some_and(|eject| eject.clicked()) && !busy {
+                    self.ejecting = Some((drive.mountpoint.clone(), crate::drives::eject(drive.clone(), ui.ctx())));
+                }
+            }
+        }
         ui.add_space(10.0);
         side_label(ui, "ELSEWHERE");
         if self.mode == Mode::Browse {
@@ -680,6 +735,51 @@ impl Browser {
         });
     }
 
+    /// What a click, drag or right click on one entry does, the same in the list and the grid.
+    #[allow(clippy::too_many_arguments)]
+    fn entry_events(&mut self, ui: &mut egui::Ui, response: egui::Response, entry: &Entry, name: &str, marked: bool, shown: &[PathBuf], draggable: bool,
+        event: &mut Option<Event>, opened: &mut Option<PathBuf>, act: &mut Act, menu_drawn: &mut bool) {
+        response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, marked, format!("{name}, {}", kind_of(entry))));
+        // A double click opens only when both clicks were on this entry, unmodified.
+        let was_focused = self.selected.as_ref() == Some(&entry.path);
+        let modifiers = ui.input(|i| i.modifiers);
+        if response.clicked() { self.click(entry.path.clone(), modifiers, shown); }
+        if response.secondary_clicked() && !marked { self.select_only(entry.path.clone()); }
+        if response.middle_clicked() && entry.directory && self.mode == Mode::Browse { *event = Some(Event::NewTab(entry.path.clone())); }
+        if response.drag_started() && draggable && event.is_none() {
+            self.select_only(entry.path.clone());
+            *event = Some(Event::Drag(entry.path.clone()));
+        }
+        if response.double_clicked() && was_focused && !(modifiers.ctrl || modifiers.command || modifiers.shift) { *opened = Some(entry.path.clone()); }
+        response.context_menu(|ui| {
+            *menu_drawn = true;
+            ui.set_width(230.0); ui.spacing_mut().item_spacing.y = 0.0;
+            let count = self.chosen().len();
+            if count > 1 { menu_heading(ui, &format!("{count} ITEMS")); }
+            let open = if entry.directory { "Open" } else if self.mode == Mode::ImagePicker { "Choose image" } else { "Open" };
+            if count == 1 && menu_item(ui, open, "Enter", entry.directory || self.mode == Mode::Browse || image_path(&entry.path)).clicked() { act.open = true; ui.close_menu(); }
+            if self.mode == Mode::Browse {
+                if entry.directory && count == 1 && menu_item(ui, "Open in new tab", "Middle click", true).clicked() { *event = Some(Event::NewTab(entry.path.clone())); ui.close_menu(); }
+                if entry.directory && count == 1 && menu_item(ui, "Open a terminal here", "", true).clicked() { act.terminal = Some(entry.path.clone()); ui.close_menu(); }
+                menu_separator(ui);
+                if self.in_trash {
+                    if menu_item(ui, "Restore", "", true).clicked() { act.restore = true; ui.close_menu(); }
+                } else {
+                    if menu_item(ui, "Copy", "Ctrl+C", true).clicked() { act.copy = true; ui.close_menu(); }
+                    if menu_item(ui, "Cut", "Ctrl+X", true).clicked() { act.cut = true; ui.close_menu(); }
+                    if count == 1 && menu_item(ui, "Rename", "F2", true).clicked() { act.rename = true; ui.close_menu(); }
+                    menu_separator(ui);
+                    if menu_item(ui, "Copy path", "", true).clicked() {
+                        let paths: Vec<String> = self.chosen().iter().map(|p| p.to_string_lossy().into_owned()).collect();
+                        ui.ctx().copy_text(paths.join("\n")); ui.close_menu();
+                    }
+                    menu_separator(ui);
+                    if menu_item_caution(ui, "Move to Trash", "Del").clicked() { act.trash = true; ui.close_menu(); }
+                }
+            }
+        });
+    }
+
     /// The toolbar, the sortable list and the status line.
     fn center(&mut self, ui: &mut egui::Ui, theme: &Theme, act: &mut Act, target: &mut Option<(PathBuf, Navigation)>, menu_drawn: &mut bool) -> Option<Event> {
         let mut event = None;
@@ -698,15 +798,20 @@ impl Browser {
                 toggle.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, self.hidden, "Hidden files"));
                 if toggle.on_hover_text("Ctrl+H").clicked() { self.hidden = !self.hidden; }
                 ui.label(egui::RichText::new("Hidden").font(ui::display(12.5)).color(ui::SECONDARY));
+                ui.add_space(8.0);
+                crate::settings::segmented(ui, theme, &mut self.view, &[(View::List, "List"), (View::Grid, "Grid")]);
             });
         });
         if let Some(error) = &self.error { ui.add_space(4.0); ui.add(egui::Label::new(egui::RichText::new(error).font(ui::display(12.5)).color(ui::CAUTION)).truncate()); }
         ui.add_space(8.0);
 
-        // Column header: click to sort, again to reverse.
+        // Column header: click to sort, again to reverse. The grid has no columns,
+        // so it lists the same sorts side by side.
         let columns = Columns::for_width(width);
+        let grid = self.view == View::Grid;
         let (head, _) = ui.allocate_exact_size(egui::vec2(width, 26.0), egui::Sense::hover());
-        for (key, label, rect, right) in columns.headers(head) {
+        let heads = if grid { sort_labels(head) } else { columns.headers(head) };
+        for (key, label, rect, right) in heads {
             let response = ui.interact(rect, ui.id().with(("sort", label)), egui::Sense::click());
             let on = self.sort == key;
             let text = if on { format!("{label} {}", if self.descending { "↓" } else { "↑" }) } else { label.to_string() };
@@ -742,10 +847,14 @@ impl Browser {
         });
 
         // Keep the focused row in view after keys move it.
-        let mut scroll = egui::ScrollArea::vertical().id_salt("native-files-list").max_height(list_height).auto_shrink([false, false]);
+        let per_row = if grid { ((width + GRID_GAP) / (TILE_W + GRID_GAP)).floor().max(1.0) as usize } else { 1 };
+        self.grid_columns = per_row;
+        let (row_height, gap) = if grid { (TILE_H, GRID_GAP) } else { (ROW, ROW_GAP) };
+        let tile_width = (width - GRID_GAP * (per_row as f32 - 1.0)) / per_row as f32;
+        let mut scroll = egui::ScrollArea::vertical().id_salt(("native-files-list", grid)).max_height(list_height).auto_shrink([false, false]);
         if self.reveal {
-            if let Some(row) = self.selected.as_ref().and_then(|p| shown.iter().position(|s| s == p)) {
-                let top = row as f32 * (ROW + ROW_GAP); let bottom = top + ROW;
+            if let Some(at) = self.selected.as_ref().and_then(|p| shown.iter().position(|s| s == p)) {
+                let top = (at / per_row) as f32 * (row_height + gap); let bottom = top + row_height;
                 let mut offset = self.list_offset;
                 if top < offset { offset = top; } else if bottom > offset + self.list_height { offset = bottom - self.list_height; }
                 scroll = scroll.vertical_scroll_offset(offset.max(0.0));
@@ -754,51 +863,30 @@ impl Browser {
         }
         let draggable = self.mode == Mode::Browse && !self.in_trash && self.operation_progress.is_none();
         let mut opened = None;
-        ui.spacing_mut().item_spacing.y = ROW_GAP;
-        let output = scroll.show_rows(ui, ROW, shown.len(), |ui, rows| {
+        ui.spacing_mut().item_spacing.y = gap;
+        let output = scroll.show_rows(ui, row_height, shown.len().div_ceil(per_row), |ui, rows| {
             for row in rows {
-                let Some(entry) = self.entries.iter().find(|e| e.path == shown[row]).cloned() else { continue };
-                let name = self.name_of(&entry);
-                let marked = self.is_marked(&entry.path);
-                let focused = self.selected.as_ref() == Some(&entry.path) && self.marked.len() > 1;
-                let response = entry_row(ui, theme, &entry, &name, columns, marked, focused);
-                response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, marked, format!("{name}, {}", kind_of(&entry))));
-                // A double click opens only when both clicks were on this entry, unmodified.
-                let was_focused = self.selected.as_ref() == Some(&entry.path);
-                let modifiers = ui.input(|i| i.modifiers);
-                if response.clicked() { self.click(entry.path.clone(), modifiers, &shown); }
-                if response.secondary_clicked() && !marked { self.select_only(entry.path.clone()); }
-                if response.drag_started() && draggable && event.is_none() {
-                    self.select_only(entry.path.clone());
-                    event = Some(Event::Drag(entry.path.clone()));
-                }
-                if response.double_clicked() && was_focused && !(modifiers.ctrl || modifiers.command || modifiers.shift) { opened = Some(entry.path.clone()); }
-                response.context_menu(|ui| {
-                    *menu_drawn = true;
-                    ui.set_width(230.0); ui.spacing_mut().item_spacing.y = 0.0;
-                    let count = self.chosen().len();
-                    if count > 1 { menu_heading(ui, &format!("{count} ITEMS")); }
-                    let open = if entry.directory { "Open" } else if self.mode == Mode::ImagePicker { "Choose image" } else { "Open" };
-                    if count == 1 && menu_item(ui, open, "Enter", entry.directory || self.mode == Mode::Browse || image_path(&entry.path)).clicked() { act.open = true; ui.close_menu(); }
-                    if self.mode == Mode::Browse {
-                        if entry.directory && count == 1 && menu_item(ui, "Open a terminal here", "", true).clicked() { act.terminal = Some(entry.path.clone()); ui.close_menu(); }
-                        menu_separator(ui);
-                        if self.in_trash {
-                            if menu_item(ui, "Restore", "", true).clicked() { act.restore = true; ui.close_menu(); }
-                        } else {
-                            if menu_item(ui, "Copy", "Ctrl+C", true).clicked() { act.copy = true; ui.close_menu(); }
-                            if menu_item(ui, "Cut", "Ctrl+X", true).clicked() { act.cut = true; ui.close_menu(); }
-                            if count == 1 && menu_item(ui, "Rename", "F2", true).clicked() { act.rename = true; ui.close_menu(); }
-                            menu_separator(ui);
-                            if menu_item(ui, "Copy path", "", true).clicked() {
-                                let paths: Vec<String> = self.chosen().iter().map(|p| p.to_string_lossy().into_owned()).collect();
-                                ui.ctx().copy_text(paths.join("\n")); ui.close_menu();
-                            }
-                            menu_separator(ui);
-                            if menu_item_caution(ui, "Move to Trash", "Del").clicked() { act.trash = true; ui.close_menu(); }
+                if grid {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = GRID_GAP;
+                        for at in row * per_row..((row + 1) * per_row).min(shown.len()) {
+                            let Some(entry) = self.entries.iter().find(|e| e.path == shown[at]).cloned() else { continue };
+                            let name = self.name_of(&entry);
+                            let marked = self.is_marked(&entry.path);
+                            let focused = self.selected.as_ref() == Some(&entry.path) && self.marked.len() > 1;
+                            let thumb = (!entry.directory && crate::thumbs::can_thumbnail(&entry.path)).then(|| self.thumbs.get(ui.ctx(), &entry.path, entry.modified)).flatten();
+                            let response = grid_tile(ui, theme, &entry, &name, tile_width, marked, focused, thumb.as_ref());
+                            self.entry_events(ui, response, &entry, &name, marked, &shown, draggable, &mut event, &mut opened, act, menu_drawn);
                         }
-                    }
-                });
+                    });
+                } else {
+                    let Some(entry) = self.entries.iter().find(|e| e.path == shown[row]).cloned() else { continue };
+                    let name = self.name_of(&entry);
+                    let marked = self.is_marked(&entry.path);
+                    let focused = self.selected.as_ref() == Some(&entry.path) && self.marked.len() > 1;
+                    let response = entry_row(ui, theme, &entry, &name, columns, marked, focused);
+                    self.entry_events(ui, response, &entry, &name, marked, &shown, draggable, &mut event, &mut opened, act, menu_drawn);
+                }
             }
         });
         self.list_offset = output.state.offset.y;
@@ -831,6 +919,9 @@ impl Browser {
             let mut text = if self.loading { "Loading…".to_string() } else { items(shown.len()) };
             if chosen.len() > 1 { text += &format!(" · {} selected", chosen.len()); }
             if self.limited { text += " · limited listing"; }
+            if self.mounting.is_some() { text += " · opening the drive…"; }
+            if self.ejecting.is_some() { text += " · ejecting…"; }
+            if let Some((message, _)) = self.message.as_ref().filter(|(_, at)| at.elapsed() < std::time::Duration::from_secs(6)) { text += &format!(" · {message}"); }
             if let Some(clipboard) = self.clipboard.as_ref().filter(|_| self.mode == Mode::Browse) {
                 let what = match clipboard.sources.as_slice() { [one] => one.file_name().unwrap_or_default().to_string_lossy().into_owned(), many => format!("{} items", many.len()) };
                 text += &format!(" · {} {what} · Ctrl+V pastes here", if clipboard.cut { "Cut" } else { "Copied" });
@@ -892,6 +983,55 @@ fn entry_row(ui: &mut egui::Ui, theme: &Theme, entry: &Entry, name: &str, column
     if let Some(r) = kind { small(r, kind_of(entry).to_string(), false); }
     if let Some(r) = modified { small(r, when(entry.modified), false); }
     if let Some(r) = size { small(r, if entry.directory { "—".into() } else { file_size(entry.bytes) }, true); }
+    response
+}
+
+const TILE_W: f32 = 132.0;
+const TILE_H: f32 = 154.0;
+const GRID_GAP: f32 = 10.0;
+
+/// The sorts side by side, for the grid, which has no columns to click.
+fn sort_labels(rect: egui::Rect) -> Vec<(SortKey, &'static str, egui::Rect, bool)> {
+    let mut x = rect.left() + 10.0;
+    [(SortKey::Name, "NAME"), (SortKey::Kind, "KIND"), (SortKey::Modified, "MODIFIED"), (SortKey::Size, "SIZE")].into_iter().map(|(key, label)| {
+        let width = 26.0 + label.len() as f32 * 7.0;
+        let r = egui::Rect::from_min_max(egui::pos2(x, rect.top()), egui::pos2(x + width, rect.bottom()));
+        x += width + 14.0;
+        (key, label, r, false)
+    }).collect()
+}
+
+/// One entry in the grid: its picture or icon, then its name.
+#[allow(clippy::too_many_arguments)]
+fn grid_tile(ui: &mut egui::Ui, theme: &Theme, entry: &Entry, name: &str, width: f32, marked: bool, focused: bool, thumb: Option<&egui::TextureHandle>) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, TILE_H), egui::Sense::click_and_drag());
+    let painter = ui.painter();
+    if marked { painter.rect_filled(rect, ui::SURFACE_RADIUS, theme.main.gamma_multiply(0.16)); }
+    else if response.hovered() { painter.rect_filled(rect, ui::SURFACE_RADIUS, ui::TRACK); }
+    if focused || response.has_focus() { painter.rect_stroke(rect, ui::SURFACE_RADIUS, egui::Stroke::new(1.0, theme.main), egui::StrokeKind::Inside); }
+    let picture = egui::Rect::from_min_size(rect.min + egui::vec2(8.0, 8.0), egui::vec2(width - 16.0, TILE_H - 50.0));
+    match thumb {
+        Some(texture) => {
+            let size = texture.size_vec2();
+            let scale = (picture.width() / size.x).min(picture.height() / size.y).min(1.0);
+            let shown = egui::Rect::from_center_size(picture.center(), size * scale);
+            painter.image(texture.id(), shown, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+            painter.rect_stroke(shown, 2.0, egui::Stroke::new(1.0, ui::LINE), egui::StrokeKind::Outside);
+        }
+        None => {
+            let icon = egui::Rect::from_center_size(picture.center(), egui::vec2(18.0, 18.0));
+            // The line icon, drawn larger by scaling its frame.
+            let big = egui::Rect::from_center_size(icon.center(), egui::vec2(44.0, 44.0));
+            paint_entry_icon(painter, big, entry);
+        }
+    }
+    let mut job = egui::text::LayoutJob::simple_singleline(name.to_owned(), ui::display(12.5), ui::TEXT);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(width - 12.0);
+    job.halign = egui::Align::Center;
+    let galley = ui.painter().layout_job(job);
+    painter.galley(egui::pos2(rect.center().x, picture.bottom() + 8.0), galley, ui::TEXT);
+    let meta = if entry.directory { "Folder".to_string() } else { file_size(entry.bytes) };
+    painter.text(egui::pos2(rect.center().x, picture.bottom() + 28.0), egui::Align2::CENTER_TOP, meta, ui::mono(10.5), ui::LABEL);
     response
 }
 
@@ -961,6 +1101,32 @@ fn place_item(ui: &mut egui::Ui, theme: &Theme, width: f32, title: &str, hint: &
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, current, title));
     response
 }
+/// A drive in the sidebar: its name and size, and an eject button while it can be ejected.
+fn drive_item(ui: &mut egui::Ui, theme: &Theme, width: f32, drive: &crate::drives::Drive, current: bool, busy: bool) -> (egui::Response, Option<egui::Response>) {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, ui::CONTROL_HEIGHT), egui::Sense::click());
+    let eject_rect = egui::Rect::from_min_size(egui::pos2(rect.right() - ui::CONTROL_HEIGHT, rect.top()), egui::vec2(ui::CONTROL_HEIGHT, ui::CONTROL_HEIGHT));
+    let eject = ui.interact(eject_rect, response.id.with("eject"), if busy { egui::Sense::hover() } else { egui::Sense::click() });
+    let lit = response.hovered() || response.has_focus();
+    let fill = if current { theme.main.gamma_multiply(0.16) } else if lit { ui::TRACK } else { egui::Color32::TRANSPARENT };
+    ui.painter().rect_filled(rect, ui::CONTROL_RADIUS, fill);
+    if response.has_focus() { ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, egui::Stroke::new(1.0, theme.main), egui::StrokeKind::Inside); }
+    let color = if current || lit { ui::TEXT } else { ui::SECONDARY };
+    let mut job = egui::text::LayoutJob::simple_singleline(drive.name.clone(), ui::display(13.0), color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width((width - 20.0 - ui::CONTROL_HEIGHT).max(1.0));
+    let galley = ui.painter().layout_job(job);
+    ui.painter().galley(egui::pos2(rect.left() + 10.0, rect.center().y - galley.size().y / 2.0), galley, color);
+    // An eject mark: a triangle over a bar.
+    let ink = if eject.hovered() { ui::TEXT } else { ui::LABEL };
+    if eject.hovered() { ui.painter().rect_filled(eject_rect.shrink(3.0), ui::CONTROL_RADIUS, ui::LINE); }
+    let c = eject_rect.center();
+    ui.painter().add(egui::Shape::convex_polygon(vec![c + egui::vec2(-5.0, 1.0), c + egui::vec2(0.0, -5.0), c + egui::vec2(5.0, 1.0)], ink, egui::Stroke::NONE));
+    ui.painter().rect_filled(egui::Rect::from_min_size(c + egui::vec2(-5.0, 3.0), egui::vec2(10.0, 2.0)), 0.0, ink);
+    let mounted = if drive.mountpoint.is_some() { "open" } else { "not open yet" };
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, current, format!("{}, {mounted}", drive.name)));
+    eject.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, !busy, format!("Eject {}", drive.name)));
+    let eject = eject.on_hover_text("Eject");
+    (response, Some(eject))
+}
 fn menu_item_with(ui: &mut egui::Ui, label: &str, shortcut: &str, enabled: bool, ink: egui::Color32) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(230.0, 28.0), if enabled { egui::Sense::click() } else { egui::Sense::hover() });
     if enabled && (response.hovered() || response.has_focus()) { ui.painter().rect_filled(rect, ui::CONTROL_RADIUS, ui::TRACK); }
@@ -978,6 +1144,117 @@ fn menu_separator(ui: &mut egui::Ui) {
 }
 fn menu_heading(ui: &mut egui::Ui, text: &str) {
     ui.horizontal(|ui| { ui.add_space(10.0); ui::tracked(ui, text, ui::mono(10.0), ui::LABEL, 1.4); });
+}
+
+/// The file manager: browsers in tabs, sharing the clipboard and the work queue.
+pub struct Window { tabs: Vec<Browser>, active: usize }
+const MAX_FILE_TABS: usize = 12;
+impl Window {
+    pub fn new(path: PathBuf) -> Self { Window { tabs: vec![Browser::new(path, Mode::Browse)], active: 0 } }
+    pub fn captures_keyboard(&self) -> bool { self.tabs[self.active].captures_keyboard() }
+    pub fn configure_operations(&mut self, clipboard: Option<Clipboard>, progress: Option<u64>, queued: usize) {
+        for tab in &mut self.tabs { tab.configure_operations(clipboard.clone(), progress, queued); }
+    }
+    /// The active tab gets the answer; the others look again, as the change may show there.
+    pub fn operation_result(&mut self, ctx: &egui::Context, result: Result<&str, &str>) {
+        let active = self.active;
+        for (index, tab) in self.tabs.iter_mut().enumerate() {
+            if index == active { tab.operation_result(ctx, result); } else if result.is_ok() { tab.refresh(ctx); }
+        }
+    }
+    fn open_tab(&mut self, path: PathBuf) {
+        if self.tabs.len() >= MAX_FILE_TABS { return; }
+        self.active += 1;
+        self.tabs.insert(self.active, Browser::new(path, Mode::Browse));
+    }
+    /// Closes a tab; returns true when it was the last one.
+    fn close_tab(&mut self, index: usize) -> bool {
+        if self.tabs.len() == 1 { return true; }
+        self.tabs.remove(index);
+        if self.active > index || self.active >= self.tabs.len() { self.active = self.active.saturating_sub(1); }
+        false
+    }
+    pub fn show_with_keyboard(&mut self, ui: &mut egui::Ui, theme: &Theme, active: bool) -> Option<Event> {
+        let keys = active && !self.captures_keyboard();
+        let mut close = false;
+        if keys {
+            let pressed = |ui: &mut egui::Ui, modifiers, key| ui.input_mut(|i| i.consume_key(modifiers, key));
+            if pressed(ui, Modifiers::COMMAND | Modifiers::SHIFT, Key::Tab) || pressed(ui, Modifiers::COMMAND, Key::PageUp) {
+                self.active = (self.active + self.tabs.len() - 1) % self.tabs.len();
+            } else if pressed(ui, Modifiers::COMMAND, Key::Tab) || pressed(ui, Modifiers::COMMAND, Key::PageDown) {
+                self.active = (self.active + 1) % self.tabs.len();
+            }
+            if pressed(ui, Modifiers::COMMAND, Key::T) { let path = self.tabs[self.active].path.clone(); self.open_tab(path); }
+            if pressed(ui, Modifiers::COMMAND, Key::W) { close = self.close_tab(self.active); }
+        }
+        if close { return Some(Event::Close); }
+        // The strip of tabs; with one, just the place for a new one.
+        let mut select = None; let mut shut = None; let mut add = false;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let room = ui.available_width() - ui::CONTROL_HEIGHT - 8.0;
+            let width = (room / self.tabs.len() as f32).clamp(60.0, 200.0);
+            for (index, tab) in self.tabs.iter().enumerate() {
+                let (open, close) = tab_item(ui, theme, width, &tab.title(), index == self.active, self.tabs.len() > 1);
+                if open.clicked() { select = Some(index); }
+                if open.middle_clicked() || close.is_some_and(|c| c.clicked()) { shut = Some(index); }
+            }
+            if self.tabs.len() < MAX_FILE_TABS {
+                add = new_tab_button(ui, theme).on_hover_text("New tab · Ctrl+T").clicked();
+            }
+        });
+        ui.add_space(8.0);
+        if let Some(index) = select { self.active = index; }
+        if let Some(index) = shut { if self.close_tab(index) { return Some(Event::Close); } }
+        if add { let path = self.tabs[self.active].path.clone(); self.open_tab(path); }
+        match self.tabs[self.active].show_with_keyboard(ui, theme, active) {
+            Some(Event::NewTab(path)) => { self.open_tab(path); None },
+            other => other,
+        }
+    }
+}
+
+fn tab_item(ui: &mut egui::Ui, theme: &Theme, width: f32, title: &str, current: bool, closable: bool) -> (egui::Response, Option<egui::Response>) {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, ui::CONTROL_HEIGHT), egui::Sense::click());
+    let close_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - 14.0, rect.center().y), egui::vec2(20.0, 20.0));
+    let close = closable.then(|| ui.interact(close_rect, response.id.with("close"), egui::Sense::click()));
+    let lit = response.hovered() || response.has_focus();
+    let painter = ui.painter();
+    painter.rect_filled(rect, ui::CONTROL_RADIUS, if current { ui::PANEL } else if lit { ui::TRACK } else { egui::Color32::TRANSPARENT });
+    if current {
+        painter.rect_stroke(rect, ui::CONTROL_RADIUS, egui::Stroke::new(1.0, ui::LINE), egui::StrokeKind::Inside);
+        painter.hline(rect.x_range().shrink(6.0), rect.top() + 1.0, egui::Stroke::new(2.0, theme.main));
+    }
+    if response.has_focus() { painter.rect_stroke(rect, ui::CONTROL_RADIUS, egui::Stroke::new(1.0, theme.main), egui::StrokeKind::Inside); }
+    let color = if current || lit { ui::TEXT } else { ui::SECONDARY };
+    let mut job = egui::text::LayoutJob::simple_singleline(title.to_owned(), ui::display(12.5), color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width((width - if closable { 40.0 } else { 20.0 }).max(8.0));
+    let galley = ui.painter().layout_job(job);
+    painter.galley(egui::pos2(rect.left() + 10.0, rect.center().y - galley.size().y / 2.0), galley, color);
+    if let Some(close) = &close {
+        if current || lit || close.hovered() {
+            if close.hovered() { painter.rect_filled(close_rect, 4.0, ui::LINE); }
+            let c = close_rect.center(); let ink = if close.hovered() { ui::TEXT } else { ui::LABEL };
+            painter.line_segment([c + egui::vec2(-4.0, -4.0), c + egui::vec2(4.0, 4.0)], egui::Stroke::new(1.3, ink));
+            painter.line_segment([c + egui::vec2(4.0, -4.0), c + egui::vec2(-4.0, 4.0)], egui::Stroke::new(1.3, ink));
+        }
+        close.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Close {title}")));
+    }
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, current, title));
+    (response, close)
+}
+
+fn new_tab_button(ui: &mut egui::Ui, theme: &Theme) -> egui::Response {
+    let size = ui::CONTROL_HEIGHT;
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
+    let lit = response.hovered() || response.has_focus();
+    if lit { ui.painter().rect_filled(rect, ui::CONTROL_RADIUS, ui::TRACK); }
+    if response.has_focus() { ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, egui::Stroke::new(1.0, theme.main), egui::StrokeKind::Inside); }
+    let c = rect.center(); let ink = if lit { ui::TEXT } else { ui::SECONDARY };
+    ui.painter().line_segment([c + egui::vec2(-6.0, 0.0), c + egui::vec2(6.0, 0.0)], egui::Stroke::new(1.6, ink));
+    ui.painter().line_segment([c + egui::vec2(0.0, -6.0), c + egui::vec2(0.0, 6.0)], egui::Stroke::new(1.6, ink));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "New tab"));
+    response
 }
 
 pub fn request(ctx: &egui::Context, path: PathBuf) { ctx.data_mut(|data| data.insert_temp(egui::Id::new("open-native-files"), path)); }
@@ -1316,6 +1593,45 @@ mod interaction_tests {
         assert_eq!(browser.chosen().len(), 3, "Shift+Down extends the selection");
         key(&mut browser, &ctx, Key::ArrowUp, Modifiers::ALT, 900.0);
         assert_eq!(browser.pending.as_ref().map(|p| p.0.clone()), Some(PathBuf::from("/tmp")), "Alt+Up opens the parent");
+    }
+    #[test]
+    fn file_tabs_open_close_and_the_last_close_leaves_files() {
+        let ctx = egui::Context::default(); crate::ui::install_fonts(&ctx, None, None);
+        let mut window = Window::new("/tmp".into());
+        let run = |window: &mut Window, events: Vec<egui::Event>| {
+            let mut action = None;
+            let _ = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1100.0, 700.0))), events, ..Default::default() },
+                |ctx| { egui::CentralPanel::default().show(ctx, |ui| action = window.show_with_keyboard(ui, &Theme::load("signal"), true)); });
+            action
+        };
+        let press = |key| vec![egui::Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers: Modifiers::COMMAND }];
+        run(&mut window, Vec::new());
+        assert!(run(&mut window, press(Key::T)).is_none());
+        assert_eq!((window.tabs.len(), window.active), (2, 1));
+        assert!(run(&mut window, press(Key::W)).is_none());
+        assert_eq!(window.tabs.len(), 1);
+        assert!(matches!(run(&mut window, press(Key::W)), Some(Event::Close)), "closing the last tab leaves Files");
+    }
+    #[test]
+    fn grid_arrows_move_across_then_down_a_row() {
+        let ctx = egui::Context::default(); crate::ui::install_fonts(&ctx, None, None);
+        let mut browser = Browser::new("/tmp".into(), Mode::Browse); browser.loaded = true; browser.view = View::Grid;
+        browser.entries = (0..12).map(|n| Entry { path: PathBuf::from(format!("/tmp/{n:02}.txt")), directory: false, bytes: 1, modified: None }).collect();
+        render(&mut browser, &ctx, Vec::new(), 900.0);
+        let across = browser.grid_columns;
+        assert!(across > 1, "a wide grid has several columns");
+        key(&mut browser, &ctx, Key::ArrowRight, Modifiers::NONE, 900.0);
+        key(&mut browser, &ctx, Key::ArrowRight, Modifiers::NONE, 900.0);
+        assert_eq!(browser.selected, Some(PathBuf::from("/tmp/01.txt")));
+        key(&mut browser, &ctx, Key::ArrowDown, Modifiers::NONE, 900.0);
+        assert_eq!(browser.selected, Some(PathBuf::from(format!("/tmp/{:02}.txt", 1 + across))));
+        for width in [320.0, 900.0] {
+            let output = render(&mut browser, &ctx, Vec::new(), width).0;
+            for shape in output.shapes {
+                if let egui::Shape::Text(text) = shape.shape { assert!(text.pos.x + text.galley.size().x <= width + 1.0, "grid text spilled at {width}: {}", text.galley.job.text); }
+            }
+        }
+        assert_eq!(Browser::new("/tmp".into(), Mode::ImagePicker).view, View::Grid, "pictures are chosen from a grid");
     }
     #[test]
     fn native_files_sort_keeps_folders_first_and_reverses() {

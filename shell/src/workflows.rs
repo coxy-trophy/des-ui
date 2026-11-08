@@ -104,7 +104,7 @@ impl App {
         self.launcher.open = false; self.settings.open = false; self.files_browser = None; self.music.open = false;
         self.notices.open = false; self.power_menu.open = false; self.world.expanded = false;
         self.scratchpad.close_now(); self.fs.blur(); self.settings.appearance_editor.reset(&self.config.appearance);
-        self.files_browser = Some(files::Browser::new(path, files::Mode::Browse));
+        self.files_browser = Some(files::Window::new(path));
         self.send(Command::Terminal);
     }
     /// Opens a terminal tab running a program with its arguments, no shell between;
