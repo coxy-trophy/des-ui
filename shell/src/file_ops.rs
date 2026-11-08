@@ -1,14 +1,34 @@
 use std::{path::PathBuf, sync::atomic::{AtomicBool, AtomicU64}};
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Operation {
     CreateFolder { parent: PathBuf, name: String },
     Rename { source: PathBuf, name: String },
-    Copy { source: PathBuf, directory: PathBuf },
-    Move { source: PathBuf, directory: PathBuf },
+    Copy { source: PathBuf, directory: PathBuf, conflict: Conflict },
+    Move { source: PathBuf, directory: PathBuf, conflict: Conflict },
     Trash { source: PathBuf },
     Restore { source: PathBuf },
 }
-pub struct Completed { pub path: PathBuf, pub message: String }
+/// What a copy or move does when its name is already taken where it goes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Conflict {
+    /// Stop, so a person can choose.
+    #[default]
+    Ask,
+    /// Give the newcomer a free name, such as "report (2).pdf".
+    KeepBoth,
+    /// Move what is there to Trash first, so the replacement can be undone.
+    Replace,
+    /// Leave both where they are.
+    Skip,
+}
+pub struct Completed {
+    pub path: PathBuf,
+    pub message: String,
+    /// What a replacement moved to Trash, in Trash.
+    pub replaced: Option<PathBuf>,
+    /// Nothing was done, by choice.
+    pub skipped: bool,
+}
 use std::{fs::{self, File, OpenOptions}, io::{Read, Write}, path::{Path, Component}, os::{fd::AsRawFd, unix::{ffi::OsStrExt, fs::{OpenOptionsExt, PermissionsExt, MetadataExt, DirBuilderExt}}}, sync::atomic::Ordering};
 
 fn check(cancelled: &AtomicBool) -> Result<(), String> {
@@ -27,7 +47,46 @@ fn rename_safe(source: &Path, target: &Path) -> Result<(), String> {
     rustix::fs::renameat_with(rustix::fs::CWD, source, rustix::fs::CWD, target, rustix::fs::RenameFlags::NOREPLACE)
         .map_err(|e| if e == rustix::io::Errno::XDEV { "Cannot move across filesystems; source was preserved. Copy the item first.".into() } else { format!("Cannot move item (source preserved): {e}") })
 }
-fn done(path: PathBuf, message: &str) -> Completed { Completed {path,message:message.into()} }
+fn done(path: PathBuf, message: &str) -> Completed { Completed {path,message:message.into(),replaced:None,skipped:false} }
+/// Where a copy or move would put its item.
+pub fn target_of(operation: &Operation) -> Option<PathBuf> {
+    match operation {
+        Operation::Copy { source, directory, .. } | Operation::Move { source, directory, .. } => source.file_name().map(|name| directory.join(name)),
+        _ => None,
+    }
+}
+/// The first of "name", "name (2)", "name (3)"… not taken in `directory`, the
+/// number before the extension.
+pub fn free_name(directory: &Path, name: &std::ffi::OsStr) -> PathBuf {
+    let first = directory.join(name);
+    if fs::symlink_metadata(&first).is_err() { return first; }
+    let path = Path::new(name);
+    let text = name.to_string_lossy();
+    let (stem, extension) = match (path.file_stem(), path.extension()) {
+        (Some(stem), Some(extension)) if !text.starts_with('.') || text.matches('.').count() > 1 => (stem.to_string_lossy().into_owned(), format!(".{}", extension.to_string_lossy())),
+        _ => (text.into_owned(), String::new()),
+    };
+    (2..).map(|n| directory.join(format!("{stem} ({n}){extension}"))).find(|candidate| fs::symlink_metadata(candidate).is_err()).unwrap()
+}
+/// Settles where a copy or move goes: the planned place, a free name, or the
+/// planned place after what was there went to Trash. `None` means skip.
+fn settle(source: &Path, directory: &Path, conflict: Conflict, cancelled: &AtomicBool) -> Result<Option<(PathBuf, Option<PathBuf>)>, String> {
+    let name = source.file_name().ok_or("Missing source name")?;
+    let target = directory.join(name);
+    if fs::symlink_metadata(&target).is_err() { return Ok(Some((target, None))); }
+    match conflict {
+        Conflict::Ask => Err("Destination already exists".into()),
+        Conflict::Skip => Ok(None),
+        Conflict::KeepBoth => Ok(Some((free_name(directory, name), None))),
+        Conflict::Replace => {
+            if fs::canonicalize(&target).ok() == fs::canonicalize(source).ok() { return Err("An item cannot replace itself".into()); }
+            let root = trash_root().ok_or("Home directory is unavailable")?;
+            let trashed = trash_at(&target, &root, cancelled).map_err(|e| format!("Could not move the existing item to Trash: {e}"))?;
+            Ok(Some((target, Some(trashed.path))))
+        },
+    }
+}
+fn skipped(source: PathBuf) -> Completed { Completed { path: source, message: "Item skipped".into(), replaced: None, skipped: true } }
 pub fn execute(operation: Operation, cancelled: &AtomicBool, progress: &AtomicU64) -> Result<Completed, String> {
     progress.store(0,Ordering::Relaxed); check(cancelled)?;
     match operation {
@@ -39,21 +98,22 @@ pub fn execute(operation: Operation, cancelled: &AtomicBool, progress: &AtomicU6
             safe_path(&source)?; name_valid(&name)?;
             let target=source.parent().unwrap().join(name); check(cancelled)?; rename_safe(&source,&target)?; Ok(done(target,"Item renamed"))
         },
-        Operation::Move {source,directory} => {
+        Operation::Move {source,directory,conflict} => {
             safe_path(&source)?; if !directory.is_absolute() { return Err("Destination must be absolute".into()); }
-            let target=directory.join(source.file_name().ok_or("Missing source name")?);
-            check(cancelled)?; rename_safe(&source,&target)?; Ok(done(target,"Item moved"))
+            check(cancelled)?;
+            let Some((target, replaced)) = settle(&source, &directory, conflict, cancelled)? else { return Ok(skipped(source)) };
+            rename_safe(&source,&target)?; Ok(Completed { replaced, ..done(target,"Item moved") })
         },
-        Operation::Copy {source,directory} => copy_staged(&source,&directory,cancelled,progress),
+        Operation::Copy {source,directory,conflict} => copy_staged(&source,&directory,conflict,cancelled,progress),
         Operation::Trash {source} => trash_at(&source,&trash_root().ok_or("Home directory is unavailable")?,cancelled),
         Operation::Restore {source} => restore_at(&source,&trash_root().ok_or("Home directory is unavailable")?,cancelled),
     }
 }
-fn copy_staged(source:&Path,directory:&Path,cancelled:&AtomicBool,progress:&AtomicU64)->Result<Completed,String> {
+fn copy_staged(source:&Path,directory:&Path,conflict:Conflict,cancelled:&AtomicBool,progress:&AtomicU64)->Result<Completed,String> {
     safe_path(source)?; if !directory.is_absolute() { return Err("Destination must be absolute".into()); }
     let directory=fs::canonicalize(directory).map_err(|e|e.to_string())?;
-    let target=directory.join(source.file_name().ok_or("Missing source name")?);
-    if fs::symlink_metadata(&target).is_ok() { return Err("Destination already exists".into()); }
+    let name = source.file_name().ok_or("Missing source name")?;
+    if conflict == Conflict::Ask && fs::symlink_metadata(directory.join(name)).is_ok() { return Err("Destination already exists".into()); }
     let meta=fs::symlink_metadata(source).map_err(|e|e.to_string())?;
     if meta.is_dir() {
         let original=fs::canonicalize(source).map_err(|e|e.to_string())?;
@@ -62,7 +122,10 @@ fn copy_staged(source:&Path,directory:&Path,cancelled:&AtomicBool,progress:&Atom
     let stage=tempfile::Builder::new().prefix(".desui-copy-").tempdir_in(&directory).map_err(|e|e.to_string())?;
     let payload=stage.path().join("payload"); let mut count=0;
     copy_node(source,&payload,0,&mut count,cancelled,progress)?;
-    check(cancelled)?; rename_safe(&payload,&target)?; Ok(done(target,"Item copied"))
+    check(cancelled)?;
+    // Settle the name only once the copy is whole, so a replacement happens last.
+    let Some((target, replaced)) = settle(source, &directory, conflict, cancelled)? else { return Ok(skipped(source.to_path_buf())) };
+    rename_safe(&payload,&target)?; Ok(Completed { replaced, ..done(target,"Item copied") })
 }
 fn copy_node(source:&Path,target:&Path,depth:usize,count:&mut usize,cancelled:&AtomicBool,progress:&AtomicU64)->Result<(),String> {
     check(cancelled)?; *count+=1;
@@ -136,6 +199,34 @@ fn trash_at(source:&Path,root:&Path,cancelled:&AtomicBool)->Result<Completed,Str
         let _=fs::remove_file(metadata_path); return Err(error);
     }
     Ok(done(target,"Item moved to Trash"))
+}
+/// What puts a finished operation back as it was, in the order to run it; empty
+/// when there is nothing to put back.
+pub fn reverse(operation: &Operation, completed: &Completed) -> Vec<Operation> {
+    if completed.skipped { return Vec::new(); }
+    let mut steps = match operation {
+        Operation::CreateFolder { .. } => vec![Operation::Trash { source: completed.path.clone() }],
+        Operation::Rename { source, .. } => match source.file_name() {
+            Some(name) => vec![Operation::Rename { source: completed.path.clone(), name: name.to_string_lossy().into_owned() }],
+            None => Vec::new(),
+        },
+        Operation::Copy { .. } => vec![Operation::Trash { source: completed.path.clone() }],
+        Operation::Move { source, .. } => {
+            let Some(parent) = source.parent() else { return Vec::new() };
+            let mut steps = vec![Operation::Move { source: completed.path.clone(), directory: parent.to_path_buf(), conflict: Conflict::Ask }];
+            if completed.path.file_name() != source.file_name() {
+                if let (Some(moved), Some(name)) = (completed.path.file_name(), source.file_name()) {
+                    steps.push(Operation::Rename { source: parent.join(moved), name: name.to_string_lossy().into_owned() });
+                }
+            }
+            steps
+        },
+        Operation::Trash { .. } => vec![Operation::Restore { source: completed.path.clone() }],
+        Operation::Restore { .. } => vec![Operation::Trash { source: completed.path.clone() }],
+    };
+    // What a replacement sent to Trash comes back once its place is free again.
+    if let Some(trashed) = &completed.replaced { steps.push(Operation::Restore { source: trashed.clone() }); }
+    steps
 }
 fn trash_root() -> Option<PathBuf> {
     std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).filter(|p|p.is_absolute())
@@ -223,30 +314,58 @@ mod tests {
         fs::write(p.join("a/f"), b"contents").unwrap();
         run(Operation::Rename {source:p.join("a"), name:"b".into()}).unwrap();
         fs::create_dir(p.join("out")).unwrap();
-        run(Operation::Copy {source:p.join("b"), directory:p.join("out")}).unwrap();
+        run(Operation::Copy {source:p.join("b"), directory:p.join("out"), conflict: Conflict::Ask}).unwrap();
         assert_eq!(fs::read(p.join("out/b/f")).unwrap(), b"contents");
-        assert!(run(Operation::Move {source:p.join("b"), directory:p.join("out")}).is_err());
+        assert!(run(Operation::Move {source:p.join("b"), directory:p.join("out"), conflict: Conflict::Ask}).is_err());
         assert!(p.join("b/f").exists());
         fs::create_dir(p.join("other")).unwrap();
-        run(Operation::Move {source:p.join("b"), directory:p.join("other")}).unwrap();
+        run(Operation::Move {source:p.join("b"), directory:p.join("other"), conflict: Conflict::Ask}).unwrap();
         assert!(!p.join("b").exists());
+    }
+    #[test]
+    fn conflicts_keep_both_skip_or_replace_and_each_can_be_undone() {
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().join("trash");
+        let p = home.path();
+        fs::create_dir(p.join("in")).unwrap(); fs::create_dir(p.join("out")).unwrap();
+        fs::write(p.join("in/report.pdf"), b"new").unwrap(); fs::write(p.join("out/report.pdf"), b"old").unwrap();
+        let copy = |conflict| execute(Operation::Copy { source: p.join("in/report.pdf"), directory: p.join("out"), conflict }, &AtomicBool::new(false), &AtomicU64::new(0));
+        assert!(copy(Conflict::Ask).is_err());
+        let both = copy(Conflict::KeepBoth).unwrap();
+        assert_eq!(both.path, fs::canonicalize(p.join("out")).unwrap().join("report (2).pdf"));
+        assert!(copy(Conflict::Skip).unwrap().skipped);
+        assert_eq!(fs::read(p.join("out/report.pdf")).unwrap(), b"old");
+        assert_eq!(free_name(&p.join("out"), std::ffi::OsStr::new("report.pdf")), p.join("out/report (3).pdf"));
+        assert_eq!(free_name(&p.join("out"), std::ffi::OsStr::new(".bashrc")), p.join("out/.bashrc"));
+        fs::write(p.join("out/.bashrc"), b"").unwrap();
+        assert_eq!(free_name(&p.join("out"), std::ffi::OsStr::new(".bashrc")), p.join("out/.bashrc (2)"));
+        // Replacing sends the old one to Trash, and undoing brings it back.
+        let operation = Operation::Copy { source: p.join("in/report.pdf"), directory: p.join("out"), conflict: Conflict::Replace };
+        let target = fs::canonicalize(p.join("out")).unwrap().join("report.pdf");
+        let trashed = trash_at(&target, &root, &AtomicBool::new(false)).unwrap();
+        let replaced = Completed { path: target.clone(), message: String::new(), replaced: Some(trashed.path.clone()), skipped: false };
+        assert_eq!(reverse(&operation, &replaced), vec![Operation::Trash { source: target.clone() }, Operation::Restore { source: trashed.path }]);
+        let moved = Completed { path: p.join("out/notes (2).txt"), message: String::new(), replaced: None, skipped: false };
+        assert_eq!(reverse(&Operation::Move { source: p.join("in/notes.txt"), directory: p.join("out"), conflict: Conflict::KeepBoth }, &moved),
+            vec![Operation::Move { source: p.join("out/notes (2).txt"), directory: p.join("in"), conflict: Conflict::Ask }, Operation::Rename { source: p.join("in/notes (2).txt"), name: "notes.txt".into() }]);
+        assert!(reverse(&operation, &skipped(p.join("x"))).is_empty());
     }
     #[test]
     fn rejects_unsafe_names_conflicts_aliases_and_cancellation() {
         let t=tempfile::tempdir().unwrap(); let p=t.path();
         for name in ["", ".", "..", "a/b", "a\0b"] { assert!(run(Operation::CreateFolder {parent:p.into(),name:name.into()}).is_err()); }
         fs::create_dir(p.join("a")).unwrap(); symlink(p.join("a"),p.join("alias")).unwrap();
-        assert!(run(Operation::Copy {source:p.join("a"),directory:p.join("alias")}).is_err());
+        assert!(run(Operation::Copy {source:p.join("a"),directory:p.join("alias"), conflict: Conflict::Ask}).is_err());
         fs::write(p.join("f"),b"x").unwrap(); symlink(p.join("missing"),p.join("taken")).unwrap();
         assert!(run(Operation::Rename {source:p.join("f"),name:"taken".into()}).is_err());
         assert_eq!(fs::read(p.join("f")).unwrap(),b"x");
-        assert!(execute(Operation::Copy {source:p.join("f"),directory:p.into()},&AtomicBool::new(true),&AtomicU64::new(0)).is_err());
+        assert!(execute(Operation::Copy {source:p.join("f"),directory:p.into(), conflict: Conflict::Ask},&AtomicBool::new(true),&AtomicU64::new(0)).is_err());
     }
     #[test]
     fn copy_preserves_symlinks_without_following_them() {
         let t=tempfile::tempdir().unwrap(); let p=t.path(); fs::create_dir(p.join("a")).unwrap(); fs::create_dir(p.join("out")).unwrap();
         symlink("../missing",p.join("a/link")).unwrap();
-        run(Operation::Copy {source:p.join("a"),directory:p.join("out")}).unwrap();
+        run(Operation::Copy {source:p.join("a"),directory:p.join("out"), conflict: Conflict::Ask}).unwrap();
         assert_eq!(fs::read_link(p.join("out/a/link")).unwrap(),PathBuf::from("../missing"));
     }
     #[test]
@@ -266,10 +385,10 @@ mod tests {
     fn unsupported_pipe_leaves_no_partial_copy_and_progress_counts_bytes() {
         let t=tempfile::tempdir().unwrap();let p=t.path();fs::create_dir(p.join("out")).unwrap();
         rustix::fs::mknodat(rustix::fs::CWD,p.join("pipe"),rustix::fs::FileType::Fifo,rustix::fs::Mode::RUSR|rustix::fs::Mode::WUSR,0).unwrap();
-        assert!(run(Operation::Copy {source:p.join("pipe"),directory:p.join("out")}).is_err());
+        assert!(run(Operation::Copy {source:p.join("pipe"),directory:p.join("out"), conflict: Conflict::Ask}).is_err());
         assert_eq!(fs::read_dir(p.join("out")).unwrap().count(),0);
         let source=p.join(std::ffi::OsStr::from_bytes(b"native-\xff"));fs::write(&source,vec![42;150000]).unwrap();let progress=AtomicU64::new(0);
-        let result=execute(Operation::Copy {source,directory:p.join("out")},&AtomicBool::new(false),&progress).unwrap();
+        let result=execute(Operation::Copy {source,directory:p.join("out"), conflict: Conflict::Ask},&AtomicBool::new(false),&progress).unwrap();
         assert_eq!(progress.load(Ordering::Relaxed),150000);assert_eq!(fs::metadata(result.path).unwrap().len(),150000);
     }
 
@@ -278,7 +397,7 @@ mod tests {
         let t=tempfile::tempdir().unwrap();let p=t.path();let source=p.join("deep");fs::create_dir(&source).unwrap();fs::create_dir(p.join("out")).unwrap();
         let mut current=source.clone();for _ in 0..130 {current=current.join("d");fs::create_dir(&current).unwrap();}
         fs::write(current.join("leaf"),b"keep").unwrap();
-        assert!(run(Operation::Copy {source,directory:p.join("out")}).is_err());
+        assert!(run(Operation::Copy {source,directory:p.join("out"), conflict: Conflict::Ask}).is_err());
         assert_eq!(fs::read(current.join("leaf")).unwrap(),b"keep");assert_eq!(fs::read_dir(p.join("out")).unwrap().count(),0);
     }
 

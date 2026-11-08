@@ -65,6 +65,7 @@ mod sysmon;
 mod term;
 mod theme;
 mod thumbs;
+mod transfers;
 mod ui;
 
 use eframe::egui::{
@@ -154,8 +155,10 @@ struct App {
     files_browser: Option<files::Window>,
     file_clipboard: Option<files::Clipboard>,
     file_job: Option<files::Task>,
-    /// File operations waiting for the one running, in order.
-    file_queue: std::collections::VecDeque<file_ops::Operation>,
+    /// File operations in order, the questions they raise, and their undo.
+    file_work: transfers::Transfers,
+    /// The batch of the running file operation.
+    file_job_batch: u64,
     /// The compositor connection; `None` when running as an ordinary window.
     desktop: Option<Desktop>,
     launcher: Launcher,
@@ -381,7 +384,8 @@ impl App {
             files_browser: None,
             file_clipboard: None,
             file_job: None,
-            file_queue: Default::default(),
+            file_work: Default::default(),
+            file_job_batch: 0,
             desktop,
             launcher,
             dock: dock::Dock::default(),

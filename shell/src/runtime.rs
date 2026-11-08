@@ -604,14 +604,18 @@ impl eframe::App for App {
                     let action = region(ui, mine, vec2(20.0, 16.0), Layout::top_down(Align::Min), |ui| {
                         let progress = self.file_job.as_ref().map(|task| task.progress.load(std::sync::atomic::Ordering::Relaxed));
                         let browser = self.files_browser.as_mut().unwrap();
-                        browser.configure_operations(self.file_clipboard.clone(), progress, self.file_queue.len());
+                        browser.configure_operations(self.file_clipboard.clone(), self.file_work.view(progress.unwrap_or(0)));
                         browser.show_with_keyboard(ui, &theme, !scratch_keys && !self.dock.captures_keyboard())
                     });
                     match action {
                         Some(files::Event::Close) => self.files_browser = None,
                         Some(files::Event::Clipboard(clipboard)) => self.file_clipboard = Some(clipboard),
                         Some(files::Event::Drag(path)) => self.start_file_drag(ctx, &path),
-                        Some(files::Event::Operate(operations)) => for operation in operations { self.start_file_operation(operation) },
+                        Some(files::Event::Operate(operations)) => { self.file_work.enqueue(operations); self.pump_file_queue(); },
+                        Some(files::Event::Undo) => { if self.file_work.undo().is_some() { self.pump_file_queue(); } },
+                        Some(files::Event::Resolve(choice, all)) => { self.file_work.resolve(choice, all); self.pump_file_queue(); },
+                        Some(files::Event::PauseTransfers(paused)) => { self.file_work.set_paused(paused); self.pump_file_queue(); },
+                        Some(files::Event::ClearTransfers) => { self.file_work.clear(); },
                         Some(files::Event::Terminal(folder)) => { self.files_browser = None; self.new_tab_in(folder); },
                         Some(files::Event::CancelOperation) => { if let Some(task) = &self.file_job { task.cancel(); } },
                         Some(files::Event::Open(path)) => {

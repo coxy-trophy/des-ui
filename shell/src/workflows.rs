@@ -50,21 +50,25 @@ impl App {
             }
         }
     }
-    pub(super) fn start_file_operation(&mut self, operation: file_ops::Operation) {
-        // One at a time: later ones wait their turn, in order.
-        if self.file_job.is_some() { self.file_queue.push_back(operation); return; }
-        match files::Task::start(operation, self.ctx.clone()) {
-            Ok(task) => self.file_job = Some(task),
-            Err(error) => {
-                if let Some(browser) = &mut self.files_browser { browser.operation_result(&self.ctx, Err(&error)); }
-                self.notices.post("File operation not started", &error, false);
-            },
+    /// Starts the next waiting file operation, when nothing runs and nothing asks.
+    pub(super) fn pump_file_queue(&mut self) {
+        while self.file_job.is_none() {
+            let transfers::Next::Start(batch, operation) = self.file_work.next() else { break };
+            match files::Task::start(operation.clone(), self.ctx.clone()) {
+                Ok(task) => { self.file_job = Some(task); self.file_job_batch = batch; },
+                Err(error) => {
+                    if let Some(browser) = &mut self.files_browser { browser.operation_result(&self.ctx, Err(&error)); }
+                    self.file_work.finished(batch, &operation, &Err(error.clone()));
+                    self.notices.post("File operation not started", &error, false);
+                },
+            }
         }
     }
     pub(super) fn pump_file_operations(&mut self, ctx: &egui::Context) {
         let result = self.file_job.as_ref().and_then(files::Task::poll);
         if let Some(result) = result {
             let task = self.file_job.take().unwrap();
+            let over = self.file_work.finished(self.file_job_batch, &task.operation, &result);
             match result {
                 Ok(completed) => {
                     let source = match &task.operation {
@@ -73,7 +77,7 @@ impl App {
                         file_ops::Operation::Move { source, .. } | file_ops::Operation::Trash { source } |
                         file_ops::Operation::Restore { source } => Some(source.clone()),
                     };
-                    if let (Some(source), Some(clip)) = (source, self.file_clipboard.as_mut()) {
+                    if let (Some(source), Some(clip), false) = (source, self.file_clipboard.as_mut(), completed.skipped) {
                         if let Some(at) = clip.sources.iter().position(|s| *s == source) {
                             match task.operation {
                                 file_ops::Operation::Rename { .. } | file_ops::Operation::Restore { .. } => clip.sources[at] = completed.path.clone(),
@@ -84,19 +88,14 @@ impl App {
                         }
                     }
                     if let Some(browser) = &mut self.files_browser { browser.operation_result(ctx, Ok(&completed.message)); }
-                    if self.file_queue.is_empty() {
-                        let detail = match &task.operation { file_ops::Operation::Trash { source } => source.display().to_string(), _ => completed.path.display().to_string() };
-                        self.notices.post(&completed.message, &detail, false);
-                    }
-                    if let Some(next) = self.file_queue.pop_front() { self.start_file_operation(next); }
+                    if let Some(label) = over.filter(|_| self.files_browser.is_none()) { self.notices.post("Files", &format!("Done: {label}"), false); }
                 },
                 Err(error) => {
-                    let skipped = std::mem::take(&mut self.file_queue).len();
                     if let Some(browser) = &mut self.files_browser { browser.operation_result(ctx, Err(&error)); }
-                    let detail = if skipped > 0 { format!("{error} · {skipped} more not done") } else { error };
-                    self.notices.post("File operation failed", &detail, false);
+                    self.notices.post("File operation failed", &error, false);
                 },
             }
+            self.pump_file_queue();
         }
         if self.file_job.is_some() && self.files_browser.is_some() { ctx.request_repaint_after(Duration::from_millis(100)); }
     }

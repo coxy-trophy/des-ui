@@ -96,6 +96,12 @@ pub enum Event {
     Terminal(PathBuf),
     /// Open this folder in a new tab.
     NewTab(PathBuf),
+    /// Put back what the last batch of work changed.
+    Undo,
+    /// The answer to a name already taken, and whether it is for the rest too.
+    Resolve(crate::file_ops::Conflict, bool),
+    PauseTransfers(bool),
+    ClearTransfers,
 }
 enum DialogKind { NewFolder, Rename(PathBuf), Trash(Vec<PathBuf>) }
 struct OperationDialog { kind: DialogKind, name: String, pending: bool, focused: bool, error: Option<String> }
@@ -107,7 +113,7 @@ enum View { List, Grid }
 
 /// What a click, key or menu asked for this frame; one place carries them out.
 #[derive(Default)]
-struct Act { open: bool, new_folder: bool, rename: bool, copy: bool, cut: bool, paste: bool, trash: bool, restore: bool, terminal: Option<PathBuf> }
+struct Act { open: bool, new_folder: bool, rename: bool, copy: bool, cut: bool, paste: bool, trash: bool, restore: bool, undo: bool, terminal: Option<PathBuf> }
 
 pub struct Browser {
     path: PathBuf, path_text: String, entries: Vec<Entry>,
@@ -120,7 +126,7 @@ pub struct Browser {
     mode: Mode, filter: String, hidden: bool, history: Vec<PathBuf>, history_at: usize,
     worker: Option<Worker>, generation: u64, pending: Option<(PathBuf, Navigation)>,
     loading: bool, loaded: bool, error: Option<String>, limited: bool, in_trash: bool,
-    clipboard: Option<Clipboard>, operation_progress: Option<u64>, queued: usize,
+    clipboard: Option<Clipboard>, transfers: crate::transfers::View, transfers_open: bool, clash_all: bool,
     dialog: Option<OperationDialog>, menu_open: bool, paste_chord_handled: bool, labels: std::collections::HashMap<PathBuf, String>,
     sort: SortKey, descending: bool, editing_path: bool, focus_path: bool, focus_filter: bool,
     places: Vec<(&'static str, PathBuf)>, free: Option<u64>,
@@ -190,7 +196,7 @@ impl Browser {
         Self { path_text: path.to_string_lossy().into_owned(), history: vec![path.clone()], path, entries: Vec::new(), selected: None, marked: Vec::new(), anchor: None,
             mode, filter: String::new(), hidden: false, history_at: 0, worker: None, generation: 0, pending: None,
             loading: false, loaded: false, error: None, limited: false, in_trash: false,
-            clipboard: None, operation_progress: None, queued: 0, dialog: None, menu_open: false, paste_chord_handled: false, labels: Default::default(),
+            clipboard: None, transfers: Default::default(), transfers_open: false, clash_all: true, dialog: None, menu_open: false, paste_chord_handled: false, labels: Default::default(),
             sort: SortKey::Name, descending: false, editing_path: false, focus_path: false, focus_filter: false,
             places, free: None, look: Default::default(), look_path: None, list_offset: 0.0, list_height: 0.0, reveal: false,
             view: if mode == Mode::ImagePicker { View::Grid } else { View::List }, grid_columns: 1, thumbs: Default::default(), mounting: None, ejecting: None, message: None }
@@ -268,7 +274,7 @@ impl Browser {
         else if self.can_choose() { Some(if self.mode == Mode::ImagePicker { Event::Choose(entry.path) } else { Event::Open(entry.path) }) }
         else { None }
     }
-    pub fn captures_keyboard(&self) -> bool { self.dialog.is_some() || self.menu_open }
+    pub fn captures_keyboard(&self) -> bool { self.dialog.is_some() || self.menu_open || self.transfers.clash.is_some() }
     /// Reads the folder again, as after another tab changed it.
     pub fn refresh(&mut self, ctx: &egui::Context) { if self.loaded { self.navigate(ctx, self.path.clone(), Navigation::Refresh); } }
     /// What a tab showing this is called.
@@ -276,8 +282,10 @@ impl Browser {
         if self.in_trash { "Trash".into() } else if self.path == home() { "Home".into() }
         else { self.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "File system".into()) }
     }
-    pub fn configure_operations(&mut self, clipboard: Option<Clipboard>, progress: Option<u64>, queued: usize) {
-        self.clipboard = clipboard; self.operation_progress = progress; self.queued = queued;
+    pub fn configure_operations(&mut self, clipboard: Option<Clipboard>, transfers: crate::transfers::View) {
+        // A new question brings the panel up, so the answer has context.
+        if transfers.clash.is_some() && self.transfers.clash.is_none() { self.transfers_open = true; self.clash_all = true; }
+        self.clipboard = clipboard; self.transfers = transfers;
     }
     pub fn operation_result(&mut self, ctx: &egui::Context, result: Result<&str, &str>) {
         match result {
@@ -318,6 +326,7 @@ impl Browser {
     /// Carries out what was asked, in Browse mode against the selection.
     fn perform(&mut self, ctx: &egui::Context, act: Act) -> Option<Event> {
         if let Some(folder) = act.terminal { return Some(Event::Terminal(folder)); }
+        if act.undo && self.mode == Mode::Browse && self.transfers.undo.is_some() { return Some(Event::Undo); }
         if act.open { return self.activate(ctx); }
         if self.mode != Mode::Browse { return None; }
         let chosen = self.chosen();
@@ -336,8 +345,8 @@ impl Browser {
             if let Some(clipboard) = &self.clipboard {
                 let directory = self.path.clone();
                 return Some(Event::Operate(clipboard.sources.iter().cloned().map(|source| if clipboard.cut {
-                    crate::file_ops::Operation::Move { source, directory: directory.clone() }
-                } else { crate::file_ops::Operation::Copy { source, directory: directory.clone() } }).collect()));
+                    crate::file_ops::Operation::Move { source, directory: directory.clone(), conflict: Default::default() }
+                } else { crate::file_ops::Operation::Copy { source, directory: directory.clone(), conflict: Default::default() } }).collect()));
             }
         }
         None
@@ -396,6 +405,7 @@ impl Browser {
             act.cut |= pressed(ui, Modifiers::CTRL, Key::X);
             act.paste |= pressed(ui, Modifiers::CTRL, Key::V);
             act.new_folder |= pressed(ui, Modifiers::CTRL | Modifiers::SHIFT, Key::N);
+            act.undo |= pressed(ui, Modifiers::COMMAND, Key::Z);
             act.rename |= pressed(ui, Modifiers::NONE, Key::F2);
             act.trash |= pressed(ui, Modifiers::NONE, Key::Delete);
         }
@@ -456,6 +466,7 @@ impl Browser {
         let base_enabled = owns && self.dialog.is_none();
         let mut event = ui.add_enabled_ui(base_enabled, |ui| self.show_inner(ui, theme, base_enabled)).inner;
         if owns { event = self.operation_dialog(ui.ctx(), theme).or(event); }
+        if owns && self.dialog.is_none() { event = self.clash_dialog(ui.ctx(), theme).or(event); }
         event
     }
     fn show_inner(&mut self, ui: &mut egui::Ui, theme: &Theme, keyboard_active: bool) -> Option<Event> {
@@ -780,6 +791,94 @@ impl Browser {
         });
     }
 
+    /// The work queue: what runs, what waits, what was done, and the way back.
+    fn transfers_panel(&mut self, ui: &mut egui::Ui, theme: &Theme, undo: &mut bool) -> Option<Event> {
+        let mut event = None;
+        let rect = ui.max_rect();
+        ui.painter().rect_filled(rect, ui::SURFACE_RADIUS, ui::PANEL);
+        ui.painter().rect_stroke(rect, ui::SURFACE_RADIUS, egui::Stroke::new(1.0, ui::LINE), egui::StrokeKind::Inside);
+        let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(egui::vec2(14.0, 10.0))).layout(egui::Layout::top_down(egui::Align::Min)));
+        let ui = &mut inner;
+        ui.spacing_mut().item_spacing = egui::vec2(8.0, 6.0);
+        ui.horizontal(|ui| {
+            ui::tracked(ui, "TRANSFERS", ui::display_bold(12.0), ui::TEXT, 1.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui::button(ui, theme, "HIDE", None, false).clicked() { self.transfers_open = false; }
+                if !self.transfers.waiting.is_empty() && ui::button(ui, theme, "CLEAR WAITING", None, false).clicked() { event = Some(Event::ClearTransfers); }
+                let paused = self.transfers.paused;
+                if (paused || !self.transfers.waiting.is_empty()) && ui::button(ui, theme, if paused { "RESUME" } else { "PAUSE" }, None, paused).clicked() { event = Some(Event::PauseTransfers(!paused)); }
+                if let Some(label) = &self.transfers.undo { if ui::button(ui, theme, "UNDO", Some("CTRL Z"), false).on_hover_text(label.as_str()).clicked() { *undo = true; } }
+            });
+        });
+        let line = |ui: &mut egui::Ui, text: &str, color: egui::Color32| {
+            let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), ui::mono(11.5), color);
+            job.wrap = egui::text::TextWrapping::truncate_at_width(ui.available_width().max(10.0));
+            ui.label(job);
+        };
+        match (&self.transfers.running, &self.transfers.clash) {
+            (_, Some(clash)) => line(ui, &format!("Waiting for you: {} is already there", clash.name), ui::CAUTION),
+            (Some(running), None) => {
+                ui.horizontal(|ui| {
+                    if ui::button(ui, theme, "CANCEL", None, false).clicked() { event = Some(Event::CancelOperation); }
+                    let done = if self.transfers.progress == 0 { String::new() } else { format!(" · {}", file_size(self.transfers.progress)) };
+                    line(ui, &format!("{running}{done}"), ui::TEXT);
+                });
+            },
+            (None, None) if self.transfers.paused => line(ui, "Paused", ui::CAUTION),
+            (None, None) => line(ui, "Nothing running.", ui::SECONDARY),
+        }
+        for waiting in self.transfers.waiting.iter().take(2) { line(ui, &format!("Waiting · {waiting}"), ui::SECONDARY); }
+        if self.transfers.waiting.len() > 2 { line(ui, &format!("and {} more waiting", self.transfers.waiting.len() - 2), ui::LABEL); }
+        for (text, ok) in self.transfers.recent.iter().take(3) {
+            line(ui, &format!("{} {text}", if *ok { "Done ·" } else { "Failed ·" }), if *ok { ui::LABEL } else { ui::CAUTION });
+        }
+        event
+    }
+
+    /// A name already taken where something goes: what is coming, what is there, and the choices.
+    fn clash_dialog(&mut self, ctx: &egui::Context, theme: &Theme) -> Option<Event> {
+        let clash = self.transfers.clash.clone()?;
+        let mut event = None;
+        egui::Modal::new(egui::Id::new("native-file-clash")).show(ctx, |ui| {
+            ui.set_width((ctx.screen_rect().width() - 48.0).clamp(240.0, 460.0));
+            ui.add(egui::Label::new(egui::RichText::new(format!("{} is already there", clash.name)).font(ui::display_bold(19.0)).color(ui::TEXT)).wrap());
+            ui.add_space(12.0);
+            // To the second, as a person reads the times; finer differences say nothing.
+            let second = |time: Option<std::time::SystemTime>| time.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs());
+            let (incoming, existing) = (second(clash.incoming.1), second(clash.existing.1));
+            ui.columns(2, |columns| {
+                for (column, title, (bytes, when_changed), lit) in [(0, "COMING IN", clash.incoming, incoming > existing), (1, "ALREADY THERE", clash.existing, existing > incoming)] {
+                    let ui = &mut columns[column];
+                    let label = if lit { format!("{title} · NEWER") } else { title.to_string() };
+                    ui.label(egui::RichText::new(label).font(ui::mono(10.5)).color(if lit { theme.main } else { ui::LABEL }));
+                    ui.label(egui::RichText::new(file_size(bytes)).font(ui::display(14.0)).color(ui::TEXT));
+                    ui.label(egui::RichText::new(when(when_changed)).font(ui::mono(11.5)).color(ui::SECONDARY));
+                }
+            });
+            ui.add_space(12.0);
+            let pressed = |ui: &mut egui::Ui, key| ui.input_mut(|i| i.consume_key(Modifiers::NONE, key));
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+                if ui::button(ui, theme, "REPLACE", Some("R"), true).on_hover_text("The one there goes to Trash").clicked() || pressed(ui, Key::R) { event = Some(Event::Resolve(crate::file_ops::Conflict::Replace, self.clash_all)); }
+                if ui::button(ui, theme, "KEEP BOTH", Some("B"), false).clicked() || pressed(ui, Key::B) { event = Some(Event::Resolve(crate::file_ops::Conflict::KeepBoth, self.clash_all)); }
+                if ui::button(ui, theme, "SKIP", Some("S"), false).clicked() || pressed(ui, Key::S) { event = Some(Event::Resolve(crate::file_ops::Conflict::Skip, self.clash_all)); }
+                if ui::button(ui, theme, "STOP", Some("ESC"), false).on_hover_text("Leave this and everything still waiting").clicked() || pressed(ui, Key::Escape) { event = Some(Event::ClearTransfers); }
+            });
+            if clash.more > 0 {
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let toggle = ui::toggle(ui, theme, self.clash_all);
+                    toggle.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, self.clash_all, "Do the same for the rest"));
+                    if toggle.clicked() { self.clash_all = !self.clash_all; }
+                    ui.label(egui::RichText::new(format!("Do the same for the other {}", clash.more)).font(ui::display(13.0)).color(ui::TEXT));
+                });
+            }
+            ui.add_space(6.0);
+            crate::settings::note(ui, "Anything replaced goes to Trash, so Undo can bring it back.");
+        });
+        event
+    }
+
     /// The toolbar, the sortable list and the status line.
     fn center(&mut self, ui: &mut egui::Ui, theme: &Theme, act: &mut Act, target: &mut Option<(PathBuf, Navigation)>, menu_drawn: &mut bool) -> Option<Event> {
         let mut event = None;
@@ -827,7 +926,8 @@ impl Browser {
 
         let shown: Vec<PathBuf> = self.visible().into_iter().map(|i| self.entries[i].path.clone()).collect();
         let status_height = 34.0;
-        let list_height = (ui.available_height() - status_height).max(60.0);
+        let panel = if self.transfers_open && self.mode == Mode::Browse { 196.0_f32.min((ui.available_height() - status_height - 120.0).max(0.0)) } else { 0.0 };
+        let list_height = (ui.available_height() - status_height - panel).max(60.0);
         let list_rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(width, list_height));
         // The empty space of the folder has its own menu, under the rows.
         let background = ui.interact(list_rect, ui.id().with("folder-space"), egui::Sense::click());
@@ -861,7 +961,7 @@ impl Browser {
             }
             self.reveal = false;
         }
-        let draggable = self.mode == Mode::Browse && !self.in_trash && self.operation_progress.is_none();
+        let draggable = self.mode == Mode::Browse && !self.in_trash && self.transfers.running.is_none();
         let mut opened = None;
         ui.spacing_mut().item_spacing.y = gap;
         let output = scroll.show_rows(ui, row_height, shown.len().div_ceil(per_row), |ui, rows| {
@@ -897,6 +997,12 @@ impl Browser {
             ui.painter().text(list_rect.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, note, ui::display(13.0), ui::LABEL);
         }
 
+        if panel > 0.0 {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(width, panel), egui::Sense::hover());
+            let mut inside = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(egui::vec2(0.0, 6.0))).layout(egui::Layout::top_down(egui::Align::Min)));
+            inside.set_clip_rect(rect);
+            if let Some(asked) = self.transfers_panel(&mut inside, theme, &mut act.undo) { event = Some(asked); }
+        }
         // Status: what is here and selected, the clipboard, work going on.
         let (status, _) = ui.allocate_exact_size(egui::vec2(width, status_height), egui::Sense::hover());
         ui.painter().hline(status.x_range(), status.top(), egui::Stroke::new(1.0, ui::LINE));
@@ -906,12 +1012,19 @@ impl Browser {
             let ready = self.can_choose();
             if line.add_enabled_ui(ready, |ui| ui::button(ui, theme, "CHOOSE IMAGE", None, ready)).inner.clicked() { act.open = true; }
         }
-        if let Some(progress) = self.operation_progress {
-            if ui::button(&mut line, theme, "CANCEL", None, false).clicked() { event = Some(Event::CancelOperation); }
-            let waiting = if self.queued > 0 { format!(" · {} waiting", self.queued) } else { String::new() };
-            let done = if progress == 0 { String::new() } else { format!(" · {:.1} MiB", progress as f64 / 1_048_576.0) };
-            line.label(egui::RichText::new(format!("Working{done}{waiting}")).font(ui::mono(11.5)).color(ui::TEXT));
-        } else if let Some(free) = self.free.filter(|_| width >= 420.0) {
+        if self.mode == Mode::Browse {
+            let busy = self.transfers.running.is_some() || !self.transfers.waiting.is_empty() || self.transfers.clash.is_some();
+            let label = if self.transfers_open { "HIDE TRANSFERS" } else { "TRANSFERS" };
+            if (busy || !self.transfers.recent.is_empty()) && ui::button(&mut line, theme, label, None, busy).clicked() { self.transfers_open = !self.transfers_open; }
+            if !busy && !self.transfers_open && self.transfers.undo.is_some() && ui::button(&mut line, theme, "UNDO", Some("CTRL Z"), false).on_hover_text(self.transfers.undo.clone().unwrap_or_default()).clicked() { act.undo = true; }
+        }
+        if let Some(running) = self.transfers.running.clone().filter(|_| !self.transfers_open && width >= 520.0) {
+            let done = if self.transfers.progress == 0 { String::new() } else { format!(" · {}", file_size(self.transfers.progress)) };
+            let waiting = if self.transfers.waiting.is_empty() { String::new() } else { format!(" · {} waiting", self.transfers.waiting.len()) };
+            let mut job = egui::text::LayoutJob::simple_singleline(format!("{running}{done}{waiting}"), ui::mono(11.5), ui::TEXT);
+            job.wrap = egui::text::TextWrapping::truncate_at_width((width * 0.45).max(60.0));
+            line.label(job);
+        } else if let Some(free) = self.free.filter(|_| width >= 420.0 && self.transfers.running.is_none()) {
             line.label(egui::RichText::new(format!("{} free", file_size(free))).font(ui::mono(11.5)).color(ui::LABEL));
         }
         line.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -1152,8 +1265,8 @@ const MAX_FILE_TABS: usize = 12;
 impl Window {
     pub fn new(path: PathBuf) -> Self { Window { tabs: vec![Browser::new(path, Mode::Browse)], active: 0 } }
     pub fn captures_keyboard(&self) -> bool { self.tabs[self.active].captures_keyboard() }
-    pub fn configure_operations(&mut self, clipboard: Option<Clipboard>, progress: Option<u64>, queued: usize) {
-        for tab in &mut self.tabs { tab.configure_operations(clipboard.clone(), progress, queued); }
+    pub fn configure_operations(&mut self, clipboard: Option<Clipboard>, transfers: crate::transfers::View) {
+        for tab in &mut self.tabs { tab.configure_operations(clipboard.clone(), transfers.clone()); }
     }
     /// The active tab gets the answer; the others look again, as the change may show there.
     pub fn operation_result(&mut self, ctx: &egui::Context, result: Result<&str, &str>) {
@@ -1408,7 +1521,7 @@ mod interaction_tests {
     fn native_clipboard_paste_uses_the_selected_file_clipboard() {
         let ctx = egui::Context::default(); crate::ui::install_fonts(&ctx, None, None);
         let mut browser = Browser::new("/tmp/destination".into(), Mode::Browse); browser.loaded = true;
-        browser.configure_operations(Some(Clipboard { sources: vec!["/tmp/source.txt".into()], cut: false }), None, 0);
+        browser.configure_operations(Some(Clipboard { sources: vec!["/tmp/source.txt".into()], cut: false }), Default::default());
         render(&mut browser, &ctx, Vec::new(), 700.0);
         let action = render(&mut browser, &ctx, vec![egui::Event::Paste("unrelated system clipboard text".into())], 700.0).1;
         assert!(matches!(action.as_ref().map(|event| match event { Event::Operate(ops) => ops.as_slice(), _ => &[] }), Some([crate::file_ops::Operation::Copy { source, .. }]) if *source == PathBuf::from("/tmp/source.txt")));
@@ -1418,7 +1531,7 @@ mod interaction_tests {
     fn paste_shortcut_works_when_the_system_clipboard_has_no_text() {
         let ctx = egui::Context::default(); crate::ui::install_fonts(&ctx, None, None);
         let mut browser = Browser::new("/tmp/destination".into(), Mode::Browse); browser.loaded = true;
-        browser.configure_operations(Some(Clipboard { sources: vec!["/tmp/source.txt".into()], cut: false }), None, 0);
+        browser.configure_operations(Some(Clipboard { sources: vec!["/tmp/source.txt".into()], cut: false }), Default::default());
         render(&mut browser, &ctx, Vec::new(), 700.0);
         let mut action = None;
         let _ = ctx.run(egui::RawInput { modifiers: Modifiers::CTRL, events: vec![egui::Event::Key { key: Key::V, physical_key: Some(Key::V), pressed: false, repeat: false, modifiers: Modifiers::CTRL }], ..Default::default() }, |ctx| {
@@ -1431,7 +1544,7 @@ mod interaction_tests {
     fn clipboard_paste_event_and_key_release_do_not_paste_twice() {
         let ctx = egui::Context::default(); crate::ui::install_fonts(&ctx, None, None);
         let mut browser = Browser::new("/tmp/destination".into(), Mode::Browse); browser.loaded = true;
-        browser.configure_operations(Some(Clipboard { sources: vec!["/tmp/source.txt".into()], cut: false }), None, 0);
+        browser.configure_operations(Some(Clipboard { sources: vec!["/tmp/source.txt".into()], cut: false }), Default::default());
         render(&mut browser, &ctx, Vec::new(), 700.0);
         let mut run = |events| { let mut action = None; let _ = ctx.run(egui::RawInput { modifiers: Modifiers::CTRL, events, ..Default::default() }, |ctx| { egui::CentralPanel::default().show(ctx, |ui| action = browser.show(ui, &Theme::load("signal"))); }); action };
         assert!(matches!(run(vec![egui::Event::Paste("text".into())]), Some(Event::Operate(_))));
@@ -1632,6 +1745,22 @@ mod interaction_tests {
             }
         }
         assert_eq!(Browser::new("/tmp".into(), Mode::ImagePicker).view, View::Grid, "pictures are chosen from a grid");
+    }
+    #[test]
+    fn ctrl_z_asks_for_undo_and_a_clash_asks_before_anything_else() {
+        let ctx = egui::Context::default(); crate::ui::install_fonts(&ctx, None, None);
+        let mut browser = Browser::new("/tmp".into(), Mode::Browse); browser.loaded = true;
+        render(&mut browser, &ctx, Vec::new(), 900.0);
+        assert!(key(&mut browser, &ctx, Key::Z, Modifiers::COMMAND, 900.0).is_none(), "nothing to undo yet");
+        browser.configure_operations(None, crate::transfers::View { undo: Some("Move 2 items to Trash".into()), ..Default::default() });
+        assert!(matches!(key(&mut browser, &ctx, Key::Z, Modifiers::COMMAND, 900.0), Some(Event::Undo)));
+        let clash = crate::transfers::Clash { name: "report.pdf".into(), incoming: (10, None), existing: (9, None), more: 2 };
+        browser.configure_operations(None, crate::transfers::View { clash: Some(clash), ..Default::default() });
+        assert!(browser.captures_keyboard(), "the question owns the keys");
+        render(&mut browser, &ctx, Vec::new(), 900.0);
+        assert!(matches!(key(&mut browser, &ctx, Key::B, Modifiers::NONE, 900.0), Some(Event::Resolve(crate::file_ops::Conflict::KeepBoth, true))));
+        assert!(matches!(key(&mut browser, &ctx, Key::Escape, Modifiers::NONE, 900.0), Some(Event::ClearTransfers)));
+        assert!(browser.transfers_open, "the panel comes up with the question");
     }
     #[test]
     fn native_files_sort_keeps_folders_first_and_reverses() {
