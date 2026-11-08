@@ -346,6 +346,8 @@ impl Music {
         let body = (height - 44.0).max(40.0);
         match self.side_tab {
             SideTab::Lyrics => {
+                if now.track.is_some() && ui::button(ui, theme, "FULL SCREEN", None, false).clicked() { self.go(Source::Lyrics, true); self.lyrics_view.reset(); }
+                let body = (body - 40.0).max(40.0);
                 let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), body), Sense::hover());
                 let mut inner = ui.new_child(UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Min)));
                 inner.set_clip_rect(rect.intersect(ui.clip_rect()));
@@ -430,7 +432,7 @@ impl Music {
             ui.add_space(((ui.available_width() - buttons) / 2.0).max(0.0));
             if glyph_button(ui, theme, Glyph::Shuffle, 34.0, now.shuffle, if now.shuffle { "Shuffle is on" } else { "Shuffle" }).clicked() { self.send(json!({ "cmd": "shuffle", "on": !now.shuffle })); }
             if control(ui, theme, Control::Previous, 34.0, false).clicked() { self.send(json!({ "cmd": "prev" })); }
-            if play_button(ui, theme, now.playing).clicked() { self.send(json!({ "cmd": "toggle" })); }
+            if play_button(ui, theme, now.playing, 42.0).clicked() { self.send(json!({ "cmd": "toggle" })); }
             if control(ui, theme, Control::Next, 34.0, false).clicked() { self.send(json!({ "cmd": "next" })); }
             let (glyph, label, next) = match now.repeat.as_str() { "all" => (Glyph::Repeat, "Repeating all", "one"), "one" => (Glyph::RepeatOne, "Repeating this track", "off"), _ => (Glyph::Repeat, "Repeat", "all") };
             if glyph_button(ui, theme, glyph, 34.0, now.repeat != "off", label).clicked() { self.send(json!({ "cmd": "repeat", "mode": next })); }
@@ -459,17 +461,17 @@ impl Music {
         if glyph_button(&mut c, theme, Glyph::Queue, 32.0, queue_on, "Up next").clicked() {
             if wide_column { self.side_tab = SideTab::Queue; self.queue_as_of = None; } else { self.go(Source::Queue, true); self.queue_as_of = None; }
         }
-        let lyrics_on = if wide_column { self.side_tab == SideTab::Lyrics } else { self.source == Source::Lyrics };
-        if glyph_button(&mut c, theme, Glyph::Lyrics, 32.0, lyrics_on, "Lyrics").clicked() {
-            if wide_column { self.side_tab = SideTab::Lyrics; } else { self.go(Source::Lyrics, true); self.lyrics_view.reset(); }
+        let lyrics_on = self.source == Source::Lyrics;
+        if glyph_button(&mut c, theme, Glyph::Lyrics, 32.0, lyrics_on, if lyrics_on { "Close the lyrics" } else { "Lyrics, full screen" }).clicked() {
+            if lyrics_on { self.leave_lyrics(); } else { self.go(Source::Lyrics, true); self.lyrics_view.reset(); }
         }
         if now.playing { ui.ctx().request_repaint_after(Duration::from_millis(500)); }
     }
 }
 
 /// The large round play or pause button in the middle of the bar.
-fn play_button(ui: &mut Ui, theme: &Theme, playing: bool) -> Response {
-    let size = 42.0;
+pub(super) fn play_button(ui: &mut Ui, theme: &Theme, playing: bool, size: f32) -> Response {
+    let k = size / 42.0;
     let (rect, response) = ui.allocate_exact_size(vec2(size, size), Sense::click());
     let label = if playing { "Pause" } else { "Play" };
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label));
@@ -479,10 +481,10 @@ fn play_button(ui: &mut Ui, theme: &Theme, playing: bool) -> Response {
     if response.has_focus() { painter.circle_stroke(rect.center(), size / 2.0 + 2.0, Stroke::new(1.5, theme.main)); }
     let c = rect.center();
     if playing {
-        painter.rect_filled(Rect::from_center_size(c - vec2(4.5, 0.0), vec2(4.0, 15.0)), 1.0, ui::GROUND);
-        painter.rect_filled(Rect::from_center_size(c + vec2(4.5, 0.0), vec2(4.0, 15.0)), 1.0, ui::GROUND);
+        painter.rect_filled(Rect::from_center_size(c - vec2(4.5, 0.0) * k, vec2(4.0, 15.0) * k), 1.0, ui::GROUND);
+        painter.rect_filled(Rect::from_center_size(c + vec2(4.5, 0.0) * k, vec2(4.0, 15.0) * k), 1.0, ui::GROUND);
     } else {
-        painter.add(Shape::convex_polygon(vec![c + vec2(-5.0, -8.0), c + vec2(9.0, 0.0), c + vec2(-5.0, 8.0)], ui::GROUND, Stroke::NONE));
+        painter.add(Shape::convex_polygon(vec![c + vec2(-5.0, -8.0) * k, c + vec2(9.0, 0.0) * k, c + vec2(-5.0, 8.0) * k], ui::GROUND, Stroke::NONE));
     }
     response
 }

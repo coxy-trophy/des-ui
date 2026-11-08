@@ -7,6 +7,7 @@
 
 mod chrome;
 mod pages;
+mod stage;
 mod lyrics_view;
 
 use crate::theme::Theme;
@@ -624,14 +625,12 @@ fn fetch_cover(url: &str) -> Option<egui::ColorImage> {
 #[derive(Clone, Copy, PartialEq)]
 enum Control {
     Previous,
-    Play,
-    Pause,
     Next,
 }
 
 fn control(ui: &mut Ui, theme: &Theme, which: Control, size: f32, lit: bool) -> Response {
     let (rect, response) = ui.allocate_exact_size(vec2(size, size), Sense::click());
-    let label = match which { Control::Previous => "Previous track", Control::Play => "Play", Control::Pause => "Pause", Control::Next => "Next track" };
+    let label = match which { Control::Previous => "Previous track", Control::Next => "Next track" };
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label));
     let response = response.on_hover_text(label);
     let ink = if lit { ui::TEXT } else if response.hovered() { ui::TEXT } else { ui::SECONDARY };
@@ -649,13 +648,6 @@ fn control(ui: &mut Ui, theme: &Theme, which: Control, size: f32, lit: bool) -> 
     };
     let bar = |x: f32| Rect::from_center_size(pos2(c.x + x, c.y), vec2(unit * 0.5, unit * 2.8));
     match which {
-        Control::Play => {
-            painter.add(triangle(unit * 1.3, -unit * 0.9));
-        }
-        Control::Pause => {
-            painter.rect_filled(bar(-unit * 0.7), 0.0, ink);
-            painter.rect_filled(bar(unit * 0.7), 0.0, ink);
-        }
         Control::Next => {
             painter.add(triangle(unit * 0.8, -unit * 1.2));
             painter.rect_filled(bar(unit * 1.2), 0.0, ink);
@@ -868,95 +860,6 @@ impl Music {
         if self.now().track.is_some() { PANEL_HEIGHT } else { 0.0 }
     }
 
-    pub fn panel(&mut self, ui: &mut Ui, theme: &Theme) -> bool {
-        let now = self.now();
-        let Some(track) = now.track.as_ref() else { return false; };
-        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_HEIGHT), Sense::hover());
-        let mut inner = ui.new_child(UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Min)));
-        inner.set_clip_rect(rect.intersect(ui.clip_rect()));
-        let ui = &mut inner;
-        ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
-        ui::tracked(ui, if now.playing { "NOW PLAYING" } else { "PAUSED" }, ui::display_bold(10.0), ui::SECONDARY, 1.5);
-        let mut open = false;
-        ui.horizontal(|ui| {
-            self.draw_cover(ui, 36.0, track.cover.as_deref());
-            ui.vertical(|ui| {
-                let fit = (ui.available_width().max(0.0) / 8.0) as usize;
-                let title = ui.add(egui::Label::new(egui::RichText::new(crate::panels::truncate(&track.name, fit)).font(ui::display_bold(13.0)).color(ui::TEXT)).truncate().sense(Sense::click()));
-                open = title.on_hover_text(format!("Open Music — {}", track.name)).clicked();
-                ui::text(ui, &crate::panels::truncate(&track.artists, fit), ui::display(11.0), ui::SECONDARY).on_hover_text(&track.artists);
-            });
-        });
-        ui.horizontal(|ui| {
-            if control(ui, theme, Control::Previous, ui::CONTROL_HEIGHT, false).clicked() { self.send(json!({ "cmd": "prev" })); }
-            if control(ui, theme, if now.playing { Control::Pause } else { Control::Play }, ui::CONTROL_HEIGHT, true).clicked() { self.send(json!({ "cmd": "toggle" })); }
-            if control(ui, theme, Control::Next, ui::CONTROL_HEIGHT, false).clicked() { self.send(json!({ "cmd": "next" })); }
-            ui::text(ui, &clock(now.position_ms()), ui::mono(10.0), ui::SECONDARY);
-        });
-        let frac = now.position_ms() as f32 / track.duration_ms.max(1) as f32;
-        ui::bar(ui, theme, 3.0, frac.min(CAUTION_FREE), 0.0);
-        self.volume_control(ui, theme, &now);
-        if now.playing { ui.ctx().request_repaint_after(Duration::from_millis(500)); }
-        open
-    }
-
-    /// What is playing, for the lock screen: the cover, the track, how far along it
-    /// is, and the three controls. Nothing when nothing is. It sits at the bottom of
-    /// `within`, in the middle.
-    pub fn lock_card(&mut self, ui: &mut Ui, theme: &Theme, within: Rect) {
-        let now = self.now();
-        let Some(track) = now.track.clone() else {
-            return;
-        };
-        let size = vec2(460.0_f32.min(within.width()), 116.0);
-        let mut card = Rect::from_center_size(pos2(within.center().x, within.bottom() - 40.0 - size.y / 2.0), size);
-        // On a short screen the middle is taken by the password line: the corner then.
-        if card.top() < within.center().y + 236.0 {
-            card = Rect::from_min_size(within.right_bottom() - size, size);
-        }
-        crate::material::paint(ui.ctx(), ui.painter(), card, ui::CONTROL_RADIUS, crate::material::Role::Panel);
-        ui.painter().rect_stroke(card, ui::CONTROL_RADIUS, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
-
-        let mut inner = ui.new_child(UiBuilder::new().max_rect(card.shrink(14.0)).layout(Layout::left_to_right(Align::Center)));
-        let ui = &mut inner;
-        ui.spacing_mut().item_spacing.x = 16.0;
-        self.draw_cover(ui, 88.0, track.cover.as_deref());
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 4.0;
-            let fit = (ui.available_width() / 8.6) as usize;
-            let state = match (&now.device, now.playing) {
-                (Some(device), true) => format!("PLAYING ON {}", device.to_uppercase()),
-                (None, true) => "NOW PLAYING".to_string(),
-                (_, false) => "PAUSED".to_string(),
-            };
-            ui::tracked(ui, &crate::panels::truncate(&state, fit), ui::display_bold(10.0), if now.playing { theme.main } else { ui::LABEL }, 2.0);
-            ui::text(ui, &crate::panels::truncate(&track.name, fit), ui::display_bold(16.0), ui::TEXT);
-            ui::text(ui, &crate::panels::truncate(&track.artists, fit + 4), ui::display(11.0), ui::SECONDARY);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                if control(ui, theme, Control::Previous, 26.0, false).clicked() {
-                    self.send(json!({ "cmd": "prev" }));
-                }
-                let which = if now.playing { Control::Pause } else { Control::Play };
-                if control(ui, theme, which, 30.0, true).clicked() {
-                    self.send(json!({ "cmd": "toggle" }));
-                }
-                if control(ui, theme, Control::Next, 26.0, false).clicked() {
-                    self.send(json!({ "cmd": "next" }));
-                }
-                ui.add_space(10.0);
-                let position = now.position_ms();
-                ui::text(ui, &format!("{} / {}", clock(position), clock(track.duration_ms)), ui::mono(11.0), ui::LABEL);
-            });
-            let frac = now.position_ms() as f32 / track.duration_ms.max(1) as f32;
-            ui::bar(ui, theme, 3.0, frac.min(CAUTION_FREE), 0.0);
-        });
-        // The position keeps moving while it plays.
-        if now.playing {
-            ui.ctx().request_repaint_after(Duration::from_millis(500));
-        }
-    }
-
     /// The full view, in place of the terminal.
     pub fn show(&mut self, ui: &mut Ui, rect: Rect, theme: &Theme) {
         if let Some(receiver)=&self.browser_open {
@@ -969,6 +872,8 @@ impl Music {
         if self.editor.is_none() && self.add_to.is_none() && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape)) {
             if ui.memory(|memory| memory.any_popup_open()) {
                 ui.memory_mut(|memory| memory.close_popup());
+            } else if self.source == Source::Lyrics {
+                self.leave_lyrics();
             } else {
                 self.open = false;
                 return;
@@ -1182,6 +1087,13 @@ impl Music {
             self.player_bar(ui, theme, now, transport_height, false);
             return;
         }
+        // The words, full screen, in place of the library and the bar.
+        if source == Source::Lyrics && now.track.is_some() && ui.available_width() >= 900.0 {
+            let rect = ui.available_rect_before_wrap();
+            ui.allocate_rect(rect, Sense::hover());
+            self.lyrics_stage(ui, theme, now, rect);
+            return;
+        }
         let rail_width = (ui.available_width() * 0.23).clamp(152.0, 224.0);
         let wide = ui.available_width() >= 660.0;
         let navigation_top = ui.cursor().min.y;
@@ -1248,7 +1160,7 @@ impl Music {
                         }
                         return;
                     }
-                    self.library_actions(ui,theme,&source);
+                    if source != Source::Lyrics { self.library_actions(ui,theme,&source); }
                 }
                 if source == Source::Lyrics {
                     self.lyrics(ui, theme, now);
@@ -1515,20 +1427,6 @@ impl Music {
 
     pub fn set_lyrics_motion(&mut self,enabled:bool) {self.lyrics_motion=enabled;}
 
-    /// Music's software volume is independent of the desktop output volume.
-    /// Keep it visible in both players so a quiet source is easy to identify.
-    fn volume_control(&self, ui: &mut Ui, theme: &Theme, now: &Now) {
-        ui.horizontal(|ui| {
-            ui::text(ui, "Music", ui::display(12.0), ui::SECONDARY)
-                .on_hover_text("des-music volume; separate from system volume");
-            let width = (ui.available_width() - 44.0 - ui.spacing().item_spacing.x).max(20.0);
-            if let Some(to) = ui::slider(ui, theme, width, now.volume as f32 / 100.0, "Music volume") {
-                self.send(json!({ "cmd": "volume", "percent": (to * 100.0).round() as u8 }));
-            }
-            ui::text(ui, &format!("{}%", now.volume), ui::mono(11.0), ui::TEXT);
-        });
-    }
-
 }
 
 /// Read only the explicitly selected image; encode a bounded JPEG for Spotify.
@@ -1548,11 +1446,6 @@ fn playlist_cover(path: &str) -> Result<String,String> {
 
 /// Finite right-panel playback reservation, including its internal spacing.
 pub const PANEL_HEIGHT: f32 = 136.0;
-
-/// A track near its end is no warning, so progress never shows the caution colour.
-const CAUTION_FREE: f32 = ui::CAUTION_ABOVE;
-
-/// A row in the left list. Returns true when clicked.
 
 /// What was clicked on a row: the row itself, or its way into the queue.
 #[derive(Clone, Copy, PartialEq)]
@@ -2008,7 +1901,7 @@ mod tests {
                 }}
                 let theme=Theme::load("signal");
                 egui::CentralPanel::default().show(ctx,|ui| {
-                    if self.mode=="compact"{self.music.panel(ui,&theme);}else{let rect=ui.available_rect_before_wrap();self.music.show(ui,rect,&theme);}
+                    if self.mode=="compact"{self.music.panel(ui,&theme);}else if self.mode=="lock"{let rect=ui.max_rect();self.music.lock_card(ui,&theme,rect);}else{let rect=ui.available_rect_before_wrap();self.music.show(ui,rect,&theme);}
                 });
                 self.frames+=1;
                 if self.frames==4 {ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));}
@@ -2018,7 +1911,13 @@ mod tests {
         let output=PathBuf::from(std::env::var("DESUI_MUSIC_PREVIEW").expect("preview output"));
         let mode=std::env::var("DESUI_MUSIC_PREVIEW_MODE").unwrap_or_default();
         let width=std::env::var("DESUI_MUSIC_PREVIEW_WIDTH").ok().and_then(|s|s.parse::<f32>().ok()).unwrap_or(1100.0);
-        let mut music=fixture(Now::parse(&json!({"volume":75,"playing":false,"track":{"uri":"spotify:track:fixture","name":"Sample track","artists":"Sample artist","duration_ms":240000}})));
+        let mut music=fixture(Now::parse(&json!({"volume":75,"playing":false,"position_ms":61000,"device":"This laptop","track":{"uri":"spotify:track:fixture","name":"Sample track","artists":"Sample artist","album":"Sample album","duration_ms":240000}})));
+        if mode=="lyrics" {
+            let lines=["Streetlights count the hours down","Every window holds a tune","We keep driving past the town","Chasing echoes of the moon","Hold the signal, hold it close","Static fading into light","Every road we never chose","Folds into the open night","Hold the signal","Hold it close"];
+            music.shared.lock().unwrap().lyrics=Some(Lyrics{track:"spotify:track:fixture".into(),synced:true,lines:lines.iter().enumerate().map(|(i,l)|(i as u32*12_000,l.to_string())).collect(),error:None});
+            music.lyrics_asked=Some("spotify:track:fixture".into());
+            music.trail.push(Source::Home); music.source=Source::Lyrics;
+        }
         if mode=="home" {
             let tracks=|names:&[(&str,&str)]| parse_items(&json!({"items":names.iter().enumerate().map(|(i,(n,a))| json!({"uri":format!("spotify:track:{n}{i}"),"name":n,"artists":a,"duration_ms":200_000+i*13_000})).collect::<Vec<_>>()}));
             let playlists=parse_items(&json!({"items":(["Signal Flare","Late shift","Focus · no words","Road north","Sunday low","Made for running","Evening favourites"]).iter().enumerate().map(|(i,n)| json!({"kind":"playlist","uri":format!("spotify:playlist:{i}"),"id":format!("p{i}"),"name":n,"owner":"you"})).collect::<Vec<_>>()}));
@@ -2050,7 +1949,7 @@ mod tests {
             }
         }
         if mode.starts_with("editor") {music.editor=Some(PlaylistEditor{name:"Evening favourites".into(),description:"A personal playlist".into(),..Default::default()});if mode=="editor-error"{music.editor.as_mut().unwrap().error=Some("Spotify refused this edit. Your draft is preserved; reconnect the library to approve permissions.".into());}else if mode=="editor-pending"{music.editor.as_mut().unwrap().begin(&mut music.shared.lock().unwrap(),"playlist_save",Instant::now());}}
-        else if mode!="compact" && mode!="home" && mode!="playlist" && mode!="search" {music.source=Source::Browse{kind:"shows".into(),key:String::new(),name:"Podcasts".into(),range:"medium_term".into()};music.shared.lock().unwrap().lists.insert("shows:".into(),(parse_items(&json!({"items":[{"kind":"show","uri":"spotify:show:fixture","id":"fixture","name":"A sample podcast","artists":"Sample publisher"}]})),None));}
+        else if mode!="compact" && mode!="home" && mode!="playlist" && mode!="search" && mode!="lyrics" && mode!="lock" {music.source=Source::Browse{kind:"shows".into(),key:String::new(),name:"Podcasts".into(),range:"medium_term".into()};music.shared.lock().unwrap().lists.insert("shows:".into(),(parse_items(&json!({"items":[{"kind":"show","uri":"spotify:show:fixture","id":"fixture","name":"A sample podcast","artists":"Sample publisher"}]})),None));}
         let options=eframe::NativeOptions{viewport:egui::ViewportBuilder::default().with_inner_size([width,800.0]),event_loop_builder:Some(Box::new(|builder|{builder.with_x11().with_any_thread(true);})),..Default::default()};
         eframe::run_native("DEs-UI music fixture",options,Box::new(move |cc|{ui::install_fonts(&cc.egui_ctx,None,None);crate::apply_style(&cc.egui_ctx,&Theme::load("signal"));Ok(Box::new(Preview{music,frames:0,output,mode}))})).unwrap();
     }

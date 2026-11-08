@@ -437,7 +437,7 @@ pub fn prominent_slider(ui: &mut Ui, theme: &Theme, width: f32, value: f32, name
     slider_sized(ui, theme, width, value, name, 42.0)
 }
 
-fn slider_sized(ui: &mut Ui, theme: &Theme, width: f32, value: f32, name: &str, height: f32) -> Option<f32> {
+pub fn slider_sized(ui: &mut Ui, theme: &Theme, width: f32, value: f32, name: &str, height: f32) -> Option<f32> {
     let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click_and_drag());
     if response.clicked() || response.drag_started() { response.request_focus(); }
     let track_half_height = if height > CONTROL_HEIGHT { 4.0 } else { 3.0 };
