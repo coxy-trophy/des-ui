@@ -1,5 +1,5 @@
 //! Bounded private IPC and protocol8 TLS device sessions. No capture starts on boot.
-use crate::{identity::{self,Store,Result},packet::{Identity,Packet,MAX_FRAME},pairing::{Pairing,Session,Attempt,State}};
+use crate::{cast::{self,Cast},identity::{self,Store,Result},packet::{Identity,Packet,MAX_FRAME},pairing::{Pairing,Session,Attempt,State}};
 use openssl::{ssl::{Ssl,SslContextBuilder,SslMethod,SslStream,SslVerifyMode,SslVersion},x509::X509};
 use serde::{Serialize,Deserialize};
 use serde_json::{json,Value};
@@ -11,9 +11,10 @@ pub struct Device {
  pub last_ping:Option<i64>,pub error:Option<String>,
  #[serde(default)] pub files_enabled:bool,#[serde(default)] pub files_reconnect_needed:bool,
  #[serde(default)] pub media_enabled:bool,#[serde(default)] pub volume_enabled:bool,#[serde(default)] pub media_reconnect_needed:bool,#[serde(default)] pub volume_reconnect_needed:bool,
+ #[serde(default)] pub wireless_cast:bool,
  #[serde(skip)] epoch:u64,
 }
-impl Device {fn offline(id:String,name:String,kind:String,files_enabled:bool,media_enabled:bool,volume_enabled:bool)->Self {Self{id,name,kind,connected:false,paired:true,pair_state:"offline".into(),attempt:None,verification_key:None,battery:None,charging:false,last_ping:None,error:None,files_enabled,files_reconnect_needed:false,media_enabled,volume_enabled,media_reconnect_needed:false,volume_reconnect_needed:false,epoch:0}}}
+impl Device {fn offline(id:String,name:String,kind:String,files_enabled:bool,media_enabled:bool,volume_enabled:bool)->Self {Self{id,name,kind,connected:false,paired:true,pair_state:"offline".into(),attempt:None,verification_key:None,battery:None,charging:false,last_ping:None,error:None,files_enabled,files_reconnect_needed:false,media_enabled,volume_enabled,media_reconnect_needed:false,volume_reconnect_needed:false,wireless_cast:false,epoch:0}}}
 #[derive(Clone,Deserialize,Serialize,Debug)]
 pub struct Request {pub op:String,#[serde(default)] pub device_id:Option<String>,#[serde(default)] pub attempt:Option<u64>,#[serde(flatten)]pub args:BTreeMap<String,Value>}
 struct Replacement {stream:SslStream<TcpStream>,identity:Identity,ip:AddressPermit,files_advertised:bool,media_advertised:bool,volume_advertised:bool}
@@ -26,7 +27,7 @@ impl Job {fn content_guard(&self)->Result<()> {
 }}
 struct Shared {
  store:Mutex<Store>,ips:Mutex<BTreeMap<IpAddr,usize>>,devices:Mutex<BTreeMap<String,Device>>,routes:Mutex<BTreeMap<String,Route>>,
- screens:Mutex<crate::screens::ScreenBridge>,screen_peer:Mutex<Option<String>>,transfers:Mutex<Option<crate::transfers::TransferManager>>,loopback:bool,stop:AtomicBool,
+ screens:Mutex<crate::screens::ScreenBridge>,screen_peer:Mutex<Option<String>>,cast:Mutex<Option<Cast>>,transfers:Mutex<Option<crate::transfers::TransferManager>>,loopback:bool,stop:AtomicBool,
  next:AtomicU64,next_approval:AtomicU64,active:AtomicUsize,unpaired:AtomicUsize,ipc_active:AtomicUsize,id:String,name:String,port:u16,
 }
 impl Shared {
@@ -34,9 +35,21 @@ impl Shared {
   let devices=self.devices.lock().unwrap().values().cloned().collect::<Vec<_>>();let transfers=self.transfers.lock().unwrap().as_mut().map(|manager|manager.snapshots()).unwrap_or_default();let mut screens=self.screens.lock().unwrap();
   let mut screen_status=serde_json::to_value(screens.status()).unwrap();
   screen_status["device_id"]=json!(self.screen_peer.lock().unwrap().clone());
+  if let Some(cast)=self.cast.lock().unwrap().as_ref(){screen_status=cast.snapshot();}
   json!({"id":self.id,"name":self.name,"tcp_port":self.port,"running":!self.stop.load(Ordering::Acquire),"devices":devices,"transfers":transfers,"screens":screen_status,"screen_capabilities":screens.capabilities()})
  }
  fn paired(&self,id:&str)->bool {self.devices.lock().unwrap().get(id).is_some_and(|d|d.connected&&d.paired)&&self.store.lock().unwrap().peers.contains_key(id)}
+ fn cast_peer_authorized(&self,id:&str,epoch:u64)->bool {
+  if self.stop.load(Ordering::Acquire){return false;}
+  let digest=self.routes.lock().unwrap().get(id).filter(|route|route.epoch==epoch).map(|route|route.digest);
+  let Some(digest)=digest else{return false;};
+  let connected=self.devices.lock().unwrap().get(id).is_some_and(|d|d.epoch==epoch&&d.connected&&d.paired);
+  connected&&self.store.lock().unwrap().pin(id).is_ok_and(|known|known==Some(digest))
+ }
+ fn clear_cast(&self, check:impl FnOnce(&Cast)->bool) {
+  let mut slot=self.cast.lock().unwrap();
+  if slot.as_ref().is_some_and(check){*slot=None;}
+ }
  fn identity(&self)->Packet {self.identity_with_policies(false,false,false)}
  fn identity_with_policies(&self,files:bool,media:bool,volume:bool)->Packet {let mut identity=packet("kdeconnect.identity",json!({"deviceId":self.id,"deviceName":self.name,"deviceType":"desktop","protocolVersion":8,"tcpPort":self.port,
  "incomingCapabilities":["kdeconnect.ping","kdeconnect.battery"],"outgoingCapabilities":["kdeconnect.ping","kdeconnect.battery.request"]}));
@@ -48,7 +61,11 @@ impl Shared {
  fn secure_identity(&self,id:&str,digest:[u8;32])->Result<(Packet,(bool,bool,bool))> {
   let store=self.store.lock().unwrap();let trusted=store.pin(id)?==Some(digest);let peer=store.peers.get(id);
   let files=trusted&&peer.is_some_and(|p|p.files_enabled);let media=trusted&&peer.is_some_and(|p|p.media_enabled);let volume=trusted&&peer.is_some_and(|p|p.volume_enabled);
-  Ok((self.identity_with_policies(files,media,volume),(files,media,volume)))
+  let mut identity=self.identity_with_policies(files,media,volume);
+  for key in ["incomingCapabilities","outgoingCapabilities"] {
+   identity.body[key].as_array_mut().unwrap().push(json!(cast::CAPABILITY));
+  }
+  Ok((identity,(files,media,volume)))
  }
  fn files_allowed(&self,id:&str)->bool {self.paired(id)&&self.store.lock().unwrap().peers.get(id).is_some_and(|peer|peer.files_enabled)}
  fn ensure_transfers(&self)->Result<()> {
@@ -110,7 +127,7 @@ fn handshake(shared:&Shared,mut tcp:TcpStream,claim:Option<Packet>)->Result<(Ssl
  stream.get_ref().set_read_timeout(Some(Duration::from_millis(200)))?;
  Ok((stream,after,cert,files_advertised))
 }
-struct Actor {shared:Arc<Shared>,view:Device,stream:SslStream<TcpStream>,cert:X509,pair:Pairing,session:Session,started:Instant,timestamp:Option<i64>,write_failed:bool,public_attempt:Option<(Attempt,u64)>,unpaired_permit:Option<UnpairedPermit>,ip:AddressPermit,incoming_capabilities:Vec<String>,outgoing_capabilities:Vec<String>,files_advertised:bool,media_advertised:bool,volume_advertised:bool,reconnect_requested:bool,media_dispatched:bool}
+struct Actor {shared:Arc<Shared>,view:Device,stream:SslStream<TcpStream>,cert:X509,pair:Pairing,session:Session,started:Instant,timestamp:Option<i64>,write_failed:bool,public_attempt:Option<(Attempt,u64)>,unpaired_permit:Option<UnpairedPermit>,ip:AddressPermit,incoming_capabilities:Vec<String>,outgoing_capabilities:Vec<String>,files_advertised:bool,media_advertised:bool,volume_advertised:bool,reconnect_requested:bool,media_dispatched:bool,cast_id:Option<String>,last_cast_lease:Instant}
 impl Actor {
  fn send(&mut self,packet:Packet)->Result<()> {let result=write_packet(&mut self.stream,packet);if result.is_err(){self.write_failed=true;}result}
  fn request_battery(&mut self)->Result<()> {
@@ -125,6 +142,7 @@ impl Actor {
   let policy=self.shared.store.lock().unwrap().peers.get(&self.view.id).map(|peer|(peer.files_enabled,peer.media_enabled,peer.volume_enabled)).unwrap_or_default();
   let authorized=self.pair.authorized();self.view.files_enabled=authorized&&policy.0;self.view.media_enabled=authorized&&policy.1;self.view.volume_enabled=authorized&&policy.2;
   self.view.files_reconnect_needed=authorized&&self.view.files_enabled!=self.files_advertised;self.view.media_reconnect_needed=authorized&&self.view.media_enabled!=self.media_advertised;self.view.volume_reconnect_needed=authorized&&self.view.volume_enabled!=self.volume_advertised;
+  self.view.wireless_cast=self.cast_capable();
   self.view.paired=self.pair.authorized();self.view.pair_state=match self.pair.state(){State::Incoming=>"incoming",State::Outgoing=>"outgoing",State::Accepting=>"accepting",State::Paired=>"paired",State::Disconnected=>"offline",State::Unpaired=>"unpaired"}.into();
   let attempt=self.pair.pending();if self.public_attempt.map(|p|p.0)!=attempt {self.public_attempt=attempt.map(|a|(a,self.shared.next_approval.fetch_add(1,Ordering::Relaxed)));}
   self.view.attempt=self.public_attempt.map(|a|a.1);
@@ -142,9 +160,99 @@ impl Actor {
   let store=self.shared.store.lock().unwrap();let pin=store.pin(&self.view.id)?.ok_or("device is no longer paired")?;
   crate::transfers::PeerTls::new(store.key.clone(),store.certificate.clone(),self.view.id.clone(),self.cert.clone(),pin,self.stream.get_ref().peer_addr()?.ip()).map_err(Into::into)
  }
+ fn cast_capable(&self)->bool {
+  matches!(self.view.kind.as_str(),"phone"|"tablet")&&
+   [&self.incoming_capabilities,&self.outgoing_capabilities].iter().all(|caps|caps.iter().any(|cap|cap==cast::CAPABILITY))
+ }
+ fn cast_authorized(&self)->bool {
+  if self.shared.stop.load(Ordering::Acquire)||!self.pair.authorized()||!self.cast_capable(){return false;}
+  let pin=self.pair.pinned();
+  pin.is_some()&&self.shared.store.lock().unwrap().pin(&self.view.id).is_ok_and(|known|known==pin)
+ }
+ fn cast_job_guard(&self,job:&Job)->Result<()> {
+  if Instant::now()>=job.expires_at||!control_alive(&job.client){return Err("cast command expired or was cancelled".into());}
+  if !self.cast_authorized(){return Err("cast requires a paired phone that supports wireless casting".into());}
+  if !session_unlocked(){
+   self.shared.clear_cast(|cast|cast.owned_by(&self.view.id,self.view.epoch));
+   return Err("casting requires an unlocked DES UI session".into());
+  }
+  Ok(())
+ }
+ fn cast_start(&mut self,job:&Job)->Result<()> {
+  self.cast_job_guard(job)?;
+  self.cast_tick()?;
+  if self.cast_id.is_some(){return Err("stop the current screen session before casting".into());}
+  let id=cast::new_id()?;
+  // Always take the USB screen lock first when both transports are involved.
+  {
+   let mut screens=self.shared.screens.lock().unwrap();
+   let mut slot=self.shared.cast.lock().unwrap();
+   if slot.is_some()||screens.status().running{return Err("stop the current screen session before casting".into());}
+   *slot=Some(Cast::new(self.view.id.clone(),self.view.epoch,id.clone(),Instant::now()));
+  }
+  let result=self.cast_job_guard(job).and_then(|()|{
+   if !self.shared.cast.lock().unwrap().as_ref().is_some_and(|cast|cast.id==id){return Err("cast request was stopped".into());}
+   self.send(packet(cast::CAPABILITY,json!({"op":"start","id":id})))
+  });
+  if result.is_err(){self.shared.clear_cast(|cast|cast.id==id);}
+  else {self.cast_id=Some(id);self.last_cast_lease=Instant::now();}
+  result
+ }
+ fn cast_input(&mut self,job:&Job)->Result<()> {
+  self.cast_job_guard(job)?;
+  let id=job.args.get("serial").and_then(Value::as_str).filter(|id|cast::valid_id(id)).ok_or("missing cast session")?;
+  let body={
+   let mut slot=self.shared.cast.lock().unwrap();
+   let cast=slot.as_mut().filter(|cast|cast.id==id&&cast.owned_by(&self.view.id,self.view.epoch)).ok_or("cast session has ended")?;
+   cast.input(&job.args,Instant::now())?
+  };
+  // Re-check the live client, lock, trust and current frame after preparing
+  // input. Do not block Stop or frame revocation on a TLS write.
+  self.cast_job_guard(job)?;
+  let geometry=body["geometry"].as_u64().ok_or("missing cast geometry")?;
+  let valid=self.shared.cast.lock().unwrap().as_ref().is_some_and(|cast|
+   cast.id==id&&cast.owned_by(&self.view.id,self.view.epoch)&&cast.input_allowed(geometry,Instant::now()));
+  if !valid{return Err("cast session or preview geometry changed".into());}
+  if Instant::now()>=job.expires_at||!control_alive(&job.client){return Err("cast command expired or was cancelled".into());}
+  self.send(packet(cast::CAPABILITY,body))
+ }
+ fn cast_tick(&mut self)->Result<()> {
+  let Some(id)=self.cast_id.clone() else{return Ok(());};
+  let due=self.last_cast_lease.elapsed()>=Duration::from_secs(1);
+  if due&&(!self.cast_authorized()||!session_unlocked()){
+   self.shared.clear_cast(|cast|cast.id==id);
+  }
+  let active={
+   let mut slot=self.shared.cast.lock().unwrap();
+   if slot.as_ref().is_some_and(|cast|cast.id==id&&cast.expired(Instant::now())){*slot=None;}
+   slot.as_ref().is_some_and(|cast|cast.id==id)
+  };
+  if !active {
+   self.cast_id=None;
+   self.send(packet(cast::CAPABILITY,json!({"op":"stop","id":id})))?;
+  }else if due{
+   self.last_cast_lease=Instant::now();
+   self.send(packet(cast::CAPABILITY,json!({"op":"lease","id":id})))?;
+  }
+  Ok(())
+ }
+ fn cast_received(&mut self,np:&Packet) {
+  let Some(id)=self.cast_id.as_deref() else{return;};
+  if np.payload_size.is_some()||!self.cast_authorized(){return;}
+  let mut slot=self.shared.cast.lock().unwrap();
+  if let Some(cast)=slot.as_mut().filter(|cast|cast.id==id&&cast.owned_by(&self.view.id,self.view.epoch)){
+   if matches!(cast.receive(&np.body,Instant::now()),cast::Update::Stop){*slot=None;self.cast_id=None;}
+  }
+ }
+ fn cast_clear_link(&mut self) {
+  self.shared.clear_cast(|cast|cast.owned_by(&self.view.id,self.view.epoch));
+  self.cast_id=None;
+ }
  fn pending(&self,id:Option<u64>)->Result<Attempt>{self.public_attempt.filter(|a|Some(a.1)==id&&self.pair.pending()==Some(a.0)).map(|a|a.0).ok_or_else(||"pairing request changed; refresh before accepting".into())}
  fn command(&mut self,job:&Job)->Result<()> {
   match job.op.as_str() {
+   "cast_phone"=>self.cast_start(job)?,
+   "cast_input"=>return self.cast_input(job),
    "set_files"|"set_media"|"set_volume"=>{
     if !self.pair.authorized()||!session_unlocked(){return Err("permission changes require a paired device and unlocked DES UI session".into());}
     let enabled=job.args.get("enabled").and_then(Value::as_bool).ok_or("enabled must be a boolean")?;
@@ -185,7 +293,7 @@ impl Actor {
     let _=self.request_battery();
    }
    "reject"=>{let attempt=self.pending(job.attempt)?;self.pair.cancel(self.session,attempt)?;self.send(packet("kdeconnect.pair",json!({"pair":false})))?;}
-   "unpair"=>{self.shared.cancel_peer_files(&self.view.id);self.shared.store.lock().unwrap().forget(&self.view.id)?;self.pair.unpair(self.session)?;self.send(packet("kdeconnect.pair",json!({"pair":false})))?;}
+   "unpair"=>{self.cast_clear_link();self.shared.cancel_peer_files(&self.view.id);self.shared.store.lock().unwrap().forget(&self.view.id)?;self.pair.unpair(self.session)?;self.send(packet("kdeconnect.pair",json!({"pair":false})))?;}
    "ping"=>{if !self.pair.authorized(){return Err("pair device before sending commands".into());}
     self.send(packet("kdeconnect.ping",json!({"message":"DES Connect"})))?;
    }
@@ -193,6 +301,7 @@ impl Actor {
   }self.view.error=None;self.publish();Ok(())
  }
  fn received(&mut self,np:Packet)->Result<()> {
+  if np.kind==cast::CAPABILITY {self.cast_received(&np);return Ok(());}
   if np.payload_size.is_some(){
    if !self.pair.authorized(){return Ok(());}
    if matches!(np.kind.as_str(),crate::media::MPRIS_REQUEST|crate::media::SYSTEM_VOLUME_REQUEST){self.view.error=Some("Media payloads are unsupported".into());self.publish();return Ok(());}
@@ -204,7 +313,7 @@ impl Actor {
   }
   if np.kind=="kdeconnect.pair" {
    let wants=np.body.get("pair").and_then(Value::as_bool).ok_or("invalid pairing packet")?;
-   if !wants {self.shared.cancel_peer_files(&self.view.id);self.shared.store.lock().unwrap().forget(&self.view.id)?;self.pair.unpair(self.session)?;self.timestamp=None;}
+   if !wants {self.cast_clear_link();self.shared.cancel_peer_files(&self.view.id);self.shared.store.lock().unwrap().forget(&self.view.id)?;self.pair.unpair(self.session)?;self.timestamp=None;}
    else if self.pair.state()==State::Outgoing {
     // A simultaneous v8 request carries a timestamp; only a bare response is consent.
     if np.body.contains_key("timestamp"){return Ok(());}
@@ -241,6 +350,7 @@ impl Actor {
   self.view.error=None;self.publish();Ok(())
  }
  fn replace(&mut self,replacement:Replacement)->Result<()> {
+  self.cast_clear_link();
   // peer_worker only supplies replacements whose authenticated certificate
   // digest equals this route's pin. Routine same-link discovery refreshes must
   // not interrupt independent payload sockets or pending local consent.
@@ -258,13 +368,14 @@ impl Actor {
   loop {
    if self.shared.stop.load(Ordering::Acquire){return Ok(());}
    if let Ok(replacement)=replacements.try_recv(){self.replace(replacement)?;pending.clear();carry.clear();frame_start=None;}
+   self.cast_tick()?;
    if self.pair.authorized(){self.unpaired_permit=None;}else{
     let limit=bounded_duration("DES_CONNECT_UNPAIRED_MS",90_000);let elapsed=self.started.elapsed();
     if elapsed>limit&&(self.pair.state()==State::Unpaired||elapsed>limit+Duration::from_secs(30)){return Err("unpaired session expired; discover again".into());}
     if self.unpaired_permit.is_none(){self.unpaired_permit=Some(UnpairedPermit::new(self.shared.clone())?);}
    }
    let state=self.pair.state();self.pair.expire(self.session,self.now());if state!=self.pair.state(){self.publish();}
-   for _ in 0..8 {let Ok(job)=rx.try_recv()else{break};let result=self.command(&job).map_err(|e|e.to_string());if let Err(e)=&result{self.view.error=Some(e.clone());self.publish();}let _=job.reply.try_send(result);if self.reconnect_requested{return Ok(()); }if self.write_failed{if let Ok(replacement)=replacements.recv_timeout(Duration::from_millis(300)){self.replace(replacement)?;pending.clear();carry.clear();frame_start=None;}else{return Err("TLS write failed".into());}}}
+   for _ in 0..8 {let Ok(job)=rx.try_recv()else{break};let result=self.command(&job).map_err(|e|e.to_string());if let Err(e)=&result{if job.op!="cast_input"{self.view.error=Some(e.clone());self.publish();}}let _=job.reply.try_send(result);if self.reconnect_requested{return Ok(()); }if self.write_failed{if let Ok(replacement)=replacements.recv_timeout(Duration::from_millis(300)){self.replace(replacement)?;pending.clear();carry.clear();frame_start=None;}else{return Err("TLS write failed".into());}}}
    self.media_dispatched=false;
    // Yield to local commands after each potentially blocking media request.
    // Keep at most one existing 4KiB read of raw bytes; do not drop coalesced
@@ -318,10 +429,10 @@ fn peer_worker(shared:Arc<Shared>,tcp:TcpStream,claim:Option<Packet>){
   let mut pair=Pairing::from_pin(pin);let session=pair.connected(digest)?;
   let epoch=shared.next.fetch_add(1,Ordering::Relaxed);let (tx,rx)=mpsc::sync_channel(8);let (replacement_tx,replacement_rx)=mpsc::sync_channel(1);
   {let mut routes=shared.routes.lock().unwrap();if routes.contains_key(&id.device_id){return Err("simultaneous device connection".into());}routes.insert(id.device_id.clone(),Route{epoch,digest,commands:tx,replacement:replacement_tx});}
-  let view=Device{id:id.device_id.clone(),name:id.name,kind:id.device_type,connected:true,paired:pair.authorized(),pair_state:"unpaired".into(),attempt:None,verification_key:None,battery:None,charging:false,last_ping:None,error:None,files_enabled:false,files_reconnect_needed:false,media_enabled:false,volume_enabled:false,media_reconnect_needed:false,volume_reconnect_needed:false,epoch};
-  let mut actor=Actor{shared:shared.clone(),view,stream,cert,pair,session,started:Instant::now(),timestamp:None,write_failed:false,public_attempt:None,unpaired_permit:None,ip:ip.unwrap(),incoming_capabilities:id.incoming_capabilities,outgoing_capabilities:id.outgoing_capabilities,files_advertised,media_advertised,volume_advertised,reconnect_requested:false,media_dispatched:false};actor.publish();
-  let result=actor.run(rx,replacement_rx);let _=actor.stream.get_ref().shutdown(std::net::Shutdown::Both);shared.cancel_peer_files(&id.device_id);actor.pair.disconnected(session);
-  let mut routes=shared.routes.lock().unwrap();if routes.get(&id.device_id).is_some_and(|r|r.epoch==epoch){routes.remove(&id.device_id);actor.view.connected=false;actor.view.paired=shared.store.lock().unwrap().peers.contains_key(&id.device_id);actor.view.pair_state="offline".into();actor.view.files_reconnect_needed=false;actor.view.media_reconnect_needed=false;actor.view.volume_reconnect_needed=false;actor.view.attempt=None;actor.view.verification_key=None;actor.view.error=result.as_ref().err().map(ToString::to_string);if actor.view.paired{shared.update(actor.view.clone());}else{shared.devices.lock().unwrap().remove(&id.device_id);}}
+  let view=Device{id:id.device_id.clone(),name:id.name,kind:id.device_type,connected:true,paired:pair.authorized(),pair_state:"unpaired".into(),attempt:None,verification_key:None,battery:None,charging:false,last_ping:None,error:None,files_enabled:false,files_reconnect_needed:false,media_enabled:false,volume_enabled:false,media_reconnect_needed:false,volume_reconnect_needed:false,wireless_cast:false,epoch};
+  let mut actor=Actor{shared:shared.clone(),view,stream,cert,pair,session,started:Instant::now(),timestamp:None,write_failed:false,public_attempt:None,unpaired_permit:None,ip:ip.unwrap(),incoming_capabilities:id.incoming_capabilities,outgoing_capabilities:id.outgoing_capabilities,files_advertised,media_advertised,volume_advertised,reconnect_requested:false,media_dispatched:false,cast_id:None,last_cast_lease:Instant::now()};actor.publish();
+  let result=actor.run(rx,replacement_rx);actor.cast_clear_link();let _=actor.stream.get_ref().shutdown(std::net::Shutdown::Both);shared.cancel_peer_files(&id.device_id);actor.pair.disconnected(session);
+  let mut routes=shared.routes.lock().unwrap();if routes.get(&id.device_id).is_some_and(|r|r.epoch==epoch){routes.remove(&id.device_id);actor.view.connected=false;actor.view.wireless_cast=false;actor.view.paired=shared.store.lock().unwrap().peers.contains_key(&id.device_id);actor.view.pair_state="offline".into();actor.view.files_reconnect_needed=false;actor.view.media_reconnect_needed=false;actor.view.volume_reconnect_needed=false;actor.view.attempt=None;actor.view.verification_key=None;actor.view.error=result.as_ref().err().map(ToString::to_string);if actor.view.paired{shared.update(actor.view.clone());}else{shared.devices.lock().unwrap().remove(&id.device_id);}}
   result
  })();if let Err(e)=result{eprintln!("DES Connect session: {e}");}shared.active.fetch_sub(1,Ordering::Release);
 }
@@ -341,13 +452,19 @@ fn handle_ipc(shared:&Arc<Shared>,request:Request,udp:&UdpSocket,client:&UnixStr
   match request.op.as_str(){
    "state"=>{},
    "stop"=>{},
-   "stop_screen"=>{shared.screens.lock().unwrap().stop().map_err(|e|->Box<dyn std::error::Error+Send+Sync>{e.into()})?;*shared.screen_peer.lock().unwrap()=None;},
+   "stop_screen"=>{
+    let mut screens=shared.screens.lock().unwrap();
+    shared.clear_cast(|_|true);
+    screens.stop().map_err(|e|->Box<dyn std::error::Error+Send+Sync>{e.into()})?;
+    *shared.screen_peer.lock().unwrap()=None;
+   },
    "mirror_phone"|"extend"=>{
     let id=request.device_id.as_deref().ok_or("select a paired device first")?;
     if !shared.paired(id){return Err("device must be paired and connected before screen sharing".into());}
     if !session_unlocked(){return Err("screen sharing requires an unlocked DES UI session with available lock status".into());}
     let serial=request.args.get("serial").and_then(Value::as_str).ok_or("select the authorized USB device serial")?;
     let mut screens=shared.screens.lock().unwrap();
+    if shared.cast.lock().unwrap().is_some(){return Err("stop the wireless cast before starting USB sharing".into());}
     let result=if request.op=="mirror_phone" {screens.start_phone_guarded(serial,request.args.get("control").and_then(Value::as_bool).unwrap_or(false),||screen_guard(shared,id,client))}else{
      let arg=|key:&str,default:u32|->Result<u32>{Ok(request.args.get(key).map(|v|v.as_u64().and_then(|v|u32::try_from(v).ok()).ok_or("invalid screen dimension/rate")).transpose()?.unwrap_or(default))};
      screens.start_extended_guarded(serial,arg("width",960)?,arg("height",600)?,arg("fps",15)?,||screen_guard(shared,id,client))
@@ -370,7 +487,7 @@ fn handle_ipc(shared:&Arc<Shared>,request:Request,udp:&UdpSocket,client:&UnixStr
    }
    "discover"=>{udp.send_to(&shared.identity().encode()?,"255.255.255.255:1716")?;}
    "unpair" if !shared.routes.lock().unwrap().contains_key(request.device_id.as_deref().unwrap_or(""))=>{let id=request.device_id.as_deref().ok_or("device_id required")?;shared.cancel_peer_files(id);shared.store.lock().unwrap().forget(id)?;shared.devices.lock().unwrap().remove(id);}
-   "pair"|"accept"|"reject"|"unpair"|"ping"|"set_files"|"set_media"|"set_volume"|"reconnect"|"send_file"|"accept_transfer"=>{
+   "pair"|"accept"|"reject"|"unpair"|"ping"|"set_files"|"set_media"|"set_volume"|"reconnect"|"send_file"|"accept_transfer"|"cast_phone"|"cast_input"=>{
     let id=request.device_id.as_deref().ok_or("device_id required")?;
     let route=shared.routes.lock().unwrap().get(id).cloned().ok_or("device is not connected")?;let tx=route.commands;
     let reconnect=request.op=="reconnect";
@@ -400,7 +517,7 @@ pub fn run_options(socket:&Path,state:&Path,name:&str,loopback:bool)->Result<()>
  let udp=UdpSocket::bind(if loopback{("127.0.0.1",0)}else{("0.0.0.0",1716)})?;udp.set_broadcast(true)?;udp.set_nonblocking(true)?;
  let devices=store.peers.iter().map(|(id,p)|(id.clone(),Device::offline(id.clone(),p.name.clone(),p.kind.clone(),p.files_enabled,p.media_enabled,p.volume_enabled))).collect();
  let mut random=[0;8];openssl::rand::rand_bytes(&mut random)?;let approval_seed=u64::from_be_bytes(random)&(u64::MAX>>1);
- let shared=Arc::new(Shared{id:store.id().into(),store:Mutex::new(store),ips:Mutex::new(Default::default()),devices:Mutex::new(devices),routes:Mutex::new(Default::default()),screens:Mutex::new(crate::screens::ScreenBridge::new()),screen_peer:Mutex::new(None),transfers:Mutex::new(None),loopback,stop:AtomicBool::new(false),next:AtomicU64::new(1),next_approval:AtomicU64::new(approval_seed),unpaired:AtomicUsize::new(0),active:AtomicUsize::new(0),ipc_active:AtomicUsize::new(0),name:name.into(),port});
+ let shared=Arc::new(Shared{id:store.id().into(),store:Mutex::new(store),ips:Mutex::new(Default::default()),devices:Mutex::new(devices),routes:Mutex::new(Default::default()),screens:Mutex::new(crate::screens::ScreenBridge::new()),screen_peer:Mutex::new(None),cast:Mutex::new(None),transfers:Mutex::new(None),loopback,stop:AtomicBool::new(false),next:AtomicU64::new(1),next_approval:AtomicU64::new(approval_seed),unpaired:AtomicUsize::new(0),active:AtomicUsize::new(0),ipc_active:AtomicUsize::new(0),name:name.into(),port});
  eprintln!("DES Connect listening on private control socket and LAN TCP {port}");
  let mut screen_check=Instant::now();let mut broadcast=Instant::now()-Duration::from_secs(31);let mut rate=HashMap::<IpAddr,Instant>::new();let mut data=[0;MAX_FRAME+1];
  while !shared.stop.load(Ordering::Acquire) {
@@ -434,10 +551,14 @@ pub fn run_options(socket:&Path,state:&Path,name:&str,loopback:bool)->Result<()>
 
   thread::sleep(Duration::from_millis(100));
  }
- let _=shared.screens.lock().unwrap().stop();shared.cancel_all_files();let transfers=shared.transfers.lock().unwrap().take();drop(transfers);Ok(())
+ shared.clear_cast(|_|true);let _=shared.screens.lock().unwrap().stop();shared.cancel_all_files();let transfers=shared.transfers.lock().unwrap().take();drop(transfers);Ok(())
 }
 fn revocation_tick(shared:&Shared) {
  // Screen revocation must not wait behind file source/destination preparation.
+ let wireless=shared.cast.lock().unwrap().as_ref().map(|cast|(cast.id.clone(),cast.peer.clone(),cast.epoch,cast.expired(Instant::now())));
+ if let Some((id,peer,epoch,expired))=wireless {
+  if expired||!shared.cast_peer_authorized(&peer,epoch)||!session_unlocked(){shared.clear_cast(|cast|cast.id==id);}
+ }
  let running=shared.screens.lock().unwrap().status().running;
  if running {let id=shared.screen_peer.lock().unwrap().clone();if id.as_deref().is_none_or(|id|!shared.paired(id))||!session_unlocked(){let _=shared.screens.lock().unwrap().stop();*shared.screen_peer.lock().unwrap()=None;}}
  // All normal manager operations now do filesystem preparation outside this
@@ -486,13 +607,38 @@ fn screen_session_matches(status:&crate::screens::ScreenStatus, owner:Option<&st
  status.running && status.mode=="phone" && status.serial.as_deref()==Some(serial) && owner==Some(expected_owner)
 }
 
+fn wireless_frame(shared:&Shared,id:&str,serial:&str,epoch:u64,client:&UnixStream)->Vec<u8> {
+ let trusted=||shared.cast_peer_authorized(id,epoch)&&session_unlocked();
+ let revoke=||{shared.clear_cast(|cast|cast.matches(id,serial));b"LOCKED\n".to_vec()};
+ if !control_alive(client){return b"STOPPED\n".to_vec();}
+ if !trusted(){return revoke();}
+ let frame={
+  let mut slot=shared.cast.lock().unwrap();
+  let Some(cast)=slot.as_mut().filter(|cast|cast.matches(id,serial)) else{return b"STOPPED\n".to_vec();};
+  let now=Instant::now();
+  if !cast.renew(now){*slot=None;return b"STOPPED\n".to_vec();}
+  cast.frame(now)
+ };
+ if !trusted(){return revoke();}
+ if !control_alive(client){return b"STOPPED\n".to_vec();}
+ let generation=frame.as_ref().map(|(generation,_)|*generation);
+ let permitted=shared.cast.lock().unwrap().as_ref().is_some_and(|cast|cast.matches(id,serial)&&cast.can_release(generation,Instant::now()));
+ if !permitted{return b"WAIT\n".to_vec();}
+ frame.map(|(_,bytes)|bytes).unwrap_or_else(||b"WAIT\n".to_vec())
+}
+
 fn screen_frame(shared:&Shared,request:&Request,client:&UnixStream)->Vec<u8> {
  let Some(id)=request.device_id.as_deref() else {return b"ERROR\n".to_vec();};
  let Some(serial)=request.args.get("serial").and_then(Value::as_str) else {return b"ERROR\n".to_vec();};
+ let wireless=shared.cast.lock().unwrap().as_ref().filter(|cast|cast.matches(id,serial)).map(|cast|cast.epoch);
+ if let Some(epoch)=wireless{return wireless_frame(shared,id,serial,epoch,client);}
  let bound=|screens:&mut crate::screens::ScreenBridge| {
   let status=screens.status();
   screen_session_matches(&status,shared.screen_peer.lock().unwrap().as_deref(),id,serial)
  };
+ if cast::valid_id(serial)&&!bound(&mut shared.screens.lock().unwrap()){
+  return b"STOPPED\n".to_vec();
+ }
  guarded_preview(|| {
   let mut screens=shared.screens.lock().unwrap();
   if !bound(&mut screens) {return Err("screen session changed".into());}
@@ -574,7 +720,7 @@ fn control_alive(client:&UnixStream)->bool {
    let listener=UnixListener::bind(base.join("shell.sock")).unwrap();
    let shell=thread::spawn(move||{let(mut stream,_)=listener.accept().unwrap();let mut bytes=[0;6];stream.read_exact(&mut bytes).unwrap();stream.write_all(b"ok {\"locked\":true}\n").unwrap();});
    let mut screens=crate::screens::ScreenBridge::new();screens.start_phone_guarded("TEST",false,||Ok(())).unwrap();
-   let shared=Arc::new(Shared{id:store.id().into(),store:Mutex::new(store),ips:Mutex::new(Default::default()),devices:Mutex::new(BTreeMap::from([(peer.id().into(),device)])),routes:Mutex::new(Default::default()),screens:Mutex::new(screens),screen_peer:Mutex::new(Some(peer.id().into())),transfers:Mutex::new(None),loopback:true,stop:AtomicBool::new(false),next:AtomicU64::new(1),next_approval:AtomicU64::new(1),unpaired:AtomicUsize::new(0),active:AtomicUsize::new(0),ipc_active:AtomicUsize::new(0),name:"Fixture".into(),port:0});
+   let shared=Arc::new(Shared{id:store.id().into(),store:Mutex::new(store),ips:Mutex::new(Default::default()),devices:Mutex::new(BTreeMap::from([(peer.id().into(),device)])),routes:Mutex::new(Default::default()),screens:Mutex::new(screens),screen_peer:Mutex::new(Some(peer.id().into())),cast:Mutex::new(None),transfers:Mutex::new(None),loopback:true,stop:AtomicBool::new(false),next:AtomicU64::new(1),next_approval:AtomicU64::new(1),unpaired:AtomicUsize::new(0),active:AtomicUsize::new(0),ipc_active:AtomicUsize::new(0),name:"Fixture".into(),port:0});
    let stalled=shared.transfers.lock().unwrap();let(tx,rx)=mpsc::sync_channel(1);let worker=shared.clone();
    let watchdog=thread::spawn(move||{revocation_tick(&worker);tx.send(()).unwrap();});
    let prompt=rx.recv_timeout(Duration::from_secs(1)).is_ok();drop(stalled);watchdog.join().unwrap();shell.join().unwrap();

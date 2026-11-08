@@ -1109,12 +1109,14 @@ dependencies = [
 name = "des-connect"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "openssl",
  "rustix 1.1.5",
  "serde",
  "serde_json",
  "tempfile",
  "zbus 5.19.0",
+ "zune-jpeg",
 ]
 
 [[package]]

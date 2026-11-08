@@ -32,6 +32,7 @@ struct Device {
     volume_enabled: bool,
     media_reconnect_needed: bool,
     volume_reconnect_needed: bool,
+    wireless_cast: bool,
 }
 
 impl Device {
@@ -102,6 +103,39 @@ struct Screens {
     message: String,
 }
 
+impl Screens {
+    fn has_preview(&self) -> bool {
+        self.running && matches!(self.mode.as_str(), "phone" | "wireless")
+    }
+
+    fn preview_session(&self, device: &Device) -> Option<preview::Session> {
+        if !self.has_preview() || !device.paired || !device.connected || self.device_id.as_deref() != Some(&device.id) { return None; }
+        Some(preview::Session { device_id: device.id.clone(), serial: self.serial.clone()?, wireless: self.mode == "wireless" })
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct CastTarget { session: preview::Session, geometry: u64 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CastAction { Tap([u32; 2]), Swipe([u32; 2], [u32; 2]), Back, Home, Recents }
+
+struct CastGesture { target: CastTarget, image: egui::Rect, origin: [u32; 2] }
+
+impl CastGesture {
+    fn finish(&self, target: &CastTarget, image: egui::Rect, pos: egui::Pos2, dragged: bool) -> Option<CastAction> {
+        if self.target != *target || self.image != image { return None; }
+        let end = cast_point(image, pos)?;
+        Some(if dragged { CastAction::Swipe(self.origin, end) } else { CastAction::Tap(end) })
+    }
+}
+
+fn cast_point(rect: egui::Rect, point: egui::Pos2) -> Option<[u32; 2]> {
+    if !rect.contains(point) || !rect.is_finite() || rect.width() <= 0.0 || rect.height() <= 0.0 { return None; }
+    let scale = |relative: f32, dimension: f32| ((relative / dimension) * 10_000.0).round().clamp(0.0, 10_000.0) as u32;
+    Some([scale(point.x - rect.left(), rect.width()), scale(point.y - rect.top(), rect.height())])
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 struct ScreenCapabilities {
@@ -144,6 +178,22 @@ impl Request {
                 request.args.insert(key.into(), serde_json::json!(value));
             }
         }
+        request
+    }
+    fn cast_input(target: &CastTarget, action: CastAction) -> Self {
+        let mut request = Self { op: "cast_input", device_id: Some(target.session.device_id.clone()), ..Self::state() };
+        let (name, origin, end) = match action {
+            CastAction::Tap(point) => ("tap", Some(point), None),
+            CastAction::Swipe(from, to) => ("swipe", Some(from), Some(to)),
+            CastAction::Back => ("back", None, None),
+            CastAction::Home => ("home", None, None),
+            CastAction::Recents => ("recents", None, None),
+        };
+        request.args.insert("action".into(), name.into());
+        request.args.insert("serial".into(), target.session.serial.clone().into());
+        request.args.insert("geometry".into(), target.geometry.into());
+        if let Some([x, y]) = origin { request.args.insert("x".into(), x.into()); request.args.insert("y".into(), y.into()); }
+        if let Some([x, y]) = end { request.args.insert("to_x".into(), x.into()); request.args.insert("to_y".into(), y.into()); }
         request
     }
     fn permission(device: &Device, permission: DevicePermission, enabled: bool) -> Self {
@@ -250,10 +300,18 @@ struct Pending {
     op: &'static str,
 }
 
+struct CastInputPending {
+    session: preview::Session,
+    rx: Receiver<Result<Reply, String>>,
+}
+
 #[derive(Default)]
 pub struct Connect {
     snapshot: Option<Snapshot>,
     preview: preview::Preview,
+    cast_gesture: Option<CastGesture>,
+    cast_input_pending: Option<CastInputPending>,
+    cast_input_error: Option<String>,
     selected_device: Option<String>,
     settings_open: bool,
     keyboard: bool,
@@ -271,6 +329,8 @@ pub struct Connect {
     queued_controls: VecDeque<Request>,
     file_paths: BTreeMap<String, String>,
     confirm_send: Option<FileDraft>,
+    #[cfg(test)]
+    no_spawn_service: bool,
 }
 impl Connect {
     /// Drain results even when hidden, but only request state while the panel is visible.
@@ -285,12 +345,15 @@ impl Connect {
                 let pending = self.pending.take().unwrap();
                 match response {
                     Ok(reply) => {
+                        let mut cast_ended = false;
                         if let Some(mut state) = reply.state {
                             if let Some(devices) = state.usb_devices.take() { self.usb_devices = Some(devices); }
                             self.usb_serials.retain(|id, _| state.devices.iter().any(|device| &device.id == id && device.paired));
                             self.file_paths.retain(|id, _| state.devices.iter().any(|device| &device.id == id && device.paired));
                             if self.confirm_send.as_ref().is_some_and(|draft| !state.devices.iter().any(|device| device.id == draft.device_id && device.files_ready())) { self.confirm_send = None; }
                             if let Some(screen) = &state.screens {
+                                cast_ended = !screen.running && self.snapshot.as_ref().and_then(|s| s.screens.as_ref())
+                                    .is_some_and(|s| s.running && s.mode == "wireless");
                                 self.sharing_uncertain = screen.running;
                                 if screen.running { self.usb_open = false; }
                             }
@@ -304,8 +367,9 @@ impl Connect {
                                 self.sharing_uncertain = false;
                                 if let Some(screens) = self.snapshot.as_mut().and_then(|state| state.screens.as_mut()) { screens.running = false; }
                             }
-                            if pending.op == "usb_devices" { self.notice = None; }
+                            if matches!(pending.op, "usb_devices" | "cast_phone") { self.notice = None; }
                             else if !pending.passive { self.notice = Some(pending.feedback.into()); }
+                            else if cast_ended { self.notice = Some("Wireless cast ended.".into()); }
                         } else {
                             self.notice = None;
                             self.error = Some(reply.error.unwrap_or_else(|| "The service rejected this command. Refresh and retry.".into()));
@@ -322,45 +386,71 @@ impl Connect {
             self.request(ctx, Request::state(), false);
         }
         let session = self.snapshot.as_ref().filter(|s| s.running).and_then(|s| {
-            let screens = s.screens.as_ref().filter(|screens| screens.running && screens.mode == "phone")?;
+            let screens = s.screens.as_ref()?;
             // A revoked or disconnected peer must never retain a visible frame.
             let owner = screens.device_id.as_ref()?;
-            if !s.devices.iter().any(|device| &device.id == owner && device.paired && device.connected) { return None; }
-            screens.serial.as_ref().map(|serial| preview::Session { device_id: owner.clone(), serial: serial.clone() })
+            screens.preview_session(s.devices.iter().find(|device| &device.id == owner)?)
         });
         let frame_visible = visible && !self.settings_open && !self.send_open && !self.usb_open;
         if !frame_visible { self.suspend_preview(); }
         if !visible { self.expanded = false; self.keyboard = false; }
-        self.preview.tick(ctx, if frame_visible { session } else { None });
+        let session = session.filter(|_| frame_visible);
+        self.preview.tick(ctx, session.clone());
+        if let Some(pending) = &self.cast_input_pending {
+            let response = match pending.rx.try_recv() {
+                Ok(Ok(reply)) => Some(if reply.ok { None } else { reply.error.or_else(|| Some("Phone input was refused".into())) }),
+                Ok(Err(_)) | Err(mpsc::TryRecvError::Disconnected) => Some(Some("Phone input unavailable".into())),
+                Err(mpsc::TryRecvError::Empty) => None,
+            };
+            if let Some(error) = response {
+                if session.as_ref() == Some(&pending.session) && self.preview.cast_geometry(&pending.session).is_some() {
+                    self.cast_input_error = error;
+                }
+                self.cast_input_pending = None;
+            }
+        }
         if self.pending.is_some() { ctx.request_repaint_after(Duration::from_millis(100)); }
         else if visible { ctx.request_repaint_after(POLL.saturating_sub(self.last_poll.map_or(POLL, |at| at.elapsed()))); }
     }
 
-    pub fn suspend_preview(&mut self) { self.preview.clear(); }
+    pub fn suspend_preview(&mut self) {
+        self.preview.clear();
+        self.cast_gesture = None;
+        self.cast_input_error = None;
+    }
 
     pub fn has_keyboard(&self) -> bool { self.keyboard }
 
     pub fn sharing(&self) -> bool {
         if self.sharing_uncertain { return true; }
         self.snapshot.as_ref().and_then(|s| s.screens.as_ref()).is_some_and(|s| s.running)
-            || self.pending.as_ref().is_some_and(|p| matches!(p.op, "mirror_phone" | "extend"))
+            || self.pending.as_ref().is_some_and(|p| matches!(p.op, "mirror_phone" | "cast_phone" | "extend"))
     }
 
     pub fn stop_sharing(&mut self, ctx: &egui::Context) {
         self.expanded = false;
-        self.preview.clear();
+        self.suspend_preview();
         self.preview.blocked = true;
         self.request(ctx, Request { op: "stop_screen", ..Request::state() }, false);
     }
 
     fn request(&mut self, ctx: &egui::Context, request: Request, start: bool) {
+        #[cfg(test)]
+        if start && self.no_spawn_service {
+            self.error = Some("Start the isolated test daemon externally, then refresh.".into());
+            return;
+        }
         // Background reads must not disable editors or swallow explicit actions.
         // The bounded read worker may finish; its stale snapshot is discarded.
         if self.pending.as_ref().is_some_and(|pending| pending.passive) && (request.op != "state" || start) {
             self.pending = None;
         }
-        if matches!(request.op, "stop" | "stop_screen") { self.preview.clear(); self.preview.blocked = true; }
-        if matches!(request.op, "mirror_phone" | "extend") && self.pending.is_none() { self.preview.blocked = false; self.sharing_uncertain = true; }
+        if matches!(request.op, "stop" | "stop_screen") { self.suspend_preview(); self.preview.blocked = true; }
+        if matches!(request.op, "mirror_phone" | "cast_phone" | "extend") && self.pending.is_none() {
+            self.preview.blocked = false;
+            self.sharing_uncertain = true;
+            self.cast_input_error = None;
+        }
         if self.pending.is_some() {
             if request.is_priority() {
                 if self.pending.as_ref().is_some_and(|pending| pending.op == "stop" || (request.op != "cancel_transfer" && pending.op == request.op)) { return; }
@@ -563,14 +653,14 @@ impl Connect {
         self.keyboard = false;
         ui.push_id("connect-expanded", |ui| {
             ui.horizontal_wrapped(|ui| {
-                ui::meta(ui, "DEVICE SCREEN · VIEW ONLY", ui::SECONDARY);
+                ui::meta(ui, "DEVICE SCREEN", ui::SECONDARY);
                 if ui::button(ui, theme, "Minimize", None, false).clicked() { self.expanded = false; }
                 if self.sharing() && ui::button(ui, theme, "Stop", None, false).clicked() { self.stop_sharing(ui.ctx()); }
             });
             ui.add_space(ui::SPACE);
             if let Some(snapshot) = self.snapshot.clone() {
                 let device = snapshot.screens.as_ref().and_then(|screen| screen.device_id.as_ref()).and_then(|owner| snapshot.devices.iter().find(|device| &device.id == owner));
-                if let Some(device) = device { self.mirror_canvas(ui, theme, &snapshot, device, self.pending.is_some()); }
+                if let Some(device) = device { self.mirror_canvas(ui, theme, &snapshot, device, self.pending.is_some(), true); }
                 else { copy(ui, "Device unavailable · sharing stopped", ui::SECONDARY); }
             }
         });
@@ -605,7 +695,7 @@ impl Connect {
             } else { ui::meta(ui, if snapshot.is_some() { "No device" } else { "Offline" }, ui::SECONDARY); }
         });
         // Capture stop stays outside every scroll/context view, including a pending start.
-        let expandable = snapshot.as_ref().and_then(|s| s.screens.as_ref()).is_some_and(|screen| screen.running && screen.mode == "phone" && screen.device_id.is_some());
+        let expandable = snapshot.as_ref().and_then(|s| s.screens.as_ref()).is_some_and(|screen| screen.has_preview() && screen.device_id.is_some());
         if self.sharing() || expandable {
             ui.horizontal_wrapped(|ui| {
                 if self.sharing() && ui::button(ui, theme, "Stop", None, false).clicked() { self.stop_sharing(ui.ctx()); }
@@ -680,7 +770,7 @@ impl Connect {
                     if ui::button(ui, theme, "Device settings", None, false).clicked() { self.settings_open = true; self.send_open = false; self.expanded = false; self.suspend_preview(); }
                 }
             } else {
-                self.mirror_canvas(ui, theme, snapshot, device, busy);
+                self.mirror_canvas(ui, theme, snapshot, device, busy, !self.expanded);
                 ui.add_space(ui::SPACE);
                 ui.horizontal_wrapped(|ui| {
                     ui.add_enabled_ui(device.paired && device.connected, |ui| {
@@ -769,10 +859,77 @@ impl Connect {
         });
     }
 
-    fn mirror_canvas(&mut self, ui: &mut egui::Ui, theme: &Theme, snapshot: &Snapshot, device: &Device, busy: bool) {
+    fn cast_target(&self, screens: Option<&Screens>, device: &Device) -> Option<CastTarget> {
+        let screen = screens.filter(|s| s.control && s.mode == "wireless")?;
+        let session = screen.preview_session(device)?;
+        let geometry = self.preview.cast_geometry(&session)?;
+        Some(CastTarget { session, geometry })
+    }
+
+    fn send_cast_input(&mut self, ctx: &egui::Context, target: &CastTarget, action: CastAction) {
+        if self.cast_input_pending.is_some() || self.preview.cast_geometry(&target.session) != Some(target.geometry) { return; }
+        let (tx, rx) = mpsc::sync_channel(1);
+        let path = socket_path();
+        let request = Request::cast_input(target, action);
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(exchange(&path, &request));
+            ctx.request_repaint();
+        });
+        self.cast_input_error = None;
+        self.cast_input_pending = Some(CastInputPending { session: target.session.clone(), rx });
+    }
+
+    fn cast_pointer(&mut self, ui: &mut egui::Ui, target: &CastTarget, image: egui::Rect) {
+        let response = ui.interact(image, ui.id().with("connect-cast-image"), egui::Sense::click_and_drag());
+        if response.hovered() { ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand); }
+        let (press, release, down) = ui.input(|input| {
+            let mut press = None;
+            let mut release = None;
+            for event in &input.events {
+                if let egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, .. } = event {
+                    if *pressed { press = Some(*pos); } else { release = Some(*pos); }
+                }
+            }
+            (press, release, input.pointer.primary_down())
+        });
+        let local = |pos| ui.ctx().layer_transform_from_global(response.layer_id).map_or(pos, |transform| transform * pos);
+        let clicked = response.clicked_by(egui::PointerButton::Primary);
+        let dragged = response.drag_stopped_by(egui::PointerButton::Primary);
+        if let Some(press) = press {
+            self.cast_gesture = None;
+            if response.is_pointer_button_down_on() || clicked || dragged {
+                let press = local(press);
+                if ui.clip_rect().contains(press) {
+                    self.cast_gesture = cast_point(image, press).map(|origin| CastGesture { target: target.clone(), image, origin });
+                }
+            }
+        }
+        if let Some(release) = release {
+            let release = local(release);
+            if let Some(gesture) = self.cast_gesture.take()
+                && (clicked || dragged) && ui.clip_rect().contains(release)
+                && let Some(action) = gesture.finish(target, image, release, dragged)
+            {
+                self.send_cast_input(ui.ctx(), target, action);
+            }
+        } else if !down {
+            self.cast_gesture = None;
+        }
+    }
+
+    fn mirror_canvas(&mut self, ui: &mut egui::Ui, theme: &Theme, snapshot: &Snapshot, device: &Device, busy: bool, interactive: bool) {
         let running = self.sharing();
+        let screen = snapshot.screens.as_ref();
+        let cast = screen.is_some_and(|s| s.running && s.mode == "wireless") || self.pending.as_ref().is_some_and(|p| p.op == "cast_phone");
+        let target = self.cast_target(screen, device);
         ui.horizontal_wrapped(|ui| {
-            ui::meta(ui, if self.preview.texture.is_some() { "LIVE SCREEN · VIEW ONLY" } else if running { "STARTING SCREEN · VIEW ONLY" } else { "DEVICE SCREEN" }, ui::SECONDARY);
+            let status = if target.is_some() { "LIVE SCREEN · CONTROL ON" }
+                else if self.preview.texture.is_some() { "LIVE SCREEN · VIEW ONLY" }
+                else if cast { "WIRELESS CAST" }
+                else if running { "STARTING SCREEN" }
+                else { "DEVICE SCREEN" };
+            ui::meta(ui, status, if target.is_some() { theme.main } else { ui::SECONDARY });
         });
         let width = ui.available_width().max(1.0);
         let limit = (ui.available_height() - 106.0).clamp(120.0, if self.expanded { 520.0 } else { 340.0 });
@@ -784,26 +941,52 @@ impl Connect {
         if let Some(texture) = &self.preview.texture {
             let size = texture.size_vec2();
             let fit = size * (rect.width() / size.x).min(rect.height() / size.y);
-            let target = egui::Rect::from_center_size(rect.center(), fit);
-            ui.painter().image(texture.id(), target, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0,1.0)), egui::Color32::WHITE);
+            let image = egui::Rect::from_center_size(rect.center(), fit);
+            ui.painter().image(texture.id(), image, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0,1.0)), egui::Color32::WHITE);
+            if interactive {
+                if let Some(target) = &target { self.cast_pointer(ui, target, image); }
+                else { self.cast_gesture = None; }
+            }
         } else {
-            let missing_owner = snapshot.screens.as_ref().is_some_and(|screen| screen.running && screen.device_id.is_none());
-            let message = self.preview.message.unwrap_or(if missing_owner { "Update DES Connect to preview this session" } else if running { "Waiting for device screen…" } else if !device.connected { "Device offline" } else { "Your device screen appears here" });
+            if interactive { self.cast_gesture = None; }
+            let missing_owner = screen.is_some_and(|s| s.running && s.device_id.is_none());
+            let message = self.preview.message.unwrap_or(if missing_owner { "Update DES Connect to preview this session" }
+                else if let Some(status) = screen.filter(|s| cast && s.running && !s.message.is_empty()) { status.message.as_str() }
+                else if cast { "Approve the cast on your phone" }
+                else if running { "Waiting for device screen…" }
+                else if !device.connected { "Device offline" } else { "Your device screen appears here" });
             let galley = ui.painter().layout(message.into(), ui::display(13.0), ui::SECONDARY, (width - 24.0).max(1.0));
             ui.painter().galley(rect.center() - galley.size() * 0.5, galley, ui::SECONDARY);
         }
+        if interactive && let Some(target) = &target {
+            ui.horizontal_wrapped(|ui| {
+                for (label, action) in [("Back", CastAction::Back), ("Home", CastAction::Home), ("Recents", CastAction::Recents)] {
+                    if ui::button(ui, theme, label, None, false).clicked() { self.send_cast_input(ui.ctx(), target, action); }
+                }
+            });
+            if let Some(error) = &self.cast_input_error { copy(ui, error, ui::CAUTION); }
+        }
         if !running {
             let supported = snapshot.screen_capabilities.as_ref().is_some_and(|c| c.phone_mirror);
-            let ready = supported && device.paired && device.connected;
+            let ready = device.paired && device.connected;
             ui.horizontal_wrapped(|ui| {
-                ui.add_enabled_ui(!busy && ready, |ui| {
-                    let serial = self.usb_serial_for(device).trim().to_owned();
-                    if ui::button(ui, theme, "Mirror screen", None, false).clicked() {
-                        if serial.is_empty() { self.open_usb_picker(ui.ctx()); }
-                        else { self.request(ui.ctx(), Request::screen("mirror_phone", device, &serial), false); }
-                    }
-                    if !serial.is_empty() && ui::button(ui, theme, "Change USB", None, false).clicked() { self.open_usb_picker(ui.ctx()); }
-                });
+                if device.wireless_cast {
+                    ui.add_enabled_ui(!busy && ready, |ui| {
+                        if ui::button(ui, theme, "Cast wirelessly", None, false).clicked() {
+                            self.request(ui.ctx(), Request::device("cast_phone", device), false);
+                        }
+                    });
+                }
+                if supported || !device.wireless_cast {
+                    ui.add_enabled_ui(!busy && ready && supported, |ui| {
+                        let serial = self.usb_serial_for(device).trim().to_owned();
+                        if ui::button(ui, theme, if device.wireless_cast { "Mirror via USB" } else { "Mirror screen" }, None, false).clicked() {
+                            if serial.is_empty() { self.open_usb_picker(ui.ctx()); }
+                            else { self.request(ui.ctx(), Request::screen("mirror_phone", device, &serial), false); }
+                        }
+                        if !serial.is_empty() && ui::button(ui, theme, "Change USB", None, false).clicked() { self.open_usb_picker(ui.ctx()); }
+                    });
+                }
             });
         }
     }
@@ -824,6 +1007,22 @@ fn copy(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cast_gestures_use_image_coordinates_and_reject_changed_geometry() {
+        let image = egui::Rect::from_min_max(egui::pos2(20.0, 10.0), egui::pos2(120.0, 210.0));
+        assert_eq!(cast_point(image, egui::pos2(70.0, 110.0)), Some([5000, 5000]));
+        assert_eq!(cast_point(image, egui::pos2(10.0, 110.0)), None);
+        assert_eq!(cast_point(image, egui::pos2(120.0, 210.0)), Some([10000, 10000]));
+        let session = preview::Session { device_id: "phone".into(), serial: "session".into(), wireless: true };
+        let target = CastTarget { session: session.clone(), geometry: 7 };
+        let gesture = CastGesture { target: target.clone(), image, origin: [5000, 5000] };
+        assert_eq!(gesture.finish(&target, image, egui::pos2(70.0, 30.0), true), Some(CastAction::Swipe([5000, 5000], [5000, 1000])));
+        assert_eq!(gesture.finish(&CastTarget { session, geometry: 8 }, image, egui::pos2(70.0, 30.0), true), None);
+        assert_eq!(gesture.finish(&target, image, egui::pos2(10.0, 30.0), true), None);
+        let request = Request::cast_input(&target, CastAction::Tap([5000, 5000]));
+        let wire = serde_json::to_value(request).unwrap();
+        assert_eq!(wire, serde_json::json!({"op":"cast_input", "device_id":"phone", "serial":"session", "action":"tap", "geometry":7, "x":5000, "y":5000}));
+    }
     #[test]
     fn compact_default_keeps_settings_contextual_and_stop_above_scroll() {
         fn texts(shape: &egui::Shape, out: &mut Vec<(String, egui::Pos2)>) {
@@ -1204,12 +1403,16 @@ mod tests {
         server.join().unwrap();
     }
     #[test]
-    #[ignore = "isolated native fixture; needs DESUI_CONNECT_PREVIEW and Xvfb"]
+    #[ignore = "isolated native fixture; needs Xvfb and DESUI_CONNECT_PREVIEW or live-interactive mode"]
     fn native_connect_preview() {
         use winit::platform::x11::EventLoopBuilderExtX11;
-        struct Preview { connect: Connect, frames: usize, output: PathBuf, live: bool, started: Instant }
+        struct Preview { connect: Connect, frames: usize, output: PathBuf, live: bool, interactive: bool, started: Instant }
         impl eframe::App for Preview {
             fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+                if self.interactive {
+                    egui::CentralPanel::default().show(ctx, |ui| self.connect.panel(ui, &Theme::load("signal")));
+                    return;
+                }
                 for event in ctx.input(|i| i.events.clone()) {
                     if let egui::Event::Screenshot { image, .. } = event {
                         let bytes: Vec<u8> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
@@ -1234,7 +1437,22 @@ mod tests {
             }
         }
         let mode = std::env::var("DESUI_CONNECT_PREVIEW_MODE").unwrap_or_default();
-        let output = PathBuf::from(std::env::var("DESUI_CONNECT_PREVIEW").expect("preview output"));
+        let interactive = mode == "live-interactive";
+        let output = if interactive {
+            use std::os::unix::fs::{FileTypeExt, MetadataExt};
+            let path = PathBuf::from(std::env::var_os("DES_CONNECT_SOCKET").expect("an isolated socket path is required"));
+            assert!(path.is_absolute(), "the isolated socket path must be absolute");
+            let canonical = path.canonicalize().expect("the isolated daemon must be running");
+            let temp = std::env::temp_dir().canonicalize().expect("temporary directory");
+            let dir = canonical.parent().expect("temporary subdirectory");
+            let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", rustix::process::getuid().as_raw())));
+            let live_socket = runtime.join("des-connect/control.sock");
+            assert!(canonical != live_socket.canonicalize().unwrap_or(live_socket)
+                && dir.starts_with(&temp) && dir != temp && std::fs::metadata(dir).unwrap().mode() & 0o077 == 0
+                && std::fs::metadata(&canonical).unwrap().file_type().is_socket(), "use a disposable daemon socket under a private temporary directory");
+            PathBuf::new()
+        } else { PathBuf::from(std::env::var("DESUI_CONNECT_PREVIEW").expect("preview output")) };
         let width = std::env::var("DESUI_CONNECT_PREVIEW_WIDTH").ok().and_then(|s| s.parse::<f32>().ok()).unwrap_or(280.0);
         let mut connect = Connect { last_poll: Some(Instant::now() + Duration::from_secs(3600)), ..Default::default() };
         if mode == "error" { connect.error = Some("DES Connect service unavailable. Start the service or retry.".into()); }
@@ -1289,15 +1507,16 @@ mod tests {
         }
         if matches!(mode.as_str(), "media-policy" | "screen-unavailable" | "settings") { connect.settings_open = true; }
         if mode.starts_with("files") && mode != "files-transfers" { connect.send_open = true; }
-        if mode == "live" {
+        if mode == "live" || interactive {
             connect.snapshot = None;
             connect.last_poll = None;
         }
+        connect.no_spawn_service = interactive;
         let options = eframe::NativeOptions { viewport: egui::ViewportBuilder::default().with_inner_size([width, 720.0]), event_loop_builder: Some(Box::new(|builder| { builder.with_x11().with_any_thread(true); })), ..Default::default() };
         eframe::run_native("DES Connect fixture", options, Box::new(move |cc| {
             ui::install_fonts(&cc.egui_ctx, None, None);
             crate::apply_style(&cc.egui_ctx, &Theme::load("signal"));
-            if mode != "live" {
+            if mode != "live" && !interactive {
                 connect.preview.fixture = true;
                 if mode == "screen-active" {
                     // Explicit native rendering test pattern; never substitutes for live IPC.
@@ -1307,7 +1526,7 @@ mod tests {
                     connect.preview.texture = Some(cc.egui_ctx.load_texture("TEST ONLY · color bars", egui::ColorImage::from_rgb([width,height], &rgb), egui::TextureOptions::LINEAR));
                 }
             }
-            Ok(Box::new(Preview { connect, frames: 0, output, live: mode == "live", started: Instant::now() }))
+            Ok(Box::new(Preview { connect, frames: 0, output, live: mode == "live", interactive, started: Instant::now() }))
         })).unwrap();
     }
     #[test]

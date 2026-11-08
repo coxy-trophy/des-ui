@@ -47,23 +47,26 @@ or launch a capture permission prompt automatically in the background.
 | Milestone | What should work before moving on |
 | --- | --- |
 | 1. Independent app | Install a separate APK. Connect to the desktop, show the same verification code on both sides, pair, reconnect, report battery, ping in both directions, and unpair. Start with an isolated daemon and emulator; verify ordinary LAN discovery on the realme and Samsung tablet. |
-| 2. Wireless phone preview | Request sharing from CONNECT, let the user approve Android's screen-sharing prompt on the phone, and display live frames in the existing panel. Start view-only and local-network-only, with the app or full screen chosen through Android where supported. Keep USB as a fallback. |
+| 2. Wireless phone cast | Request sharing from CONNECT, approve Android's capture prompt, and see the screen in the panel. Optionally allow clicks, drags, and Android navigation for full-display sharing, with a separate phone-side grant. Keep USB as a fallback. |
 | 3. Daily-use parity and handoff | Restore the fork's verified file-transfer and media/volume workflows. Add Share → DES Connect for files and links, Send to phone in DES Files, and read-only browsing of user-selected phone folders. Start with explicit clipboard actions. |
 | 4. Tablet and camera | Make Extend desktop a usable display workflow with reconnect and display arrangement. Add touch input after the viewer is stable. Add Scan to this folder, then webcam mode. |
-| 5. Optional control | Evaluate input control, cursor crossing, and individual Android app shortcuts separately on supported devices. Do not require accessibility access for mirroring or pairing. |
+| 5. Extended control | Evaluate keyboard input, cursor crossing, and individual Android app shortcuts separately on supported devices. Pairing and view-only sharing do not require accessibility access. |
 
 ## Safety and resource boundaries
 
 - Store the app's private key in Android Keystore. Verify the desktop's identity
   and certificate before authorizing actions; keep the existing code comparison
   and pinned reconnect model. Refuse changed keys until the user re-pairs.
-- Treat wireless video as a separate capability. Authenticate the selected peer
-  and bind the stream to that pairing and the current sharing request. Do not
-  publish a stream URL on the network or attach video to the command socket.
+- Treat wireless casting as a separate negotiated capability. Bind it to the
+  pinned TLS connection and the current sharing request; add no LAN listener or
+  stream URL. Send bounded JPEG frames over that authenticated connection and
+  expose them locally only through explicit owner-only frame requests.
 - Use Android MediaProjection consent on each capture start. Stop and clear the
-  preview on desktop lock, permission revocation, loss of the peer, or Stop.
-  Reconnecting never starts another capture. Start with a native viewer and
-  bounded buffers. Compare transports after measuring the first capture path.
+  preview on either device's lock, permission revocation, loss of the peer or
+  viewer, or Stop. Reconnecting never starts another capture. A separately
+  enabled gesture service only accepts input during the current approved
+  full-display cast, with normalized coordinates bound to capture geometry.
+  Compare transports after measuring the first capture path.
 - Measure idle memory, CPU, and wakeups against the fork on the same device.
   Video workers run only during sharing. File listings and thumbnails load on
   demand. Keep the desktop panel compact.

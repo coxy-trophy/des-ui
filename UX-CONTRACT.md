@@ -273,5 +273,22 @@ The shell invalidates pending frame generations and removes the texture on
 hide/lock/stop/session changes. There is at most one in-flight UI frame request
 and one reusable texture. Capture never auto-resumes after unlock or reconnect.
 
+## Wireless phone cast
+
+CONNECT offers Cast on a connected, paired phone that supports it. It uses the
+existing preview, status, expand and Stop controls. The phone offers view-only
+sharing and a separate control option before showing Android's capture prompt.
+Clicks, drags and navigation are available only with control granted; pointer
+coordinates map to the visible image, excluding its letterbox. Changing capture
+geometry invalidates old coordinates. Lock, peer loss, or explicit Stop ends
+the cast. A closed preview stops renewing its three-second viewer lease; after
+expiry, opening the panel again requires fresh approval.
+
+The CONNECT daemon owns the cast and the frame lease. The local preview request
+identifies the paired owner and the current cast, and reads at most one bounded
+JPEG. The shell reuses its frame worker and texture. Android owns per-session
+capture consent and input permissions. No frame is retained on disk or sent to
+an unpaired peer.
+
 Expand uses the terminal workspace with Minimize/Stop; other workspace actions
 close that enlarged view without closing or restarting terminal processes.

@@ -85,6 +85,7 @@ final class Link implements AutoCloseable {
     private final Context context;
     private final Consumer<View> listener;
     private final PinStore pins;
+    final CastLink cast;
     private final Thread worker;
     private final ArrayBlockingQueue<Command> commands = new ArrayBlockingQueue<>(16);
     private final AtomicBoolean started = new AtomicBoolean();
@@ -95,10 +96,11 @@ final class Link implements AutoCloseable {
     private boolean savedDesktop; // Link thread only
 
     // The listener is called on the link thread; the Activity owns UI dispatch.
-    Link(Context context, Consumer<View> listener) {
+    Link(Context context, Consumer<View> listener, Runnable castChanged) {
         this.context = context.getApplicationContext();
         this.listener = listener;
         this.pins = new PinStore(this.context);
+        this.cast = new CastLink(this.context, castChanged);
         worker = new Thread(this::run, "DES Connect foreground link");
         worker.setDaemon(true);
         worker.start();
@@ -129,6 +131,7 @@ final class Link implements AutoCloseable {
 
     @Override public void close() {
         trust.close();
+        cast.stop();
         Socket socket;
         synchronized (lifecycle) {
             socket = activeSocket;
@@ -196,12 +199,12 @@ final class Link implements AutoCloseable {
             X509Certificate cert;
             String peerId;
             String name;
+            boolean canCast;
             try {
                 raw.connect(new InetSocketAddress(address, port), 4_000);
                 raw.setTcpNoDelay(true);
                 raw.setSoTimeout(5_000);
-                JSONObject identity = localIdentity(phone.id);
-                WirePacket.write(raw.getOutputStream(), WirePacket.IDENTITY, identity);
+                WirePacket.write(raw.getOutputStream(), WirePacket.IDENTITY, localIdentity(phone.id, false));
 
                 // The TCP initiator is the TLS server in this protocol.
                 tls = (SSLSocket) phone.tls(saved).getSocketFactory().createSocket(raw, host, port, false);
@@ -217,13 +220,15 @@ final class Link implements AutoCloseable {
                 peerId = PeerIdentity.certificateId(cert);
                 if (saved != null) saved.verify(cert);
 
-                WirePacket.write(tls.getOutputStream(), WirePacket.IDENTITY, identity);
+                WirePacket.write(tls.getOutputStream(), WirePacket.IDENTITY, localIdentity(phone.id, true));
                 tls.setSoTimeout(250);
                 frames = new Frames(tls.getInputStream(), Link::now);
                 byte[] first = null;
                 while (!isClosed() && first == null) first = frames.read();
                 if (isClosed()) return;
-                name = WirePacket.parse(first).desktopName(peerId, phone.id);
+                WirePacket remote = WirePacket.parse(first);
+                name = remote.desktopName(peerId, phone.id);
+                canCast = remote.supports(CastLink.KIND);
                 PinStore.Pin current = pins.read();
                 if (current != null) current.verify(cert);
                 if (saved != null && current == null)
@@ -234,10 +239,11 @@ final class Link implements AutoCloseable {
                 deadline.cancel(false);
             }
             PinStore.Pin candidate = new PinStore.Pin(peerId, PeerIdentity.fingerprint(cert));
-            new Session(raw, tls, frames, phone.cert, cert, candidate, saved != null, name).run();
+            new Session(raw, tls, frames, phone.cert, cert, candidate, saved != null, name, canCast).run();
         } catch (EOFException disconnected) {
             publish(Phase.DISCONNECTED, "", "Desktop disconnected.", "", 0);
         } finally {
+            cast.stop();
             abort(raw);
             if (tls != null) abort(tls);
             synchronized (lifecycle) {
@@ -246,14 +252,19 @@ final class Link implements AutoCloseable {
         }
     }
 
-    private JSONObject localIdentity(String id) throws Exception {
+    private JSONObject localIdentity(String id, boolean secure) throws Exception {
         String model = Build.MODEL == null ? "" : Build.MODEL.replaceAll("[\\p{Cntrl}]", "").trim();
         if (model.length() > 80) model = model.substring(0, 80);
         String name = model.isEmpty() ? "Android phone" : model;
+        JSONArray incoming = new JSONArray().put(WirePacket.PING).put(WirePacket.BATTERY_REQUEST);
+        JSONArray outgoing = new JSONArray().put(WirePacket.PING).put(WirePacket.BATTERY);
+        if (secure) {
+            incoming.put(CastLink.KIND);
+            outgoing.put(CastLink.KIND);
+        }
         return new JSONObject().put("deviceId", id).put("deviceName", name)
                 .put("deviceType", "phone").put("protocolVersion", 8)
-                .put("incomingCapabilities", new JSONArray().put(WirePacket.PING).put(WirePacket.BATTERY_REQUEST))
-                .put("outgoingCapabilities", new JSONArray().put(WirePacket.PING).put(WirePacket.BATTERY));
+                .put("incomingCapabilities", incoming).put("outgoingCapabilities", outgoing);
     }
 
     private final class Session {
@@ -264,6 +275,7 @@ final class Link implements AutoCloseable {
         private final PinStore.Pin candidate;
         private final Pairing pairing;
         private final String name;
+        private final boolean canCast;
         private long unpairedUntil = now() + 90_000;
         private long lastBattery = -1_000;
         private long lastPing = -1_000;
@@ -271,7 +283,7 @@ final class Link implements AutoCloseable {
         private boolean finished;
 
         Session(Socket raw, SSLSocket tls, Frames frames, X509Certificate phone, X509Certificate peer,
-                PinStore.Pin candidate, boolean pinned, String name) {
+                PinStore.Pin candidate, boolean pinned, String name, boolean canCast) {
             this.raw = raw;
             this.tls = tls;
             this.frames = frames;
@@ -280,11 +292,13 @@ final class Link implements AutoCloseable {
             this.candidate = candidate;
             this.pairing = new Pairing(pinned);
             this.name = name;
+            this.canCast = canCast;
         }
 
         void run() throws Exception {
             state(paired() ? "Secure connection restored." : "Desktop verified. Pair to connect.");
             if (paired()) battery();
+            boolean castActive = false;
             while (!isClosed()) {
                 if (expirePairing(now())) return;
                 if (!paired() && pairing.state() == Pairing.State.UNPAIRED && now() >= unpairedUntil) {
@@ -306,6 +320,15 @@ final class Link implements AutoCloseable {
                 }
                 if (isClosed()) return;
                 if (queueFull.getAndSet(false)) retryAction();
+                if (canCast && paired()) {
+                    JSONObject castMessage = cast.poll();
+                    if (castMessage != null) send(CastLink.KIND, castMessage);
+                    boolean active = cast.view() != null;
+                    if (active != castActive) {
+                        tls.setSoTimeout(active ? 100 : 250);
+                        castActive = active;
+                    }
+                }
                 byte[] frame = frames.read();
                 if (frame == null || isClosed()) continue;
                 WirePacket packet = WirePacket.parse(frame);
@@ -417,6 +440,10 @@ final class Link implements AutoCloseable {
                 return;
             }
             if (!paired()) return;
+            if (canCast && CastLink.KIND.equals(packet.type)) {
+                cast.received(packet.body);
+                return;
+            }
             if (WirePacket.PING.equals(packet.type) && now() - lastPing >= 1_000) {
                 lastPing = now();
                 state("Ping received.");
@@ -439,6 +466,7 @@ final class Link implements AutoCloseable {
         }
 
         private boolean forget() throws IOException {
+            cast.stop();
             if (!trust.mutate(() -> pins.forget(candidate))) return false;
             savedDesktop = false;
             pairing.unpair();

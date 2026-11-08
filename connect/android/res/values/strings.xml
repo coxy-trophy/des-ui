@@ -61,4 +61,17 @@
     <string name="unpair_action">Unpair</string>
     <string name="confirm_unpair_action">Confirm unpair</string>
     <string name="cancel_action">Cancel</string>
+    <string name="cast_title">Screen casting</string>
+    <string name="cast_requested">Your paired desktop wants to see your screen. Allow control only if you want to use your phone from that desktop.</string>
+    <string name="cast_waiting">Approve screen sharing in the Android prompt.</string>
+    <string name="cast_live_view">Your desktop can see your screen.</string>
+    <string name="cast_live_control">Your desktop can see and control your screen.</string>
+    <string name="cast_view_action">Share screen</string>
+    <string name="cast_control_action">Share and allow control</string>
+    <string name="cast_enable_control">Set up remote control</string>
+    <string name="cast_stop">Stop casting</string>
+    <string name="cast_decline">Decline</string>
+    <string name="cast_notification">DES Connect is sharing your screen</string>
+    <string name="cast_control_service">DES Connect remote control</string>
+    <string name="cast_control_description">Lets a paired desktop send taps, swipes, and navigation during a full-screen cast you approve. Does not read accessibility content.</string>
 </resources>

@@ -121,6 +121,19 @@ final class WirePacket {
         return (String) name;
     }
 
+    boolean supports(String capability) {
+        return contains(body.optJSONArray("incomingCapabilities"), capability)
+                && contains(body.optJSONArray("outgoingCapabilities"), capability);
+    }
+
+    private static boolean contains(JSONArray list, String value) {
+        if (list == null) return false;
+        for (int i = 0; i < list.length(); i++) {
+            if (value.equals(list.opt(i))) return true;
+        }
+        return false;
+    }
+
     private static boolean validName(String name) {
         if (name.codePointCount(0, name.length()) > 256 || name.trim().isEmpty()) return false;
         for (int i = 0; i < name.length(); ) {

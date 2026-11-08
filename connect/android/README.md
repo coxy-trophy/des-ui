@@ -37,8 +37,9 @@ pairings require comparing codes. For simultaneous pairing requests to be
 handled safely on both sides, use a desktop build from this revision or later.
 
 The current companion is still needed for file transfers and media controls.
-Wireless mirroring and optional control are later milestones. The preview has
-no background service and asks for no screen capture or accessibility access.
+See [wireless casting](../CAST.md) for Android screen sharing and optional remote
+gestures. A foreground service runs only during an explicitly approved cast;
+pairing and ordinary use do not request screen capture or accessibility access.
 
 The host Java checks exercise framing, verification codes, pairing approval and
 the lifecycle of saved trust. They need no device or SDK:
@@ -47,8 +48,8 @@ the lifecycle of saved trust. They need no device or SDK:
 src=connect/android/src/io/github/coxytrophy/desconnect/companion
 tests=connect/android/tests/io/github/coxytrophy/desconnect/companion
 classes=$(mktemp -d)
-javac --release 8 -d "$classes" "$src"/{Frames,PeerIdentity,Pairing,TrustGate}.java "$tests"/*.java && (
-    for test in WireTest PairingTest TrustGateTest; do
+javac --release 8 -d "$classes" "$src"/{Frames,PeerIdentity,Pairing,TrustGate,CastSession,CastGeometry}.java "$tests"/*.java && (
+    for test in WireTest PairingTest TrustGateTest CastSessionTest; do
         java -cp "$classes" "io.github.coxytrophy.desconnect.companion.$test" || exit 1
     done
 )

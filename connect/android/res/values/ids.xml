@@ -19,4 +19,7 @@
     <item type="id" name="desktop_name" />
     <item type="id" name="nearby_desktops" />
     <item type="id" name="discovered_desktop" />
+    <item type="id" name="cast_view" />
+    <item type="id" name="cast_control" />
+    <item type="id" name="cast_stop" />
 </resources>

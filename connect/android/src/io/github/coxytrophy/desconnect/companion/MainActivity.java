@@ -3,16 +3,20 @@ package io.github.coxytrophy.desconnect.companion;
 
 import android.app.Activity;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.graphics.drawable.StateListDrawable;
+import android.media.projection.MediaProjectionConfig;
+import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 import android.text.InputFilter;
 import android.text.InputType;
 import android.view.Gravity;
@@ -34,6 +38,8 @@ import java.util.Objects;
 
 public final class MainActivity extends Activity {
     private static final int DEFAULT_PORT = 1716;
+    private static final int CAST_CONSENT = 43;
+    private static final int CAST_SETTINGS = 44;
     private static final int TOUCH_TARGET_DP = 48;
     private static final int CONTROL_RADIUS_DP = 6;
     private static final int PANEL_RADIUS_DP = 10;
@@ -94,6 +100,14 @@ public final class MainActivity extends Activity {
     private Link.View shownApproval;
     private LinearLayout pairedActions;
     private LinearLayout confirmActions;
+    private LinearLayout castPanel;
+    private TextView castDetail;
+    private Button castView;
+    private Button castControl;
+    private Button castStop;
+    private CastSession.Token castConsent;
+    private boolean castConsentControl;
+    private boolean castSettings;
 
     @Override protected void onCreate(Bundle saved) {
         super.onCreate(saved);
@@ -113,7 +127,9 @@ public final class MainActivity extends Activity {
     @Override protected void onStart() {
         super.onStart();
         visible = true;
-        prepareLink();
+        if (link == null) prepareLink();
+        link.cast.foreground(true);
+        render();
         final int generation = ++discoveryGeneration;
         discovery = new DesktopDiscovery(found -> main.post(() -> {
             if (!visible || generation != discoveryGeneration) return;
@@ -131,6 +147,11 @@ public final class MainActivity extends Activity {
         discovery.start();
     }
 
+    @Override protected void onResume() {
+        super.onResume();
+        render();
+    }
+
     @Override protected void onStop() {
         visible = false;
         ++discoveryGeneration;
@@ -139,17 +160,39 @@ public final class MainActivity extends Activity {
             discovery.close();
             discovery = null;
         }
-        closeLink();
-        state = null;
-        render();
+        if (link != null) link.cast.foreground(false);
+        if (!retainCastLink()) {
+            closeLink();
+            state = null;
+            render();
+        }
         super.onStop();
+    }
+
+    @Override protected void onDestroy() {
+        closeLink();
+        super.onDestroy();
+    }
+
+    private boolean retainCastLink() {
+        CastSession.View cast = link == null ? null : link.cast.view();
+        return cast != null && (cast.phase != CastSession.Phase.REQUESTED || castSettings);
+    }
+
+    private void castChanged(int generation) {
+        if (generation != linkGeneration) return;
+        if (!visible && !retainCastLink()) {
+            closeLink();
+            state = null;
+        }
+        render();
     }
 
     private void prepareLink() {
         closeLink();
         final int generation = linkGeneration;
         link = new Link(getApplicationContext(), update -> main.post(() -> {
-            if (!visible || generation != linkGeneration) return;
+            if (generation != linkGeneration || !visible && !retainCastLink()) return;
             if (state != null && state.phase == Link.Phase.CONNECTING
                     && update.phase == Link.Phase.DISCONNECTED && update.detail.isEmpty()) return;
             if (pendingPhase != null && (update.retryAction || update.phase != pendingPhase
@@ -169,7 +212,8 @@ public final class MainActivity extends Activity {
             }
             state = update;
             render();
-        }));
+        }), () -> main.post(() -> castChanged(generation)));
+        link.cast.foreground(visible);
     }
 
     private void closeLink() {
@@ -177,6 +221,8 @@ public final class MainActivity extends Activity {
         pendingPhase = null;
         approvedOutgoing = false;
         confirmUnpair = false;
+        castConsent = null;
+        castSettings = false;
         if (link != null) {
             link.close();
             link = null;
@@ -382,6 +428,19 @@ public final class MainActivity extends Activity {
         add(linkPanel, reconnectButton, 12);
         add(linkPanel, forgetButton, 8);
 
+        castPanel = panel();
+        add(castPanel, eyebrow(R.string.cast_title, R.color.accent), 0);
+        castDetail = text(R.string.cast_requested, display, 16, R.color.secondary);
+        castDetail.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        add(castPanel, castDetail, 6);
+        castView = button(R.id.cast_view, R.string.cast_view_action, true, false, () -> requestCast(false));
+        add(castPanel, castView, 12);
+        castControl = button(R.id.cast_control, R.string.cast_control_action, false, false, () -> requestCast(true));
+        add(castPanel, castControl, 8);
+        castStop = button(R.id.cast_stop, R.string.cast_stop, false, true, this::stopCast);
+        add(castPanel, castStop, 8);
+        add(content, castPanel, 12);
+
         setup = column();
         add(content, setup, 12);
         LinearLayout nearby = panel();
@@ -512,6 +571,76 @@ public final class MainActivity extends Activity {
         show(forgetButton, !active && state != null && state.savedDesktop && !confirmUnpair && !pending);
         showingSetup = !active && !confirmUnpair && !pending;
         show(setup, showingSetup);
+        renderCast();
+    }
+
+    private void renderCast() {
+        CastSession.View cast = link == null ? null : link.cast.view();
+        boolean requested = cast != null && cast.phase == CastSession.Phase.REQUESTED;
+        show(castPanel, cast != null);
+        if (cast == null) return;
+        boolean available = CastControlService.available();
+        show(castView, requested);
+        show(castControl, requested);
+        castView.setEnabled(castConsent == null && !castSettings);
+        castControl.setEnabled(castConsent == null && !castSettings);
+        updateText(castDetail, getText(requested ? R.string.cast_requested
+                : cast.phase == CastSession.Phase.CONSENT ? R.string.cast_waiting
+                : cast.control ? R.string.cast_live_control : R.string.cast_live_view));
+        updateText(castControl, getText(available ? R.string.cast_control_action : R.string.cast_enable_control));
+        updateText(castStop, getText(requested ? R.string.cast_decline : R.string.cast_stop));
+    }
+
+    private void requestCast(boolean control) {
+        if (!visible || link == null || castConsent != null || castSettings) return;
+        CastSession.View cast = link.cast.view();
+        if (cast == null || cast.phase != CastSession.Phase.REQUESTED) return;
+        if (control && !CastControlService.available()) {
+            castSettings = true;
+            renderCast();
+            try {
+                startActivityForResult(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS), CAST_SETTINGS);
+            } catch (RuntimeException unavailable) {
+                castSettings = false;
+                renderCast();
+            }
+            return;
+        }
+        if (!link.cast.approve(cast.token, control)) return;
+        castConsent = cast.token;
+        castConsentControl = control;
+        renderCast();
+        try {
+            MediaProjectionManager manager = getSystemService(MediaProjectionManager.class);
+            Intent request = control && Build.VERSION.SDK_INT >= 34
+                    ? manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+                    : manager.createScreenCaptureIntent();
+            startActivityForResult(request, CAST_CONSENT);
+        } catch (RuntimeException unavailable) {
+            castConsent = null;
+            link.cast.stop(cast.token);
+        }
+    }
+
+    private void stopCast() {
+        if (link != null) link.cast.stop();
+    }
+
+    @Override protected void onActivityResult(int request, int result, Intent data) {
+        super.onActivityResult(request, result, data);
+        if (request == CAST_SETTINGS) {
+            castSettings = false;
+            renderCast();
+            return;
+        }
+        if (request != CAST_CONSENT) return;
+        CastSession.Token token = castConsent;
+        castConsent = null;
+        if (link != null && token != null && (result != RESULT_OK
+                || !CastCaptureService.launch(this, link.cast, token, data, castConsentControl))) {
+            link.cast.stop(token);
+        }
+        renderCast();
     }
 
     private void beginUnpair() {

@@ -13,10 +13,13 @@ fn dev<'a>(state:&'a Value,id:&str)->Option<&'a Value>{state["state"]["devices"]
 fn fake_identity(store:&Store)->Packet{packet("kdeconnect.identity",json!({"deviceId":store.id(),"deviceName":"Fixture phone","deviceType":"phone","protocolVersion":8,"incomingCapabilities":["kdeconnect.ping","kdeconnect.battery.request"],"outgoingCapabilities":["kdeconnect.ping","kdeconnect.battery"]}))}
 fn read(stream:&mut impl Read)->Packet {let mut bytes=Vec::new();loop {let mut b=[0];stream.read_exact(&mut b).unwrap();bytes.push(b[0]);if b[0]==b'\n'{break;}assert!(bytes.len()<65536);}Packet::read(&mut std::io::Cursor::new(bytes)).unwrap()}
 fn send(stream:&mut impl Write,packet:Packet){stream.write_all(&packet.encode().unwrap()).unwrap();}
-fn connect(port:u16,peer:&Store)->SslStream<TcpStream>{
- let mut tcp=TcpStream::connect(("127.0.0.1",port)).unwrap();tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();tcp.set_write_timeout(Some(Duration::from_secs(5))).unwrap();send(&mut tcp,fake_identity(peer));
+fn connect(port:u16,peer:&Store)->SslStream<TcpStream>{connect_with_cast(port,peer,false)}
+fn connect_with_cast(port:u16,peer:&Store,cast:bool)->SslStream<TcpStream>{
+ let mut identity=fake_identity(peer);
+ if cast {for field in ["incomingCapabilities","outgoingCapabilities"] {identity.body[field].as_array_mut().unwrap().push(json!("des.connect.cast.v1"));}}
+ let mut tcp=TcpStream::connect(("127.0.0.1",port)).unwrap();tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();tcp.set_write_timeout(Some(Duration::from_secs(5))).unwrap();send(&mut tcp,identity.clone());
  let mut context=SslContextBuilder::new(SslMethod::tls()).unwrap();context.set_min_proto_version(Some(SslVersion::TLS1_2)).unwrap();context.set_max_proto_version(Some(SslVersion::TLS1_2)).unwrap();context.set_certificate(&peer.certificate).unwrap();context.set_private_key(&peer.key).unwrap();context.set_verify_callback(SslVerifyMode::PEER|SslVerifyMode::FAIL_IF_NO_PEER_CERT,|_,_|true);
- let mut stream=SslStream::new(Ssl::new(&context.build()).unwrap(),tcp).unwrap();stream.accept().unwrap();send(&mut stream,fake_identity(peer));let identity=read(&mut stream);assert_eq!(identity.kind,"kdeconnect.identity");stream
+ let mut stream=SslStream::new(Ssl::new(&context.build()).unwrap(),tcp).unwrap();stream.accept().unwrap();send(&mut stream,identity);let identity=read(&mut stream);assert_eq!(identity.kind,"kdeconnect.identity");stream
 }
 #[test] fn tls_pairing_gates_features_persists_reconnects_and_unpairs() {
  let temp=tempfile::tempdir().unwrap();let state=temp.path().join("state");let socket=temp.path().join("runtime/control.sock");
@@ -113,4 +116,95 @@ fn connect(port:u16,peer:&Store)->SslStream<TcpStream>{
  let accepted=request(&socket,&Request{op:"accept".into(),device_id:Some(peer.id().into()),attempt:Some(attempt),args:Default::default()}).unwrap();assert_eq!(accepted["ok"],true,"{accepted}");
  assert_eq!(read(&mut second).body["pair"],true);assert_eq!(read(&mut second).kind,"kdeconnect.battery.request");
  assert_eq!(dev(&accepted,peer.id()).unwrap()["paired"],true);
+}
+
+const CAST:&str="des.connect.cast.v1";
+// A real baseline 1x1 JPEG, base64 so the fixture has no encoder dependency.
+const CAST_JPEG:&str="/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDy2iiivWPPP//Z";
+fn cast_call(socket:&Path,op:&str,id:&str,args:Value)->Value {
+ request(socket,&Request{op:op.into(),device_id:Some(id.into()),attempt:None,args:serde_json::from_value(args).unwrap()}).unwrap()
+}
+fn cast_frame(socket:&Path,id:&str,serial:&str)->Vec<u8> {
+ use std::os::unix::net::UnixStream;
+ let mut stream=UnixStream::connect(socket).unwrap();stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+ writeln!(stream,"{}",json!({"op":"screen_frame","device_id":id,"serial":serial})).unwrap();
+ let mut bytes=Vec::new();stream.read_to_end(&mut bytes).unwrap();bytes
+}
+fn cast_message(stream:&mut impl Read,op:&str)->Packet {
+ loop {let np=read(stream);assert_eq!(np.kind,CAST);if np.body["op"]==op{return np;}assert_eq!(np.body["op"],"lease");}
+}
+#[test] fn wireless_cast_requires_pairing_consent_and_current_geometry_and_stops_on_lock() {
+ use std::{os::unix::net::UnixListener,sync::{Arc,atomic::{AtomicBool,Ordering}}};
+ let temp=tempfile::tempdir().unwrap();let socket=temp.path().join("runtime/control.sock");let shell_path=temp.path().join("shell.sock");
+ let listener=UnixListener::bind(&shell_path).unwrap();listener.set_nonblocking(true).unwrap();
+ let flags=Arc::new(AtomicBool::new(false));let locked=flags.clone();
+ let (done_tx,done_rx)=std::sync::mpsc::channel::<()>();
+ let lock_server=std::thread::spawn(move||{
+  while matches!(done_rx.try_recv(),Err(std::sync::mpsc::TryRecvError::Empty)){
+   let Ok((mut s,_))=listener.accept() else{std::thread::sleep(Duration::from_millis(5));continue;};
+   let mut b=[0;6];if s.read_exact(&mut b).is_ok()&&&b==b"state\n"{let _=writeln!(s,"ok {{\"locked\":{}}}",locked.load(Ordering::Acquire));}
+  }
+ });
+ let _daemon=Daemon(Command::new(env!("CARGO_BIN_EXE_des-connectd")).arg("--loopback").env("DES_UI_CONTROL_SOCKET",&shell_path).args(["--socket",socket.to_str().unwrap(),"--state-dir",temp.path().join("state").to_str().unwrap()]).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
+ let ready=wait(&socket,|s|s["ok"]==true);let port=ready["state"]["tcp_port"].as_u64().unwrap() as u16;
+ let peer=Store::open(&temp.path().join("phone")).unwrap();let id=peer.id();let mut stream=connect_with_cast(port,&peer,true);
+ wait(&socket,|s|dev(s,id).is_some_and(|d|d["connected"]==true));
+ assert_eq!(call(&socket,"cast_phone",Some(id))["ok"],false);
+ assert_eq!(call(&socket,"pair",Some(id))["ok"],true);assert_eq!(read(&mut stream).kind,"kdeconnect.pair");send(&mut stream,packet("kdeconnect.pair",json!({"pair":true})));
+ wait(&socket,|s|dev(s,id).is_some_and(|d|d["paired"]==true));read(&mut stream);
+ let started=call(&socket,"cast_phone",Some(id));
+ assert_eq!(started["ok"],true,"{started}");
+ assert_eq!(dev(&started,id).unwrap()["wireless_cast"],true);
+ let serial=started["state"]["screens"]["serial"].as_str().unwrap();
+ assert_eq!(started["state"]["screens"]["mode"],"wireless");
+ assert_eq!(cast_message(&mut stream,"start").body["id"],serial);
+ let usb=cast_call(&socket,"mirror_phone",id,json!({"serial":"unused-test-usb"}));
+ assert!(usb["error"].as_str().unwrap().contains("stop the wireless cast"));
+ assert_eq!(call(&socket,"cast_phone",Some(id))["ok"],false);
+ let input=|geometry,x|cast_call(&socket,"cast_input",id,json!({"serial":serial,"geometry":geometry,"action":"tap","x":x,"y":9200}));
+ assert_eq!(cast_frame(&socket,id,serial),b"WAIT\n");
+ assert_eq!(input(1,2800)["ok"],false);
+ send(&mut stream,packet(CAST,json!({"op":"frame","id":serial,"geometry":1,"jpeg":CAST_JPEG})));
+ std::thread::sleep(Duration::from_millis(120));assert_eq!(cast_frame(&socket,id,serial),b"WAIT\n");
+ send(&mut stream,packet(CAST,json!({"op":"status","id":serial,"phase":"live","control":false,"geometry":2})));
+ send(&mut stream,packet(CAST,json!({"op":"frame","id":serial,"geometry":2,"jpeg":CAST_JPEG})));
+ let end=Instant::now()+Duration::from_secs(2);loop {
+  let frame=cast_frame(&socket,id,serial);if frame.starts_with(b"JPEG "){assert_eq!(frame.split(|&c|c==b'\n').next().unwrap().rsplit(|&c|c==b' ').next().unwrap(),b"2");break;}
+  assert!(Instant::now()<end,"frame not delivered: {frame:?}");
+ }
+ assert!(!cast_frame(&socket,"wrong-peer",serial).starts_with(b"JPEG "));
+ assert_eq!(input(2,2800)["ok"],false,"view-only frames must not enable input");
+ send(&mut stream,packet(CAST,json!({"op":"status","id":serial,"phase":"live","control":true,"geometry":3})));
+ send(&mut stream,packet(CAST,json!({"op":"frame","id":serial,"geometry":2,"jpeg":CAST_JPEG})));
+ send(&mut stream,packet(CAST,json!({"op":"frame","id":serial,"geometry":3,"jpeg":"not a JPEG"})));
+ wait(&socket,|s|s["state"]["screens"]["control"]==true);
+ assert_eq!(cast_frame(&socket,id,serial),b"WAIT\n","rotation must discard old pixels, including late frames");
+ assert_eq!(input(3,2800)["ok"],false,"no input before a current frame");
+ std::thread::sleep(Duration::from_millis(120));
+ send(&mut stream,packet(CAST,json!({"op":"frame","id":serial,"geometry":3,"jpeg":CAST_JPEG})));
+ let end=Instant::now()+Duration::from_secs(2);
+ while !cast_frame(&socket,id,serial).starts_with(b"JPEG ") {assert!(Instant::now()<end,"missing current frame");}
+ assert_eq!(input(2,2800)["ok"],false);
+ assert_eq!(input(3,10001)["ok"],false);
+ assert_eq!(input(3,2800)["ok"],true);
+ let sent=cast_message(&mut stream,"input");assert_eq!(sent.body["x"],2800);assert_eq!(sent.body["y"],9200);
+ flags.store(true,Ordering::Release);
+ assert!(!cast_frame(&socket,id,serial).starts_with(b"JPEG "));
+ assert_eq!(input(2,2800)["ok"],false);
+ assert_eq!(cast_message(&mut stream,"stop").body["id"],serial);
+ flags.store(false,Ordering::Release);
+ assert!(!cast_frame(&socket,id,serial).starts_with(b"JPEG "));
+ let second=call(&socket,"cast_phone",Some(id));assert_eq!(second["ok"],true,"{second}");
+ let second_id=second["state"]["screens"]["serial"].as_str().unwrap();
+ assert_ne!(serial,second_id);assert_eq!(cast_message(&mut stream,"start").body["id"],second_id);
+ // The normal state poll does not keep a cast alive if the preview viewer left.
+ wait(&socket,|s|s["state"]["screens"]["running"]==false);
+ assert_eq!(cast_message(&mut stream,"stop").body["id"],second_id);
+ assert!(!cast_frame(&socket,id,second_id).starts_with(b"JPEG "));
+ let third=call(&socket,"cast_phone",Some(id));assert_eq!(third["ok"],true,"{third}");
+ let third_id=third["state"]["screens"]["serial"].as_str().unwrap();
+ assert_eq!(cast_message(&mut stream,"start").body["id"],third_id);
+ drop(stream);wait(&socket,|s|s["state"]["screens"]["running"]==false);
+ assert!(!cast_frame(&socket,id,third_id).starts_with(b"JPEG "));
+ drop(done_tx);lock_server.join().unwrap();
 }
