@@ -181,8 +181,93 @@ pub fn tracked(ui: &mut Ui, text: &str, font: FontId, color: Color32, tracking: 
     response
 }
 
+/// Groups everything `add` draws into cards: each [`section`] heading inside opens a
+/// card that runs to the next heading or the end. The card's background is reserved
+/// before its contents and sized afterwards to what was really drawn, so spacing left
+/// after a group never stretches it. Outside this, headings stay plain rules.
+pub fn cards(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
+    if ui.data(|data| data.get_temp::<Cards>(cards_id()).is_some()) {
+        add(ui);
+        return;
+    }
+    let pad = if ui.available_width() < 480.0 { 10.0 } else { 16.0 };
+    egui::Frame::NONE.inner_margin(egui::Margin::symmetric(pad as i8, 0)).show(ui, |ui| {
+        let inner = ui.max_rect();
+        let cards = Cards { painter: ui.painter().clone(), left: inner.left() - pad, right: inner.right() + pad, pad, open: None };
+        ui.data_mut(|data| data.insert_temp(cards_id(), cards));
+        add(ui);
+        if let Some(mut cards) = ui.data(|data| data.get_temp::<Cards>(cards_id())) {
+            if let Some(bottom) = close_card(ui, &mut cards) {
+                // Room below the last card, which may sit at the foot of a scroll.
+                let below = bottom + pad - ui.cursor().top();
+                if below > 0.0 { ui.add_space(below); }
+            }
+        }
+        ui.data_mut(|data| data.remove::<Cards>(cards_id()));
+    });
+}
+
+const CARD_GAP: f32 = 16.0;
+
+#[derive(Clone)]
+struct Cards {
+    painter: egui::Painter,
+    left: f32,
+    right: f32,
+    pad: f32,
+    /// The open card: its reserved background and its top.
+    open: Option<(egui::layers::ShapeIdx, f32)>,
+}
+
+fn cards_id() -> egui::Id {
+    egui::Id::new("des-ui-cards")
+}
+
+/// Paints the open card behind what was drawn in it, and returns its bottom.
+fn close_card(ui: &Ui, cards: &mut Cards) -> Option<f32> {
+    let (idx, top) = cards.open.take()?;
+    let layer = cards.painter.layer_id();
+    let content = ui.ctx().graphics(|graphics| {
+        graphics.get(layer).map_or(top, |list| {
+            list.all_entries().skip(idx.0 + 1)
+                .map(|clipped| clipped.shape.visual_bounding_rect())
+                .filter(|rect| rect.is_finite() && rect.max.y > top)
+                .fold(top, |bottom, rect| bottom.max(rect.max.y))
+        })
+    });
+    let rect = Rect::from_min_max(pos2(cards.left, top), pos2(cards.right, content + cards.pad));
+    cards.painter.set(idx, egui::epaint::RectShape::new(rect, SURFACE_RADIUS, PANEL, Stroke::new(1.0, LINE), StrokeKind::Inside));
+    Some(rect.bottom())
+}
+
+/// Inside [`cards`]: closes the card before and opens one for this heading.
+fn open_card(ui: &mut Ui) -> bool {
+    let Some(mut cards) = ui.data(|data| data.get_temp::<Cards>(cards_id())) else { return false };
+    if let Some(bottom) = close_card(ui, &mut cards) {
+        let gap = ui.cursor().top() - bottom;
+        if gap < CARD_GAP { ui.add_space(CARD_GAP - gap); }
+    }
+    let top = ui.cursor().top();
+    let idx = cards.painter.add(egui::Shape::Noop);
+    cards.open = Some((idx, top));
+    let pad = cards.pad;
+    ui.data_mut(|data| data.insert_temp(cards_id(), cards));
+    ui.add_space(pad);
+    true
+}
+
 /// A section's heading: its name, a rule, and whatever `meta` adds at the right.
+/// Inside [`cards`] it starts a card instead, and the name heads it without a rule.
 pub fn section(ui: &mut Ui, title: &str, meta: impl FnOnce(&mut Ui)) {
+    if open_card(ui) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 10.0;
+            tracked(ui, title, display_bold(12.0), TEXT, 1.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), meta);
+        });
+        ui.add_space(4.0);
+        return;
+    }
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
         tracked(ui, title, display_bold(13.0), SECONDARY, 0.8);

@@ -811,13 +811,13 @@ impl Settings {
                 // Leave a gutter for the floating scroll bar so it never sits on a switch.
                 ui.set_max_width((ui.available_width() - SCROLL_GUTTER).min(860.0));
                 ui.spacing_mut().item_spacing = vec2(10.0, 8.0);
-                draw(self, ui);
+                ui::cards(ui, |ui| draw(self, ui));
             });
     }
 
     fn appearance(&mut self, ui: &mut Ui, theme: &Theme, config: &Config, changes: &mut Vec<Change>) {
         match self.appearance_tab {
-            AppearanceTab::Wallpaper => if let Some(appearance) = self.appearance_editor.show(ui, &config.appearance) { changes.push(Change::Appearance(appearance)); },
+            AppearanceTab::Wallpaper => if let Some(appearance) = self.appearance_editor.show(ui, theme, &config.appearance) { changes.push(Change::Appearance(appearance)); },
             AppearanceTab::Theme => self.theme_appearance(ui, theme, config, changes),
             AppearanceTab::Effects => self.effects_appearance(ui, theme, config, changes),
         }
@@ -1843,7 +1843,7 @@ fn autostart(ui: &mut Ui, theme: &Theme, changes: &mut Vec<Change>) {
     note(ui, "The command runs as written, without a shell. It starts from the next session.");
 }
 
-fn slider_row(ui: &mut Ui, theme: &Theme, name: &str, frac: f32, reading: &str) -> Option<f32> {
+pub(crate) fn slider_row(ui: &mut Ui, theme: &Theme, name: &str, frac: f32, reading: &str) -> Option<f32> {
     let mut picked = None;
     if ui.available_width() < 440.0 {
         ui.horizontal_wrapped(|ui| {
@@ -1974,7 +1974,7 @@ fn entry_row(ui: &mut Ui, theme: &Theme, crumb: Option<&str>, title: &str, about
 }
 
 /// A row of joined choices, one of them chosen. Returns true when the choice changed.
-fn segmented<T: PartialEq + Copy>(ui: &mut Ui, theme: &Theme, current: &mut T, options: &[(T, &str)]) -> bool {
+pub(crate) fn segmented<T: PartialEq + Copy>(ui: &mut Ui, theme: &Theme, current: &mut T, options: &[(T, &str)]) -> bool {
     const INSET: f32 = 3.0;
     const PAD: f32 = 14.0;
     let galleys: Vec<_> = options.iter().map(|(_, label)| ui.painter().layout_no_wrap((*label).to_owned(), ui::display(13.0), ui::TEXT)).collect();
@@ -2025,7 +2025,8 @@ pub(crate) fn switch_row(ui: &mut Ui, theme: &Theme, name: &str, what: &str, on:
     let mut inner = ui.new_child(UiBuilder::new().max_rect(toggle_area).layout(Layout::right_to_left(Align::Center)));
     let response = ui::toggle(&mut inner, theme, on);
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), on, name.job.text.as_str()));
-    ui.painter().hline(row.x_range(), row.bottom(), Stroke::new(1.0, ui::TRACK));
+    // A line above each row, so the last one never doubles the card's edge.
+    ui.painter().hline(row.x_range(), row.top(), Stroke::new(1.0, ui::TRACK));
     response.clicked()
 }
 
@@ -2181,7 +2182,7 @@ mod tests {
             assert!(texts.iter().any(|text| text.galley.job.text == "Theme"));
             assert!(texts.iter().any(|text| text.galley.job.text == "Effects"));
             assert!(!texts.iter().any(|text| text.galley.job.text == "PHOSPHOR"), "effects should have their own tab");
-            for text in texts.iter().filter(|text| ["Wallpaper", "Theme", "Effects", "Choose image", "Apply appearance"].contains(&text.galley.job.text.as_str())) {
+            for text in texts.iter().filter(|text| ["Wallpaper", "Theme", "Effects", "CHOOSE IMAGE", "APPLY"].contains(&text.galley.job.text.as_str())) {
                 assert!(text.pos.x + text.galley.size().x <= width + 1.0, "control spills outside {width}: {}", text.galley.job.text);
             }
         }
