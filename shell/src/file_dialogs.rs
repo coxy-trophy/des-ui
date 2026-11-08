@@ -134,6 +134,132 @@ impl BatchRename {
     }
 }
 
+/// Chooses an application for files, the ones made for their kind first.
+pub struct OpenWith {
+    files: Vec<PathBuf>,
+    loading: Option<Receiver<(Option<String>, Option<String>, Vec<crate::apps::Handler>)>>,
+    mime: Option<String>, default: Option<String>, handlers: Vec<crate::apps::Handler>,
+    show_all: bool, remember: bool, error: Option<String>,
+}
+impl OpenWith {
+    pub fn new(files: Vec<PathBuf>, ctx: &egui::Context) -> Self {
+        let (send, receive) = std::sync::mpsc::channel();
+        let (first, wake) = (files.first().cloned(), ctx.clone());
+        std::thread::spawn(move || {
+            let mime = first.as_deref().and_then(crate::apps::mime_of);
+            let default = mime.as_deref().and_then(crate::apps::default_for);
+            let _ = send.send((mime, default, crate::apps::handlers()));
+            wake.request_repaint();
+        });
+        OpenWith { files, loading: Some(receive), mime: None, default: None, handlers: Vec::new(), show_all: false, remember: false, error: None }
+    }
+    /// True when it should close.
+    pub fn show(&mut self, ctx: &egui::Context, theme: &Theme) -> bool {
+        if let Some((mime, default, handlers)) = self.loading.as_ref().and_then(|r| r.try_recv().ok()) {
+            self.mime = mime; self.default = default; self.handlers = handlers; self.loading = None;
+            if !self.handlers.iter().any(|h| self.mime.as_deref().is_some_and(|m| crate::apps::handles(h, m))) { self.show_all = true; }
+        }
+        let mut close = false;
+        let response = egui::Modal::new(egui::Id::new("files-open-with")).show(ctx, |ui| {
+            ui.set_width((ctx.screen_rect().width() - 48.0).clamp(260.0, 460.0));
+            let what = match self.files.as_slice() { [one] => one.file_name().unwrap_or_default().to_string_lossy().into_owned(), many => format!("{} items", many.len()) };
+            ui.add(egui::Label::new(egui::RichText::new(format!("Open {what} with")).font(ui::display_bold(19.0)).color(ui::TEXT)).wrap());
+            if let Some(mime) = &self.mime { ui.label(egui::RichText::new(mime).font(ui::mono(11.5)).color(ui::LABEL)); }
+            ui.add_space(10.0);
+            if self.loading.is_some() { crate::settings::note(ui, "Looking for applications…"); }
+            let mime = self.mime.clone().unwrap_or_default();
+            let mut fitting: Vec<&crate::apps::Handler> = self.handlers.iter().filter(|h| crate::apps::handles(h, &mime)).collect();
+            fitting.sort_by_key(|h| Some(&h.entry.desktop_id) != self.default.as_ref());
+            let others: Vec<&crate::apps::Handler> = if self.show_all { self.handlers.iter().filter(|h| !crate::apps::handles(h, &mime) && crate::apps::opens_files(h)).collect() } else { Vec::new() };
+            let mut chosen = None;
+            egui::ScrollArea::vertical().max_height(320.0).auto_shrink([false, true]).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                for handler in fitting.iter().chain(others.iter()) {
+                    let default = Some(&handler.entry.desktop_id) == self.default.as_ref();
+                    let width = ui.available_width();
+                    let (rect, row) = ui.allocate_exact_size(egui::vec2(width, 32.0), egui::Sense::click());
+                    if row.hovered() || row.has_focus() { ui.painter().rect_filled(rect, ui::CONTROL_RADIUS, ui::TRACK); }
+                    ui.painter().text(rect.left_center() + egui::vec2(10.0, 0.0), egui::Align2::LEFT_CENTER, &handler.entry.name, ui::display(14.0), ui::TEXT);
+                    if default { ui.painter().text(rect.right_center() - egui::vec2(10.0, 0.0), egui::Align2::RIGHT_CENTER, "DEFAULT", ui::mono(10.5), theme.main); }
+                    row.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &handler.entry.name));
+                    if row.clicked() { chosen = Some((*handler).clone()); }
+                }
+            });
+            if let Some(handler) = chosen {
+                match crate::apps::launch_with(&handler, &self.files) {
+                    Ok(()) => {
+                        if self.remember && !mime.is_empty() { if let Err(error) = crate::apps::set_default(&handler.entry.desktop_id, &mime) { self.error = Some(error); } }
+                        close = self.error.is_none();
+                    },
+                    Err(error) => self.error = Some(format!("{} could not start: {error}", handler.entry.name)),
+                }
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let toggle = ui::toggle(ui, theme, self.show_all);
+                if toggle.clicked() { self.show_all = !self.show_all; }
+                ui.label(egui::RichText::new("Show every application").font(ui::display(13.0)).color(ui::TEXT));
+            });
+            if !mime.is_empty() && self.files.len() == 1 {
+                ui.horizontal(|ui| {
+                    let toggle = ui::toggle(ui, theme, self.remember);
+                    if toggle.clicked() { self.remember = !self.remember; }
+                    ui.label(egui::RichText::new("Always open this kind of file with it").font(ui::display(13.0)).color(ui::TEXT));
+                });
+            }
+            if let Some(error) = &self.error { ui.colored_label(ui::CAUTION, error); }
+            ui.add_space(10.0);
+            if ui::button(ui, theme, "CANCEL", Some("ESC"), false).clicked() { close = true; }
+        });
+        close || response.should_close()
+    }
+}
+
+/// Names a new archive and picks its format.
+pub struct Compress { sources: Vec<PathBuf>, name: String, format: &'static str, focused: bool }
+impl Compress {
+    pub fn new(sources: Vec<PathBuf>) -> Self {
+        let name = match sources.as_slice() {
+            // "notes.md" makes "notes.zip"; a folder keeps its whole name.
+            [one] if one.is_dir() => one.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Archive".into()),
+            [one] => one.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Archive".into()),
+            _ => sources.first().and_then(|p| p.parent()).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Archive".into()),
+        };
+        Compress { sources, name, format: ".zip", focused: false }
+    }
+    pub fn show(&mut self, ctx: &egui::Context, theme: &Theme) -> Option<Outcome> {
+        let mut outcome = None;
+        let response = egui::Modal::new(egui::Id::new("files-compress")).show(ctx, |ui| {
+            ui.set_width((ctx.screen_rect().width() - 48.0).clamp(260.0, 440.0));
+            let what = if self.sources.len() == 1 { "1 item".to_string() } else { format!("{} items", self.sources.len()) };
+            ui.label(egui::RichText::new(format!("Compress {what}")).font(ui::display_bold(19.0)).color(ui::TEXT));
+            ui.add_space(10.0);
+            let width = ui.available_width();
+            let field = ui.add_sized(egui::vec2(width, ui::CONTROL_HEIGHT), egui::TextEdit::singleline(&mut self.name).margin(egui::vec2(10.0, 4.0)).vertical_align(egui::Align::Center).hint_text(ui::hint("Archive name")));
+            if !self.focused { field.request_focus(); self.focused = true; }
+            ui.add_space(8.0);
+            crate::settings::segmented(ui, theme, &mut self.format, &[(".zip", ".zip"), (".tar.gz", ".tar.gz"), (".tar.xz", ".tar.xz"), (".7z", ".7z")]);
+            crate::settings::note(ui, ".zip opens everywhere; .tar.xz is smallest.");
+            let name = self.name.trim();
+            let valid = !name.is_empty() && !name.contains('/') && name != "." && name != "..";
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let enter = ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter));
+                if (ui.add_enabled_ui(valid, |ui| ui::button(ui, theme, "COMPRESS", Some("ENTER"), valid)).inner.clicked() || enter) && valid {
+                    if let Some(folder) = self.sources.first().and_then(|p| p.parent()) {
+                        let archive = folder.join(format!("{name}{}", self.format));
+                        outcome = Some(Outcome::Run(vec![Operation::Compress { sources: self.sources.clone(), archive }]));
+                    }
+                }
+                if ui::button(ui, theme, "CANCEL", Some("ESC"), false).clicked() { outcome = Some(Outcome::Cancel); }
+            });
+        });
+        if response.should_close() && outcome.is_none() { outcome = Some(Outcome::Cancel); }
+        outcome
+    }
+}
+
 /// The name for a numeric id from a passwd- or group-like file.
 fn name_for(file: &str, id: u32) -> Option<String> {
     std::fs::read_to_string(file).ok()?.lines().find_map(|line| {

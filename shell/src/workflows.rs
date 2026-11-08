@@ -72,7 +72,7 @@ impl App {
             match result {
                 Ok(completed) => {
                     let source = match &task.operation {
-                        file_ops::Operation::CreateFolder { .. } => None,
+                        file_ops::Operation::CreateFolder { .. } | file_ops::Operation::Compress { .. } | file_ops::Operation::Extract { .. } => None,
                         file_ops::Operation::Rename { source, .. } | file_ops::Operation::Copy { source, .. } |
                         file_ops::Operation::Move { source, .. } | file_ops::Operation::Trash { source } |
                         file_ops::Operation::Restore { source } => Some(source.clone()),

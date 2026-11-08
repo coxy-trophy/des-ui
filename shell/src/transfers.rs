@@ -65,6 +65,11 @@ pub fn describe(operation: &Operation) -> String {
         Operation::Copy { source, directory, .. } => format!("Copy {} to {}", name(source), name(directory)),
         Operation::Move { source, directory, .. } => format!("Move {} to {}", name(source), name(directory)),
         Operation::Trash { source } => format!("Move {} to Trash", name(source)),
+        Operation::Compress { sources, archive } => match sources.as_slice() {
+            [one] => format!("Compress {} into {}", name(one), name(archive)),
+            many => format!("Compress {} items into {}", many.len(), name(archive)),
+        },
+        Operation::Extract { archive } => format!("Extract {}", name(archive)),
         Operation::Restore { source } => format!("Restore {}", crate::file_ops::trash_original_name(source).map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| name(source))),
     }
 }
@@ -214,6 +219,7 @@ fn operation_source(operation: &Operation) -> PathBuf {
     match operation {
         Operation::CreateFolder { parent, name } => parent.join(name),
         Operation::Rename { source, .. } | Operation::Copy { source, .. } | Operation::Move { source, .. } | Operation::Trash { source } | Operation::Restore { source } => source.clone(),
+        Operation::Compress { archive, .. } | Operation::Extract { archive } => archive.clone(),
     }
 }
 

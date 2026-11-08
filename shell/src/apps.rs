@@ -163,6 +163,125 @@ pub fn split_exec(exec: &str) -> Vec<String> {
     args
 }
 
+/// An application that can open files, with the kinds it says it handles and where
+/// its `Exec` line takes them.
+#[derive(Clone, Debug)]
+pub struct Handler {
+    pub entry: AppEntry,
+    pub mime: Vec<String>,
+    /// The argument position and code (f, F, u or U) of the file placeholder.
+    files: Option<(usize, char)>,
+}
+
+/// Where in `Exec` the files go, as the argument index once placeholders are dropped.
+pub fn file_placeholder(exec: &str) -> Option<(usize, char)> {
+    let mut words = 0;
+    let mut in_word = false;
+    let mut quoted = false;
+    let mut chars = exec.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => { quoted = !quoted; in_word = true; },
+            '\\' if quoted => { chars.next(); in_word = true; },
+            '%' => match chars.peek().copied() {
+                Some(code @ ('f' | 'F' | 'u' | 'U')) if !in_word => return Some((words, code)),
+                Some(_) => { chars.next(); },
+                None => {},
+            },
+            c if c.is_whitespace() && !quoted => { if in_word { words += 1; in_word = false; } },
+            _ => in_word = true,
+        }
+    }
+    None
+}
+
+/// Every application that opens files, read afresh.
+pub fn handlers() -> Vec<Handler> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for dir in entry_dirs() {
+        let Ok(listing) = std::fs::read_dir(&dir) else { continue };
+        for file in listing.flatten() {
+            let name = file.file_name();
+            if !name.to_string_lossy().ends_with(".desktop") || !seen.insert(name.clone()) { continue; }
+            let Ok(text) = std::fs::read_to_string(file.path()) else { continue };
+            let Some(mut entry) = parse(&text) else { continue };
+            entry.desktop_id = name.to_string_lossy().into_owned();
+            let mut mime = Vec::new();
+            let mut files = None;
+            let mut main = false;
+            for line in text.lines().map(str::trim) {
+                if line.starts_with('[') { main = line == "[Desktop Entry]"; continue; }
+                if !main { continue; }
+                if let Some(value) = line.strip_prefix("MimeType=") { mime = value.split(';').map(str::trim).filter(|m| !m.is_empty()).map(str::to_string).collect(); }
+                if let Some(value) = line.strip_prefix("Exec=") { files = file_placeholder(value.trim()); }
+            }
+            out.push(Handler { entry, mime, files });
+        }
+    }
+    out.sort_by_key(|h| h.entry.name.to_lowercase());
+    out
+}
+
+fn xdg_mime(args: &[&str]) -> Option<String> {
+    let output = Command::new("xdg-mime").args(args).stderr(Stdio::null()).output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (output.status.success() && !text.is_empty()).then_some(text)
+}
+/// The kind of a file as the desktop names it, such as "application/pdf".
+pub fn mime_of(path: &std::path::Path) -> Option<String> { xdg_mime(&["query", "filetype", &path.to_string_lossy()]) }
+/// The desktop id of the application that opens a kind by default.
+pub fn default_for(mime: &str) -> Option<String> { xdg_mime(&["query", "default", mime]) }
+/// Makes an application the default for a kind.
+pub fn set_default(desktop_id: &str, mime: &str) -> Result<(), String> {
+    let status = Command::new("xdg-mime").args(["default", desktop_id, mime]).status().map_err(|e| e.to_string())?;
+    if status.success() { Ok(()) } else { Err(format!("xdg-mime could not set the default ({status})")) }
+}
+
+/// Whether it is a window that takes files, rather than a tool run in a terminal.
+pub fn opens_files(handler: &Handler) -> bool { handler.files.is_some() && !handler.entry.terminal }
+/// Whether a handler says it opens `mime`, directly or as "image/*".
+pub fn handles(handler: &Handler, mime: &str) -> bool {
+    let family = mime.split('/').next().unwrap_or("");
+    handler.mime.iter().any(|m| m == mime || m.strip_suffix("/*").is_some_and(|f| f == family))
+}
+
+fn file_uri(path: &std::path::Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+    let mut uri = String::from("file://");
+    for &byte in path.as_os_str().as_bytes() {
+        if byte.is_ascii_alphanumeric() || b"/-._~".contains(&byte) { uri.push(byte as char); } else { uri.push_str(&format!("%{byte:02X}")); }
+    }
+    uri
+}
+
+/// The command lines that open `files` with a handler: one for every file when it
+/// takes one at a time, else one for all of them.
+pub fn command_lines(handler: &Handler, files: &[PathBuf]) -> Vec<Vec<String>> {
+    let as_arg = |path: &PathBuf, code: char| if code == 'u' || code == 'U' { file_uri(path) } else { path.to_string_lossy().into_owned() };
+    let base = &handler.entry.exec;
+    match handler.files {
+        Some((at, code @ ('f' | 'u'))) => files.iter().map(|file| {
+            let mut line = base.clone(); line.insert(at.min(line.len()), as_arg(file, code)); line
+        }).collect(),
+        Some((at, code)) => {
+            let mut line = base.clone();
+            let at = at.min(line.len());
+            line.splice(at..at, files.iter().map(|f| as_arg(f, code)));
+            vec![line]
+        },
+        None => { let mut line = base.clone(); line.extend(files.iter().map(|f| f.to_string_lossy().into_owned())); vec![line] },
+    }
+}
+
+/// Opens `files` with a handler, detached, at most sixteen windows at once.
+pub fn launch_with(handler: &Handler, files: &[PathBuf]) -> std::io::Result<()> {
+    for line in command_lines(handler, files).into_iter().take(16) {
+        launch(&AppEntry { exec: line, ..handler.entry.clone() })?;
+    }
+    Ok(())
+}
+
 /// Starts an application on its own, detached from the shell.
 pub fn launch(entry: &AppEntry) -> std::io::Result<()> {
     let (program, args) = entry
@@ -253,6 +372,19 @@ fn open_url_using(program: &std::ffi::OsStr, url: &str) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn files_go_where_the_exec_line_asks_one_or_all_at_once() {
+        assert_eq!(file_placeholder("gimp %U"), Some((1, 'U')));
+        assert_eq!(file_placeholder("evince --fullscreen %f"), Some((2, 'f')));
+        assert_eq!(file_placeholder("\"my app\" --name=%c"), None);
+        let handler = |exec: &str| Handler { entry: AppEntry { name: "x".into(), desktop_id: "x.desktop".into(), icon: None, startup_wm_class: None, exec: split_exec(exec), terminal: false }, mime: vec!["image/*".into()], files: file_placeholder(exec) };
+        let files = [PathBuf::from("/a b/1.png"), PathBuf::from("/2.png")];
+        assert_eq!(command_lines(&handler("viewer %f --flag"), &files), vec![vec!["viewer", "/a b/1.png", "--flag"], vec!["viewer", "/2.png", "--flag"]]);
+        assert_eq!(command_lines(&handler("viewer %U"), &files), vec![vec!["viewer", "file:///a%20b/1.png", "file:///2.png"]]);
+        assert_eq!(command_lines(&handler("viewer"), &files[..1]), vec![vec!["viewer", "/a b/1.png"]]);
+        assert!(handles(&handler("v %f"), "image/png") && !handles(&handler("v %f"), "text/plain"));
+    }
+
     use super::*;
 
     #[test]

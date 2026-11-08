@@ -102,6 +102,8 @@ pub enum Event {
     Resolve(crate::file_ops::Conflict, bool),
     PauseTransfers(bool),
     ClearTransfers,
+    /// Offer these files to a phone or tablet through DES Connect.
+    SendTo(String, Vec<PathBuf>),
 }
 enum DialogKind { NewFolder, Rename(PathBuf), Trash(Vec<PathBuf>) }
 struct OperationDialog { kind: DialogKind, name: String, pending: bool, focused: bool, error: Option<String> }
@@ -113,7 +115,7 @@ enum View { List, Grid }
 
 /// What a click, key or menu asked for this frame; one place carries them out.
 #[derive(Default)]
-struct Act { open: bool, new_folder: bool, rename: bool, copy: bool, cut: bool, paste: bool, trash: bool, restore: bool, undo: bool, properties: bool, terminal: Option<PathBuf> }
+struct Act { open: bool, new_folder: bool, rename: bool, copy: bool, cut: bool, paste: bool, trash: bool, restore: bool, undo: bool, properties: bool, open_with: bool, compress: bool, extract: bool, send: Option<String>, terminal: Option<PathBuf> }
 
 pub struct Browser {
     path: PathBuf, path_text: String, entries: Vec<Entry>,
@@ -145,6 +147,9 @@ pub struct Browser {
     /// An entry to select once its folder has been read.
     reveal_after: Option<PathBuf>,
     renaming: Option<crate::file_dialogs::BatchRename>, properties: Option<crate::file_dialogs::Properties>,
+    open_with: Option<crate::file_dialogs::OpenWith>, compressing: Option<crate::file_dialogs::Compress>,
+    /// Phones and tablets ready for files, as (id, name).
+    phones: Vec<(String, String)>,
 }
 pub fn home() -> PathBuf { std::env::var_os("HOME").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| PathBuf::from("/")) }
 fn image_path(path: &Path) -> bool { matches!(path.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg") }
@@ -205,7 +210,7 @@ impl Browser {
             clipboard: None, transfers: Default::default(), transfers_open: false, clash_all: true, dialog: None, menu_open: false, paste_chord_handled: false, labels: Default::default(),
             sort: SortKey::Name, descending: false, editing_path: false, focus_path: false, focus_filter: false,
             places, free: None, look: Default::default(), look_path: None, list_offset: 0.0, list_height: 0.0, reveal: false,
-            view: if mode == Mode::ImagePicker { View::Grid } else { View::List }, grid_columns: 1, thumbs: Default::default(), mounting: None, ejecting: None, message: None, search: None, found: Vec::new(), lines: Default::default(), reveal_after: None, renaming: None, properties: None }
+            view: if mode == Mode::ImagePicker { View::Grid } else { View::List }, grid_columns: 1, thumbs: Default::default(), mounting: None, ejecting: None, message: None, search: None, found: Vec::new(), lines: Default::default(), reveal_after: None, renaming: None, properties: None, open_with: None, compressing: None, phones: Vec::new() }
     }
     fn navigate(&mut self, ctx: &egui::Context, path: PathBuf, navigation: Navigation) {
         if !path.is_absolute() { self.error = Some("Use an absolute folder path".into()); return; }
@@ -299,7 +304,8 @@ impl Browser {
         else if self.can_choose() { Some(if self.mode == Mode::ImagePicker { Event::Choose(entry.path) } else { Event::Open(entry.path) }) }
         else { None }
     }
-    pub fn captures_keyboard(&self) -> bool { self.dialog.is_some() || self.menu_open || self.transfers.clash.is_some() || self.renaming.is_some() || self.properties.is_some() }
+    pub fn captures_keyboard(&self) -> bool { self.dialog.is_some() || self.menu_open || self.transfers.clash.is_some() || self.renaming.is_some() || self.properties.is_some() || self.open_with.is_some() || self.compressing.is_some() }
+    pub fn set_phones(&mut self, phones: Vec<(String, String)>) { self.phones = phones; }
     /// Reads the folder again, as after another tab changed it.
     pub fn refresh(&mut self, ctx: &egui::Context) { if self.loaded { self.navigate(ctx, self.path.clone(), Navigation::Refresh); } }
     /// What a tab showing this is called.
@@ -349,13 +355,21 @@ impl Browser {
         } else { self.select_only(path); }
     }
     /// Carries out what was asked, in Browse mode against the selection.
-    fn perform(&mut self, ctx: &egui::Context, act: Act) -> Option<Event> {
+    fn perform(&mut self, ctx: &egui::Context, mut act: Act) -> Option<Event> {
         if let Some(folder) = act.terminal { return Some(Event::Terminal(folder)); }
         if act.undo && self.mode == Mode::Browse && self.transfers.undo.is_some() { return Some(Event::Undo); }
         if act.open { return self.activate(ctx); }
         if self.mode != Mode::Browse { return None; }
         let chosen = self.chosen();
         if act.new_folder && !self.in_trash && !self.loading { self.dialog = Some(OperationDialog::new(DialogKind::NewFolder, String::new())); }
+        let files: Vec<PathBuf> = chosen.iter().filter(|p| self.items().iter().any(|e| &e.path == *p && !e.directory)).cloned().collect();
+        if act.open_with && !files.is_empty() { self.open_with = Some(crate::file_dialogs::OpenWith::new(files.clone(), ctx)); }
+        if let Some(device) = act.send.take() { if !files.is_empty() { return Some(Event::SendTo(device, files)); } }
+        if act.compress && !self.in_trash && self.search.is_none() && !chosen.is_empty() { self.compressing = Some(crate::file_dialogs::Compress::new(chosen.clone())); }
+        if act.extract && !self.in_trash {
+            let archives: Vec<_> = files.iter().filter(|p| crate::file_ops::Archive::of(p).is_some()).cloned().map(|archive| crate::file_ops::Operation::Extract { archive }).collect();
+            if !archives.is_empty() { return Some(Event::Operate(archives)); }
+        }
         if act.properties {
             if let Some(path) = self.selected_visible().or_else(|| Some(self.path.clone())) {
                 let kind = self.items().iter().find(|e| e.path == path).map_or("Folder", kind_of).to_string();
@@ -517,6 +531,14 @@ impl Browser {
                 }
             }
             if self.properties.as_mut().is_some_and(|properties| properties.show(ui.ctx(), theme)) { self.properties = None; self.refresh(ui.ctx()); }
+            if self.open_with.as_mut().is_some_and(|open_with| open_with.show(ui.ctx(), theme)) { self.open_with = None; }
+            if let Some(compressing) = &mut self.compressing {
+                match compressing.show(ui.ctx(), theme) {
+                    Some(crate::file_dialogs::Outcome::Run(operations)) => { self.compressing = None; event = Some(Event::Operate(operations)); },
+                    Some(crate::file_dialogs::Outcome::Cancel) => self.compressing = None,
+                    None => {},
+                }
+            }
         }
         event
     }
@@ -809,6 +831,13 @@ impl Browser {
             if self.in_trash { act.restore |= ui::button(ui, theme, "RESTORE", None, false).clicked(); return; }
             if single { act.open |= ui::button(ui, theme, "OPEN", None, true).clicked(); }
             if single && folder { if ui::button(ui, theme, "TERMINAL HERE", None, false).clicked() { act.terminal = self.selected.clone(); } }
+            if single && !folder { act.open_with |= ui::button(ui, theme, "OPEN WITH", None, false).clicked(); }
+            if single && self.selected.as_deref().and_then(crate::file_ops::Archive::of).is_some() { act.extract |= ui::button(ui, theme, "EXTRACT", None, false).clicked(); }
+            if !folder || !single {
+                for (id, name) in self.phones.clone() {
+                    if ui::button(ui, theme, &format!("SEND TO {}", name.to_uppercase()), None, false).clicked() { act.send = Some(id); }
+                }
+            }
             if single { act.rename |= ui::button(ui, theme, "RENAME", None, false).clicked(); }
             act.copy |= ui::button(ui, theme, "COPY", None, false).clicked();
             act.cut |= ui::button(ui, theme, "CUT", None, false).clicked();
@@ -849,6 +878,17 @@ impl Browser {
                     if menu_item(ui, "Copy", "Ctrl+C", true).clicked() { act.copy = true; ui.close_menu(); }
                     if menu_item(ui, "Cut", "Ctrl+X", true).clicked() { act.cut = true; ui.close_menu(); }
                     if menu_item(ui, if count == 1 { "Rename" } else { "Rename all…" }, "F2", true).clicked() { act.rename = true; ui.close_menu(); }
+                    menu_separator(ui);
+                    let chosen = self.chosen();
+                    let any_file = chosen.iter().any(|p| self.items().iter().any(|e| &e.path == p && !e.directory));
+                    if any_file && menu_item(ui, "Open with…", "", true).clicked() { act.open_with = true; ui.close_menu(); }
+                    if self.search.is_none() && menu_item(ui, "Compress…", "", true).clicked() { act.compress = true; ui.close_menu(); }
+                    if chosen.iter().all(|p| crate::file_ops::Archive::of(p).is_some()) && menu_item(ui, "Extract here", "", true).clicked() { act.extract = true; ui.close_menu(); }
+                    if any_file {
+                        for (id, name) in self.phones.clone() {
+                            if menu_item(ui, &format!("Send to {name}"), "", true).clicked() { act.send = Some(id); ui.close_menu(); }
+                        }
+                    }
                     menu_separator(ui);
                     if menu_item(ui, "Copy path", "", true).clicked() {
                         let paths: Vec<String> = self.chosen().iter().map(|p| p.to_string_lossy().into_owned()).collect();
@@ -1349,6 +1389,9 @@ const MAX_FILE_TABS: usize = 12;
 impl Window {
     pub fn new(path: PathBuf) -> Self { Window { tabs: vec![Browser::new(path, Mode::Browse)], active: 0, split: None, right_focus: false } }
     pub fn captures_keyboard(&self) -> bool { self.tabs[self.active].captures_keyboard() || self.split.as_ref().is_some_and(Browser::captures_keyboard) }
+    pub fn set_phones(&mut self, phones: Vec<(String, String)>) {
+        for tab in self.tabs.iter_mut().chain(self.split.as_mut()) { tab.set_phones(phones.clone()); }
+    }
     pub fn configure_operations(&mut self, clipboard: Option<Clipboard>, transfers: crate::transfers::View) {
         for tab in self.tabs.iter_mut().chain(self.split.as_mut()) { tab.configure_operations(clipboard.clone(), transfers.clone()); }
     }
@@ -1959,6 +2002,23 @@ mod interaction_tests {
         let event = key(&mut browser, &ctx, Key::Escape, Modifiers::NONE, 900.0);
         assert!(event.is_none(), "Escape in the filter must not close Files");
         assert!(browser.filter.is_empty());
+    }
+    #[test]
+    fn the_menu_offers_open_with_compress_extract_and_send_to_a_ready_phone() {
+        let ctx = egui::Context::default(); crate::ui::install_fonts(&ctx, None, None);
+        let mut browser = Browser::new("/tmp".into(), Mode::Browse); browser.loaded = true;
+        browser.entries = vec![Entry { path: "/tmp/photos.zip".into(), directory: false, bytes: 9, modified: None }];
+        browser.set_phones(vec![("tab".into(), "Galaxy Tab".into())]);
+        let output = render(&mut browser, &ctx, Vec::new(), 900.0).0;
+        right_click(&mut browser, &ctx, button(&output, "photos.zip"));
+        let output = render(&mut browser, &ctx, Vec::new(), 900.0).0;
+        for label in ["Open with…", "Compress…", "Extract here", "Send to Galaxy Tab"] { button(&output, label); }
+        let event = browser.perform(&ctx, Act { send: Some("tab".into()), ..Default::default() });
+        assert!(matches!(event, Some(Event::SendTo(device, files)) if device == "tab" && files == vec![PathBuf::from("/tmp/photos.zip")]));
+        let event = browser.perform(&ctx, Act { extract: true, ..Default::default() });
+        assert!(matches!(event.as_ref().map(|e| match e { Event::Operate(ops) => ops.as_slice(), _ => &[] }), Some([crate::file_ops::Operation::Extract { .. }])));
+        browser.perform(&ctx, Act { compress: true, ..Default::default() });
+        assert!(browser.compressing.is_some());
     }
     #[test]
     fn native_files_sort_keeps_folders_first_and_reverses() {

@@ -7,6 +7,10 @@ pub enum Operation {
     Move { source: PathBuf, directory: PathBuf, conflict: Conflict },
     Trash { source: PathBuf },
     Restore { source: PathBuf },
+    /// Packs items of one folder into a new .zip or .tar.gz named like `archive`.
+    Compress { sources: Vec<PathBuf>, archive: PathBuf },
+    /// Unpacks an archive into a new folder beside it.
+    Extract { archive: PathBuf },
 }
 /// What a copy or move does when its name is already taken where it goes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -106,6 +110,8 @@ pub fn execute(operation: Operation, cancelled: &AtomicBool, progress: &AtomicU6
         },
         Operation::Copy {source,directory,conflict} => copy_staged(&source,&directory,conflict,cancelled,progress),
         Operation::Trash {source} => trash_at(&source,&trash_root().ok_or("Home directory is unavailable")?,cancelled),
+        Operation::Compress {sources,archive} => compress(&sources,&archive,cancelled),
+        Operation::Extract {archive} => extract(&archive,cancelled),
         Operation::Restore {source} => restore_at(&source,&trash_root().ok_or("Home directory is unavailable")?,cancelled),
     }
 }
@@ -200,6 +206,104 @@ fn trash_at(source:&Path,root:&Path,cancelled:&AtomicBool)->Result<Completed,Str
     }
     Ok(done(target,"Item moved to Trash"))
 }
+/// The archive formats Files makes and opens.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Archive { Zip, TarGz, TarXz, TarBz2, Tar, SevenZip }
+impl Archive {
+    pub fn of(path: &Path) -> Option<Archive> {
+        let name = path.file_name()?.to_string_lossy().to_ascii_lowercase();
+        [(".tar.gz", Archive::TarGz), (".tgz", Archive::TarGz), (".tar.xz", Archive::TarXz), (".txz", Archive::TarXz), (".tar.bz2", Archive::TarBz2),
+         (".tar", Archive::Tar), (".zip", Archive::Zip), (".7z", Archive::SevenZip)]
+            .into_iter().find(|(ending, _)| name.ends_with(ending)).map(|(_, kind)| kind)
+    }
+    /// The name without what marks it as an archive: "photos.tar.gz" → "photos".
+    pub fn stem(path: &Path) -> String {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        for ending in [".tar.gz", ".tar.xz", ".tar.bz2", ".tgz", ".txz", ".tar", ".zip", ".7z"] {
+            if name.to_ascii_lowercase().ends_with(ending) && name.len() > ending.len() { return name[..name.len() - ending.len()].to_string(); }
+        }
+        name
+    }
+}
+/// Runs a packing tool, stopping it when cancelled.
+fn run_tool(mut command: std::process::Command, cancelled: &AtomicBool) -> Result<(), String> {
+    let program = command.get_program().to_string_lossy().into_owned();
+    let mut child = command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped())
+        .spawn().map_err(|e| format!("{program} could not run: {e}. Install it to use this format."))?;
+    loop {
+        if cancelled.load(Ordering::Relaxed) { let _ = child.kill(); let _ = child.wait(); return Err("Operation cancelled".into()); }
+        match child.try_wait().map_err(|e| e.to_string())? {
+            Some(status) if status.success() => return Ok(()),
+            Some(status) => {
+                let mut error = String::new();
+                if let Some(mut stderr) = child.stderr.take() { let _ = stderr.read_to_string(&mut error); }
+                let line = error.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();
+                return Err(if line.is_empty() { format!("{program} failed ({status})") } else { format!("{program}: {line}") });
+            },
+            None => std::thread::sleep(std::time::Duration::from_millis(40)),
+        }
+    }
+}
+fn compress(sources: &[PathBuf], archive: &Path, cancelled: &AtomicBool) -> Result<Completed, String> {
+    let directory = archive.parent().ok_or("Missing archive folder")?;
+    if sources.is_empty() { return Err("Nothing to compress".into()); }
+    let mut names = Vec::new();
+    for source in sources {
+        safe_path(source)?;
+        if source.parent() != Some(directory) { return Err("Compress items from one folder into that folder".into()); }
+        names.push(source.file_name().ok_or("Missing source name")?.to_os_string());
+    }
+    let kind = Archive::of(archive).ok_or("Name the archive .zip or .tar.gz")?;
+    // Packed under a private name, then given its own once whole.
+    let stage = tempfile::Builder::new().prefix(".desui-archive-").tempdir_in(directory).map_err(|e| e.to_string())?;
+    // Its real name inside the staging folder, as zip and 7z add their ending to a bare one.
+    let packed = stage.path().join(archive.file_name().ok_or("Missing archive name")?);
+    let mut command;
+    match kind {
+        Archive::Zip => { command = std::process::Command::new("zip"); command.current_dir(directory).args(["-r", "-q", "-y"]).arg(&packed).arg("--").args(&names); },
+        Archive::SevenZip => { command = std::process::Command::new("7z"); command.current_dir(directory).args(["a", "-bd", "-y", "-t7z"]).arg(&packed).arg("--").args(&names); },
+        tar => {
+            let flag = match tar { Archive::TarGz => "-czf", Archive::TarXz => "-cJf", Archive::TarBz2 => "-cjf", _ => "-cf" };
+            command = std::process::Command::new("tar"); command.arg(flag).arg(&packed).arg("-C").arg(directory).arg("--").args(&names);
+        },
+    }
+    run_tool(command, cancelled)?;
+    let made = packed;
+    let target = free_name(directory, archive.file_name().ok_or("Missing archive name")?);
+    check(cancelled)?; rename_safe(&made, &target)?;
+    Ok(done(target, "Archive created"))
+}
+fn extract(archive: &Path, cancelled: &AtomicBool) -> Result<Completed, String> {
+    safe_path(archive)?;
+    let directory = archive.parent().ok_or("Missing archive folder")?;
+    let kind = Archive::of(archive).ok_or("Not an archive Files can open")?;
+    let stage = tempfile::Builder::new().prefix(".desui-extract-").tempdir_in(directory).map_err(|e| e.to_string())?;
+    let mut command;
+    match kind {
+        Archive::Zip => { command = std::process::Command::new("unzip"); command.arg("-q").arg(archive).arg("-d").arg(stage.path()); },
+        Archive::SevenZip => { command = std::process::Command::new("7z"); command.args(["x", "-bd", "-y"]).arg(format!("-o{}", stage.path().display())).arg(archive); },
+        _ => { command = std::process::Command::new("tar"); command.arg("-xf").arg(archive).arg("-C").arg(stage.path()).args(["--no-same-owner", "--no-same-permissions"]); },
+    }
+    run_tool(command, cancelled)?;
+    check(cancelled)?;
+    // One folder inside comes out as itself; anything else goes in a folder named for the archive.
+    let inside: Vec<_> = fs::read_dir(stage.path()).map_err(|e| e.to_string())?.flatten().collect();
+    let target = match inside.as_slice() {
+        [only] if only.file_type().is_ok_and(|t| t.is_dir()) => {
+            let target = free_name(directory, &only.file_name());
+            rename_safe(&only.path(), &target)?;
+            target
+        },
+        _ => {
+            let target = free_name(directory, std::ffi::OsStr::new(&Archive::stem(archive)));
+            let kept = stage.keep();
+            if let Err(error) = rename_safe(&kept, &target) { let _ = fs::remove_dir_all(&kept); return Err(error); }
+            let _ = fs::set_permissions(&target, fs::Permissions::from_mode(0o755));
+            target
+        },
+    };
+    Ok(done(target, "Archive extracted"))
+}
 /// What puts a finished operation back as it was, in the order to run it; empty
 /// when there is nothing to put back.
 pub fn reverse(operation: &Operation, completed: &Completed) -> Vec<Operation> {
@@ -223,6 +327,7 @@ pub fn reverse(operation: &Operation, completed: &Completed) -> Vec<Operation> {
         },
         Operation::Trash { .. } => vec![Operation::Restore { source: completed.path.clone() }],
         Operation::Restore { .. } => vec![Operation::Trash { source: completed.path.clone() }],
+        Operation::Compress { .. } | Operation::Extract { .. } => vec![Operation::Trash { source: completed.path.clone() }],
     };
     // What a replacement sent to Trash comes back once its place is free again.
     if let Some(trashed) = &completed.replaced { steps.push(Operation::Restore { source: trashed.clone() }); }
@@ -349,6 +454,30 @@ mod tests {
         assert_eq!(reverse(&Operation::Move { source: p.join("in/notes.txt"), directory: p.join("out"), conflict: Conflict::KeepBoth }, &moved),
             vec![Operation::Move { source: p.join("out/notes (2).txt"), directory: p.join("in"), conflict: Conflict::Ask }, Operation::Rename { source: p.join("in/notes (2).txt"), name: "notes.txt".into() }]);
         assert!(reverse(&operation, &skipped(p.join("x"))).is_empty());
+    }
+    #[test]
+    fn compress_then_extract_round_trips_and_never_overwrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        fs::create_dir(p.join("photos")).unwrap(); fs::write(p.join("photos/a.txt"), b"A").unwrap(); fs::write(p.join("b.txt"), b"B").unwrap();
+        let run = |op| execute(op, &AtomicBool::new(false), &AtomicU64::new(0));
+        for name in ["pack.zip", "pack.tar.gz"] {
+            let made = run(Operation::Compress { sources: vec![p.join("photos"), p.join("b.txt")], archive: p.join(name) }).unwrap();
+            assert_eq!(made.path, p.join(name));
+            let out = run(Operation::Extract { archive: made.path.clone() }).unwrap();
+            assert_eq!(out.path, p.join("pack"), "several items come out in a folder named for the archive");
+            assert_eq!(fs::read(out.path.join("photos/a.txt")).unwrap(), b"A");
+            assert_eq!(fs::read(out.path.join("b.txt")).unwrap(), b"B");
+            fs::remove_dir_all(&out.path).unwrap();
+        }
+        let again = run(Operation::Compress { sources: vec![p.join("b.txt")], archive: p.join("pack.zip") }).unwrap();
+        assert_eq!(again.path, p.join("pack (2).zip"), "an archive never replaces one already there");
+        let single = run(Operation::Compress { sources: vec![p.join("photos")], archive: p.join("photos.tar.gz") }).unwrap();
+        fs::rename(p.join("photos"), p.join("photos-original")).unwrap();
+        assert_eq!(run(Operation::Extract { archive: single.path }).unwrap().path, p.join("photos"), "one folder inside comes out as itself");
+        assert_eq!(Archive::stem(Path::new("x.Tar.GZ")), "x");
+        assert!(run(Operation::Compress { sources: vec![p.join("b.txt")], archive: p.join("sub/x.zip") }).is_err());
+        assert!(!fs::read_dir(p).unwrap().flatten().any(|e| e.file_name().to_string_lossy().starts_with(".desui-")), "no staging is left behind");
     }
     #[test]
     fn rejects_unsafe_names_conflicts_aliases_and_cancellation() {

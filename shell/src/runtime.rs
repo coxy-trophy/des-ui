@@ -17,6 +17,7 @@ impl eframe::App for App {
         let connect_visible=self.right_connect && self.desktop.as_ref().map_or(self.local_panels.right, |d| d.state.panels.right)
             && !self.lock.locked && !self.lock_confirmed && !self.unlock_pending && !self.capture.marking();
         self.connect.tick(ctx, connect_visible);
+        if self.files_browser.is_some() && !connect_visible { self.connect.keep_fresh(ctx); }
         self.mon.set_processor_temperature_warnings(self.config.processor_temperature_warnings);
         self.mon.tick();
         // Volume and brightness changed from outside the shell's sliders get a meter.
@@ -605,6 +606,7 @@ impl eframe::App for App {
                         let progress = self.file_job.as_ref().map(|task| task.progress.load(std::sync::atomic::Ordering::Relaxed));
                         let browser = self.files_browser.as_mut().unwrap();
                         browser.configure_operations(self.file_clipboard.clone(), self.file_work.view(progress.unwrap_or(0)));
+                        browser.set_phones(self.connect.file_targets());
                         browser.show_with_keyboard(ui, &theme, !scratch_keys && !self.dock.captures_keyboard())
                     });
                     match action {
@@ -616,6 +618,13 @@ impl eframe::App for App {
                         Some(files::Event::Resolve(choice, all)) => { self.file_work.resolve(choice, all); self.pump_file_queue(); },
                         Some(files::Event::PauseTransfers(paused)) => { self.file_work.set_paused(paused); self.pump_file_queue(); },
                         Some(files::Event::ClearTransfers) => { self.file_work.clear(); },
+                        Some(files::Event::SendTo(device, paths)) => {
+                            let name = self.connect.file_targets().into_iter().find(|(id, _)| *id == device).map(|(_, name)| name).unwrap_or_default();
+                            match self.connect.send_files(ctx, &device, &paths) {
+                                Ok(count) => self.notices.post("Files", &format!("Offering {count} file(s) to {name}. Accept on the device; progress shows in CONNECT."), false),
+                                Err(error) => self.notices.post("Not sent", &error, false),
+                            }
+                        },
                         Some(files::Event::Terminal(folder)) => { self.files_browser = None; self.new_tab_in(folder); },
                         Some(files::Event::CancelOperation) => { if let Some(task) = &self.file_job { task.cancel(); } },
                         Some(files::Event::Open(path)) => {

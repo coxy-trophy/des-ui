@@ -329,6 +329,8 @@ pub struct Connect {
     usb_devices: Option<Vec<UsbDevice>>,
     usb_serials: BTreeMap<String, String>,
     queued_controls: VecDeque<Request>,
+    /// Files sent from the file manager, one request at a time after the controls.
+    queued_sends: VecDeque<Request>,
     file_paths: BTreeMap<String, String>,
     confirm_send: Option<FileDraft>,
     #[cfg(test)]
@@ -383,6 +385,7 @@ impl Connect {
         }
         if self.pending.is_none() {
             if let Some(control) = self.queued_controls.pop_front() { self.request(ctx, control, false); }
+            else if let Some(send) = self.queued_sends.pop_front() { self.request(ctx, send, false); }
         }
         if visible && self.pending.is_none() && self.last_poll.is_none_or(|at| at.elapsed() >= POLL) {
             self.request(ctx, Request::state(), false);
@@ -421,6 +424,30 @@ impl Connect {
         self.cast_input_error = None;
     }
 
+    /// Reads the devices again now and then while something other than this panel,
+    /// such as Files, wants to know which can take files.
+    pub fn keep_fresh(&mut self, ctx: &egui::Context) {
+        if self.pending.is_none() && self.last_poll.is_none_or(|at| at.elapsed() >= POLL) { self.request(ctx, Request::state(), false); }
+    }
+    /// Paired phones and tablets that take files now, as (id, name).
+    pub fn file_targets(&self) -> Vec<(String, String)> {
+        self.snapshot.as_ref().filter(|s| s.running).map(|s| s.devices.iter().filter(|d| d.files_ready()).map(|d| (d.id.clone(), d.name.clone())).collect()).unwrap_or_default()
+    }
+    /// Offers each file to a device, in order; folders are left out. The device
+    /// still asks its owner to accept, as for a send from this panel.
+    pub fn send_files(&mut self, ctx: &egui::Context, device_id: &str, paths: &[std::path::PathBuf]) -> Result<usize, String> {
+        let device = self.snapshot.as_ref().and_then(|s| s.devices.iter().find(|d| d.id == device_id && d.files_ready())).cloned()
+            .ok_or("That device is not ready for files. Open CONNECT to check it.")?;
+        let files: Vec<_> = paths.iter().filter(|p| p.is_file()).collect();
+        if files.is_empty() { return Err("Only files can be sent, not folders.".into()); }
+        if self.queued_sends.len() + files.len() > 64 { return Err("Too many files waiting to send. Try again when these are done.".into()); }
+        for path in &files {
+            let draft = FileDraft { device_id: device.id.clone(), device_name: device.name.clone(), path: path.to_string_lossy().into_owned() };
+            self.queued_sends.push_back(Request::send_file(&draft));
+        }
+        if self.pending.is_none() { if let Some(send) = self.queued_sends.pop_front() { self.request(ctx, send, false); } }
+        Ok(files.len())
+    }
     pub fn has_keyboard(&self) -> bool { self.keyboard }
 
     pub fn sharing(&self) -> bool {
@@ -1208,6 +1235,23 @@ mod tests {
             let request = serde_json::to_value(Request::transfer(op, &transfer)).unwrap();
             assert_eq!(request["transfer_id"], "opaque-transfer"); assert_eq!(request["device_id"], "paired-phone");
         }
+    }
+    #[test]
+    fn files_sent_from_the_file_manager_queue_in_order_and_skip_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        for n in ["a.pdf", "b.jpg"] { std::fs::write(dir.path().join(n), b"x").unwrap(); }
+        let ready = Device { id: "tab".into(), name: "Galaxy Tab".into(), paired: true, connected: true, files_enabled: true, ..Default::default() };
+        let (_tx, rx) = mpsc::channel();
+        let mut connect = Connect { pending: Some(Pending { rx, passive: false, feedback: "Working", op: "state" }),
+            snapshot: Some(Snapshot { running: true, devices: vec![ready, Device { id: "off".into(), name: "Old phone".into(), ..Default::default() }], ..Default::default() }), ..Default::default() };
+        assert_eq!(connect.file_targets(), vec![("tab".to_string(), "Galaxy Tab".to_string())], "only devices ready for files are offered");
+        let ctx = egui::Context::default();
+        let paths = [dir.path().join("a.pdf"), dir.path().to_path_buf(), dir.path().join("b.jpg")];
+        assert_eq!(connect.send_files(&ctx, "tab", &paths), Ok(2));
+        let queued: Vec<String> = connect.queued_sends.iter().map(|r| serde_json::to_value(r).unwrap()["path"].as_str().unwrap().to_string()).collect();
+        assert_eq!(queued, [dir.path().join("a.pdf").display().to_string(), dir.path().join("b.jpg").display().to_string()]);
+        assert!(connect.send_files(&ctx, "off", &paths).is_err(), "a device that is not ready gets nothing");
+        assert!(connect.send_files(&ctx, "tab", &[dir.path().to_path_buf()]).is_err(), "folders are not sent");
     }
     #[test]
     fn file_models_are_default_off_and_readiness_requires_applied_current_connection() {
