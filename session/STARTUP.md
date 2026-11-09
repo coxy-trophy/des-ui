@@ -34,8 +34,7 @@ desktop, but the current input filter does not handle it while locked.
 
 For recovery, press Ctrl+Alt+F3 (or another available text console), sign in with
 your own account, and run `loginctl list-sessions`. Identify your affected
-graphical session by its seat, TTY and type; `loginctl show-session SESSION_ID
--p Name -p Type -p TTY -p Seat` shows those details. If ending that session is
+graphical session by its seat, TTY and type; `loginctl show-session SESSION_ID -p Name -p Type -p TTY -p Seat` shows those details. If ending that session is
 necessary, run `loginctl terminate-session SESSION_ID` with its actual ID.
 This ends the session and its applications; unsaved work may be lost. Do not
 terminate unrelated sessions or use this to test recovery while work is active.
