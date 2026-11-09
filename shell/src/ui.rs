@@ -425,10 +425,6 @@ pub fn slider(ui: &mut Ui, theme: &Theme, width: f32, value: f32, name: &str) ->
 }
 
 /// A larger slider for primary controls, with the same keyboard and focus behavior.
-pub fn prominent_slider(ui: &mut Ui, theme: &Theme, width: f32, value: f32, name: &str) -> Option<f32> {
-    slider_sized(ui, theme, width, value, name, 42.0)
-}
-
 pub fn slider_sized(ui: &mut Ui, theme: &Theme, width: f32, value: f32, name: &str, height: f32) -> Option<f32> {
     let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click_and_drag());
     if response.clicked() || response.drag_started() { response.request_focus(); }
@@ -541,6 +537,8 @@ pub enum Icon {
     Bluetooth,
     /// A crescent: do not disturb.
     Moon,
+    /// A padlock.
+    Lock,
 }
 
 impl Icon {
@@ -616,7 +614,7 @@ impl Icon {
             Self::LayoutSingle => "One application", Self::LayoutSplit => "Two side by side",
             Self::LayoutColumns => "Three columns", Self::LayoutMaster => "Master and stack",
             Self::Keyboard => "On-screen keyboard", Self::Quick => "Quick settings",
-            Self::Bluetooth => "Bluetooth", Self::Moon => "Do not disturb",
+            Self::Bluetooth => "Bluetooth", Self::Moon => "Do not disturb", Self::Lock => "Lock",
         }
     }
 }
@@ -688,6 +686,16 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color3
             line((-3.0,-2.0),(5.0,-4.0));
             painter.circle_filled(c + vec2(-5.0,4.0), 2.2, color);
             painter.circle_filled(c + vec2(3.0,2.0), 2.2, color);
+        }
+        Icon::Lock => {
+            painter.rect_stroke(Rect::from_center_size(c + vec2(0.0, 2.5), vec2(12.0, 9.0)), 2.0, stroke, StrokeKind::Inside);
+            let points = (0..=16).map(|i| {
+                let a = std::f32::consts::PI + i as f32 / 16.0 * std::f32::consts::PI;
+                c + vec2(0.0, -2.0) + vec2(a.cos() * 3.6, a.sin() * 3.6)
+            }).collect::<Vec<_>>();
+            painter.line(points, stroke);
+            line((-3.6,-2.0),(-3.6,-1.8)); line((3.6,-2.0),(3.6,-1.8));
+            painter.circle_filled(c + vec2(0.0, 2.5), 1.1, color);
         }
         Icon::Power => {
             let points = (0..=24).map(|i| {

@@ -508,7 +508,6 @@ impl eframe::App for App {
                             night_light: self.config.night_light,
                             do_not_disturb: self.notices.quiet,
                             keyboard: self.osk.open,
-                            battery: None,
                             power: self.mon.power,
                             battery_health: self.mon.battery_health,
                         };
@@ -835,7 +834,6 @@ impl eframe::App for App {
             night_light: self.config.night_light,
             do_not_disturb: self.notices.quiet,
             keyboard: self.osk.open,
-            battery: self.mon.power.map(crate::power::battery_line),
             power: self.mon.power,
             battery_health: self.mon.battery_health,
         };
