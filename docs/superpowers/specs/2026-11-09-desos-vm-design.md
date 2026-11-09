@@ -18,8 +18,8 @@ also add package and system maintenance. For this prototype, use Canonical's
 signed cloud image, a private writable qcow2 layer and cloud-init provisioning.
 This is the implementation choice for the owner's authorized VM prototype.
 
-Run QEMU/KVM with a virtual GPU, 4 virtual CPUs, approximately 5 GiB RAM and a
-sparse guest disk capped at 48 GiB. Bind SSH to loopback; keep QMP and any display
+Run QEMU/KVM with a virtual GPU, 4 virtual CPUs, approximately 5 GiB RAM, a 2 GiB
+guest swap reserve and a sparse guest disk capped at 48 GiB. Bind SSH to loopback; keep QMP and any display
 control sockets private. Provision an independent test account with a dedicated
 SSH key; never copy host account secrets, application state or personal files.
 Source transfer includes only frozen tracked source at `d462986`.
