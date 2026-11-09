@@ -2,8 +2,10 @@
 
 Status: automatic checks, installation, actual logout/login, lock/unlock, one
 supervised suspend/resume and cold-boot/login checks passed on this laptop.
-Disposable startup recovery checks also passed. Remaining hardware acceptance, Ubuntu
-compatibility and DesOS image creation are Pending.
+Disposable startup recovery checks also passed. An Ubuntu-native build and DesOS
+VM prototype now pass guest boot/login, keyboard and lock/unlock checks. Remaining
+physical hardware acceptance, upstream-kernel testing and installer/live ISO work
+are Pending.
 
 ## Scope and provenance
 
@@ -18,6 +20,9 @@ Work is performed in isolated desktop and website worktrees. The build host is
 Kali GNU/Linux Rolling 2026.3, x86_64, kernel `7.1.5+kali-amd64`. A package built
 here carries this host's native library dependencies. Build and validate again
 in the selected Ubuntu LTS environment before using it in an Ubuntu-based image.
+That target-native build and guest validation have subsequently been performed
+for the private [DesOS VM prototype](2026-11-09-desos-vm.md); the Kali archives
+listed below remain distinct historical artifacts.
 
 The local evidence bundle is retained at `target/stabilization/2026-11-09/`:
 full verification/build logs, fault-injection harness/results, source snapshot,
@@ -148,14 +153,15 @@ login activated matching shell/compositor hashes. Lock/unlock, one supervised
 suspend/resume and the separately approved cold-boot/login check passed; see the
 activation record and private receipts.
 
-Disposable failed-startup recovery now passes without changing the host session.
-The next development step is a DesOS VM prototype on the selected Ubuntu base,
-including target-native builds and guest boot/login/recovery validation. Keep a
-known-working guest snapshot and recovery route. Physical DRM/display-manager
+Disposable failed-startup recovery passes without changing the host session.
+The Ubuntu-based DesOS VM prototype now has a target-native release build,
+installed packages, real virtual-DRM desktop startup, authenticated login,
+keyboard input, lock/unlock and reboot/login evidence. The next development step
+is testing unmodified upstream Linux in a fresh guest overlay while preserving
+the working Ubuntu baseline and its recovery route. Physical DRM/display-manager
 recovery and the remaining essential hardware cases must pass before replacing
-the owner's current system. The current results do not establish Ubuntu
-compatibility or test an unmodified upstream kernel; the host still uses its
-existing Kali kernel.
+the owner's current system. Virtual hardware does not certify the laptop's Ubuntu
+support. The host still uses its existing Kali kernel.
 
 `installed-before.json` records the original pre-installation process hashes.
 The current candidate identities are recorded in `fresh-login.json`,
