@@ -25,3 +25,21 @@ Run focused watchdog regressions with:
 
 These tests launch only controlled children and never install files or modify
 services. Actual DRM/display-manager recovery still needs hardware verification.
+
+## Recovering a session that will not unlock
+
+Normal unlock requires the account password. `des-ui --unlock` is deliberately
+rejected and is not a recovery command. Ctrl+Alt+Backspace ends an unlocked
+desktop, but the current input filter does not handle it while locked.
+
+For recovery, press Ctrl+Alt+F3 (or another available text console), sign in with
+your own account, and run `loginctl list-sessions`. Identify your affected
+graphical session by its seat, TTY and type; `loginctl show-session SESSION_ID
+-p Name -p Type -p TTY -p Seat` shows those details. If ending that session is
+necessary, run `loginctl terminate-session SESSION_ID` with its actual ID.
+This ends the session and its applications; unsaved work may be lost. Do not
+terminate unrelated sessions or use this to test recovery while work is active.
+
+VT switching, display-manager return and the next login must still be verified
+on the exact installed candidate. These instructions do not bypass authentication
+or certify that hardware recovery has already passed.

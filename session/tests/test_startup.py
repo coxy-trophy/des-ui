@@ -63,8 +63,8 @@ while True:
             def terminated():
                 try:
                     return stat.read_text().split()[2] == 'Z'
-                except FileNotFoundError:
-                    # Reaping between exists() and read_text() is successful cleanup.
+                except (FileNotFoundError, ProcessLookupError):
+                    # /proc may report ENOENT or ESRCH when reaping races the read.
                     return True
             deadline = time.monotonic() + 1
             while not terminated() and time.monotonic() < deadline:
