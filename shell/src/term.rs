@@ -317,6 +317,12 @@ impl TermTab {
         }
     }
 
+    /// Whether something other than the shell holds the terminal: a program it ran.
+    pub fn busy(&self) -> bool {
+        let Some(shell_pid) = self.pane_pid.or_else(|| self.child.process_id()) else { return false; };
+        self.foreground_pid().is_some_and(|pid| pid != shell_pid)
+    }
+
     fn foreground_is_shell(&self) -> bool {
         let Some(shell_pid) = self.pane_pid.or_else(|| self.child.process_id()) else { return false; };
         if self.foreground_pid() != Some(shell_pid) { return false; }

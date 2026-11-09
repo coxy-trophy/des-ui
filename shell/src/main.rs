@@ -1191,79 +1191,82 @@ struct BarActions {
 
 /// How one tab in the top bar looks.
 struct Tab<'a> {
-    /// A two-digit position, for terminal tabs.
-    number: Option<String>,
+    /// Its place among the tabs, from 1.
+    number: usize,
+    /// The folder its terminal is in, short.
     name: &'a str,
-    /// The program running in a terminal tab.
-    detail: Option<&'a str>,
-    /// The display an application is on, when there are several.
-    badge: Option<String>,
+    /// The program in its foreground.
+    process: &'a str,
+    /// Running something other than the shell.
+    busy: bool,
+    /// The tab in view, with the terminal showing.
     selected: bool,
+    /// The tab in view while something else covers the terminal.
+    current: bool,
 }
 
-/// Draws a tab: a label, underlined in the accent when it is the one in view.
+/// A terminal tab: its number in a badge, its folder, and what runs there; filled in
+/// the accent when it is the one in view, its program lit while it is busy.
 fn tab(ui: &mut Ui, theme: &Theme, tab: Tab, animate: bool) -> Response {
-    let ink = if tab.selected { ui::TEXT } else { ui::SECONDARY };
-    let quiet = if tab.selected { ui::SECONDARY } else { ui::LABEL };
-    let name_font = if tab.selected { ui::display_bold(13.0) } else { ui::display(13.0) };
-    let number = tab
-        .number
-        .map(|n| ui::galley(ui, &n, ui::display(13.0), if tab.selected { theme.main } else { ui::LABEL }, 0.0));
-    let name = ui::galley(ui, tab.name, name_font, ink, 0.5);
-    let detail = tab.detail.map(|d| ui::galley(ui, d, ui::mono(11.0), quiet, 0.0));
-    let badge_ink = if tab.selected { theme.main } else { ui::SECONDARY };
-    let badge = tab.badge.map(|b| ui::galley(ui, &b, ui::mono(10.0), badge_ink, 0.0));
-
+    let ink = if tab.selected || tab.current { ui::TEXT } else { ui::SECONDARY };
+    let number_ink = if tab.selected { ui::GROUND } else if tab.current { theme.main } else { ui::LABEL };
+    let number = ui::galley(ui, &tab.number.to_string(), ui::mono(10.5), number_ink, 0.0);
+    let name = ui::galley(ui, &crate::panels::truncate(tab.name, 24), if tab.selected { ui::display_bold(12.5) } else { ui::display(12.5) }, ink, 0.2);
+    let process = ui::galley(ui, &crate::panels::truncate(tab.process, 14), ui::mono(11.0), if tab.busy { theme.main } else { ui::LABEL }, 0.0);
     let gap = 8.0;
-    let mut width = name.size().x;
-    for part in [&number, &detail].into_iter().flatten() {
-        width += part.size().x + gap;
-    }
-    if let Some(badge) = &badge {
-        width += badge.size().x + 10.0 + gap;
-    }
-    let (rect, response) = ui.allocate_exact_size(vec2(width + 28.0, ui.available_height()), Sense::click());
-    let spoken = match tab.detail {
-        Some(detail) => format!("{}, {detail}", tab.name),
-        None => tab.name.to_string(),
-    };
+    let badge_side = 20.0;
+    let dot = if tab.busy { 7.0 + gap } else { 0.0 };
+    let width = 6.0 + badge_side + gap + name.size().x + gap + dot + process.size().x + 12.0;
+    let (rect, response) = ui.allocate_exact_size(vec2(width, ui.available_height()), Sense::click());
+    let spoken = format!("Tab {}, {}, {}{}", tab.number, tab.name, tab.process, if tab.busy { ", busy" } else { "" });
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, tab.selected, &spoken));
     let painter = ui.painter();
-    let tab_surface = rect.shrink2(vec2(2.0, 5.0));
-    if tab.selected || response.hovered() || response.has_focus() {
-        painter.rect_filled(tab_surface, ui::CONTROL_RADIUS, if tab.selected { theme.tint() } else { ui::TRACK });
+    let surface = Rect::from_center_size(rect.center(), vec2(rect.width(), 32.0_f32.min(rect.height())));
+    let lit = if animate { ui.ctx().animate_bool_with_time(response.id, tab.selected, 0.14) } else if tab.selected { 1.0 } else { 0.0 };
+    if lit > 0.0 {
+        painter.rect_filled(surface, 9.0, theme.main.gamma_multiply(0.14 * lit));
+        painter.rect_stroke(surface, 9.0, Stroke::new(1.0, theme.main.gamma_multiply(0.6 * lit)), StrokeKind::Inside);
+    } else if response.hovered() {
+        painter.rect_filled(surface, 9.0, ui::TRACK);
     }
-    if response.has_focus() { painter.rect_stroke(tab_surface, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
-    let mut x = rect.left() + 14.0;
-    let mut put = |galley: std::sync::Arc<egui::Galley>, color| {
-        let size = galley.size();
-        painter.galley(pos2(x, rect.center().y - size.y / 2.0), galley, color);
-        x += size.x + gap;
-    };
-    if let Some(number) = number {
-        put(number, ui::LABEL);
+    if response.has_focus() { painter.rect_stroke(surface.expand(1.0), 10.0, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
+    let badge = Rect::from_center_size(pos2(surface.left() + 6.0 + badge_side / 2.0, surface.center().y), vec2(badge_side, badge_side));
+    painter.rect_filled(badge, 6.0, if tab.selected { theme.main } else { ui::TRACK });
+    painter.galley(badge.center() - number.size() / 2.0, number, number_ink);
+    let mut x = badge.right() + gap;
+    let name_size = name.size();
+    painter.galley(pos2(x, surface.center().y - name_size.y / 2.0), name, ink);
+    x += name_size.x + gap;
+    if tab.busy {
+        painter.circle_filled(pos2(x + 3.5, surface.center().y), 5.0, theme.main.gamma_multiply(0.2));
+        painter.circle_filled(pos2(x + 3.5, surface.center().y), 3.0, theme.main);
+        x += 7.0 + gap;
     }
-    put(name, if response.hovered() { ui::TEXT } else { ink });
-    if let Some(detail) = detail {
-        put(detail, quiet);
-    }
-    if let Some(badge) = badge {
-        let frame = Rect::from_min_size(
-            pos2(x, rect.center().y - badge.size().y / 2.0 - 2.0),
-            badge.size() + vec2(10.0, 4.0),
-        );
-        let edge = if tab.selected { theme.main } else { ui::LINE_STRONG };
-        painter.rect_stroke(frame, 0.0, Stroke::new(1.0, edge), StrokeKind::Inside);
-        painter.galley(frame.min + vec2(5.0, 2.0), badge, badge_ink);
-    }
-    let progress = if animate { ui.ctx().animate_bool_with_time(response.id, tab.selected, 0.14) } else if tab.selected { 1.0 } else { 0.0 };
-    if progress > 0.0 {
-        let width = (rect.width() - 28.0).max(0.0) * progress;
-        let underline = Rect::from_center_size(pos2(rect.center().x, rect.bottom() - 2.0), vec2(width, 2.0));
-        painter.rect_filled(underline, 0.0, theme.main);
-    }
+    let process_size = process.size();
+    painter.galley(pos2(x, surface.center().y - process_size.y / 2.0), process, ui::LABEL);
     response
 }
+
+/// The short name of a terminal's folder: `~` at home, `~/Name` just under it, else
+/// the folder's own name.
+fn folder_label(cwd: Option<&std::path::Path>) -> String {
+    let Some(cwd) = cwd else { return "terminal".into() };
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    match home.as_ref().and_then(|home| cwd.strip_prefix(home).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".into(),
+        Some(rest) if rest.components().count() == 1 => format!("~/{}", rest.display()),
+        _ => cwd.file_name().map_or_else(|| cwd.display().to_string(), |name| name.to_string_lossy().into_owned()),
+    }
+}
+
+/// A group of controls on a well of their own.
+fn well<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    egui::Frame::new().fill(ui::TRACK.gamma_multiply(0.55)).corner_radius(9.0).inner_margin(egui::Margin::symmetric(3, 3)).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        add(ui)
+    }).inner
+}
+
 
 impl App {
     /// Draws terminal tabs and workspace controls. Graphical apps live in the right Apps panel.
@@ -1276,7 +1279,7 @@ impl App {
 
         // Reserve the right-hand controls first; tabs can scroll in their own clipped area.
         let available = ui.available_rect_before_wrap();
-        let controls_width: f32 = if state.is_some() { 342.0 } else { 76.0 };
+        let controls_width: f32 = if state.is_some() { 360.0 } else { 76.0 };
         let right_width = controls_width.min((available.width() * 0.6).max(0.0));
         let gap = 4.0_f32.min((available.width() - right_width).max(0.0));
         let right_rect = Rect::from_min_max(pos2(available.right() - right_width, available.top()), available.max);
@@ -1292,10 +1295,19 @@ impl App {
             egui::ScrollArea::horizontal().id_salt("header-controls").auto_shrink([false, false]).show(ui, |ui| {
                 ui.set_min_width(controls_width);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
+            ui.spacing_mut().item_spacing.x = 6.0;
+            // A new tab: the bar's one filled button, round, at its end.
             let available = self.tabs.len() < MAX_TABS;
             let hint = if available { "New terminal tab" } else { "Maximum of 9 terminal tabs" };
-            if ui.add_enabled(available, egui::Button::new(egui::RichText::new("+").font(ui::mono(16.0))).min_size(vec2(32.0, ui::CONTROL_HEIGHT))).on_hover_text(hint).clicked() {
+            let (plus, response) = ui.allocate_exact_size(vec2(32.0, 32.0), if available { Sense::click() } else { Sense::hover() });
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, available, "New terminal tab"));
+            let fill = if !available { ui::TRACK } else if response.hovered() { theme.main.gamma_multiply(0.85) } else { theme.main };
+            ui.painter().circle_filled(plus.center(), 16.0, fill);
+            if response.has_focus() { ui.painter().circle_stroke(plus.center(), 18.0, Stroke::new(1.0, theme.main)); }
+            let ink = Stroke::new(2.2, if available { ui::GROUND } else { ui::LABEL });
+            ui.painter().line_segment([plus.center() - vec2(6.0, 0.0), plus.center() + vec2(6.0, 0.0)], ink);
+            ui.painter().line_segment([plus.center() - vec2(0.0, 6.0), plus.center() + vec2(0.0, 6.0)], ink);
+            if response.on_hover_text(hint).clicked() {
                 actions.open_tab = true;
                 self.launcher.open = false;
                 actions.command = Some(Command::Terminal);
@@ -1305,22 +1317,8 @@ impl App {
                 actions.toggle_launcher = true;
             }
             if let Some(state) = state {
-                // How the main display shares the workspace in view; laid out right to
-                // left, so the last of the four comes first.
-                let shown = layout_in_view(state, layouts.as_deref().unwrap_or(&[]));
-                ui.spacing_mut().item_spacing.x = 2.0;
-                for kind in des_common::ipc::LayoutKind::ALL.into_iter().rev() {
-                    let hint = match kind {
-                        des_common::ipc::LayoutKind::Single => "One application at a time",
-                        des_common::ipc::LayoutKind::Split => "Two side by side; drag the gap to resize",
-                        des_common::ipc::LayoutKind::Columns => "Three columns side by side",
-                        des_common::ipc::LayoutKind::Master => "A master and up to four stacked beside it",
-                    };
-                    if ui::icon_button(ui, theme, Icon::of_layout(kind), 24.0, shown == kind).on_hover_text(hint).clicked() {
-                        actions.command = Some(Command::Layout(kind));
-                    }
-                }
-                ui.spacing_mut().item_spacing.x = 8.0;
+                let (line, _) = ui.allocate_exact_size(vec2(9.0, 18.0), Sense::hover());
+                ui.painter().line_segment([line.center_top(), line.center_bottom()], Stroke::new(1.0, ui::LINE));
                 if state.apps.iter().any(|app| app.workspace == state.workspace)
                     && ui::icon_button(ui, theme, Icon::Fullscreen, 28.0, false)
                         .on_hover_text(shortcuts::hint(ui.ctx(), "Let the application cover the whole display", "desktop.fullscreen"))
@@ -1328,38 +1326,55 @@ impl App {
                 {
                     actions.command = Some(Command::Fullscreen);
                 }
+                // How the main display shares the workspace in view; laid out right to
+                // left, so the last of the four comes first.
+                let shown = layout_in_view(state, layouts.as_deref().unwrap_or(&[]));
+                well(ui, |ui| {
+                    for kind in des_common::ipc::LayoutKind::ALL.into_iter().rev() {
+                        let hint = match kind {
+                            des_common::ipc::LayoutKind::Single => "One application at a time",
+                            des_common::ipc::LayoutKind::Split => "Two side by side; drag the gap to resize",
+                            des_common::ipc::LayoutKind::Columns => "Three columns side by side",
+                            des_common::ipc::LayoutKind::Master => "A master and up to four stacked beside it",
+                        };
+                        if ui::icon_button(ui, theme, Icon::of_layout(kind), 26.0, shown == kind).on_hover_text(hint).clicked() {
+                            actions.command = Some(Command::Layout(kind));
+                        }
+                    }
+                });
                 // The workspaces, last to first since this side fills from the right.
-                ui.add_space(6.0);
-                ui.spacing_mut().item_spacing.x = 4.0;
-                for workspace in (0..des_common::ipc::WORKSPACES).rev() {
-                    let here = workspace == state.workspace;
-                    let count = state.apps.iter().filter(|app| app.workspace == workspace).count();
-                    let (rect, response) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::click());
-                    let painter = ui.painter();
-                    if here {
-                        painter.rect_filled(rect, 0.0, theme.main);
-                    } else {
-                        let line = if response.hovered() { ui::SECONDARY } else { ui::LINE_STRONG };
-                        painter.rect_stroke(rect, 0.0, Stroke::new(1.0, line), egui::StrokeKind::Inside);
+                well(ui, |ui| {
+                    for workspace in (0..des_common::ipc::WORKSPACES).rev() {
+                        let here = workspace == state.workspace;
+                        let count = state.apps.iter().filter(|app| app.workspace == workspace).count();
+                        let (rect, response) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::click());
+                        let painter = ui.painter();
+                        if here {
+                            painter.rect_filled(rect, 7.0, theme.main);
+                        } else if response.hovered() {
+                            painter.rect_filled(rect, 7.0, ui::TRACK);
+                        }
+                        if response.has_focus() { painter.rect_stroke(rect, 7.0, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
+                        let ink = if here { ui::GROUND } else if count > 0 { ui::TEXT } else { ui::LABEL };
+                        painter.text(rect.center() - vec2(0.0, 1.0), egui::Align2::CENTER_CENTER, (workspace + 1).to_string(), ui::display_bold(11.5), ink);
+                        // A mark on those that hold something.
+                        if count > 0 && !here {
+                            painter.rect_filled(Rect::from_center_size(rect.center_bottom() - vec2(0.0, 4.0), vec2(8.0, 2.0)), 1.0, theme.main);
+                        }
+                        let name = shortcuts::hint(ui.ctx(), &format!("Workspace {}", workspace + 1), &format!("desktop.workspace_{}", workspace + 1));
+                        let about = match count { 0 => format!("{name}: empty"), 1 => format!("{name}: 1 application"), many => format!("{name}: {many} applications") };
+                        response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, here, &about));
+                        let send = shortcuts::hint(ui.ctx(), "Shift+click sends the application here", &format!("desktop.send_{}", workspace + 1));
+                        let response = response.on_hover_text(format!("{about}\n{send}"));
+                        if response.clicked() {
+                            let shift = ui.input(|i| i.modifiers.shift);
+                            actions.command = Some(match state.focus.filter(|_| shift) {
+                                Some(index) => Command::SendTo(index, workspace),
+                                None => Command::Workspace(workspace),
+                            });
+                        }
                     }
-                    let ink = if here { ui::GROUND } else if count > 0 { ui::TEXT } else { ui::LABEL };
-                    painter.text(rect.center(), egui::Align2::CENTER_CENTER, (workspace + 1).to_string(), ui::display_bold(12.0), ink);
-                    // A mark on those that hold something.
-                    if count > 0 && !here {
-                        painter.rect_filled(egui::Rect::from_center_size(rect.center_bottom() - vec2(0.0, 4.0), vec2(8.0, 2.0)), 0.0, theme.main);
-                    }
-                    let name = shortcuts::hint(ui.ctx(), &format!("Workspace {}", workspace + 1), &format!("desktop.workspace_{}", workspace + 1));
-                    let about = match count { 0 => format!("{name}: empty"), 1 => format!("{name}: 1 application"), many => format!("{name}: {many} applications") };
-                    let send = shortcuts::hint(ui.ctx(), "Shift+click sends the application here", &format!("desktop.send_{}", workspace + 1));
-                    let response = response.on_hover_text(format!("{about}\n{send}"));
-                    if response.clicked() {
-                        let shift = ui.input(|i| i.modifiers.shift);
-                        actions.command = Some(match state.focus.filter(|_| shift) {
-                            Some(index) => Command::SendTo(index, workspace),
-                            None => Command::Workspace(workspace),
-                        });
-                    }
-                }
+                });
             }
         });
             });
@@ -1372,12 +1387,15 @@ impl App {
             let process = self.tabs[i]
                 .foreground_process()
                 .unwrap_or_else(|| "shell".to_string());
+            let folder = folder_label(self.tabs[i].cwd().as_deref());
+            let in_view = i == self.active || Some(i) == self.side;
             let look = Tab {
-                number: Some(format!("{:02}", i + 1)),
-                name: if i == 0 { "main" } else { "term" },
-                detail: Some(&process),
-                badge: None,
-                selected: (i == self.active || Some(i) == self.side) && terminal_in_use,
+                number: i + 1,
+                name: &folder,
+                process: &process,
+                busy: self.tabs[i].busy(),
+                selected: in_view && terminal_in_use,
+                current: in_view && !terminal_in_use,
             };
             let persistence = if self.tabs[i].persistent_id.is_some() {
                 "Live terminal: reconnects after a graphical-shell restart"
@@ -1394,15 +1412,17 @@ impl App {
                 actions.command = Some(Command::Terminal);
             }
         }
-        if ui::icon_button(ui, theme, Icon::Copy, 28.0, false).on_hover_text("Copy last command output").clicked() { self.copy_last_output(); }
-        if ui::icon_button(ui,theme,Icon::Search,28.0,self.tabs[self.focus_tab()].searching()).on_hover_text(shortcuts::hint(ui.ctx(), "Find in terminal", "terminal.find")).clicked() { actions.find_terminal=true; actions.command=Some(Command::Terminal); }
+        ui.add_space(6.0);
+        well(ui, |ui| {
+        if ui::icon_button(ui, theme, Icon::Copy, 26.0, false).on_hover_text("Copy last command output").clicked() { self.copy_last_output(); }
+        if ui::icon_button(ui,theme,Icon::Search,26.0,self.tabs[self.focus_tab()].searching()).on_hover_text(shortcuts::hint(ui.ctx(), "Find in terminal", "terminal.find")).clicked() { actions.find_terminal=true; actions.command=Some(Command::Terminal); }
 
         let split_hint = if self.side.is_some() {
             shortcuts::hint(ui.ctx(), "Make the terminal whole again", "shell.split_right")
         } else {
             format!("{}; {}", shortcuts::hint(ui.ctx(), "Split side by side", "shell.split_right"), shortcuts::hint(ui.ctx(), "Split above and below", "shell.split_down"))
         };
-        if ui::icon_button(ui, theme, Icon::SplitPane, 28.0, self.side.is_some())
+        if ui::icon_button(ui, theme, Icon::SplitPane, 26.0, self.side.is_some())
             .on_hover_text(split_hint)
             .clicked()
         {
@@ -1414,6 +1434,7 @@ impl App {
             self.power_menu.open = false;
             actions.command = Some(Command::Terminal);
         }
+        });
 
                 });
             });
