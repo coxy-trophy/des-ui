@@ -2,7 +2,7 @@
 
 Status: automatic checks, installation, actual logout/login, lock/unlock, one
 supervised suspend/resume and cold-boot/login checks passed on this laptop.
-Remaining hardware acceptance, Ubuntu
+Disposable startup recovery checks also passed. Remaining hardware acceptance, Ubuntu
 compatibility and DesOS image creation are Pending.
 
 ## Scope and provenance
@@ -109,7 +109,7 @@ the owner saves work and identifies sessions that must be preserved.
 | Case | Acceptance condition | Status |
 |---|---|---|
 | Cold boot, login and logout | Desktop initializes; logout returns to greeter; a subsequent login works | Passed on this laptop/kernel: actual logout/login, changed boot identity and initialized candidate startup verified |
-| Failed startup and update recovery | Failed candidate reaches the known-working fallback; no login loop | Pending |
+| Failed startup and update recovery | Failed candidate reaches the known-working fallback; no login loop | Partial: disposable early crash, full startup timeout/descendant cleanup and real previous/Cage startup passed; physical DRM/display-manager recovery pending |
 | Lock and shell failure/restart | Applications remain hidden and unfocused until password authentication | Partial: actual lock/unlock and locked control policy passed; forced shell failure/restart pending |
 | Suspend/resume and lid | Lock precedes exposed application content; display/input recover | Partial: actual suspend/resume passed with lock observed before/after sleep and owner visual confirmation; lid pending |
 | Authenticated VT recovery | Text-console access works; only the selected disposable graphical session ends; greeter returns | Pending |
@@ -129,6 +129,12 @@ were running again with unchanged policies; all four configured health checks
 were healthy. Network and audio services were active. The broader gate is not
 complete; no additional shutdown is scheduled.
 
+[Disposable recovery testing](2026-11-09-desos-recovery.md) subsequently verified
+early-crash and startup-hang recovery into the real previous build, plus real
+candidate startup through the final Cage route when both native attempts fail.
+These used software rendering and private namespaces; physical DRM/greeter
+recovery remains unverified.
+
 Existing machine records are historical evidence for their own binaries, not
 passes for this candidate. The older performance samples are active-session
 observations, not a controlled idle baseline. Optional music, AI, gestures and
@@ -142,18 +148,22 @@ login activated matching shell/compositor hashes. Lock/unlock, one supervised
 suspend/resume and the separately approved cold-boot/login check passed; see the
 activation record and private receipts.
 
-The next essential gap is recovery from a failed candidate startup. Exercise that
-in a disposable session or virtual machine with a known-working recovery route.
-Do not repeat host shutdown or deliberately break the owner's active session.
-The current cold-boot result does not establish Ubuntu compatibility or test an
-unmodified upstream kernel; the host still uses its existing Kali kernel.
+Disposable failed-startup recovery now passes without changing the host session.
+The next development step is a DesOS VM prototype on the selected Ubuntu base,
+including target-native builds and guest boot/login/recovery validation. Keep a
+known-working guest snapshot and recovery route. Physical DRM/display-manager
+recovery and the remaining essential hardware cases must pass before replacing
+the owner's current system. The current results do not establish Ubuntu
+compatibility or test an unmodified upstream kernel; the host still uses its
+existing Kali kernel.
 
 `installed-before.json` records the original pre-installation process hashes.
 The current candidate identities are recorded in `fresh-login.json`,
 `post-resume.json` and `cold-boot-result.json` under the private hardware evidence
 directory.
 
-DesOS live-image work follows the essential hardware gate;
-upstream-kernel testing follows the established base-system baseline. The installed
+An isolated DesOS image prototype can proceed with the remaining acceptance cases
+tracked; host replacement follows the essential hardware gate. Upstream-kernel
+testing follows the established base-system baseline. The installed
 desktop has now been activated through the separately approved test session;
 the kernel, display-manager service choice and boot configuration remain unchanged.

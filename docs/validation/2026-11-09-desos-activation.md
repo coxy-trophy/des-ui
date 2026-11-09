@@ -165,3 +165,12 @@ shutdown receipt. No additional visual boot acceptance answer was collected.
 This closes the cold-boot/login case on this laptop with this kernel and
 candidate; failed-startup recovery, authenticated VT recovery, lid behavior and
 the broader device/application/performance cases remain pending.
+
+## Subsequent disposable recovery checks
+
+The owner approved continuing with failed-startup recovery in a disposable
+environment. Early crash, a full 15-second startup hang with descendant cleanup,
+real previous-build startup and final Cage fallback passed with private process,
+filesystem and D-Bus state. Host boot and candidate PIDs remained unchanged.
+See [the recovery record](2026-11-09-desos-recovery.md) for identities, evidence,
+probe corrections and the remaining physical DRM/display-manager limits.
