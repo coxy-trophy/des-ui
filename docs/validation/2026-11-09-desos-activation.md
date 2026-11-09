@@ -116,3 +116,23 @@ running candidate hashes, readiness acknowledgement and service recovery. Keep
 the recorded previous shell/compositor pair available; if normal startup fails,
 use the existing fallback or authenticated text-console recovery. Do not install
 or rebuild the candidate again merely to perform that boot test.
+
+## Cold-boot shutdown authorized
+
+After being told that a shutdown would stop nine running Docker containers and
+current applications, the owner explicitly instructed "do it". Preflight again
+verified all installed candidate hashes, the previous core recovery hashes and
+readiness support, the active display manager and the owner's graphical session.
+Logind allowed normal power-off from the test's user-service context.
+
+The private `cold-boot-handoff.json` records the old boot/session identity,
+candidate and recovery identities, and container IDs/restart policies without
+container names, environment variables or credentials. No container policy is
+changed. The guarded one-shot helper uses normal `systemctl poweroff`, leaving
+service shutdown and filesystem flushing to the operating system.
+
+After the machine fully powers off, the owner physically powers it on, signs into
+DEs-UI and returns. Verify a new boot ID, kernel selection, candidate process
+hashes, initialized readiness, network/audio services and container recovery
+against the recorded policies before claiming a cold-boot pass. A shutdown
+request receipt alone is not cold-boot evidence. Do not repeat shutdown on resume.
