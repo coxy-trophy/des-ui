@@ -44,6 +44,10 @@ fn worker_path() -> Option<PathBuf> {
 }
 #[derive(Default)]
 pub struct Companion {
+    /// Whether things may move; off when the desktop is asked to reduce motion.
+    pub animate: bool,
+    /// Since when a reply has been thought about, while one is.
+    thinking_since: Option<std::time::Instant>,
     pub open: bool, pub chat_selected: bool, pub panel_requested: bool, pub settings_requested: bool, bridge: Option<Bridge>, next_id: u64, snapshot: Value, voice: Value,
     input: String, key: String, show_key: bool, model: String, identity: String, memory: String, memory_edit: Option<(i64, String)>, memory_edit_saving: Option<(i64, String)>,
     worker_ready: bool, pending_voice: bool, keep_requested: bool, voice_requested: bool, voice_notice: Option<(String,std::time::Instant)>, voice_screen: usize, cursor_signal: Option<(bool,Option<(i32,i32,i32,i32)>,std::time::Instant)>, voice_anchor: Option<egui::Pos2>, voice_caption: String, remember_key: Option<bool>,
@@ -377,7 +381,8 @@ impl Companion {
         let ready=enabled && configured && !busy && !active;
         // What sits between the messages and the field: the attachment, or the reply
         // being thought about.
-        let middle=self.attachment.is_some() || self.capture_pending.is_some() || busy;
+        let middle=self.attachment.is_some() || self.capture_pending.is_some();
+        if busy { self.thinking_since.get_or_insert_with(std::time::Instant::now); } else { self.thinking_since=None; }
         let composer=46.0;
         let message_height=(height-composer-8.0-if middle{32.0}else{0.0}).max(16.0);
         let messages=self.snapshot["messages"].as_array().cloned().unwrap_or_default();
@@ -433,6 +438,35 @@ impl Companion {
                         });
                     }
                 }
+                // While a reply is thought about, it takes shape where it will appear:
+                // the companion's bubble, its three dots rising in turn.
+                if busy {
+                    ui.vertical(|ui|{
+                        ui.spacing_mut().item_spacing.y=4.0;
+                        ui.label(RichText::new("COMPANION").font(ui::mono(10.0)).color(theme.main));
+                        ui.horizontal(|ui|{
+                            ui.spacing_mut().item_spacing.x=10.0;
+                            let (bubble,_)=ui.allocate_exact_size(egui::vec2(60.0,34.0),egui::Sense::hover());
+                            let painter=ui.painter();
+                            painter.rect_filled(bubble,egui::CornerRadius{nw:12,ne:12,sw:4,se:12},ui::PANEL);
+                            painter.rect_stroke(bubble,egui::CornerRadius{nw:12,ne:12,sw:4,se:12},egui::Stroke::new(1.0,ui::LINE),egui::StrokeKind::Inside);
+                            let time=ui.input(|i|i.time) as f32;
+                            for dot in 0..3 {
+                                let (lift,strength)=if self.animate {
+                                    let wave=((time*5.0-dot as f32*0.9).sin()*0.5+0.5).powi(2);
+                                    (wave*4.0,0.35+0.65*wave)
+                                } else {(0.0,0.6)};
+                                let at=bubble.center()+egui::vec2((dot as f32-1.0)*11.0,-lift+1.0);
+                                painter.circle_filled(at,3.2,theme.main.gamma_multiply(strength));
+                            }
+                            let seconds=self.thinking_since.map_or(0,|since|since.elapsed().as_secs());
+                            let said=if seconds<2 {"Thinking".to_string()} else {format!("Thinking · {seconds} s")};
+                            ui.label(RichText::new(said).font(ui::mono(11.5)).color(ui::SECONDARY));
+                            if ui::button(ui,theme,"STOP",None,false).on_hover_text("Stop this reply").clicked() { self.send(json!({"type":"cancel"})); }
+                        });
+                    });
+                    if self.animate { ui.ctx().request_repaint(); } else { ui.ctx().request_repaint_after(std::time::Duration::from_secs(1)); }
+                }
             });
         ui.add_space(4.0);
         let mut remove_attachment = false;
@@ -442,12 +476,6 @@ impl Companion {
             ui.horizontal(|ui| {
                 ui.set_min_height(28.0);
                 ui.spacing_mut().item_spacing.x=8.0;
-                if busy {
-                    ui.spinner();
-                    ui.label(RichText::new("Thinking…").font(ui::mono(11.5)).color(ui::SECONDARY));
-                    if ui::button(ui,theme,"STOP",None,false).on_hover_text("Stop this reply").clicked() { self.send(json!({"type":"cancel"})); }
-                    ui.add_space(12.0);
-                }
                 if self.capture_pending.is_some() { ui.label(RichText::new("Capturing the screen…").font(ui::mono(11.5)).color(ui::SECONDARY)); }
                 if let Some(attachment) = &self.attachment {
                     egui::Frame::new().stroke(egui::Stroke::new(1.0,ui::LINE_STRONG)).corner_radius(12).inner_margin(egui::Margin::symmetric(8,3)).show(ui,|ui|{
@@ -784,12 +812,12 @@ mod panel_revision_tests {
                 }
                 egui::CentralPanel::default().frame(egui::Frame::new().fill(ui::GROUND).inner_margin(20.0)).show(ctx, |ui| self.companion.panel_ui(ui, &Theme::load("signal")));
                 self.frames += 1;
-                if self.frames == 5 { ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default())); }
+                if self.frames == 12 { ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default())); }
                 ctx.request_repaint();
             }
         }
         let output = std::path::PathBuf::from(std::env::var("DESUI_CHAT_PREVIEW").expect("preview output"));
-        let companion = Companion { open: true, chat_selected: true, snapshot: json!({"enabled": true, "configured": true, "busy": true, "messages": [
+        let companion = Companion { open: true, chat_selected: true, animate: true, snapshot: json!({"enabled": true, "configured": true, "busy": true, "messages": [
             {"role": "user", "text": "Why is my build failing?"},
             {"role": "assistant", "text": "[The companion's answer, a few lines, with the command it suggests.]"},
             {"role": "user", "text": "And how do I fix the second error?"}]}), ..Default::default() };

@@ -571,6 +571,7 @@ impl eframe::App for App {
                         if chat && switch!=Some(0) {
                             self.fs.blur();
                             if self.companion.open && !self.shortcut_reference.open {ctx.input_mut(|i|i.events.extend(std::mem::take(&mut reference_input)));}
+                            self.companion.animate=animate;
                             self.companion.panel_ui(ui,&theme);
                             if self.companion.open {let _=shortcuts::take_modal_input(ctx,true);}
                             if self.companion.open {chat_area=Some(rect);}
