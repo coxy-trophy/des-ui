@@ -553,18 +553,22 @@ impl eframe::App for App {
                 if open.bottom {
                     let rect=on_screen(frame_layout.bottom.expect("open bottom panel"));
                     typed=frame_region(ui,rect,vec2(24.0,10.0),Layout::top_down(Align::Min),|ui|{
-                        ui.horizontal(|ui|{
-                            if ui.selectable_label(!self.companion.chat_selected,"FILES").clicked(){self.companion.select_files();}
-                            if ui.selectable_label(self.companion.chat_selected,"CHAT").clicked(){self.fs.blur();self.companion.open(ctx);}
-                            if self.companion.chat_selected {
-                                if self.companion.voice_active(){ui.label(egui::RichText::new("VOICE ACTIVE").color(theme.main));}
+                        // FILES and CHAT: which the panel shows.
+                        let chat=self.companion.chat_selected;
+                        let mut switch=None;
+                        if chat {
+                            ui.horizontal(|ui|{
+                                ui.spacing_mut().item_spacing.x=14.0;
+                                switch=panels::tabs(ui,&theme,&["FILES","CHAT"],1);
+                                if self.companion.voice_active(){panels::pill(ui,"● VOICE ACTIVE",theme.main);}
                                 ui.with_layout(Layout::right_to_left(Align::Center),|ui|{
-                                    if ui.small_button("Settings").clicked(){self.companion.settings_requested=true;self.companion.blur_text();}
+                                    if crate::ui::icon_button(ui,&theme,crate::ui::Icon::Settings,28.0,false).on_hover_text("Companion settings").clicked(){self.companion.settings_requested=true;self.companion.blur_text();}
                                 });
-                            }
-                        });
-                        ui.add_space(4.0);
-                        if self.companion.chat_selected {
+                            });
+                            ui.add_space(4.0);
+                            if switch==Some(0){self.companion.select_files();}
+                        }
+                        if chat && switch!=Some(0) {
                             self.fs.blur();
                             if self.companion.open && !self.shortcut_reference.open {ctx.input_mut(|i|i.events.extend(std::mem::take(&mut reference_input)));}
                             self.companion.panel_ui(ui,&theme);
@@ -573,7 +577,9 @@ impl eframe::App for App {
                             None
                         } else {
                             let cwd=self.tabs[self.focus_tab()].cwd();
-                            self.fs.show(ui,&theme,cwd.as_deref())
+                            let typed=self.fs.show(ui,&theme,cwd.as_deref(),|ui|{switch=panels::tabs(ui,&theme,&["FILES","CHAT"],0);});
+                            if switch==Some(1){self.fs.blur();self.companion.open(ctx);}
+                            typed
                         }
                     });
                 } else {

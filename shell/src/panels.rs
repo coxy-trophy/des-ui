@@ -963,6 +963,8 @@ pub fn shell_quote(s: &str) -> String {
 pub struct FsView {
     path: PathBuf,
     entries: Vec<(String, bool)>,
+    /// How big each file is, by name.
+    sizes: std::collections::HashMap<String, u64>,
     loaded: Option<Instant>,
     /// The file picked by a click, which the keys and quick-look act on.
     selected: Option<String>,
@@ -1003,6 +1005,7 @@ impl FsView {
         FsView {
             path: PathBuf::new(),
             entries: Vec::new(),
+            sizes: std::collections::HashMap::new(),
             loaded: None,
             selected: None,
             focused: false,
@@ -1086,14 +1089,19 @@ impl FsView {
     }
 
     fn reload(&mut self, cwd: &Path) {
+        // In another folder, what was picked in the last one is let go.
+        if self.path != cwd { self.selected = None; self.focused = false; }
         self.path = cwd.to_path_buf();
         self.loaded = Some(Instant::now());
+        self.sizes.clear();
         self.entries = std::fs::read_dir(cwd)
             .map(|rd| {
                 rd.flatten()
                     .map(|e| {
                         let name = e.file_name().to_string_lossy().into_owned();
-                        (name, e.path().is_dir())
+                        let is_dir = e.path().is_dir();
+                        if !is_dir { if let Ok(meta) = e.metadata() { self.sizes.insert(name.clone(), meta.len()); } }
+                        (name, is_dir)
                     })
                     .filter(|(name, _)| !name.starts_with('.'))
                     .collect()
@@ -1104,9 +1112,10 @@ impl FsView {
             .sort_by_key(|(name, is_dir)| (!*is_dir, name.to_lowercase()));
     }
 
-    /// Draws the browser: a path, then a grid of tiles. Returns text to type into the
-    /// terminal when an entry is clicked.
-    pub fn show(&mut self, ui: &mut Ui, theme: &Theme, cwd: Option<&Path>) -> Option<String> {
+    /// Draws the browser: the tabs `tabs` draws, the folder as a path to click back
+    /// up, then the folders and files. Returns text to type into the terminal when an
+    /// entry or a folder of the path is clicked.
+    pub fn show(&mut self, ui: &mut Ui, theme: &Theme, cwd: Option<&Path>, tabs: impl FnOnce(&mut Ui)) -> Option<String> {
         powerup::stage(ui.ctx()).apply(ui, Part::Bottom);
         if let Some(cwd) = cwd {
             let stale = self
@@ -1116,40 +1125,53 @@ impl FsView {
                 self.reload(cwd);
             }
         }
-        let count = self.entries.len();
+        let mut typed = None;
+        let folders = self.entries.iter().filter(|(_, is_dir)| *is_dir).count();
+        let files = self.entries.len() - folders;
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 10.0;
-            if ui::button(ui, theme, "FILES", None, false).on_hover_text("Open native Files browser").clicked() {
-                crate::files::request(ui.ctx(), if self.path.is_absolute() { self.path.clone() } else { crate::files::home() });
-            }
-            // The path, with everything but the current folder played down.
+            ui.spacing_mut().item_spacing.x = 14.0;
+            tabs(ui);
+            // The path, each folder of it a way back up; the current one plain.
+            ui.spacing_mut().item_spacing.x = 2.0;
             let home = std::env::var_os("HOME").map(PathBuf::from);
-            let shown = match home.as_ref().and_then(|home| self.path.strip_prefix(home).ok()) {
-                Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
-                Some(rest) => format!("~/{}", rest.display()),
-                None => self.path.display().to_string(),
+            let mut crumbs: Vec<(String, PathBuf)> = Vec::new();
+            let mut walk = PathBuf::new();
+            let under_home = home.as_ref().filter(|home| self.path.starts_with(home));
+            let rest = match under_home {
+                Some(home) => { crumbs.push(("~".into(), home.clone())); walk = home.clone(); self.path.strip_prefix(home).map(Path::to_path_buf).unwrap_or_default() }
+                None => { crumbs.push(("/".into(), PathBuf::from("/"))); walk.push("/"); self.path.strip_prefix("/").map(Path::to_path_buf).unwrap_or_default() }
             };
-            let (parent, name) = match shown.rsplit_once('/') {
-                Some((parent, name)) if !name.is_empty() => (format!("{parent}/"), name.to_string()),
-                _ => (String::new(), shown.clone()),
-            };
-            ui.spacing_mut().item_spacing.x = 0.0;
-            ui::text(ui, &truncate_start(&parent, 60), ui::mono(12.0), ui::LABEL);
-            ui::text(ui, &name, ui::mono(12.0), ui::TEXT);
-            ui.spacing_mut().item_spacing.x = 10.0;
-            ui.add_space(10.0);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let plural = if count == 1 { "" } else { "S" };
-                ui::meta(ui, &format!("{count} ITEM{plural} · FOLLOWS THE TERMINAL"), ui::LABEL);
-                let rest = ui.available_rect_before_wrap();
-                if rest.width() > 4.0 {
-                    ui.painter().hline(rest.x_range(), rest.center().y, Stroke::new(1.0, ui::LINE));
+            for part in rest.components() {
+                walk.push(part);
+                crumbs.push((part.as_os_str().to_string_lossy().into_owned(), walk.clone()));
+            }
+            // A deep path keeps its last folders, after an ellipsis.
+            let shown = crumbs.len().min(5);
+            if crumbs.len() > shown { ui::text(ui, "… /", ui::mono(12.0), ui::LABEL); }
+            let last = crumbs.len().saturating_sub(1);
+            for (index, (name, path)) in crumbs.iter().enumerate().skip(crumbs.len() - shown) {
+                if index > crumbs.len() - shown && !(index == 1 && crumbs[0].0 == "/") { ui::text(ui, "/", ui::mono(12.0), ui::LINE_STRONG); }
+                if index == last {
+                    ui::text(ui, &truncate(name, 32), ui::mono(12.0), ui::TEXT);
+                } else {
+                    let crumb = ui.add(eframe::egui::Button::new(eframe::egui::RichText::new(truncate(name, 24)).font(ui::mono(12.0)).color(ui::SECONDARY)).frame(false));
+                    if crumb.on_hover_text(format!("Go to {}", path.display())).clicked() {
+                        typed = Some(format!("cd {}\r", shell_quote(&path.to_string_lossy())));
+                    }
                 }
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                if ui::button(ui, theme, "OPEN IN FILES ↗", None, false).on_hover_text("Open this folder in Files").clicked() {
+                    crate::files::request(ui.ctx(), if self.path.is_absolute() { self.path.clone() } else { crate::files::home() });
+                }
+                pill(ui, "FOLLOWS THE TERMINAL", theme.main).on_hover_text("This panel shows the folder the terminal is in");
+                let plural = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+                ui::meta(ui, &format!("{} · {}", plural(folders, "folder", "folders"), plural(files, "file", "files")), ui::LABEL);
             });
         });
-        ui.add_space(8.0);
+        ui.add_space(6.0);
 
-        let mut typed = None;
         let panel = ui.max_rect();
         if self.has_keyboard() {
             let keys = ui.input(|input| {
@@ -1176,47 +1198,65 @@ impl FsView {
                 self.focused = false;
             }
         }
-        let gap = 8.0;
-        let columns = ((ui.available_width() + gap) / (200.0 + gap)).floor().max(1.0);
+        // While a file has the keyboard, a line at the foot says what the keys do.
+        let hint = self.focused.then(|| self.selected.clone()).flatten().filter(|name| self.entries.iter().any(|(entry, _)| entry == name));
+        let gap = 6.0;
+        let columns = ((ui.available_width() + gap) / (170.0 + gap)).floor().max(1.0);
         self.columns = columns as usize;
         let width = ((ui.available_width() + gap) / columns - gap).floor();
         let mut tiles: Vec<(String, bool, Option<String>)> = Vec::new();
         if self.path.parent().is_some() {
-            tiles.push(("..".to_string(), true, Some("cd ..\r".to_string())));
+            tiles.push(("Up a folder".to_string(), true, Some("cd ..\r".to_string())));
         }
         for (name, is_dir) in &self.entries {
             tiles.push((name.clone(), *is_dir, None));
         }
-        ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        let grid_height = (ui.available_height() - if hint.is_some() { 22.0 } else { 0.0 }).max(20.0);
+        ScrollArea::vertical().auto_shrink([false, false]).max_height(grid_height).show(ui, |ui| {
             ui.spacing_mut().item_spacing = vec2(gap, gap);
             ui.horizontal_wrapped(|ui| {
                 for (name, is_dir, command) in &tiles {
-                    let (rect, response) = ui.allocate_exact_size(vec2(width, 44.0), Sense::click_and_drag());
+                    let (rect, response) = ui.allocate_exact_size(vec2(width, 36.0), Sense::click_and_drag());
+                    response.widget_info(|| eframe::egui::WidgetInfo::labeled(eframe::egui::WidgetType::Button, true, name));
                     let painter = ui.painter_at(rect);
                     let picked = command.is_none() && self.selected.as_deref() == Some(name.as_str());
-                    let line = if picked && self.focused {
-                        theme.main
-                    } else if response.hovered() || picked {
-                        ui::LINE_STRONG
+                    let (fill, edge) = if picked && self.focused {
+                        (theme.main.gamma_multiply(0.14), theme.main)
+                    } else if picked {
+                        (ui::TRACK, ui::LINE_STRONG)
+                    } else if response.hovered() {
+                        (ui::TRACK, ui::LINE)
                     } else {
-                        ui::LINE
+                        (ui::PANEL, ui::PANEL)
                     };
-                    crate::material::paint(ui.ctx(), &painter, rect, ui::CONTROL_RADIUS, crate::material::Role::Panel);
-                    painter.rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, line), StrokeKind::Inside);
-                    let icon = pos2(rect.left() + 20.0, rect.center().y);
-                    if *is_dir {
-                        let color = if name == ".." { ui::SECONDARY } else { theme.main };
-                        folder_icon(&painter, icon, color);
+                    painter.rect_filled(rect, ui::CONTROL_RADIUS + 3.0, fill);
+                    painter.rect_stroke(rect, ui::CONTROL_RADIUS + 3.0, Stroke::new(1.0, edge), StrokeKind::Inside);
+                    let badge = Rect::from_center_size(pos2(rect.left() + 20.0, rect.center().y), vec2(22.0, 20.0));
+                    let mut right = rect.right() - 10.0;
+                    if command.is_some() {
+                        painter.rect_filled(badge, 5.0, ui::TRACK);
+                        let c = badge.center();
+                        painter.line(vec![c + vec2(-4.0, 1.5), c + vec2(0.0, -3.0), c + vec2(4.0, 1.5)], Stroke::new(1.5, ui::SECONDARY));
+                        painter.line_segment([c + vec2(0.0, -3.0), c + vec2(0.0, 5.0)], Stroke::new(1.5, ui::SECONDARY));
+                    } else if *is_dir {
+                        painter.rect_filled(badge, 5.0, theme.main.gamma_multiply(0.16));
+                        folder_icon(&painter, badge.center() + vec2(0.5, 0.0), theme.main);
                     } else {
-                        file_icon(&painter, icon, ui::LABEL);
+                        let (tag, color) = file_kind(name);
+                        painter.rect_filled(badge, 5.0, color.gamma_multiply(0.16));
+                        painter.text(badge.center(), Align2::CENTER_CENTER, tag, ui::mono(7.5), color);
+                        if let Some(size) = self.sizes.get(name) {
+                            let size = painter.layout_no_wrap(human_bytes(*size as f64), ui::mono(10.0), ui::LABEL);
+                            right -= size.size().x;
+                            painter.galley(pos2(right, rect.center().y - size.size().y / 2.0), size, ui::LABEL);
+                            right -= 8.0;
+                        }
                     }
-                    painter.text(
-                        pos2(rect.left() + 38.0, rect.center().y),
-                        Align2::LEFT_CENTER,
-                        truncate(name, ((width - 48.0) / 7.4) as usize),
-                        ui::mono(12.0),
-                        if *is_dir && name != ".." { ui::TEXT } else { ui::SECONDARY },
-                    );
+                    let room = (right - (rect.left() + 38.0)).max(10.0);
+                    let mut job = eframe::egui::text::LayoutJob::simple_singleline(name.clone(), ui::mono(12.0), if command.is_some() { ui::SECONDARY } else { ui::TEXT });
+                    job.wrap = eframe::egui::text::TextWrapping::truncate_at_width(room);
+                    let label = painter.layout_job(job);
+                    painter.galley(pos2(rect.left() + 38.0, rect.center().y - label.size().y / 2.0), label, ui::TEXT);
                     // Dragged out of its tile, a file or folder goes where it is dropped.
                     if command.is_none() && response.dragged() && !self.dragging {
                         let outside = response.interact_pointer_pos().is_some_and(|at| !rect.contains(at));
@@ -1243,31 +1283,38 @@ impl FsView {
                 }
             });
         });
+        if let Some(name) = hint {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 16.0;
+                ui::text(ui, &truncate(&name, 40), ui::mono(11.0), theme.main);
+                for words in ["Space preview", "↵ type its path", "arrows move", "Esc back to the terminal"] {
+                    ui::text(ui, words, ui::mono(11.0), ui::LABEL);
+                }
+            });
+        }
         typed
     }
 }
 
-/// Keeps the end of `s`, which for a path is the part that matters.
-fn truncate_start(s: &str, max: usize) -> String {
-    let count = s.chars().count();
-    if count <= max {
-        s.to_string()
-    } else {
-        let tail: String = s.chars().skip(count - max.saturating_sub(1)).collect();
-        format!("…{tail}")
-    }
+/// A file's kind as a short tag and a colour of its own, from its extension.
+fn file_kind(name: &str) -> (String, eframe::egui::Color32) {
+    use eframe::egui::Color32;
+    let extension = name.rsplit_once('.').filter(|(stem, _)| !stem.is_empty()).map(|(_, ext)| ext.to_ascii_lowercase()).unwrap_or_default();
+    let colour = match extension.as_str() {
+        "md" | "txt" | "pdf" | "doc" | "docx" | "odt" | "ods" | "xlsx" | "csv" | "rtf" => Color32::from_rgb(0x6F, 0xA8, 0xDC),
+        "sh" | "py" | "rs" | "js" | "ts" | "c" | "h" | "cpp" | "go" | "java" | "rb" | "toml" | "json" | "yaml" | "yml" | "html" | "css" => Color32::from_rgb(0x5F, 0xD0, 0x8A),
+        "zip" | "tar" | "gz" | "xz" | "bz2" | "7z" | "rar" | "deb" | "rpm" | "iso" | "zst" => Color32::from_rgb(0xE6, 0xC3, 0x5C),
+        "jpg" | "jpeg" | "png" | "gif" | "svg" | "webp" | "bmp" | "heic" => Color32::from_rgb(0xD9, 0x8B, 0xC8),
+        "mp3" | "flac" | "wav" | "ogg" | "m4a" | "mp4" | "mkv" | "webm" | "mov" | "avi" => Color32::from_rgb(0x8C, 0x9E, 0xFF),
+        _ => ui::SECONDARY,
+    };
+    let tag = if extension.is_empty() { "—".to_string() } else { extension.chars().take(3).collect::<String>().to_uppercase() };
+    (tag, colour)
 }
 
 fn folder_icon(painter: &eframe::egui::Painter, center: eframe::egui::Pos2, color: eframe::egui::Color32) {
     let (x, y) = (center.x - 8.0, center.y - 6.0);
     let points = [(0.0, 1.0), (5.0, 1.0), (6.5, 3.0), (15.0, 3.0), (15.0, 12.0), (0.0, 12.0), (0.0, 1.0)];
-    let points: Vec<_> = points.iter().map(|(dx, dy)| pos2(x + dx, y + dy)).collect();
-    painter.line(points, Stroke::new(1.2, color));
-}
-
-fn file_icon(painter: &eframe::egui::Painter, center: eframe::egui::Pos2, color: eframe::egui::Color32) {
-    let (x, y) = (center.x - 6.0, center.y - 7.0);
-    let points = [(0.0, 0.0), (8.0, 0.0), (12.0, 4.0), (12.0, 14.0), (0.0, 14.0), (0.0, 0.0)];
     let points: Vec<_> = points.iter().map(|(dx, dy)| pos2(x + dx, y + dy)).collect();
     painter.line(points, Stroke::new(1.2, color));
 }
@@ -1313,6 +1360,22 @@ mod tests {
     }
 
     #[test]
+    fn moving_to_another_folder_lets_go_of_the_picked_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("inner")).unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        let mut fs = FsView::new();
+        fs.reload(dir.path());
+        assert_eq!(fs.sizes.get("a.txt"), Some(&1));
+        fs.selected = Some("a.txt".into());
+        fs.focused = true;
+        fs.reload(dir.path());
+        assert!(fs.has_keyboard(), "the same folder again keeps the pick");
+        fs.reload(&dir.path().join("inner"));
+        assert!(fs.selected.is_none() && !fs.has_keyboard());
+    }
+
+    #[test]
     fn quotes_for_the_shell() {
         assert_eq!(shell_quote("/tmp/a b"), "'/tmp/a b'");
         assert_eq!(shell_quote("it's"), "'it'\\''s'");
@@ -1337,8 +1400,11 @@ mod tests {
         assert_eq!(human_bytes(1536.0), "1.5 KB");
         assert_eq!(truncate("short", 10), "short");
         assert_eq!(truncate("abcdefghij", 5), "abcd…");
-        assert_eq!(truncate_start("abcdefghij", 5), "…ghij");
-        assert_eq!(truncate_start("short", 10), "short");
+        assert_eq!(file_kind("README.md").0, "MD");
+        assert_eq!(file_kind("archive.tar.gz").0, "GZ");
+        assert_eq!(file_kind("Makefile").0, "—");
+        assert_eq!(file_kind(".bashrc").0, "—", "a dotfile has no extension");
+        assert_eq!(file_kind("photo.JPEG").0, "JPE");
     }
 }
 
