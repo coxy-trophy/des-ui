@@ -33,6 +33,8 @@ pub enum Action {
     Keyboard,
     DoNotDisturb(bool),
     Settings,
+    /// The settings, at the page of this name.
+    SettingsAt(&'static str),
     Power,
     Lock,
 }
@@ -140,6 +142,18 @@ impl Quick {
 
     fn contents(&mut self, ui: &mut Ui, theme: &Theme, readings: &Readings, actions: &mut Vec<Action>) {
         ui.spacing_mut().item_spacing.y = 10.0;
+        let radio = self.radio.get_or_insert_with(|| Radio::new(ui.ctx().clone()));
+        // Wi-Fi and Bluetooth lists take the whole pop-up, with their own way back.
+        if matches!(self.view, View::Wifi | View::Bluetooth) {
+            let (exit, page) = if self.view == View::Wifi { (radio.quick_wifi(ui, theme), "wifi") } else { (radio.quick_bluetooth(ui, theme), "bluetooth") };
+            match exit {
+                crate::radio::QuickExit::Stay => {}
+                crate::radio::QuickExit::Back => self.view = View::Levels,
+                crate::radio::QuickExit::Settings => { self.view = View::Levels; actions.push(Action::SettingsAt(page)); }
+            }
+            ui.ctx().request_repaint_after(Duration::from_secs(1));
+            return;
+        }
         // The head: what this is, and the battery in a word or two.
         ui.horizontal(|ui| {
             ui::tracked(ui, "QUICK SETTINGS", ui::display_bold(12.0), ui::SECONDARY, 1.4);
@@ -157,7 +171,6 @@ impl Quick {
             }
         });
 
-        let radio = self.radio.get_or_insert_with(|| Radio::new(ui.ctx().clone()));
         let wifi = radio.wifi_glance();
         let bluetooth = radio.bluetooth_glance();
         let now = Instant::now();
@@ -199,6 +212,8 @@ impl Quick {
                         }
                         (4, Hit::Switch) => actions.push(Action::Keyboard),
                         (5, Hit::Switch) => actions.push(Action::Mute),
+                        (0, Hit::Arrow) => self.view = View::Wifi,
+                        (1, Hit::Arrow) => self.view = View::Bluetooth,
                         (5, Hit::Arrow) => self.view = if self.view == View::Outputs { View::Levels } else { View::Outputs },
                         _ => {}
                     }
@@ -217,7 +232,7 @@ impl Quick {
                 let sound = self.sound.get_or_insert_with(|| Sound::new(ui.ctx().clone()));
                 sound.quick_outputs(ui, theme);
             }
-            View::Levels => {
+            View::Levels | View::Wifi | View::Bluetooth => {
                 ui.spacing_mut().item_spacing.y = 4.0;
                 if let Some(level) = brightness {
                     if let Some(to) = level_row(ui, theme, ui::Icon::Brightness, None, level, "Brightness", 40.0) {
@@ -264,6 +279,8 @@ enum View {
     #[default]
     Levels,
     Outputs,
+    Wifi,
+    Bluetooth,
 }
 
 /// A round button with an icon, named for the screen reader and on hover. `warm`
@@ -608,6 +625,38 @@ mod tests {
         render(&mut quick, vec![egui::Event::PointerMoved(at), click(true)]);
         render(&mut quick, vec![click(false)]);
         assert!(quick.view == View::Levels);
+    }
+
+    #[test]
+    fn the_wifi_arrow_opens_its_list_and_back_returns_without_changing_anything() {
+        let ctx = egui::Context::default(); crate::ui::install_fonts(&ctx, None, None); ctx.enable_accesskit();
+        let mut quick = Quick { open: true, ..Default::default() };
+        let readings = Readings { volume: Some(40), brightness: Some(80), ..Default::default() };
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(1280.0, 900.0));
+        let render = |quick: &mut Quick, events| {
+            let mut actions = Vec::new();
+            let output = ctx.run(egui::RawInput { screen_rect: Some(screen), events, ..Default::default() }, |ctx| {
+                actions = quick.show(ctx, &Theme::load("signal"), screen, 872.0, &readings);
+            });
+            (output, actions)
+        };
+        let press = |quick: &mut Quick, label: &str| {
+            render(quick, Vec::new());
+            let (output, _) = render(quick, Vec::new());
+            let bounds = output.platform_output.accesskit_update.unwrap().nodes.into_iter().find_map(|(_, node)|
+                (node.label() == Some(label)).then(|| node.bounds()).flatten()).unwrap_or_else(|| panic!("{label}"));
+            let at = pos2((bounds.x0 + bounds.x1) as f32 / 2.0, (bounds.y0 + bounds.y1) as f32 / 2.0);
+            let click = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+            let (_, first) = render(quick, vec![egui::Event::PointerMoved(at), click(true)]);
+            let (_, second) = render(quick, vec![click(false)]);
+            first.into_iter().chain(second).collect::<Vec<_>>()
+        };
+        assert!(press(&mut quick, "Wi-Fi: show the list").is_empty(), "opening the list must not switch Wi-Fi");
+        assert!(quick.view == View::Wifi);
+        assert!(press(&mut quick, "Back to quick settings").is_empty());
+        assert!(quick.view == View::Levels);
+        assert!(press(&mut quick, "Bluetooth: show the list").is_empty());
+        assert!(quick.view == View::Bluetooth);
     }
 
     #[test]

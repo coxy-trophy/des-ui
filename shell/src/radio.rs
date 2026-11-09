@@ -6,7 +6,7 @@ mod wifi;
 
 use crate::theme::Theme;
 use crate::ui;
-use eframe::egui::{self, Align, Align2, Key, Layout, Sense, Stroke, StrokeKind, TextEdit, Ui, vec2};
+use eframe::egui::{self, Align, Align2, Key, Layout, Rect, Sense, Stroke, StrokeKind, TextEdit, Ui, pos2, vec2};
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
@@ -433,6 +433,8 @@ pub struct Radio {
     /// The network or device whose controls are open.
     selected: Option<String>,
     password: String,
+    /// Whether the password being typed is shown.
+    reveal: bool,
     /// The VPN settings file being named, to bring in.
     vpn_file: String,
     /// What the device being paired is asking, and where the answer goes.
@@ -450,6 +452,7 @@ impl Radio {
             ctx,
             selected: None,
             password: String::new(),
+            reveal: false,
             vpn_file: String::new(),
             asking: Arc::default(),
             answer: None,
@@ -986,6 +989,376 @@ impl Radio {
     }
 }
 
+/// What the quick settings' lists ask of the pop-up around them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum QuickExit {
+    Stay,
+    /// Back to the switches and levels.
+    Back,
+    /// To the full page in the settings.
+    Settings,
+}
+
+/// The Wi-Fi networks and Bluetooth devices, compact, inside the quick settings.
+impl Radio {
+    /// The networks in range: connect, disconnect and forget, with the password asked
+    /// for in place when a new network needs one.
+    pub fn quick_wifi(&mut self, ui: &mut Ui, theme: &Theme) -> QuickExit {
+        let (powered, mut networks, working, problem, stale) = {
+            let state = self.wifi.lock().unwrap();
+            let stale = state.refreshed.is_none_or(|at| at.elapsed() > Duration::from_secs(12));
+            (state.powered, state.items.clone(), state.working.clone(), state.problem.clone(), stale)
+        };
+        if stale && working.is_none() {
+            self.wifi_do("READING", Vec::new(), false);
+        }
+        let args = |words: &[&str]| words.iter().map(|w| w.to_string()).collect::<Vec<String>>();
+        let mut exit = QuickExit::Stay;
+        if let Some(on) = quick_head(ui, theme, "Wi-Fi", working.as_deref(), powered, &mut exit) {
+            self.wifi_do(if on { "TURNING OFF" } else { "TURNING ON" }, vec![args(&["radio", "wifi", if on { "off" } else { "on" }])], !on);
+        }
+        if let Some(problem) = &problem { quick_note(ui, problem, ui::CAUTION); }
+        match powered {
+            None => quick_note(ui, if working.is_some() { "Looking for the Wi-Fi radio…" } else { "No Wi-Fi radio on this machine." }, ui::LABEL),
+            Some(false) => quick_note(ui, "Wi-Fi is off. Switch it on to see networks.", ui::LABEL),
+            Some(true) => {
+                // The one in use first, then the strongest.
+                networks.sort_by_key(|network| (!network.in_use, std::cmp::Reverse(network.signal)));
+                if networks.is_empty() { quick_note(ui, "No networks in range yet.", ui::LABEL); }
+                ui.spacing_mut().item_spacing.y = 2.0;
+                for network in networks.iter().take(12) {
+                    let open = self.selected.as_deref() == Some(&network.ssid);
+                    let state = match (network.in_use, network.known) {
+                        (true, _) => "CONNECTED",
+                        (false, true) => "SAVED",
+                        (false, false) if network.secured => "SECURED",
+                        (false, false) => "OPEN",
+                    };
+                    let mut toggle = false;
+                    quick_group(ui, open, |ui| {
+                        toggle = quick_row(ui, theme, Lead::Signal(network.signal), &network.ssid, network.secured && !network.known, state, network.in_use);
+                        if !open { return; }
+                        let ssid = network.ssid.as_str();
+                        if !network.in_use && !network.known && network.secured {
+                            let go = quick_secret(ui, theme, &mut self.password, &mut self.reveal, &format!("Password for {ssid}"));
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 8.0;
+                                ui.add_space(8.0);
+                                let ready = !self.password.is_empty();
+                                if (ui::button(ui, theme, "CONNECT", None, ready).clicked() || go) && ready {
+                                    let password = std::mem::take(&mut self.password);
+                                    self.wifi_connect(ssid.to_string(), Some(password));
+                                }
+                                if ui::button(ui, theme, "CANCEL", None, false).clicked() { toggle = true; }
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| { ui.add_space(8.0); ui::text(ui, "ENTER", ui::mono(10.0), ui::LABEL); });
+                            });
+                            return;
+                        }
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 8.0;
+                            ui.add_space(8.0);
+                            if network.in_use {
+                                if ui::button(ui, theme, "DISCONNECT", None, false).clicked() {
+                                    self.wifi_do("DISCONNECTING", vec![args(&["connection", "down", "id", ssid])], false);
+                                }
+                            } else if network.known {
+                                if ui::button(ui, theme, "CONNECT", None, true).clicked() {
+                                    self.wifi_do("CONNECTING", vec![args(&["connection", "up", "id", ssid])], false);
+                                }
+                            } else if ui::button(ui, theme, "CONNECT", None, true).clicked() {
+                                self.wifi_connect(ssid.to_string(), None);
+                            }
+                            if network.known && ui::button(ui, theme, "FORGET", None, false).clicked() {
+                                self.wifi_do("FORGETTING", vec![args(&["connection", "delete", "id", ssid])], false);
+                            }
+                        });
+                    });
+                    if toggle {
+                        self.selected = if open { None } else { Some(network.ssid.clone()) };
+                        self.password.clear();
+                        self.reveal = false;
+                    }
+                }
+                ui.spacing_mut().item_spacing.y = 10.0;
+            }
+        }
+        if let Some(chosen) = quick_foot(ui, theme, powered == Some(true), "SCAN AGAIN", &mut exit) {
+            if chosen { self.wifi_do("SCANNING", Vec::new(), true); }
+        }
+        if exit != QuickExit::Stay { self.selected = None; self.password.clear(); self.reveal = false; }
+        exit
+    }
+
+    /// The devices: paired ones to connect, nearby ones to pair, with what a device
+    /// asks while pairing shown in its own row.
+    pub fn quick_bluetooth(&mut self, ui: &mut Ui, theme: &Theme) -> QuickExit {
+        let (powered, devices, working, problem, stale) = {
+            let state = self.bluetooth.lock().unwrap();
+            let stale = state.refreshed.is_none_or(|at| at.elapsed() > Duration::from_secs(12));
+            (state.powered, state.items.clone(), state.working.clone(), state.problem.clone(), stale)
+        };
+        if stale && working.is_none() {
+            self.bluetooth_do("READING", Vec::new());
+        }
+        let args = |words: &[&str]| words.iter().map(|w| w.to_string()).collect::<Vec<String>>();
+        let mut exit = QuickExit::Stay;
+        if let Some(on) = quick_head(ui, theme, "Bluetooth", working.as_deref(), powered, &mut exit) {
+            self.bluetooth_do(if on { "TURNING OFF" } else { "TURNING ON" }, vec![args(&["power", if on { "off" } else { "on" }])]);
+        }
+        if let Some(problem) = &problem { quick_note(ui, problem, ui::CAUTION); }
+        let asking = self.asking.lock().unwrap().is_some();
+        match powered {
+            None => quick_note(ui, if working.is_some() { "Looking for the Bluetooth radio…" } else { "No Bluetooth radio on this machine." }, ui::LABEL),
+            Some(false) => quick_note(ui, "Bluetooth is off. Switch it on to see devices.", ui::LABEL),
+            Some(true) => {
+                // A question from a device no longer listed still needs its answer.
+                if asking && !devices.iter().any(|device| self.selected.as_deref() == Some(&device.address)) {
+                    self.quick_asking(ui, theme, "The device");
+                }
+                let (paired, nearby): (Vec<&BtDevice>, Vec<&BtDevice>) = devices.iter().partition(|device| device.paired);
+                if devices.is_empty() { quick_note(ui, "No devices yet. Put one in pairing mode and scan.", ui::LABEL); }
+                for (heading, group) in [("PAIRED", paired), ("NEARBY", nearby)] {
+                    if group.is_empty() { continue; }
+                    ui::tracked(ui, heading, ui::display_bold(10.0), ui::LABEL, 1.2);
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    for device in group {
+                        let open = self.selected.as_deref() == Some(&device.address);
+                        let state = match (device.connected, device.paired, open && working.as_deref() == Some("PAIRING")) {
+                            (_, _, true) => "PAIRING…",
+                            (true, _, _) => "CONNECTED",
+                            (false, true, _) => "PAIRED",
+                            (false, false, _) => "NEW",
+                        };
+                        let mut toggle = false;
+                        quick_group(ui, open, |ui| {
+                            toggle = quick_row(ui, theme, Lead::Device, &device.name, false, state, device.connected);
+                            if !open { return; }
+                            if asking {
+                                self.quick_asking(ui, theme, &device.name);
+                                return;
+                            }
+                            let address = device.address.as_str();
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 8.0;
+                                ui.add_space(8.0);
+                                if device.connected {
+                                    if ui::button(ui, theme, "DISCONNECT", None, false).clicked() {
+                                        self.bluetooth_do("DISCONNECTING", vec![args(&["disconnect", address])]);
+                                    }
+                                } else if device.paired {
+                                    if ui::button(ui, theme, "CONNECT", None, true).clicked() {
+                                        self.bluetooth_do("CONNECTING", vec![args(&["connect", address])]);
+                                    }
+                                } else if ui::button(ui, theme, "PAIR", None, true).clicked() {
+                                    self.pair_with(address);
+                                }
+                                if device.paired && ui::button(ui, theme, "FORGET", None, false).clicked() {
+                                    self.bluetooth_do("FORGETTING", vec![args(&["remove", address])]);
+                                }
+                            });
+                        });
+                        // While a device is asking, its row stays open.
+                        if toggle && !(asking && open) {
+                            self.selected = if open { None } else { Some(device.address.clone()) };
+                        }
+                    }
+                    ui.spacing_mut().item_spacing.y = 10.0;
+                }
+            }
+        }
+        if let Some(chosen) = quick_foot(ui, theme, powered == Some(true), "SCAN FOR 8 S", &mut exit) {
+            // Listening for eight seconds finds what is in pairing mode nearby.
+            if chosen { self.bluetooth_do("SCANNING FOR 8 SECONDS", vec![args(&["--timeout", "8", "scan", "on"])]); }
+        }
+        if exit != QuickExit::Stay && !asking { self.selected = None; }
+        exit
+    }
+
+    /// What a device being paired asks, compact, under its row.
+    fn quick_asking(&mut self, ui: &mut Ui, theme: &Theme, name: &str) {
+        let Some(ask) = self.asking.lock().unwrap().clone() else { return };
+        let send = |answer: &str| { if let Some(to) = &self.answer { let _ = to.send(answer.to_string()); } };
+        let mut sent = false;
+        let code_line = |ui: &mut Ui, code: &str| {
+            ui.vertical_centered(|ui| { ui::tracked(ui, code, ui::mono(26.0), ui::TEXT, 5.0); });
+        };
+        match &ask {
+            Ask::Type(code) => {
+                quick_note(ui, &format!("Type this on {name}, then press its Enter key."), ui::SECONDARY);
+                code_line(ui, code);
+            }
+            Ask::Confirm(code) => {
+                quick_note(ui, &format!("Does {name} show this code?"), ui::SECONDARY);
+                code_line(ui, code);
+            }
+            Ask::Enter => {
+                quick_note(ui, &format!("Type the code {name} shows, or the one in its manual."), ui::SECONDARY);
+                let mut shown = true;
+                if quick_secret(ui, theme, &mut self.code, &mut shown, "Pairing code") && !self.code.trim().is_empty() {
+                    send(self.code.trim());
+                    sent = true;
+                }
+            }
+        }
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            ui.add_space(8.0);
+            match &ask {
+                Ask::Confirm(_) => {
+                    if ui::button(ui, theme, "YES, PAIR", None, true).clicked() { send("yes"); sent = true; }
+                    if ui::button(ui, theme, "NO", None, false).clicked() { send("no"); sent = true; }
+                }
+                Ask::Enter => {
+                    let ready = !self.code.trim().is_empty();
+                    if ui::button(ui, theme, "PAIR", None, ready).clicked() && ready { send(self.code.trim()); sent = true; }
+                    if ui::button(ui, theme, "CANCEL", None, false).clicked() { send(""); sent = true; }
+                }
+                // An empty answer calls the whole thing off.
+                Ask::Type(_) => { if ui::button(ui, theme, "CANCEL", None, false).clicked() { send(""); sent = true; } }
+            }
+        });
+        if sent {
+            self.code.clear();
+            *self.asking.lock().unwrap() = None;
+        }
+    }
+}
+
+/// What leads a row in the quick lists.
+enum Lead { Signal(u8), Device }
+
+/// The head of a quick list: back, its name, what is being done, and the radio's
+/// switch. Returns the radio's state when its switch was clicked.
+fn quick_head(ui: &mut Ui, theme: &Theme, name: &str, working: Option<&str>, powered: Option<bool>, exit: &mut QuickExit) -> Option<bool> {
+    let mut flip = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        let (back, response) = ui.allocate_exact_size(vec2(30.0, 30.0), Sense::click());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Back to quick settings"));
+        ui.painter().rect_filled(back, 8.0, if response.hovered() { ui::LINE } else { ui::TRACK });
+        if response.has_focus() { ui.painter().rect_stroke(back, 8.0, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
+        let c = back.center();
+        ui.painter().line(vec![c + vec2(2.5, -5.0), c + vec2(-2.5, 0.0), c + vec2(2.5, 5.0)], Stroke::new(1.8, ui::TEXT));
+        if response.on_hover_text("Back · Esc closes").clicked() { *exit = QuickExit::Back; }
+        ui::text(ui, name, ui::display_bold(14.0), ui::TEXT);
+        if let Some(doing) = working { ui::text(ui, &format!("{doing}…").replace("……", "…"), ui::mono(10.0), theme.main); }
+        if let Some(on) = powered {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui::toggle(ui, theme, on).on_hover_text(format!("Turn {name} {}", if on { "off" } else { "on" })).clicked() { flip = Some(on); }
+            });
+        }
+    });
+    flip
+}
+
+/// A line of quiet text in a quick list.
+fn quick_note(ui: &mut Ui, text: &str, color: egui::Color32) {
+    ui.add(egui::Label::new(egui::RichText::new(text).font(ui::mono(11.0)).color(color)).wrap());
+}
+
+/// A row and, when it is open, its controls, together in one bordered box.
+fn quick_group(ui: &mut Ui, open: bool, add: impl FnOnce(&mut Ui)) {
+    if !open { add(ui); return; }
+    egui::Frame::new().fill(ui::PANEL).stroke(Stroke::new(1.0, ui::LINE)).corner_radius(12).inner_margin(egui::Margin { left: 4, right: 4, top: 4, bottom: 10 }).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = 8.0;
+        add(ui);
+    });
+}
+
+/// One network or device: what leads it, its name, a padlock when it wants a
+/// password, and its state; lit while in use. True on a click.
+fn quick_row(ui: &mut Ui, theme: &Theme, lead: Lead, name: &str, locked: bool, state: &str, live: bool) -> bool {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 42.0), Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{name}, {}", state.to_lowercase())));
+    let painter = ui.painter_at(rect);
+    if live { painter.rect_filled(rect, 10.0, theme.main.gamma_multiply(0.14)); } else if response.hovered() { painter.rect_filled(rect, 10.0, ui::TRACK); }
+    if response.has_focus() { painter.rect_stroke(rect, 10.0, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
+    let lead_at = rect.left_center() + vec2(18.0, 0.0);
+    match lead {
+        Lead::Signal(signal) => {
+            let lit = (signal as usize * 4).div_ceil(100).clamp(1, 4);
+            for bar in 0..4 {
+                let height = 5.0 + bar as f32 * 3.0;
+                let x = lead_at.x - 6.0 + bar as f32 * 4.0;
+                let tone = if bar < lit { if live { theme.main } else { ui::TEXT } } else { ui::LINE_STRONG };
+                painter.rect_filled(Rect::from_min_max(pos2(x, lead_at.y + 7.0 - height), pos2(x + 3.0, lead_at.y + 7.0)), 1.0, tone);
+            }
+        }
+        Lead::Device => ui::paint_icon(&painter, Rect::from_center_size(lead_at, vec2(16.0, 16.0)), ui::Icon::Bluetooth, if live { theme.main } else { ui::SECONDARY }, live),
+    }
+    let state_galley = painter.layout_no_wrap(state.to_string(), ui::mono(10.0), if live { theme.main } else if state == "PAIRING…" { ui::CAUTION } else { ui::LABEL });
+    let state_width = state_galley.size().x;
+    painter.galley(pos2(rect.right() - 10.0 - state_width, rect.center().y - state_galley.size().y / 2.0), state_galley, ui::LABEL);
+    let room = rect.width() - 36.0 - state_width - 20.0 - if locked { 18.0 } else { 0.0 };
+    let mut job = egui::text::LayoutJob::simple_singleline(if name.is_empty() { "Hidden network".into() } else { name.to_string() }, ui::display(13.0), ui::TEXT);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(room.max(20.0));
+    let galley = painter.layout_job(job);
+    let name_end = rect.left() + 36.0 + galley.size().x;
+    painter.galley(pos2(rect.left() + 36.0, rect.center().y - galley.size().y / 2.0), galley, ui::TEXT);
+    if locked {
+        ui::paint_icon(&painter, Rect::from_center_size(pos2(name_end + 12.0, rect.center().y), vec2(12.0, 12.0)), ui::Icon::Lock, ui::LABEL, false);
+    }
+    response.clicked()
+}
+
+/// A field for a password or code, with an eye to see it. True when Enter was
+/// pressed in it.
+fn quick_secret(ui: &mut Ui, theme: &Theme, text: &mut String, reveal: &mut bool, name: &str) -> bool {
+    let width = ui.available_width() - 16.0;
+    let mut go = false;
+    ui.horizontal(|ui| {
+        ui.add_space(8.0);
+        let (rect, _) = ui.allocate_exact_size(vec2(width, 36.0), Sense::hover());
+        ui.painter().rect_filled(rect, 9.0, ui::GROUND);
+        ui.painter().rect_stroke(rect, 9.0, Stroke::new(1.0, theme.main), StrokeKind::Inside);
+        let eye = Rect::from_center_size(rect.right_center() - vec2(18.0, 0.0), vec2(28.0, 28.0));
+        let edit = ui.put(
+            Rect::from_min_max(rect.min + vec2(12.0, 4.0), pos2(eye.left() - 4.0, rect.bottom() - 4.0)),
+            TextEdit::singleline(text).vertical_align(Align::Center).password(!*reveal).frame(false).font(ui::mono(13.0)).text_color(ui::TEXT).hint_text(crate::ui::hint(name)),
+        );
+        edit.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, name));
+        if !edit.has_focus() && text.is_empty() && !ui.memory(|m| m.focused().is_some()) { edit.request_focus(); }
+        go = edit.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
+        let response = ui.interact(eye, edit.id.with("eye"), Sense::click());
+        let label = if *reveal { "Hide password" } else { "Show password" };
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+        let c = eye.center();
+        let tone = if *reveal { theme.main } else if response.hovered() { ui::TEXT } else { ui::SECONDARY };
+        let stroke = Stroke::new(1.4, tone);
+        let lid = |sign: f32| (0..=12).map(|i| { let t = i as f32 / 12.0 * std::f32::consts::PI; c + vec2(-7.0 * t.cos(), sign * 4.5 * t.sin()) }).collect::<Vec<_>>();
+        ui.painter().line(lid(-1.0), stroke);
+        ui.painter().line(lid(1.0), stroke);
+        ui.painter().circle_stroke(c, 2.2, stroke);
+        if !*reveal { ui.painter().line_segment([c + vec2(-7.0, 6.0), c + vec2(7.0, -6.0)], stroke); }
+        if response.on_hover_text(label).clicked() { *reveal = !*reveal; }
+    });
+    go
+}
+
+/// The foot of a quick list: scan again, and the full page in the settings. Some
+/// with true when scan was clicked.
+fn quick_foot(ui: &mut Ui, theme: &Theme, can_scan: bool, scan: &str, exit: &mut QuickExit) -> Option<bool> {
+    let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
+    ui.painter().hline(line.x_range(), line.center().y, Stroke::new(1.0, ui::LINE));
+    let mut scanned = None;
+    ui.horizontal(|ui| {
+        if can_scan && quick_link(ui, theme, scan).clicked() { scanned = Some(true); }
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if quick_link(ui, theme, "MORE IN SETTINGS ↗").clicked() { *exit = QuickExit::Settings; }
+        });
+    });
+    scanned
+}
+
+fn quick_link(ui: &mut Ui, theme: &Theme, text: &str) -> egui::Response {
+    let galley = ui.painter().layout_no_wrap(text.to_string(), ui::mono(10.5), theme.main);
+    let (rect, response) = ui.allocate_exact_size(galley.size() + vec2(0.0, 8.0), Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, text));
+    let tone = if response.hovered() { ui::TEXT } else { theme.main };
+    ui.painter().galley(rect.min + vec2(0.0, 4.0), galley, tone);
+    response
+}
+
 /// A one-line text field in the settings' style. Returns true when Enter was pressed in it.
 fn field(ui: &mut Ui, theme: &Theme, text: &mut String, hint: &str, secret: bool, width: f32) -> bool {
     let (rect, _) = ui.allocate_exact_size(vec2(width.min(ui.available_width()), 28.0), Sense::hover());
@@ -1036,6 +1409,32 @@ fn row(ui: &mut Ui, theme: &Theme, name: &str, reading: &str, state: &str, live:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_secured_network_asks_for_its_password_in_the_quick_list() {
+        let ctx = egui::Context::default(); crate::ui::install_fonts(&ctx, None, None); ctx.enable_accesskit();
+        let mut radio = Radio::new(ctx.clone());
+        *radio.wifi.lock().unwrap() = Shared {
+            powered: Some(true),
+            items: vec![
+                Network { ssid: "Home".into(), signal: 80, secured: true, in_use: true, known: true },
+                Network { ssid: "Neighbour".into(), signal: 40, secured: true, in_use: false, known: false },
+            ],
+            working: None, problem: None, refreshed: Some(Instant::now()),
+        };
+        radio.selected = Some("Neighbour".into());
+        let mut labels = Vec::new();
+        for _ in 0..2 {
+            let output = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| { radio.quick_wifi(ui, &Theme::load("signal")); });
+            });
+            labels = output.platform_output.accesskit_update.unwrap().nodes.into_iter().filter_map(|(_, node)| node.label().map(str::to_string)).collect();
+        }
+        for wanted in ["Password for Neighbour", "Show password", "CONNECT", "CANCEL", "Home, connected", "Neighbour, secured"] {
+            assert!(labels.iter().any(|label| label == wanted), "{wanted} missing from {labels:?}");
+        }
+        assert!(!labels.iter().any(|label| label == "FORGET"), "an unsaved network has nothing to forget");
+    }
 
     #[test]
     fn splits_terse_lines() {

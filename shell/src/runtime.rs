@@ -1125,6 +1125,12 @@ impl App {
                     self.toggle_settings();
                 }
             }
+            quick::Action::SettingsAt(page) => {
+                self.quick.open = false;
+                self.launcher.open = false; self.music.open = false; self.notices.open = false; self.power_menu.open = false;
+                self.settings.open_at(&self.config, page);
+                self.send(Command::Terminal);
+            }
             quick::Action::Power => {
                 self.quick.open = false;
                 self.toggle_power();
