@@ -26,7 +26,14 @@ linked() {
     mkdir "$work/debian"
     printf 'Source: des-ui\n\nPackage: des-ui\nArchitecture: any\n' >"$work/debian/control"
     for program; do set -- "$@" "-e$PWD/$program"; shift; done
-    (cd "$work" && dpkg-shlibdeps -O "$@" 2>/dev/null) | sed 's/^shlibs:Depends=//'
+    # A pipeline through sed would hide dpkg-shlibdeps failures, including failures
+    # after partial output. Never package a program with incomplete dependencies.
+    if dependencies=$(cd "$work" && dpkg-shlibdeps -O "$@"); then
+        printf '%s\n' "$dependencies" | sed 's/^shlibs:Depends=//'
+    else
+        rm -rf "$work"
+        return 1
+    fi
     rm -rf "$work"
 }
 
@@ -65,6 +72,8 @@ pack() {
 root="$out/des-ui"
 install -Dm755 target/release/des-ui "$root/usr/bin/des-ui"
 install -Dm755 target/release/des-ui-ctl "$root/usr/bin/des-ui-ctl"
+install -Dm755 target/release/des-connectd "$root/usr/bin/des-connectd"
+install -Dm755 target/release/des-connect-ctl "$root/usr/bin/des-connect-ctl"
 install -Dm755 target/release/des-comp "$root/usr/bin/des-comp"
 install -Dm755 target/release/des-hands "$root/usr/bin/des-hands"
 install -Dm755 target/release/des-portal "$root/usr/bin/des-portal"
@@ -78,6 +87,7 @@ install -Dm644 session/org.freedesktop.impl.portal.desktop.des-ui.service "$root
 sed -i 's|/usr/local/bin/|/usr/bin/|' "$root/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.des-ui.service"
 install -d "$root/usr/share/des-ui/companion"
 install -m644 companion/service.py companion/voice.py companion/credentials.py "$root/usr/share/des-ui/companion/"
+install -Dm644 scripts/virtual-display-viewer.py "$root/usr/share/des-ui/virtual-display-viewer.py"
 install -d "$root/usr/share/des-ui/themes"
 install -m644 themes/*.json "$root/usr/share/des-ui/themes/"
 target/release/des-comp --write-cursor-theme "$root/usr/share/icons/DEs-UI"
@@ -88,8 +98,9 @@ install -d -m 1777 "$root/var/lib/des-ui/avatars"
 
 # Wayland and the graphics libraries are loaded while running, so nothing finds them
 # by looking at the programs: they are named here.
+desktop_depends=$(linked target/release/des-ui target/release/des-ui-ctl target/release/des-comp target/release/des-portal target/release/des-hands target/release/des-connectd target/release/des-connect-ctl)
 pack des-ui \
-    "$(linked target/release/des-ui target/release/des-ui-ctl target/release/des-comp target/release/des-portal target/release/des-hands), python3, python3-gi, gir1.2-secret-1, gnome-keyring, dbus-user-session, python3-websocket, pipewire-bin, tmux (>= 3.3), libegl1, libwayland-client0, libwayland-cursor0, libwayland-egl1, fontconfig" \
+    "$desktop_depends, python3, python3-gi, gir1.2-secret-1, gnome-keyring, dbus-user-session, python3-websocket, pipewire-bin, tmux (>= 3.3), libegl1, libwayland-client0, libwayland-cursor0, libwayland-egl1, fontconfig" \
     "libgl1-mesa-dri, xwayland, cage, xdg-desktop-portal-gtk, wireplumber, pipewire-bin, network-manager, bluez, iproute2, sudo, curl, wl-clipboard, sound-theme-freedesktop, des-ui-music" \
     "ffmpeg, des-ui-greeter, des-ui-plymouth" \
     "sci-fi terminal desktop" <<'TEXT'
@@ -104,8 +115,9 @@ TEXT
 
 root="$out/des-ui-music"
 install -Dm755 target/release/des-music "$root/usr/bin/des-music"
+music_depends=$(linked target/release/des-music)
 pack des-ui-music \
-    "$(linked target/release/des-music), des-ui (= $version), pipewire-bin" \
+    "$music_depends, des-ui (= $version), pipewire-bin" \
     "" "" \
     "Spotify player for the DEs-UI desktop" <<'TEXT'
 Plays music from Spotify inside DEs-UI, and shows and controls what is

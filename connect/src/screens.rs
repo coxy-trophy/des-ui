@@ -321,9 +321,16 @@ fn find_scrcpy() -> Option<PathBuf> {
         .or_else(|| find_executable("scrcpy"))
 }
 fn find_helper() -> Option<PathBuf> {
-    env::var_os("DES_CONNECT_VIEWER").map(PathBuf::from).filter(|p| p.is_absolute() && p.is_file())
-        .or_else(|| { let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/virtual-display-viewer.py"); p.is_file().then_some(p) })
-        .or_else(|| { let p = PathBuf::from("/usr/local/share/des-ui/virtual-display-viewer.py"); p.is_file().then_some(p) })
+    helper_path(
+        env::var_os("DES_CONNECT_VIEWER").map(PathBuf::from),
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/virtual-display-viewer.py"),
+        &[Path::new("/usr/local"), Path::new("/usr")],
+    )
+}
+fn helper_path(explicit: Option<PathBuf>, development: PathBuf, prefixes: &[&Path]) -> Option<PathBuf> {
+    explicit.filter(|p| p.is_absolute() && p.is_file())
+        .or_else(|| development.is_file().then_some(development))
+        .or_else(|| prefixes.iter().map(|prefix| prefix.join("share/des-ui/virtual-display-viewer.py")).find(|p| p.is_file()))
 }
 fn executable(path: &Path) -> bool { fs::metadata(path).is_ok_and(|m| m.is_file() && m.mode() & 0o111 != 0) }
 fn find_executable(name: &str) -> Option<PathBuf> {
@@ -428,6 +435,34 @@ mod tests {
     }
 
     use super::*;
+    #[test]
+    fn viewer_helper_is_found_in_both_install_prefixes_without_a_source_checkout() {
+        let root = tempfile::tempdir().unwrap();
+        let local = root.path().join("usr/local");
+        let system = root.path().join("usr");
+        let development = root.path().join("missing-checkout/viewer.py");
+        let helper = system.join("share/des-ui/virtual-display-viewer.py");
+        fs::create_dir_all(helper.parent().unwrap()).unwrap();
+        fs::write(&helper, "system viewer").unwrap();
+        assert_eq!(helper_path(None, development.clone(), &[&local, &system]), Some(helper));
+        let local_helper = local.join("share/des-ui/virtual-display-viewer.py");
+        fs::create_dir_all(local_helper.parent().unwrap()).unwrap();
+        fs::write(&local_helper, "local viewer").unwrap();
+        assert_eq!(helper_path(None, development, &[&local, &system]), Some(local_helper));
+    }
+    #[test]
+    fn viewer_override_and_development_fallback_keep_their_precedence() {
+        let root = tempfile::tempdir().unwrap();
+        let development = root.path().join("development.py");
+        let explicit = root.path().join("explicit.py");
+        fs::write(&development, "development viewer").unwrap();
+        fs::write(&explicit, "explicit viewer").unwrap();
+        assert_eq!(helper_path(Some(explicit.clone()), development.clone(), &[]), Some(explicit));
+        for invalid in [PathBuf::from("relative.py"), root.path().join("missing.py"), root.path().to_owned()] {
+            assert_eq!(helper_path(Some(invalid), development.clone(), &[]), Some(development.clone()));
+        }
+        assert_eq!(helper_path(None, root.path().join("absent.py"), &[root.path()]), None);
+    }
     #[test]
     fn serial_rejects_network_and_argument_injection() {
         for invalid in ["", "-x", "phone;touch /tmp/pwn", "192.168.1.2:5555", "a\nb", "a b"] {

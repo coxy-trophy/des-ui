@@ -13,7 +13,7 @@ class PackagingTests(unittest.TestCase):
     def test_desktop_package_contains_hand_control_and_its_dependencies(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for name in ("packaging", "session", "themes", "companion"):
+            for name in ("packaging", "session", "themes", "companion", "scripts"):
                 shutil.copytree(ROOT / name, root / name,
                                 ignore=shutil.ignore_patterns("tests", "__pycache__"))
             (root / "shell").mkdir()
@@ -22,7 +22,7 @@ class PackagingTests(unittest.TestCase):
                 shutil.copyfile(ROOT / name, root / name)
             release = root / "target/release"
             release.mkdir(parents=True)
-            for name in ("des-ui", "des-ui-ctl", "des-comp", "des-portal", "des-hands", "des-music"):
+            for name in ("des-ui", "des-ui-ctl", "des-comp", "des-portal", "des-hands", "des-music", "des-connectd", "des-connect-ctl"):
                 path = release / name
                 path.write_text("#!/bin/sh\nexit 0\n")
                 path.chmod(0o755)
