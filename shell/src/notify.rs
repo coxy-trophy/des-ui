@@ -615,10 +615,11 @@ impl Center {
                 }
             }
         }
-        let showing: Vec<Notice> = self.notices.iter().filter(|notice| notice.fresh).take(AT_ONCE).cloned().collect();
+        let showing = waiting_order(&self.notices).into_iter().take(AT_ONCE).map(|index| self.notices[index].clone()).collect::<Vec<_>>();
         if showing.is_empty() {
             return (None, None);
         }
+        let more = self.notices.iter().filter(|notice| notice.fresh).count().saturating_sub(showing.len());
         for notice in &mut self.notices {
             if notice.shown.is_none() && showing.iter().any(|shown| shown.id == notice.id) {
                 notice.shown = Some(Instant::now());
@@ -639,9 +640,10 @@ impl Center {
             match area.inner {
                 Deed::Nothing => {}
                 Deed::Hovering => {
-                    // Under the pointer a toast does not run out.
-                    if let Some(notice) = self.notices.iter_mut().find(|n| n.id == notice.id) {
-                        notice.shown = Some(Instant::now());
+                    // Under the pointer a toast's time stands still.
+                    let frame = Duration::from_secs_f32(ctx.input(|input| input.unstable_dt).clamp(0.0, 0.25));
+                    if let Some(shown) = self.notices.iter_mut().find(|n| n.id == notice.id).and_then(|n| n.shown.as_mut()) {
+                        *shown += frame;
                     }
                 }
                 Deed::Put { away: true } => self.dismiss(notice.id),
@@ -664,66 +666,85 @@ impl Center {
                 Deed::Send => {}
             }
         }
+        // The rest wait in a line under the stack that opens the list.
+        if more > 0 {
+            let label = format!("+ {more} more · open the list");
+            let area = Area::new(Id::new("toast-more")).order(Order::Foreground).fixed_pos(pos2(corner.x - TOAST_WIDTH, top)).show(ctx, |ui| {
+                ui.set_width(TOAST_WIDTH);
+                ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                    let galley = ui::galley(ui, &label, ui::display(12.0), ui::TEXT, 0.0);
+                    let (rect, response) = ui.allocate_exact_size(galley.size() + vec2(28.0, 14.0), Sense::click());
+                    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+                    ui.painter().rect_filled(rect, rect.height() / 2.0, if response.hovered() { ui::LINE } else { ui::PANEL });
+                    ui.painter().rect_stroke(rect, rect.height() / 2.0, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
+                    ui.painter().galley(rect.center() - galley.size() / 2.0, galley, ui::TEXT);
+                    response.clicked()
+                }).inner
+            });
+            if area.inner { self.open = true; }
+            let rect = area.response.rect;
+            covered = Some(covered.map_or(rect, |all| all.union(rect)));
+        }
         // The line that shows a toast's time running out has to keep moving.
         ctx.request_repaint_after(Duration::from_millis(50));
         (covered.map(|rect| rect.expand(1.0)), chosen)
     }
 
     fn toast(&self, ui: &mut Ui, theme: &Theme, notice: &Notice) -> Deed {
-        let accent = if notice.urgent { ui::CAUTION } else { theme.main };
         let mut deed = Deed::Nothing;
         let background = ui.painter().add(egui::Shape::Noop);
-        let frame = egui::Frame::new().corner_radius(ui::SURFACE_RADIUS).fill(egui::Color32::TRANSPARENT).stroke(Stroke::new(1.0, ui::LINE_STRONG)).inner_margin(14.0);
+        let edge = if notice.urgent { ui::CAUTION } else { ui::LINE_STRONG };
+        let frame = egui::Frame::new().corner_radius(14.0).fill(egui::Color32::TRANSPARENT).stroke(Stroke::new(1.0, edge)).inner_margin(egui::Margin { left: 14, right: 12, top: 14, bottom: 16 });
         let shown = frame.show(ui, |ui| {
-            ui.set_width(TOAST_WIDTH - 28.0);
-            ui.spacing_mut().item_spacing.y = 5.0;
-            ui.horizontal(|ui| {
-                let (dot, _) = ui.allocate_exact_size(vec2(6.0, 6.0), Sense::hover());
-                ui.painter().rect_filled(dot, 0.0, accent);
-                ui::tracked(ui, &crate::panels::truncate(&notice.app.to_uppercase(), 24), ui::display_bold(10.0), accent, 2.0);
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if close_mark(ui).clicked() {
-                        deed = Deed::Put { away: true };
-                    }
-                    ui::text(ui, &notice.clock, ui::mono(10.0), ui::LABEL);
-                });
-            });
+            ui.set_width(TOAST_WIDTH - 26.0);
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = 12.0;
-                if let Some(icon) = &notice.icon {
-                    icon.show(ui, 40.0);
-                }
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 5.0;
+                app_badge(ui, theme, &notice.app, notice.icon.as_deref(), 36.0, notice.urgent);
+                let width = ui.available_width();
+                ui.allocate_ui_with_layout(vec2(width, 0.0), Layout::top_down(Align::Min), |ui| {
+                    ui.set_width(width);
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        ui::tracked(ui, &crate::panels::truncate(&notice.app.to_uppercase(), 20), ui::mono(10.5), ui::SECONDARY, 1.2);
+                        if notice.urgent { crate::panels::pill(ui, "URGENT", ui::CAUTION); }
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if close_mark(ui).on_hover_text("Put away").clicked() {
+                                deed = Deed::Put { away: true };
+                            }
+                            ui::text(ui, &notice.clock, ui::mono(10.5), ui::LABEL);
+                        });
+                    });
                     if !notice.title.is_empty() {
                         wrapped(ui, &notice.title, ui::display_bold(14.0), ui::TEXT, 2);
                     }
                     if !notice.body.is_empty() {
                         wrapped(ui, &notice.body, ui::mono(12.0), ui::SECONDARY, 4);
                     }
-                });
-            });
-            let offered: Vec<&(String, String)> = notice.actions.iter().filter(|(key, _)| key != "default").take(3).collect();
-            if !offered.is_empty() {
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 6.0;
-                    for (key, label) in offered {
-                        if ui::button(ui, theme, &crate::panels::truncate(&label.to_uppercase(), 16), None, false).clicked() {
-                            deed = Deed::Act(key.clone());
-                        }
+                    let offered: Vec<&(String, String)> = notice.actions.iter().filter(|(key, _)| key != "default").take(3).collect();
+                    if !offered.is_empty() {
+                        ui.add_space(4.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            for (key, label) in offered {
+                                if ui::button(ui, theme, &crate::panels::truncate(&label.to_uppercase(), 16), None, false).clicked() {
+                                    deed = Deed::Act(key.clone());
+                                }
+                            }
+                        });
                     }
                 });
-            }
+            });
         });
         let rect = shown.response.rect;
-        ui.painter().set(background, egui::Shape::Vec(crate::material::shapes(ui.ctx(), rect, ui::SURFACE_RADIUS, crate::material::Role::Notification)));
-        ui::corners(ui.painter(), rect, 8.0, Stroke::new(1.5, accent));
-        // A line along the bottom, running out with the toast's time.
+        ui.painter().set(background, egui::Shape::Vec(crate::material::shapes(ui.ctx(), rect, 14.0, crate::material::Role::Notification)));
+        // A line along the bottom, running out with the toast's time; still under the pointer.
         if let (Some(at), Some(stay)) = (self.notices.iter().find(|n| n.id == notice.id).and_then(|n| n.shown), notice.stay) {
             let left = 1.0 - (at.elapsed().as_secs_f32() / stay.as_secs_f32()).min(1.0);
-            let line = Rect::from_min_max(pos2(rect.left(), rect.bottom() - 2.0), pos2(rect.left() + rect.width() * left, rect.bottom()));
-            ui.painter().rect_filled(line, 0.0, accent);
+            let track = Rect::from_min_max(pos2(rect.left() + 14.0, rect.bottom() - 7.0), pos2(rect.right() - 14.0, rect.bottom() - 5.0));
+            let paused = ui.rect_contains_pointer(rect);
+            ui.painter().rect_filled(track, 1.0, ui::TRACK);
+            ui.painter().rect_filled(Rect::from_min_size(track.min, vec2(track.width() * left, track.height())), 1.0, if paused { ui::SECONDARY } else { theme.main });
         }
         if deed == Deed::Nothing {
             let whole = ui.interact(rect, ui.id().with("whole"), Sense::click());
@@ -1000,6 +1021,14 @@ enum Deed {
     Act(String),
     /// Send the answer typed in it.
     Send,
+}
+
+/// The notifications waiting to show, in the order they get a toast: urgent ones
+/// first, then as they came.
+fn waiting_order(notices: &[Notice]) -> Vec<usize> {
+    let mut waiting: Vec<usize> = (0..notices.len()).filter(|&index| notices[index].fresh).collect();
+    waiting.sort_by_key(|&index| !notices[index].urgent);
+    waiting
 }
 
 /// What was clicked in an application's heading.
@@ -1352,6 +1381,17 @@ mod tests {
         let notices = vec![from(1, "Mail", &[]), backup, from(3, "Chat", &[]), from(4, "Mail", &[])];
         let order: Vec<String> = groups(&notices).into_iter().map(|(app, _)| app).collect();
         assert_eq!(order, ["Backup", "Mail", "Chat"]);
+    }
+
+    #[test]
+    fn an_urgent_toast_goes_ahead_of_those_waiting_before_it() {
+        let mut backup = from(3, "Backup", &[]);
+        backup.urgent = true;
+        let mut seen = from(5, "Chat", &[]);
+        seen.fresh = false;
+        let notices = vec![from(1, "Mail", &[]), from(2, "Calendar", &[]), backup, from(4, "Mail", &[]), seen];
+        let order: Vec<u32> = waiting_order(&notices).into_iter().map(|index| notices[index].id).collect();
+        assert_eq!(order, [3, 1, 2, 4]);
     }
 
     #[test]
