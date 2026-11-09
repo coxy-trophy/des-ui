@@ -375,6 +375,10 @@ pub struct Center {
     collapsed: HashSet<String>,
     /// The notification being answered in the list, and what has been typed.
     replying: Option<(u32, String)>,
+    /// The one application whose notifications the list shows, if chosen.
+    filter: Option<String>,
+    /// How many came in without showing because it was quiet, since it went quiet.
+    quietly: usize,
 }
 
 /// The action key applications offer for an answer typed in the notification.
@@ -418,6 +422,8 @@ fn groups(notices: &[Notice]) -> Vec<(String, Vec<usize>)> {
             None => out.push((notice.app.clone(), vec![index])),
         }
     }
+    // An application with something urgent comes first; otherwise the latest first.
+    out.sort_by_key(|(_, members)| !members.iter().any(|&index| notices[index].urgent));
     out
 }
 
@@ -457,7 +463,7 @@ impl Center {
                 notification_bus(zbus::blocking::connection::Builder::session()?, inbox.clone(), ctx)
             })
             .and_then(|built| built.map_err(|e| eprintln!("des-ui: not taking applications' notifications: {e}")).ok());
-        Center { open: false, quiet, sounds: false, last_sound: None, notices: Vec::new(), inbox, bus, own_id: u32::MAX / 2, schedule: None, collapsed: HashSet::new(), replying: None }
+        Center { open: false, quiet, sounds: false, last_sound: None, notices: Vec::new(), inbox, bus, own_id: u32::MAX / 2, schedule: None, collapsed: HashSet::new(), replying: None, filter: None, quietly: 0 }
     }
 
     /// Whether only what is urgent shows now: switched on, or within quiet hours.
@@ -513,6 +519,7 @@ impl Center {
             // The same thing said again, such as progress, is no new interruption.
             Some(old) => *old = notice,
             None => {
+                if !notice.fresh { self.quietly += 1; }
                 self.notices.push(notice);
                 if let Some(sound) = sound {
                     self.last_sound = Some(Instant::now());
@@ -744,13 +751,18 @@ impl Center {
             notice.fresh = false;
             notice.shown = None;
         }
+        let quiet_now = self.quiet_now();
+        if !quiet_now { self.quietly = 0; }
+        if self.filter.as_ref().is_some_and(|app| !self.notices.iter().any(|notice| &notice.app == app)) { self.filter = None; }
         let mut chosen = None;
         let mut switched = None;
-        let margin = (rect.width() * 0.05).clamp(16.0, 56.0);
-        let area = Rect::from_min_max(rect.min + vec2(margin, 28.0), rect.max - vec2(margin, 14.0));
+        let margin = (rect.width() * 0.04).clamp(16.0, 40.0);
+        let area = Rect::from_min_max(rect.min + vec2(margin, 24.0), rect.max - vec2(margin, 14.0));
         ui.allocate_new_ui(UiBuilder::new().max_rect(area), |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
                 ui::tracked(ui, "NOTIFICATIONS", ui::display_bold(22.0), ui::TEXT, 3.0);
+                if !self.notices.is_empty() { crate::panels::pill(ui, &self.notices.len().to_string(), ui::SECONDARY); }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
                     if ui::button(ui, theme, "DONE", Some("ESC"), false).clicked() {
@@ -761,7 +773,13 @@ impl Center {
                             self.tell_closed(&notice, DISMISSED);
                         }
                     }
-                    let quiet = ui::button(ui, theme, "DO NOT DISTURB", None, self.quiet)
+                    let detail = match (self.quiet, self.schedule) {
+                        (false, Some((_, to))) if quiet_now => format!("UNTIL {:02}:{:02}", to / 60, to % 60),
+                        (false, Some((from, to))) => format!("{:02}:{:02}–{:02}:{:02}", from / 60, from % 60, to / 60, to % 60),
+                        _ => String::new(),
+                    };
+                    let label = if detail.is_empty() { "DO NOT DISTURB".to_string() } else { format!("DO NOT DISTURB · {detail}") };
+                    let quiet = ui::button(ui, theme, &label, None, self.quiet || quiet_now)
                         .on_hover_text("Keep notifications in this list without showing them as they arrive. Urgent ones still show.");
                     if quiet.clicked() {
                         self.quiet = !self.quiet;
@@ -771,31 +789,90 @@ impl Center {
             });
             ui.add_space(16.0);
             if self.bus.is_none() {
-                ui::text(ui, "Another program is taking applications' notifications; only the desktop's own are shown here.", ui::mono(11.0), ui::CAUTION);
+                caution_box(ui, "Another program is taking applications' notifications. Only the desktop's own show here.");
+                ui.add_space(10.0);
+            }
+            if quiet_now && self.quietly > 0 {
+                let line = if self.quietly == 1 { "1 came in quietly while Do not disturb was on.".to_string() } else { format!("{} came in quietly while Do not disturb was on.", self.quietly) };
+                ui::text(ui, &line, ui::display(13.0), ui::SECONDARY);
                 ui.add_space(8.0);
             }
             if self.notices.is_empty() {
-                ui::text(ui, "Nothing has come in.", ui::mono(13.0), ui::LABEL);
+                caught_up(ui);
                 return;
             }
-            let mut put_away = None;
-            let mut send = None;
-            let mut fold = None;
-            let (notices, replying, collapsed) = (&self.notices, &mut self.replying, &self.collapsed);
-            ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 0.0;
-                for (app, members) in groups(notices) {
-                    let folded = collapsed.contains(&app);
-                    if group_header(ui, theme, &app, members.len(), folded) {
-                        fold = Some(app.clone());
+            let all = groups(&self.notices);
+            let counts: Vec<(String, usize, bool)> = all.iter().map(|(app, members)| (app.clone(), members.len(), members.iter().any(|&i| self.notices[i].urgent))).collect();
+            let wide = ui.available_width() >= 860.0;
+            let mut pick = None;
+            if wide {
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = 28.0;
+                    let height = ui.available_height();
+                    ui.allocate_ui_with_layout(vec2(220.0, height), Layout::top_down(Align::Min), |ui| {
+                        ui.set_width(220.0);
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        if filter_row(ui, theme, "All", self.notices.len(), false, self.filter.is_none()) { pick = Some(None); }
+                        for (app, count, urgent) in &counts {
+                            if filter_row(ui, theme, app, *count, *urgent, self.filter.as_ref() == Some(app)) { pick = Some(Some(app.clone())); }
+                        }
+                        ui.add_space(14.0);
+                        ui.add(egui::Label::new(egui::RichText::new("Urgent ones come first, and still show during Do not disturb.").font(ui::mono(11.0)).color(ui::LABEL)).wrap());
+                    });
+                    let rest = ui.available_width();
+                    ui.allocate_ui_with_layout(vec2(rest, height), Layout::top_down(Align::Min), |ui| { ui.set_width(rest); chosen = self.cards(ui, theme, &all); });
+                });
+            } else {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                    if ui::chip(ui, theme, &format!("All {}", self.notices.len()), None, self.filter.is_none()).clicked() { pick = Some(None); }
+                    for (app, count, _) in &counts {
+                        if ui::chip(ui, theme, &format!("{app} {count}"), None, self.filter.as_ref() == Some(app)).clicked() { pick = Some(Some(app.clone())); }
                     }
-                    if folded {
-                        continue;
+                });
+                ui.add_space(10.0);
+                chosen = self.cards(ui, theme, &all);
+            }
+            if let Some(pick) = pick { self.filter = pick; }
+        });
+        let chosen = chosen.and_then(|(id, key)| self.act(id, &key));
+        if chosen.is_some() {
+            self.open = false;
+        }
+        (chosen, switched)
+    }
+
+    /// One card per application, urgent ones first, in a scroll. Returns the action
+    /// chosen, as the notification's id and the action's key.
+    fn cards(&mut self, ui: &mut Ui, theme: &Theme, all: &[(String, Vec<usize>)]) -> Option<(u32, String)> {
+        let mut chosen = None;
+        let mut put_away = None;
+        let mut clear = None;
+        let mut send = None;
+        let mut fold = None;
+        let (notices, replying, collapsed, filter) = (&self.notices, &mut self.replying, &self.collapsed, &self.filter);
+        ScrollArea::vertical().id_salt("notice-list").auto_shrink([false, false]).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 12.0;
+            for (app, members) in all {
+                if filter.as_ref().is_some_and(|only| only != app) { continue; }
+                let folded = collapsed.contains(app);
+                let urgent = members.iter().any(|&index| notices[index].urgent);
+                let frame = egui::Frame::new().fill(ui::PANEL).corner_radius(12.0)
+                    .stroke(Stroke::new(1.0, if urgent { ui::CAUTION.gamma_multiply(0.45) } else { ui::LINE }));
+                frame.show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    let titles: Vec<&str> = members.iter().map(|&index| notices[index].title.as_str()).filter(|t| !t.is_empty()).collect();
+                    match group_header(ui, theme, app, notices[members[0]].icon.as_deref(), members.len(), urgent, folded, &titles.join(", ")) {
+                        Header::Fold => fold = Some(app.clone()),
+                        Header::Clear => clear = Some(app.clone()),
+                        Header::Nothing => {}
                     }
-                    for index in members {
+                    if folded { return; }
+                    for (n, &index) in members.iter().enumerate() {
                         let notice = &notices[index];
                         let typing = replying.as_mut().filter(|(id, _)| *id == notice.id).map(|(_, text)| text);
-                        match row(ui, theme, notice, typing) {
+                        match row(ui, theme, notice, typing, n + 1 < members.len()) {
                             Deed::Put { .. } => put_away = Some(notice.id),
                             Deed::Act(key) if key == INLINE_REPLY => *replying = Some((notice.id, String::new())),
                             Deed::Act(key) => chosen = Some((notice.id, key)),
@@ -803,26 +880,24 @@ impl Center {
                             _ => {}
                         }
                     }
-                }
-            });
-            if let Some(app) = fold {
-                if !self.collapsed.remove(&app) {
-                    self.collapsed.insert(app);
-                }
-            }
-            if let Some(id) = send {
-                let text = self.replying.take().map(|(_, text)| text).unwrap_or_default();
-                self.reply(id, &text);
-            }
-            if let Some(id) = put_away {
-                self.dismiss(id);
+                });
             }
         });
-        let chosen = chosen.and_then(|(id, key)| self.act(id, &key));
-        if chosen.is_some() {
-            self.open = false;
+        if let Some(app) = fold {
+            if !self.collapsed.remove(&app) { self.collapsed.insert(app); }
         }
-        (chosen, switched)
+        if let Some(app) = clear {
+            let ids: Vec<u32> = self.notices.iter().filter(|notice| notice.app == app).map(|notice| notice.id).collect();
+            for id in ids { self.dismiss(id); }
+        }
+        if let Some(id) = send {
+            let text = self.replying.take().map(|(_, text)| text).unwrap_or_default();
+            self.reply(id, &text);
+        }
+        if let Some(id) = put_away {
+            self.dismiss(id);
+        }
+        chosen
     }
 }
 
@@ -927,20 +1002,101 @@ enum Deed {
     Send,
 }
 
-/// The heading over one application's notifications; true when clicked to fold or
-/// unfold them.
-fn group_header(ui: &mut Ui, theme: &Theme, app: &str, count: usize, folded: bool) -> bool {
-    let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(vec2(width, 28.0), Sense::click());
+/// What was clicked in an application's heading.
+enum Header { Nothing, Fold, Clear }
+
+/// A colour of its own for an application without an icon, the same every time.
+fn app_colour(app: &str) -> egui::Color32 {
+    const COLOURS: [egui::Color32; 6] = [
+        egui::Color32::from_rgb(0x6F, 0xA8, 0xDC), egui::Color32::from_rgb(0x5F, 0xD0, 0x8A), egui::Color32::from_rgb(0xE8, 0x83, 0x4A),
+        egui::Color32::from_rgb(0x8C, 0x9E, 0xFF), egui::Color32::from_rgb(0xD9, 0x8B, 0xC8), egui::Color32::from_rgb(0xE6, 0xC3, 0x5C),
+    ];
+    let sum = app.bytes().fold(7u32, |sum, byte| sum.wrapping_mul(31).wrapping_add(byte as u32));
+    COLOURS[sum as usize % COLOURS.len()]
+}
+
+/// An application's icon, or failing one its first letter on its own colour.
+fn app_badge(ui: &mut Ui, theme: &Theme, app: &str, icon: Option<&Icon>, size: f32, urgent: bool) {
+    if let Some(icon) = icon { icon.show(ui, size); return; }
+    let (rect, _) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
+    let fill = if urgent { ui::CAUTION } else if app == "DEs-UI" { theme.main } else { app_colour(app) };
+    ui.painter().rect_filled(rect, size * 0.25, fill);
+    let letter = app.chars().find(|c| c.is_alphanumeric()).map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "·".into());
+    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, letter, ui::display_bold(size * 0.48), ui::GROUND);
+}
+
+/// The heading of one application's card: its badge and name, urgent or how many,
+/// the titles when folded, and Clear and the fold.
+#[allow(clippy::too_many_arguments)]
+fn group_header(ui: &mut Ui, theme: &Theme, app: &str, icon: Option<&Icon>, count: usize, urgent: bool, folded: bool, titles: &str) -> Header {
+    let mut clicked = Header::Nothing;
+    let shown = egui::Frame::new().inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 10.0;
+            app_badge(ui, theme, app, icon, 24.0, urgent);
+            ui::tracked(ui, &crate::panels::truncate(&app.to_uppercase(), 24), ui::display_bold(12.5), ui::SECONDARY, 1.2);
+            if urgent { crate::panels::pill(ui, "URGENT", ui::CAUTION); } else { ui::meta(ui, &count.to_string(), ui::LABEL); }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let mark = if folded { "▸" } else { "▾" };
+                let fold = ui.add(egui::Button::new(egui::RichText::new(mark).font(ui::mono(13.0)).color(ui::SECONDARY)).frame(false))
+                    .on_hover_text(if folded { "Show these notifications" } else { "Fold these notifications away" });
+                if fold.clicked() { clicked = Header::Fold; }
+                let clear = ui.add(egui::Button::new(egui::RichText::new("Clear").font(ui::display(12.0)).color(ui::SECONDARY)).frame(false))
+                    .on_hover_text(format!("Put away every notification from {app}"));
+                if clear.clicked() { clicked = Header::Clear; }
+                let room = ui.available_width() - 8.0;
+                if folded && room > 40.0 {
+                    let mut job = egui::text::LayoutJob::simple_singleline(titles.to_string(), ui::mono(11.0), ui::LABEL);
+                    job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+                    let galley = ui.fonts(|fonts| fonts.layout_job(job));
+                    ui.label(galley);
+                }
+            });
+        });
+    });
+    if !folded {
+        let rect = shown.response.rect;
+        ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, ui::TRACK));
+    }
+    clicked
+}
+
+/// A place in the column of applications to show: its name and count, the chosen
+/// one lit, an amber dot where something is urgent.
+fn filter_row(ui: &mut Ui, theme: &Theme, name: &str, count: usize, urgent: bool, chosen: bool) -> bool {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::click());
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, chosen, format!("{name}, {count}")));
     let painter = ui.painter();
-    let mark = if folded { "▸" } else { "▾" };
-    let ink = if response.hovered() { ui::TEXT } else { ui::SECONDARY };
-    painter.text(rect.left_center() + vec2(4.0, 0.0), egui::Align2::LEFT_CENTER, mark, ui::mono(12.0), ink);
-    let name = crate::panels::truncate(&app.to_uppercase(), 32);
-    painter.text(rect.left_center() + vec2(22.0, 0.0), egui::Align2::LEFT_CENTER, name, ui::display_bold(11.0), theme.main);
-    painter.text(rect.right_center() - vec2(6.0, 0.0), egui::Align2::RIGHT_CENTER, count.to_string(), ui::mono(11.0), ui::LABEL);
-    painter.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, ui::LINE));
-    response.on_hover_text(if folded { "Show these notifications" } else { "Fold these notifications away" }).clicked()
+    if chosen { painter.rect_filled(rect, 8.0, theme.tint()); } else if response.hovered() { painter.rect_filled(rect, 8.0, ui::TRACK); }
+    if response.has_focus() { painter.rect_stroke(rect, 8.0, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
+    let mut x = rect.left() + 12.0;
+    if urgent { painter.circle_filled(pos2(x + 3.0, rect.center().y), 3.0, ui::CAUTION); x += 14.0; }
+    let mut job = egui::text::LayoutJob::simple_singleline(name.to_string(), ui::display(13.0), if chosen { ui::TEXT } else { ui::SECONDARY });
+    job.wrap = egui::text::TextWrapping::truncate_at_width((rect.right() - 44.0 - x).max(10.0));
+    let galley = ui.fonts(|fonts| fonts.layout_job(job));
+    painter.galley(pos2(x, rect.center().y - galley.size().y / 2.0), galley, ui::TEXT);
+    painter.text(rect.right_center() - vec2(12.0, 0.0), egui::Align2::RIGHT_CENTER, count.to_string(), ui::mono(11.0), if urgent { ui::CAUTION } else { ui::LABEL });
+    response.clicked()
+}
+
+/// What shows when nothing has come in.
+fn caught_up(ui: &mut Ui) {
+    ui.add_space((ui.available_height() * 0.25).min(120.0));
+    ui.vertical_centered(|ui| {
+        let (rect, _) = ui.allocate_exact_size(vec2(40.0, 40.0), Sense::hover());
+        ui::paint_icon(ui.painter(), rect.shrink(8.0), ui::Icon::Notifications, ui::LINE_STRONG, false);
+        ui::text(ui, "You're all caught up", ui::display_bold(16.0), ui::TEXT);
+        ui::text(ui, "New notifications show here, and for a few seconds in the top right as they arrive.", ui::display(12.5), ui::SECONDARY);
+    });
+}
+
+/// A warning in an amber box.
+fn caution_box(ui: &mut Ui, text: &str) {
+    egui::Frame::new().fill(ui::CAUTION.gamma_multiply(0.07)).stroke(Stroke::new(1.0, ui::CAUTION.gamma_multiply(0.45))).corner_radius(10.0).inner_margin(12.0).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.add(egui::Label::new(egui::RichText::new(text).font(ui::display(12.5)).color(ui::CAUTION)).wrap());
+    });
 }
 
 /// The small cross that puts a notification away.
@@ -964,82 +1120,77 @@ fn wrapped(ui: &mut Ui, text: &str, font: egui::FontId, color: egui::Color32, ro
     ui.painter().galley(rect.min, galley, color);
 }
 
-/// One notification in the list.
-fn row(ui: &mut Ui, theme: &Theme, notice: &Notice, typing: Option<&mut String>) -> Deed {
-    let accent = if notice.urgent { ui::CAUTION } else { theme.main };
+/// One notification in an application's card: its title and time, what it says,
+/// the actions it offers, and the cross that puts it away.
+fn row(ui: &mut Ui, theme: &Theme, notice: &Notice, typing: Option<&mut String>, rule: bool) -> Deed {
     let mut deed = Deed::Nothing;
-    let top = ui.cursor().top();
     let width = ui.available_width();
-    let inner = ui.allocate_ui_with_layout(vec2(width, 0.0), Layout::top_down(Align::Min), |ui| {
-        ui.add_space(10.0);
+    let inner = egui::Frame::new().inner_margin(egui::Margin { left: 14, right: 10, top: 12, bottom: 12 }).show(ui, |ui| {
+        ui.set_width((width - 24.0).max(40.0));
         ui.spacing_mut().item_spacing.y = 4.0;
-        ui.horizontal(|ui| {
-            ui.add_space(10.0);
-            ui::text(ui, &notice.clock, ui::mono(11.0), ui::LABEL);
-            ui::tracked(ui, &crate::panels::truncate(&notice.app.to_uppercase(), 28), ui::display_bold(10.0), accent, 2.0);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.add_space(6.0);
-                if close_mark(ui).clicked() {
-                    deed = Deed::Put { away: true };
-                }
-            });
-        });
-        ui.horizontal(|ui| {
-            ui.add_space(10.0);
-            ui.spacing_mut().item_spacing.x = 12.0;
-            let mut taken = 40.0;
-            if let Some(icon) = &notice.icon {
-                icon.show(ui, 36.0);
-                taken += 48.0;
-            }
-            ui.vertical(|ui| {
-                ui.set_width((width - taken).max(40.0));
-                if !notice.title.is_empty() {
-                    wrapped(ui, &notice.title, ui::display_bold(14.0), ui::TEXT, 2);
-                }
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 10.0;
+            let text_width = (ui.available_width() - 30.0).max(40.0);
+            ui.allocate_ui_with_layout(vec2(text_width, 0.0), Layout::top_down(Align::Min), |ui| {
+                ui.set_width(text_width);
+                ui.spacing_mut().item_spacing.y = 4.0;
+                ui.horizontal(|ui| {
+                    let title = if notice.title.is_empty() { notice.app.as_str() } else { notice.title.as_str() };
+                    let room = (ui.available_width() - 50.0).max(20.0);
+                    ui.allocate_ui_with_layout(vec2(room, 18.0), Layout::left_to_right(Align::Center), |ui| {
+                        ui.add(egui::Label::new(egui::RichText::new(title).font(ui::display_bold(14.0)).color(ui::TEXT)).truncate());
+                    });
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| { ui::text(ui, &notice.clock, ui::mono(11.0), ui::LABEL); });
+                });
                 if !notice.body.is_empty() {
                     wrapped(ui, &notice.body, ui::mono(12.0), ui::SECONDARY, 6);
                 }
+                let offered: Vec<&(String, String)> = notice.actions.iter().filter(|(key, _)| key != "default" && key != INLINE_REPLY).take(3).collect();
+                let offers_reply = notice.actions.iter().any(|(key, _)| key == INLINE_REPLY);
+                match typing {
+                    Some(text) => {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 8.0;
+                            let field = ui.add(egui::TextEdit::singleline(text).margin(eframe::egui::vec2(10.0, 4.0)).vertical_align(eframe::egui::Align::Center).hint_text(crate::ui::hint("Reply")).desired_width((ui.available_width() - 80.0).max(80.0)).font(ui::mono(12.0)));
+                            if !field.has_focus() && text.is_empty() {
+                                field.request_focus();
+                            }
+                            let entered = field.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
+                            if (ui::button(ui, theme, "SEND", None, true).clicked() || entered) && !text.trim().is_empty() {
+                                deed = Deed::Send;
+                            }
+                        });
+                    }
+                    None if offers_reply || !offered.is_empty() => {
+                        ui.add_space(4.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            if offers_reply && ui::button(ui, theme, "REPLY", None, false).clicked() {
+                                deed = Deed::Act(INLINE_REPLY.to_string());
+                            }
+                            for (key, label) in offered {
+                                if ui::button(ui, theme, &crate::panels::truncate(&label.to_uppercase(), 18), None, notice.urgent).clicked() {
+                                    deed = Deed::Act(key.clone());
+                                }
+                            }
+                        });
+                    }
+                    None => {}
+                }
             });
+            if close_mark(ui).on_hover_text("Put away").clicked() {
+                deed = Deed::Put { away: true };
+            }
         });
-        let offers_reply = notice.actions.iter().any(|(key, _)| key == INLINE_REPLY);
-        match typing {
-            Some(text) => {
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.add_space(10.0);
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    let field = ui.add(egui::TextEdit::singleline(text).margin(eframe::egui::vec2(10.0, 4.0)).vertical_align(eframe::egui::Align::Center).hint_text(crate::ui::hint("Reply")).desired_width((width - 120.0).max(80.0)).font(ui::mono(12.0)));
-                    if !field.has_focus() && text.is_empty() {
-                        field.request_focus();
-                    }
-                    let entered = field.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
-                    if (ui::button(ui, theme, "SEND", None, false).clicked() || entered) && !text.trim().is_empty() {
-                        deed = Deed::Send;
-                    }
-                });
-            }
-            None if offers_reply => {
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.add_space(10.0);
-                    if ui::button(ui, theme, "REPLY", None, false).clicked() {
-                        deed = Deed::Act(INLINE_REPLY.to_string());
-                    }
-                });
-            }
-            None => {}
-        }
-        ui.add_space(10.0);
     });
-    let rect = Rect::from_min_max(pos2(inner.response.rect.left(), top), pos2(inner.response.rect.left() + width, inner.response.rect.bottom()));
-    ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, ui::TRACK));
-    if ui.rect_contains_pointer(rect) {
-        ui.painter().rect_stroke(rect, 0.0, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
-    }
+    let rect = inner.response.rect;
+    if rule { ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, ui::TRACK)); }
     if deed == Deed::Nothing {
         if let Some(key) = notice.default_action() {
-            if ui.interact(rect, ui.id().with(("notice", notice.id)), Sense::click()).clicked() {
+            let whole = ui.interact(rect, ui.id().with(("notice", notice.id)), Sense::click());
+            if whole.hovered() { ui.painter().rect_stroke(rect.shrink(1.0), 4.0, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside); }
+            if whole.clicked() {
                 deed = Deed::Act(key.to_string());
             }
         }
@@ -1124,7 +1275,7 @@ mod tests {
     }
 
     fn center() -> Center {
-        Center { open: false, quiet: false, sounds: false, last_sound: None, notices: Vec::new(), inbox: Arc::default(), bus: None, own_id: u32::MAX / 2, schedule: None, collapsed: HashSet::new(), replying: None }
+        Center { open: false, quiet: false, sounds: false, last_sound: None, notices: Vec::new(), inbox: Arc::default(), bus: None, own_id: u32::MAX / 2, schedule: None, collapsed: HashSet::new(), replying: None, filter: None, quietly: 0 }
     }
 
     #[test]
@@ -1192,6 +1343,26 @@ mod tests {
         let order: Vec<(&str, Vec<u32>)> = grouped.iter().map(|(app, members)| (app.as_str(), members.iter().map(|i| notices[*i].id).collect())).collect();
         assert_eq!(order, [("Build", vec![4]), ("Mail", vec![3, 1]), ("Chat", vec![2])]);
         assert!(groups(&[]).is_empty());
+    }
+
+    #[test]
+    fn an_application_with_something_urgent_comes_first() {
+        let mut backup = from(2, "Backup", &[]);
+        backup.urgent = true;
+        let notices = vec![from(1, "Mail", &[]), backup, from(3, "Chat", &[]), from(4, "Mail", &[])];
+        let order: Vec<String> = groups(&notices).into_iter().map(|(app, _)| app).collect();
+        assert_eq!(order, ["Backup", "Mail", "Chat"]);
+    }
+
+    #[test]
+    fn counts_what_came_in_quietly_and_letters_stand_in_for_icons() {
+        let mut center = Center::new(egui::Context::default(), true, false);
+        center.add(from(1, "Mail", &[]), 0);
+        center.add(from(2, "Mail", &[]), 0);
+        // The same notification again is not another arrival.
+        center.add(from(3, "Mail", &[]), 2);
+        assert_eq!(center.quietly, 2);
+        assert_eq!(app_colour("Mail"), app_colour("Mail"));
     }
 
     #[test]
