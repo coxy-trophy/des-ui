@@ -697,6 +697,7 @@ impl eframe::App for App {
                 if self.launcher.open {
                     let picked = region(ui, mine, vec2(0.0, 0.0), Layout::top_down(Align::Min), |ui| {
                         self.launcher.set_state(state.clone());
+                        self.launcher.set_pins(&self.config.dock_pins);
                         self.launcher.show(ui, mine, &theme)
                     });
                     if let Some(action) = picked { self.palette_action(action); }

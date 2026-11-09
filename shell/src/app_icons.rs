@@ -23,6 +23,12 @@ pub struct IconCache;
 impl IconCache {
     pub fn new() -> Self { Self }
     pub fn paint(&mut self, ui: &Ui, rect: Rect, icon: Option<&str>) {
+        if !self.paint_found(ui, rect, icon) { placeholder(ui.painter(), rect); }
+    }
+
+    /// Draws the icon if it has been found, and says whether it was; nothing is drawn
+    /// in its place, so the caller can draw its own.
+    pub fn paint_found(&mut self, ui: &Ui, rect: Rect, icon: Option<&str>) -> bool {
         let cache = ui.ctx().data_mut(|data| data.get_temp_mut_or_insert_with(
             egui::Id::new("shared-application-icons-v2"),
             || std::sync::Arc::new(std::sync::Mutex::new(SharedCache::new())),
@@ -58,11 +64,17 @@ impl IconCache {
                     let size=texture.size_vec2();
                     let scale=(rect.width()/size.x).min(rect.height()/size.y);
                     ui.painter().image(texture.id(),Rect::from_center_size(rect.center(),size*scale),Rect::from_min_max(egui::Pos2::ZERO,egui::pos2(1.0,1.0)),Color32::WHITE);
-                    return;
+                    return true;
                 }
             }
         }
-        let painter=ui.painter();
+        false
+    }
+}
+
+/// The plain mark drawn where an application has no icon.
+fn placeholder(painter: &egui::Painter, rect: Rect) {
+    {
         let body=rect.shrink(rect.width()*0.1);
         painter.rect_filled(body,4.0,crate::ui::TRACK);
         painter.rect_stroke(body,4.0,Stroke::new(1.2,crate::ui::SECONDARY),egui::StrokeKind::Inside);

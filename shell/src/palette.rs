@@ -98,7 +98,7 @@ pub fn results(query:&str, entries:&[AppEntry], state:Option<&DesktopState>, cat
         let mut detail=command.exec.join(" ");
         if !command.keywords.is_empty(){detail=format!("{detail} · {}",command.keywords.join(", "));}
         let action=if command.terminal {Action::RunInTerminal(command.exec.clone())} else {
-            Action::Launch(AppEntry {name:command.name.clone(),desktop_id:format!("command:{}",command.id),exec:command.exec.clone(),icon:None,startup_wm_class:None,terminal:false})
+            Action::Launch(AppEntry {name:command.name.clone(),desktop_id:format!("command:{}",command.id),exec:command.exec.clone(),icon:None,startup_wm_class:None,terminal:false, categories: Vec::new()})
         };
         items.push(item(command.name.clone(),detail,"COMMAND",action));
     }
@@ -166,7 +166,7 @@ mod tests {
         assert!(!items.iter().find(|i|i.label=="Quiet").unwrap().detail.starts_with(URGENT));
     }
     use crate::commands::{Host,Proc,Unit,UserCommand};
-    fn entry(name:&str)->AppEntry { AppEntry { name:name.into(),desktop_id:format!("{name}.desktop"),exec:vec!["x".into()],icon:None,startup_wm_class:None,terminal:false } }
+    fn entry(name:&str)->AppEntry { AppEntry { name:name.into(),desktop_id:format!("{name}.desktop"),exec:vec!["x".into()],icon:None,startup_wm_class:None,terminal:false, categories: Vec::new() } }
     #[test]
     fn prefix_apps_rank_before_substrings_and_queries_are_not_executed() {
         let entries=["Campfire","Firefox","Fire Alarm"].map(entry);

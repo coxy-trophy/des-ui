@@ -493,7 +493,7 @@ fn run(entries: Vec<Entry>, mut sleep: impl FnMut(Duration), mut launch: impl Fn
             icon: None,
             startup_wm_class: None,
             exec: entry.exec.clone(),
-            terminal: false,
+            terminal: false, categories: Vec::new(),
         };
         if let Err(error) = launch(&app) {
             eprintln!("des-ui: autostart {}: {error}", entry.file_name);

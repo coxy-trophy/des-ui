@@ -18,6 +18,35 @@ pub struct AppEntry {
     pub exec: Vec<String>,
     /// Whether it must run inside a terminal.
     pub terminal: bool,
+    /// The freedesktop categories it lists itself under.
+    pub categories: Vec<String>,
+}
+
+/// The kinds the launcher sorts applications into, in the order it shows them.
+pub const GROUPS: [&str; 10] = ["Internet", "Development", "Graphics", "Sound & video", "Office", "Games", "Security", "System", "Utilities", "Other"];
+
+impl AppEntry {
+    /// Which of [`GROUPS`] it belongs in, from the first of its categories that says.
+    pub fn group(&self) -> &'static str {
+        for category in &self.categories {
+            let found = match category.as_str() {
+                "Network" | "WebBrowser" | "Email" | "Chat" | "InstantMessaging" => "Internet",
+                "Development" | "IDE" | "TextEditor" => "Development",
+                "Graphics" | "Photography" | "2DGraphics" | "3DGraphics" | "RasterGraphics" | "VectorGraphics" => "Graphics",
+                "AudioVideo" | "Audio" | "Video" | "Player" | "Music" => "Sound & video",
+                "Office" | "WordProcessor" | "Spreadsheet" | "Presentation" | "Viewer" => "Office",
+                "Game" => "Games",
+                "Security" => "Security",
+                "System" | "Settings" | "Monitor" | "PackageManager" | "TerminalEmulator" => "System",
+                "Utility" | "Accessories" | "Archiving" | "FileManager" | "Calculator" => "Utilities",
+                // Kali lists its tools under its own categories, such as kali-forensics.
+                other if other.to_ascii_lowercase().starts_with("kali-") || other.starts_with("X-Kali") || other.to_ascii_lowercase().contains("security") => "Security",
+                _ => continue,
+            };
+            return found;
+        }
+        "Other"
+    }
 }
 
 /// The directories that hold desktop entries, most specific first.
@@ -77,6 +106,7 @@ fn scan_dirs(dirs: Vec<PathBuf>) -> Vec<AppEntry> {
 pub fn parse(text: &str) -> Option<AppEntry> {
     let (mut name, mut exec, mut terminal) = (None, None, false);
     let (mut icon, mut startup_wm_class) = (None, None);
+    let mut categories = Vec::new();
     let mut in_main_group = false;
     for line in text.lines() {
         let line = line.trim();
@@ -101,6 +131,7 @@ pub fn parse(text: &str) -> Option<AppEntry> {
             "Terminal" => terminal = value == "true",
             "Icon" if !value.is_empty() => icon = Some(value.to_owned()),
             "StartupWMClass" if !value.is_empty() => startup_wm_class = Some(value.to_owned()),
+            "Categories" => categories = value.split(';').map(str::trim).filter(|c| !c.is_empty()).map(str::to_owned).collect(),
             _ => {}
         }
     }
@@ -112,6 +143,7 @@ pub fn parse(text: &str) -> Option<AppEntry> {
         startup_wm_class,
         exec,
         terminal,
+        categories,
     })
 }
 
@@ -377,7 +409,7 @@ mod tests {
         assert_eq!(file_placeholder("gimp %U"), Some((1, 'U')));
         assert_eq!(file_placeholder("evince --fullscreen %f"), Some((2, 'f')));
         assert_eq!(file_placeholder("\"my app\" --name=%c"), None);
-        let handler = |exec: &str| Handler { entry: AppEntry { name: "x".into(), desktop_id: "x.desktop".into(), icon: None, startup_wm_class: None, exec: split_exec(exec), terminal: false }, mime: vec!["image/*".into()], files: file_placeholder(exec) };
+        let handler = |exec: &str| Handler { entry: AppEntry { name: "x".into(), desktop_id: "x.desktop".into(), icon: None, startup_wm_class: None, exec: split_exec(exec), terminal: false, categories: Vec::new() }, mime: vec!["image/*".into()], files: file_placeholder(exec) };
         let files = [PathBuf::from("/a b/1.png"), PathBuf::from("/2.png")];
         assert_eq!(command_lines(&handler("viewer %f --flag"), &files), vec![vec!["viewer", "/a b/1.png", "--flag"], vec!["viewer", "/2.png", "--flag"]]);
         assert_eq!(command_lines(&handler("viewer %U"), &files), vec![vec!["viewer", "file:///a%20b/1.png", "file:///2.png"]]);
@@ -453,7 +485,7 @@ mod tests {
                 name: "Text Editor".into(),
                 desktop_id: String::new(), icon: None, startup_wm_class: None,
                 exec: vec!["gnome-text-editor".into()],
-                terminal: false,
+                terminal: false, categories: Vec::new(),
             })
         );
     }
@@ -476,7 +508,7 @@ mod tests {
             name: "touch".into(),
             desktop_id: String::new(), icon: None, startup_wm_class: None,
             exec: vec!["touch".into(), marker.to_string_lossy().into_owned()],
-            terminal: false,
+            terminal: false, categories: Vec::new(),
         };
         launch(&entry).unwrap();
         let appeared = (0..100).any(|_| {

@@ -469,7 +469,7 @@ mod tests {
     use super::*;
     use des_common::ipc::{AppInfo, Place};
     fn entry(id:&str, class:Option<&str>) -> AppEntry {
-        AppEntry { name: id.trim_end_matches(".desktop").into(), desktop_id:id.into(), icon:None, startup_wm_class:class.map(str::to_string), exec:vec![id.trim_end_matches(".desktop").into()], terminal:false }
+        AppEntry { name: id.trim_end_matches(".desktop").into(), desktop_id:id.into(), icon:None, startup_wm_class:class.map(str::to_string), exec:vec![id.trim_end_matches(".desktop").into()], terminal:false, categories: Vec::new() }
     }
     fn window(id:&str, title:&str) -> AppInfo {
         AppInfo { app_id:id.into(), title:title.into(), screen:0, place:Place::Main, workspace:0, pinned:false,urgent:false }

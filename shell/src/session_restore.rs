@@ -13,7 +13,7 @@ const MAX_SCREENS: usize = 32;
 mod tests {
     use super::*;
     fn session() -> Session { Session { version: VERSION, workspace: 0, apps: vec![], terminals: TerminalLayout::default(), layouts: vec![] } }
-    fn entry() -> AppEntry { AppEntry { desktop_id: "editor.desktop".into(), name: "Editor".into(), exec: vec!["editor".into()], startup_wm_class: None, icon: None, terminal: false } }
+    fn entry() -> AppEntry { AppEntry { desktop_id: "editor.desktop".into(), name: "Editor".into(), exec: vec!["editor".into()], startup_wm_class: None, icon: None, terminal: false, categories: Vec::new() } }
     #[test] fn malformed_and_bounded() {
         for bytes in [b"{}".as_slice(), br#"{"version":3,"workspace":0,"apps":[],"terminals":{"directories":[],"active":0,"side":null,"stacked":false}}"#] { assert!(decode(bytes).is_err()); }
         assert!(decode(&vec![b' '; MAX_BYTES + 1]).is_err());
