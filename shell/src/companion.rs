@@ -371,59 +371,99 @@ impl Companion {
         }
         let busy=self.snapshot["busy"].as_bool().unwrap_or(false);
         let active=self.voice_active();
-        let ready=self.snapshot["enabled"].as_bool().unwrap_or(false)
-            && self.snapshot["configured"].as_bool().unwrap_or(false) && !busy && !active;
-        let message_height=(height-104.0).max(16.0);
+        let enabled=self.snapshot["enabled"].as_bool().unwrap_or(false);
+        let configured=self.snapshot["configured"].as_bool().unwrap_or(false);
+        let loading=self.snapshot["credential_loading"].as_bool().unwrap_or(false);
+        let ready=enabled && configured && !busy && !active;
+        // What sits between the messages and the field: the attachment, or the reply
+        // being thought about.
+        let middle=self.attachment.is_some() || self.capture_pending.is_some() || busy;
+        let composer=46.0;
+        let message_height=(height-composer-8.0-if middle{32.0}else{0.0}).max(16.0);
+        let messages=self.snapshot["messages"].as_array().cloned().unwrap_or_default();
         egui::ScrollArea::vertical().id_salt("companion-chat-history")
             .max_height(message_height).min_scrolled_height(message_height)
             .auto_shrink([false,false]).stick_to_bottom(true).show(ui,|ui|{
-                if !self.error.is_empty() { ui.label(RichText::new(&self.error).color(ui::CAUTION)); }
-                let messages=self.snapshot["messages"].as_array();
-                if messages.is_none_or(|m|m.is_empty()) {
-                    ui.label(RichText::new("Your conversation lives here.").color(ui::SECONDARY));
-                }
-                for message in messages.into_iter().flatten().rev().take(40).collect::<Vec<_>>().into_iter().rev() {
-                    let user=message["role"].as_str()==Some("user");
-                    ui.horizontal_top(|ui|{
-                        ui.add_sized(egui::vec2(64.0,18.0),egui::Label::new(RichText::new(if user{"YOU"}else{"COMPANION"})
-                            .font(ui::display_bold(10.0)).color(if user{ui::SECONDARY}else{theme.main})));
-                        let text = message["text"].as_str().unwrap_or("");
-                        ui.vertical(|ui| {
-                            ui.add(egui::Label::new(text).wrap());
-                            if !user && !text.is_empty() && ui.small_button("Copy reply").clicked() { ui.ctx().copy_text(text.to_owned()); }
+                ui.spacing_mut().item_spacing.y=8.0;
+                if !self.error.is_empty() { ui.label(RichText::new(&self.error).font(ui::display(12.5)).color(ui::CAUTION)); }
+                if loading {
+                    ui.label(RichText::new("Restoring saved key…").font(ui::mono(11.5)).color(ui::SECONDARY));
+                } else if !enabled || !configured {
+                    // Not set up: what the companion is, and the one step that is missing.
+                    ui.horizontal(|ui|{
+                        ui.spacing_mut().item_spacing.x=14.0;
+                        let (badge,_)=ui.allocate_exact_size(egui::vec2(40.0,40.0),egui::Sense::hover());
+                        ui.painter().rect_filled(badge,11.0,theme.main.gamma_multiply(0.16));
+                        let c=badge.center();
+                        ui.painter().line(vec![c+egui::vec2(-8.0,-7.0),c+egui::vec2(8.0,-7.0),c+egui::vec2(8.0,4.0),c+egui::vec2(-3.0,4.0),c+egui::vec2(-8.0,8.0),c+egui::vec2(-8.0,-7.0)],egui::Stroke::new(1.6,theme.main));
+                        ui.vertical(|ui|{
+                            ui.spacing_mut().item_spacing.y=3.0;
+                            ui.label(RichText::new("Ask about what is on your screen").font(ui::display_bold(14.5)).color(ui::TEXT));
+                            let why=if !enabled{"The companion is off. Turn it on and add a key in its settings."}else{"Add an API key in the companion's settings to start."};
+                            ui.label(RichText::new(why).font(ui::mono(11.5)).color(ui::SECONDARY));
                         });
+                        let label=if !enabled{"OPEN COMPANION SETTINGS"}else{"ADD A KEY"};
+                        if ui::button(ui,theme,label,None,true).clicked() {self.settings_requested=true;self.blur_text();}
                     });
+                } else if messages.is_empty() {
+                    ui.label(RichText::new("Your conversation lives here. Ask anything about what is on your screen.").font(ui::display(12.5)).color(ui::SECONDARY));
                 }
-                if busy { ui.horizontal(|ui|{ui.spinner();ui.label("Thinking…");}); }
-                if self.snapshot["credential_loading"].as_bool().unwrap_or(false) {
-                    ui.label(RichText::new("Restoring saved key…").color(ui::SECONDARY));
-                } else if !self.snapshot["enabled"].as_bool().unwrap_or(false) || !self.snapshot["configured"].as_bool().unwrap_or(false) {
-                    let label=if !self.snapshot["enabled"].as_bool().unwrap_or(false){"Enable companion in Settings"}else{"Add an API key in Settings"};
-                    if ui.small_button(label).clicked() {self.settings_requested=true;self.blur_text();}
+                let bubble=(width*0.66).max(160.0);
+                for message in messages.iter().rev().take(40).collect::<Vec<_>>().into_iter().rev() {
+                    let user=message["role"].as_str()==Some("user");
+                    let text=message["text"].as_str().unwrap_or("");
+                    if user {
+                        // Yours, at the right.
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min),|ui|{
+                            egui::Frame::new().fill(ui::TRACK).corner_radius(egui::CornerRadius{nw:12,ne:12,sw:12,se:4}).inner_margin(egui::Margin::symmetric(12,8)).show(ui,|ui|{
+                                ui.set_max_width(bubble);
+                                ui.label(RichText::new(text).font(ui::display(13.0)).color(ui::TEXT));
+                            });
+                        });
+                    } else {
+                        // The companion's, at the left, under its name, with a way to copy it.
+                        ui.vertical(|ui|{
+                            ui.spacing_mut().item_spacing.y=4.0;
+                            ui.label(RichText::new("COMPANION").font(ui::mono(10.0)).color(theme.main));
+                            egui::Frame::new().fill(ui::PANEL).stroke(egui::Stroke::new(1.0,ui::LINE)).corner_radius(egui::CornerRadius{nw:12,ne:12,sw:4,se:12}).inner_margin(egui::Margin::symmetric(12,8)).show(ui,|ui|{
+                                ui.set_max_width(bubble);
+                                ui.add(egui::Label::new(RichText::new(text).font(ui::display(13.0)).color(ui::TEXT)).wrap());
+                            });
+                            if !text.is_empty() && ui::button(ui,theme,"COPY",None,false).on_hover_text("Copy this reply").clicked() { ui.ctx().copy_text(text.to_owned()); }
+                        });
+                    }
                 }
             });
         ui.add_space(4.0);
         let mut remove_attachment = false;
         let mut share_screen = false;
-        ui.horizontal(|ui| {
-            if self.attachment.is_none() && ui.add_enabled(self.capture_pending.is_none() && !self.voice_screen_pending, egui::Button::new("Attach screen").min_size(egui::vec2(104.0, 30.0))).on_hover_text("Capture the screen for review; it is only sent after you choose to share it").clicked() {
-                self.capture_requested = true;
-            }
-            if self.capture_pending.is_some() { ui.label("Capturing…"); }
-            if let Some(attachment) = &self.attachment {
-                ui.add(egui::Image::new(&attachment.texture).max_size(egui::vec2(48.0, 28.0)))
-                    .on_hover_ui(|ui| { ui.label("Will send to OpenAI with your message"); ui.add(egui::Image::new(&attachment.texture).max_size(egui::vec2(320.0, 180.0))); });
-                if active {
-                    let label=if self.voice_screen_pending {"Queuing…"} else {"Share with voice"};
-                    if ui.add_enabled(!self.voice_screen_pending,egui::Button::new(label)).on_hover_text("Send this preview to OpenAI for the current voice conversation").clicked() {
-                        share_screen = true;
-                    }
+        let mut attach = false;
+        if middle {
+            ui.horizontal(|ui| {
+                ui.set_min_height(28.0);
+                ui.spacing_mut().item_spacing.x=8.0;
+                if busy {
+                    ui.spinner();
+                    ui.label(RichText::new("Thinking…").font(ui::mono(11.5)).color(ui::SECONDARY));
+                    if ui::button(ui,theme,"STOP",None,false).on_hover_text("Stop this reply").clicked() { self.send(json!({"type":"cancel"})); }
+                    ui.add_space(12.0);
                 }
-                if ui.add_enabled(!self.voice_screen_pending,egui::Button::new("Remove")).on_hover_text("Discard screen attachment").clicked() { remove_attachment = true; }
-                ui.add(egui::Label::new(if active {"Share with voice sends to OpenAI"} else {"Will send to OpenAI with your message"}).truncate());
-            }
-            if busy && ui.button("Stop reply").clicked() { self.send(json!({"type":"cancel"})); }
-        });
+                if self.capture_pending.is_some() { ui.label(RichText::new("Capturing the screen…").font(ui::mono(11.5)).color(ui::SECONDARY)); }
+                if let Some(attachment) = &self.attachment {
+                    egui::Frame::new().stroke(egui::Stroke::new(1.0,ui::LINE_STRONG)).corner_radius(12).inner_margin(egui::Margin::symmetric(8,3)).show(ui,|ui|{
+                        ui.spacing_mut().item_spacing.x=8.0;
+                        ui.add(egui::Image::new(&attachment.texture).max_size(egui::vec2(36.0,20.0)).corner_radius(3))
+                            .on_hover_ui(|ui| { ui.label("Will send to OpenAI with your message"); ui.add(egui::Image::new(&attachment.texture).max_size(egui::vec2(320.0, 180.0))); });
+                        ui.add(egui::Label::new(RichText::new(if active {"Screen attached · Share with voice sends it to OpenAI"} else {"Screen attached · sent to OpenAI with your message"}).font(ui::mono(11.0)).color(ui::SECONDARY)).truncate());
+                        if active {
+                            let label=if self.voice_screen_pending {"QUEUING…"} else {"SHARE WITH VOICE"};
+                            if ui.add_enabled_ui(!self.voice_screen_pending,|ui|ui::button(ui,theme,label,None,true)).inner.on_hover_text("Send this preview to OpenAI for the current voice conversation").clicked() { share_screen = true; }
+                        }
+                        if ui.add_enabled_ui(!self.voice_screen_pending,|ui|ui::icon_button(ui,theme,ui::Icon::Close,20.0,false)).inner.on_hover_text("Remove the screen").clicked() { remove_attachment = true; }
+                    });
+                }
+            });
+        }
         if remove_attachment { self.attachment = None; }
         if share_screen {
             if let Some(image)=self.attachment.as_ref().map(|attachment|attachment.jpeg.clone()) {
@@ -431,18 +471,37 @@ impl Companion {
                 if self.bridge.is_some() {self.voice_screen_pending=true;}
             }
         }
-        let mut send_clicked=false;
+        // The field: attach the screen at its start, send at its end.
         let input_id=egui::Id::new("companion-chat-input");
         let enter=ui.memory(|memory| memory.has_focus(input_id)) && !escaped
             && ui.input_mut(|input| input.modifiers.matches_exact(egui::Modifiers::NONE) && input.consume_key(egui::Modifiers::NONE,egui::Key::Enter));
-        ui.horizontal(|ui|{
-            let edit=ui.add_sized(egui::vec2((width-70.0).max(1.0),56.0),
-                egui::TextEdit::multiline(&mut self.input).id(input_id).desired_rows(2)
-                    .char_limit(8000).hint_text(crate::ui::hint(if active{"Voice conversation active"}else{"Message…  Shift+Enter for a new line"})));
-            if self.focus_input {edit.request_focus();self.focus_input=false;}
-            if edit.has_focus() && !escaped {self.open=true;}
-            send_clicked=ui.add_enabled(ready&&!self.input.trim().is_empty(),egui::Button::new("Send").min_size(egui::vec2(56.0,56.0))).clicked();
-        });
+        let (field,_)=ui.allocate_exact_size(egui::vec2(width,composer),egui::Sense::hover());
+        let focused=ui.memory(|memory|memory.has_focus(input_id));
+        let usable=enabled && configured;
+        ui.painter().rect_filled(field,composer/2.0,ui::PANEL);
+        ui.painter().rect_stroke(field,composer/2.0,egui::Stroke::new(1.0,if focused{theme.main}else if usable{ui::LINE_STRONG}else{ui::LINE}),egui::StrokeKind::Inside);
+        let mut row=ui.new_child(egui::UiBuilder::new().max_rect(field.shrink2(egui::vec2(6.0,5.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
+        row.spacing_mut().item_spacing.x=6.0;
+        let can_attach=self.attachment.is_none() && self.capture_pending.is_none() && !self.voice_screen_pending;
+        let attach_button=row.add_enabled_ui(can_attach,|ui|ui::icon_button(ui,theme,ui::Icon::Display,32.0,false)).inner;
+        attach_button.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,can_attach,"Attach screen"));
+        if attach_button.on_hover_text("Attach the screen to your next message").clicked() { attach = true; }
+        let text_width=(row.available_width()-36.0-6.0).max(1.0);
+        let edit=row.add_sized(egui::vec2(text_width,34.0),
+            egui::TextEdit::multiline(&mut self.input).id(input_id).frame(false).desired_rows(1).vertical_align(egui::Align::Center)
+                .font(ui::display(13.5)).char_limit(8000).hint_text(crate::ui::hint(if active{"Voice conversation active"}else{"Message…  Shift+Enter for a new line"})));
+        if self.focus_input {edit.request_focus();self.focus_input=false;}
+        if edit.has_focus() && !escaped {self.open=true;}
+        let can_send=ready && !self.input.trim().is_empty();
+        let (send_rect,send)=row.allocate_exact_size(egui::vec2(36.0,36.0),if can_send{egui::Sense::click()}else{egui::Sense::hover()});
+        send.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,can_send,"Send"));
+        row.painter().circle_filled(send_rect.center(),18.0,if can_send{theme.main}else{ui::TRACK});
+        let c=send_rect.center();
+        let ink=egui::Stroke::new(2.0,if can_send{ui::GROUND}else{ui::LABEL});
+        row.painter().line_segment([c-egui::vec2(6.0,0.0),c+egui::vec2(6.0,0.0)],ink);
+        row.painter().line(vec![c+egui::vec2(1.0,-5.0),c+egui::vec2(6.0,0.0),c+egui::vec2(1.0,5.0)],ink);
+        let send_clicked=send.on_hover_text("Send · Enter").clicked();
+        if attach { self.capture_requested = true; }
         if enter {self.focus_input=true;}
         if ready && (send_clicked || enter) && !self.input.trim().is_empty() {
             let text=self.input.clone();
@@ -705,6 +764,42 @@ mod revision_tests {
 #[cfg(test)]
 mod panel_revision_tests {
     use super::*;
+    #[test]
+    #[ignore]
+    fn native_chat_preview() {
+        use winit::platform::x11::EventLoopBuilderExtX11;
+        struct Preview { companion: Companion, frames: usize, output: std::path::PathBuf }
+        impl eframe::App for Preview {
+            fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+                for event in ctx.input(|i| i.events.clone()) {
+                    if let egui::Event::Screenshot { image, .. } = event {
+                        let bytes: Vec<u8> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
+                        image::save_buffer(&self.output, &bytes, image.size[0] as u32, image.size[1] as u32, image::ColorType::Rgba8).unwrap();
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                }
+                if self.companion.attachment.is_none() {
+                    let texture = ctx.load_texture("preview-screen", egui::ColorImage::new([16, 9], egui::Color32::from_rgb(40, 60, 70)), egui::TextureOptions::LINEAR);
+                    self.companion.attachment = Some(ScreenAttachment { jpeg: String::new(), texture });
+                }
+                egui::CentralPanel::default().frame(egui::Frame::new().fill(ui::GROUND).inner_margin(20.0)).show(ctx, |ui| self.companion.panel_ui(ui, &Theme::load("signal")));
+                self.frames += 1;
+                if self.frames == 5 { ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default())); }
+                ctx.request_repaint();
+            }
+        }
+        let output = std::path::PathBuf::from(std::env::var("DESUI_CHAT_PREVIEW").expect("preview output"));
+        let companion = Companion { open: true, chat_selected: true, snapshot: json!({"enabled": true, "configured": true, "busy": true, "messages": [
+            {"role": "user", "text": "Why is my build failing?"},
+            {"role": "assistant", "text": "[The companion's answer, a few lines, with the command it suggests.]"},
+            {"role": "user", "text": "And how do I fix the second error?"}]}), ..Default::default() };
+        let options = eframe::NativeOptions { viewport: egui::ViewportBuilder::default().with_inner_size([1240.0, 250.0]), event_loop_builder: Some(Box::new(|builder| { builder.with_x11().with_any_thread(true); })), ..Default::default() };
+        eframe::run_native("chat preview", options, Box::new(move |cc| {
+            ui::install_fonts(&cc.egui_ctx, None, None);
+            crate::apply_style(&cc.egui_ctx, &Theme::load("signal"));
+            Ok(Box::new(Preview { companion, frames: 0, output }))
+        })).unwrap();
+    }
     #[test]
     fn chat_panel_fits_existing_bottom_panel_and_does_not_create_a_modal() {
         for width in [320.0,900.0] {
