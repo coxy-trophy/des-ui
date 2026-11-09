@@ -818,8 +818,12 @@ mod tests {
     fn timeout_kills_descendants_holding_the_pipes() {
         let dir = tempfile::tempdir().unwrap();
         let pidfile = dir.path().join("child-pid");
-        let args = vec!["-c".into(), "sleep 20 & echo $! > \"$1\"; exit 0".into(), "test".into(), pidfile.to_string_lossy().into_owned()];
-        assert_eq!(run_capturing("sh", &args, Duration::from_millis(150)), Outcome::TimedOut);
+        // Simulate delayed fixture startup before its descendant holds the pipes.
+        let args = vec!["-c".into(), "sleep 0.25; sleep 20 & echo $! > \"$1\"; exit 0".into(), "test".into(), pidfile.to_string_lossy().into_owned()];
+        // This checks descendant cleanup, not scheduler/startup latency. Leave
+        // setup headroom under the full parallel suite; the short deadline is
+        // covered separately by a_slow_program_is_cut_off.
+        assert_eq!(run_capturing("sh", &args, Duration::from_secs(2)), Outcome::TimedOut);
         let pid: u32 = std::fs::read_to_string(pidfile).unwrap().trim().parse().unwrap();
         let deadline = Instant::now() + Duration::from_secs(1);
         loop {
