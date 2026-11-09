@@ -629,14 +629,6 @@ pub fn icon(ui: &mut Ui, icon: Icon, size: f32, color: Color32) -> Response {
     response.on_hover_text(icon.label())
 }
 
-pub fn icon_value(ui: &mut Ui, symbol: Icon, value: &str, color: Color32, hint: &str) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 5.0;
-        icon(ui, symbol, 16.0, color);
-        text(ui, value, mono(11.0), color);
-    }).response.on_hover_text(hint);
-}
-
 pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32, lit: bool) {
     let stroke = Stroke::new(1.4, color);
     let c = rect.center();

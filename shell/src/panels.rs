@@ -638,10 +638,48 @@ mod right_column_tests {
     }
 }
 
-/// The strip along the bottom edge: what has the keyboard, the panel switches, and
-/// the readings worth seeing at all times. Returns a panel whose switch was clicked,
-/// and whether the settings were asked for. `overlay` names what is shown in place of
-/// the terminal, if anything.
+/// A piece of a pill in the status strip: an icon, or text in a colour.
+enum Piece { Icon(Icon, eframe::egui::Color32), Text(String, eframe::egui::Color32) }
+
+/// A rounded pill of icons and text, one control. `edge` and `fill` say how it stands.
+fn strip_pill(ui: &mut Ui, pieces: &[Piece], edge: eframe::egui::Color32, fill: eframe::egui::Color32, label: &str) -> eframe::egui::Response {
+    let galleys: Vec<Option<std::sync::Arc<eframe::egui::Galley>>> = pieces.iter().map(|piece| match piece {
+        Piece::Text(text, color) => Some(ui.painter().layout_no_wrap(text.clone(), ui::mono(11.0), *color)),
+        Piece::Icon(..) => None,
+    }).collect();
+    let gap = 5.0;
+    let width: f32 = pieces.iter().zip(&galleys).map(|(piece, galley)| match piece { Piece::Icon(..) => 14.0, Piece::Text(..) => galley.as_ref().map_or(0.0, |g| g.size().x) }).sum::<f32>()
+        + gap * (pieces.len().saturating_sub(1)) as f32 + 20.0;
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 22.0), Sense::click());
+    let response = response.on_hover_text(label);
+    response.widget_info(|| eframe::egui::WidgetInfo::labeled(eframe::egui::WidgetType::Button, true, label));
+    let painter = ui.painter();
+    painter.rect_filled(rect, 11.0, if response.hovered() { ui::TRACK } else { fill });
+    painter.rect_stroke(rect, 11.0, Stroke::new(1.0, edge), StrokeKind::Inside);
+    let mut x = rect.left() + 10.0;
+    for (piece, galley) in pieces.iter().zip(galleys) {
+        match piece {
+            Piece::Icon(icon, color) => {
+                ui::paint_icon(painter, Rect::from_center_size(pos2(x + 7.0, rect.center().y), vec2(14.0, 14.0)), *icon, *color, false);
+                x += 14.0 + gap;
+            }
+            Piece::Text(_, color) => {
+                if let Some(galley) = galley {
+                    let width = galley.size().x;
+                    painter.galley(pos2(x, rect.center().y - galley.size().y / 2.0), galley, *color);
+                    x += width + gap;
+                }
+            }
+        }
+    }
+    response
+}
+
+/// The strip along the bottom edge: the ways in, what has the keyboard and what
+/// plays at the left; at the right, what is happening to the user, the panels, and
+/// one pill of readings that opens the quick settings, with the time when nothing
+/// else on screen shows it. `overlay` names what is shown in place of the terminal.
+#[allow(clippy::too_many_arguments)]
 pub fn status(
     ui: &mut Ui,
     theme: &Theme,
@@ -655,126 +693,157 @@ pub fn status(
     tray: Option<&crate::tray::Tray>,
     keyboard_open: bool,
     quick_open: bool,
+    playing: Option<(&str, &str)>,
+    clock: bool,
 ) -> StatusClicks {
     let mut toggled = None;
     let stage = powerup::stage(ui.ctx());
     if stage.alpha(Part::Status) < 1.0 {
         ui.set_opacity(stage.alpha(Part::Status));
     }
-    ui.spacing_mut().item_spacing.x = 20.0;
+    ui.spacing_mut().item_spacing.x = 4.0;
     ui::tracked(ui, "DEs-UI", ui::display_bold(11.0), theme.main, 3.0);
-    // The way into the settings, lit while they are open.
+    ui.add_space(12.0);
+    // The ways in, each lit while what it opens is open.
     let way_in = |ui: &mut Ui, name: &str, icon: Icon, hint: &str| {
-        ui::icon_button(ui, theme, icon, 24.0, overlay == Some(name)).on_hover_text(hint).clicked()
+        ui::icon_button(ui, theme, icon, 24.0, overlay == Some(name)).on_hover_text(hint)
     };
     let shortcut_context = ui.ctx().clone();
-    let settings_clicked = way_in(ui, "SETTINGS", Icon::Settings, &crate::shortcuts::hint(&shortcut_context, "Settings", "desktop.settings"));
-    let music_clicked = way_in(ui, "MUSIC", Icon::Music, &crate::shortcuts::hint(&shortcut_context, "Music", "desktop.music"));
-    let power_clicked = way_in(ui, "POWER", Icon::Power, &crate::shortcuts::hint(&shortcut_context, "Sleep, restart, shut down", "desktop.power"));
-    let notices_clicked = way_in(ui, "NOTIFICATIONS", Icon::Notifications, &crate::shortcuts::hint(&shortcut_context, "Notifications", "desktop.notifications"));
+    let settings_clicked = way_in(ui, "SETTINGS", Icon::Settings, &crate::shortcuts::hint(&shortcut_context, "Settings", "desktop.settings")).clicked();
+    let music_clicked = way_in(ui, "MUSIC", Icon::Music, &crate::shortcuts::hint(&shortcut_context, "Music", "desktop.music")).clicked();
+    let power_clicked = way_in(ui, "POWER", Icon::Power, &crate::shortcuts::hint(&shortcut_context, "Sleep, restart, shut down", "desktop.power")).clicked();
+    let bell = way_in(ui, "NOTIFICATIONS", Icon::Notifications, &crate::shortcuts::hint(&shortcut_context, "Notifications", "desktop.notifications"));
+    let notices_clicked = bell.clicked();
     if notices > 0 {
-        // Keep the unread count next to the bell.
-        ui.add_space(-14.0);
-        ui::text(ui, &notices.to_string(), ui::mono(11.0), theme.main);
+        // How many wait, as a badge on the bell.
+        let text = if notices > 99 { "99+".to_string() } else { notices.to_string() };
+        let galley = ui.painter().layout_no_wrap(text, ui::mono(9.0), ui::GROUND);
+        let size = vec2((galley.size().x + 6.0).max(14.0), 14.0);
+        let badge = Rect::from_min_size(pos2(bell.rect.right() - size.x * 0.55, bell.rect.top() - 3.0), size);
+        ui.painter().rect_filled(badge, 7.0, theme.main);
+        ui.painter().galley(badge.center() - galley.size() / 2.0, galley, ui::GROUND);
     }
+    ui.add_space(14.0);
+    separator(ui);
+    ui.add_space(10.0);
 
+    // What has the keyboard, and how many applications are open.
     let holder = match (overlay, desktop.and_then(|d| d.focus.and_then(|index| d.apps.get(index)))) {
         (Some(overlay), _) => overlay.to_string(),
         (None, Some(app)) => truncate(&app.title, 28).to_uppercase(),
         (None, None) => "TERMINAL".to_string(),
     };
-    ui::text(ui, &format!("{holder} HAS THE KEYBOARD"), ui::mono(11.0), ui::SECONDARY);
+    let mut pieces = vec![Piece::Icon(Icon::Keyboard, ui::SECONDARY), Piece::Text(holder.clone(), ui::TEXT)];
+    if let Some(count) = desktop.map(|desktop| desktop.apps.len()) {
+        pieces.push(Piece::Text(format!("· {count} {}", if count == 1 { "APP" } else { "APPS" }), ui::LABEL));
+    }
+    if desktop.is_some_and(|desktop| desktop.screens > 1) {
+        pieces.push(Piece::Text(format!("· {} DISPLAYS", desktop.map_or(0, |d| d.screens)), ui::LABEL));
+    }
+    strip_pill(ui, &pieces, ui::LINE, ui::PANEL, &format!("{} has the keyboard", holder.to_lowercase()));
+    // What plays, as a way into Music.
+    let mut music_clicked = music_clicked;
+    if let Some((track, artists)) = playing {
+        ui.add_space(6.0);
+        let pieces = [Piece::Icon(Icon::Music, theme.main), Piece::Text(truncate(track, 28), ui::TEXT), Piece::Text(format!("· {}", truncate(artists, 22)), ui::LABEL)];
+        music_clicked |= strip_pill(ui, &pieces, ui::LINE, ui::PANEL, &format!("{track} — {artists}. Open Music")).clicked();
+    }
 
     let mut stop_clicked = false;
     let mut hands_clicked = false;
     let (mut keyboard_clicked, mut quick_clicked) = (false, false);
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        quick_clicked = ui::icon_button(ui, theme, Icon::Quick, 22.0, quick_open)
-            .on_hover_text(crate::shortcuts::hint(ui.ctx(), "Quick settings: Wi-Fi, Bluetooth, sound, brightness", "desktop.quick"))
-            .clicked();
-        if let Some(running) = recording {
-            // The one thing here that is happening to the user, so it is the one in colour.
-            let seconds = running.as_secs();
-            let label = ui::galley(ui, &format!("REC {:02}:{:02}  STOP", seconds / 60, seconds % 60), ui::mono(11.0), ui::CAUTION, 0.0);
-            let (rect, response) = ui.allocate_exact_size(label.size() + vec2(14.0, 8.0), Sense::click());
-            ui.painter().rect_stroke(rect, 0.0, Stroke::new(1.0, ui::CAUTION), StrokeKind::Inside);
-            ui.painter().galley(rect.center() - label.size() / 2.0, label, ui::CAUTION);
-            stop_clicked = response.on_hover_text("End the recording").clicked();
+        ui.spacing_mut().item_spacing.x = 6.0;
+        if clock {
+            ui::text(ui, &crate::region::hours_minutes(&chrono::Local::now()), ui::display_bold(13.0), ui::TEXT);
+            ui.add_space(4.0);
         }
-        // While hand control is on, the camera is: said plainly, and one click from off.
-        let (label, ink, hint) = match hands {
-            des_common::ipc::Hands::Off => ("", ui::LABEL, ""),
-            des_common::ipc::Hands::Watching => ("CAMERA ON", ui::SECONDARY, "The camera is on for hand control, waiting for a hand. Click to turn it off."),
-            des_common::ipc::Hands::Following => ("CAMERA ON  HAND", theme.main, "The camera is on, and your hand moves the pointer. Click to turn it off."),
-            des_common::ipc::Hands::Failed => ("HAND CONTROL STOPPED", ui::CAUTION, "Hand control could not go on: is the camera there, and free? Click to try again."),
-        };
-        if !label.is_empty() {
-            let label = ui::galley(ui, label, ui::mono(11.0), ink, 0.0);
-            let (rect, response) = ui.allocate_exact_size(label.size() + vec2(14.0, 8.0), Sense::click());
-            ui.painter().rect_stroke(rect, 0.0, Stroke::new(1.0, ink), StrokeKind::Inside);
-            ui.painter().galley(rect.center() - label.size() / 2.0, label, ink);
-            hands_clicked = response.on_hover_text(crate::shortcuts::hint(ui.ctx(), hint, "desktop.hands")).clicked();
-        }
-        // The readings themselves open the quick settings, as on other desktops.
-        let readings_start = ui.cursor().right();
-        if let Some(battery) = mon.power {
-            // Low and running down is the one reading here that asks for something.
-            let low = !battery.plugged && battery.percent <= 15;
-            let left = battery.minutes.map_or(String::new(), |minutes| format!("  {}", crate::power::duration(minutes)));
-            let label = match (battery.plugged, battery.minutes) {
-                (true, Some(_)) => format!("CHARGING {}%{left}", battery.percent),
-                (true, None) => format!("MAINS {}%", battery.percent),
-                (false, _) => format!("BAT {}%{left}", battery.percent),
-            };
-            let value = format!("{}%{left}", battery.percent);
-            ui::icon_value(ui, if battery.plugged { Icon::Charging } else { Icon::Battery }, &value,
-                if low { ui::CAUTION } else { ui::TEXT }, &label);
+        // One pill of readings; it opens the quick settings, and is lit while they are open.
+        let mut pieces = Vec::new();
+        let mut said = Vec::new();
+        if let Some(wifi) = mon.wifi {
+            pieces.push(Piece::Icon(Icon::Wifi, ui::TEXT));
+            said.push(format!("Wi-Fi {wifi}%"));
         }
         if let Some(volume) = mon.volume() {
-            ui::icon_value(ui, if volume == 0 { Icon::Muted } else { Icon::Volume }, &format!("{volume}%"), ui::SECONDARY, "Volume");
+            pieces.push(Piece::Icon(if volume == 0 { Icon::Muted } else { Icon::Volume }, ui::TEXT));
+            pieces.push(Piece::Text(format!("{volume}%"), ui::TEXT));
+            said.push(format!("volume {volume}%"));
         }
-        if let Some(wifi) = mon.wifi {
-            ui::icon_value(ui, Icon::Wifi, &format!("{wifi}%"), ui::SECONDARY, "Wi-Fi signal strength");
-        }
-        if let Some(desktop) = desktop {
-            if desktop.screens > 1 {
-                ui::icon_value(ui, Icon::Display, &desktop.screens.to_string(), ui::SECONDARY, "Connected displays");
+        if let Some(battery) = mon.power {
+            // Low and running down is the one reading here that asks for something.
+            let ink = if !battery.plugged && battery.percent <= 15 { ui::CAUTION } else { ui::TEXT };
+            pieces.push(Piece::Icon(if battery.plugged { Icon::Charging } else { Icon::Battery }, ink));
+            pieces.push(Piece::Text(format!("{}%", battery.percent), ink));
+            if let Some(minutes) = battery.minutes {
+                // "1 H 21" with hours; minutes alone keep their unit.
+                let left = crate::power::duration(minutes);
+                let left = if left.contains(" H ") { left.replace(" MIN", "") } else { left };
+                pieces.push(Piece::Text(format!("· {left}"), if ink == ui::CAUTION { ink } else { ui::LABEL }));
             }
-            let count = desktop.apps.len();
-            ui::icon_value(ui, Icon::Apps, &count.to_string(), ui::SECONDARY, "Open applications");
+            said.push(crate::power::battery_line(battery));
         }
-        let readings = Rect::from_min_max(pos2(ui.cursor().right(), ui.max_rect().top()), pos2(readings_start, ui.max_rect().bottom()));
-        if readings.width() > 0.0 && ui.interact(readings, ui.id().with("readings"), Sense::click()).clicked() {
-            quick_clicked = true;
-        }
+        if pieces.is_empty() { pieces.push(Piece::Icon(Icon::Quick, ui::TEXT)); }
+        let label = crate::shortcuts::hint(ui.ctx(), &format!("Quick settings{}{}", if said.is_empty() { "" } else { ": " }, said.join(", ")), "desktop.quick");
+        let (edge, fill) = if quick_open { (theme.main, theme.tint()) } else { (ui::LINE, ui::PANEL) };
+        quick_clicked = strip_pill(ui, &pieces, edge, fill, &label).clicked();
+
         keyboard_clicked = ui::icon_button(ui, theme, Icon::Keyboard, 22.0, keyboard_open)
             .on_hover_text(crate::shortcuts::hint(ui.ctx(), "On-screen keyboard", "shell.keyboard"))
             .clicked();
-        ui.spacing_mut().item_spacing.x = 4.0;
-        for (icon, panel, open) in [
-            (Icon::PanelRight, Panel::Right, panels.right),
-            (Icon::PanelBottom, Panel::Bottom, panels.bottom),
-            (Icon::PanelLeft, Panel::Left, panels.left),
-        ] {
-            let name = match panel {
-                Panel::Left => "left",
-                Panel::Right => "right",
-                Panel::Bottom => "bottom",
-            };
-            let action = if open { "Collapse" } else { "Open" };
-            let button = ui::icon_button(ui, theme, icon, 22.0, open)
-                .on_hover_text(format!("{action} the {name} panel"));
-            if button.clicked() {
-                toggled = Some(panel);
+        // The panels' switches, together.
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            let mut buttons = Vec::new();
+            for (icon, panel, open) in [(Icon::PanelRight, Panel::Right, panels.right), (Icon::PanelBottom, Panel::Bottom, panels.bottom), (Icon::PanelLeft, Panel::Left, panels.left)] {
+                let name = match panel { Panel::Left => "left", Panel::Right => "right", Panel::Bottom => "file" };
+                let action = if open { "Collapse" } else { "Open" };
+                let button = ui::icon_button(ui, theme, icon, 22.0, open).on_hover_text(format!("{action} the {name} panel"));
+                if button.clicked() { toggled = Some(panel); }
+                buttons.push(button.rect);
             }
+            if let (Some(first), Some(last)) = (buttons.first(), buttons.last()) {
+                let well = first.union(*last).expand2(vec2(2.0, 1.0));
+                ui.painter().rect_stroke(well, 8.0, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
+            }
+        });
+        ui.add_space(4.0);
+        separator(ui);
+        ui.add_space(4.0);
+        // While hand control is on, the camera is: said plainly, and one click from off.
+        let hand = match hands {
+            des_common::ipc::Hands::Off => None,
+            des_common::ipc::Hands::Watching => Some(("CAMERA ON", ui::SECONDARY, "The camera is on for hand control, waiting for a hand. Click to turn it off.")),
+            des_common::ipc::Hands::Following => Some(("CAMERA ON · HAND", theme.main, "The camera is on, and your hand moves the pointer. Click to turn it off.")),
+            des_common::ipc::Hands::Failed => Some(("HAND CONTROL STOPPED", ui::CAUTION, "Hand control could not go on: is the camera there, and free? Click to try again.")),
+        };
+        if let Some((text, ink, hint)) = hand {
+            let label = crate::shortcuts::hint(ui.ctx(), hint, "desktop.hands");
+            hands_clicked = strip_pill(ui, &[Piece::Text(format!("● {text}"), ink)], ink, ui::PANEL, &label).clicked();
         }
-        // Applications' own icons, left of the readings.
+        if let Some(running) = recording {
+            // The one thing here that is happening to the user, so it is the one in colour.
+            let seconds = running.as_secs();
+            let pieces = [Piece::Text(format!("● REC {:02}:{:02}", seconds / 60, seconds % 60), ui::CAUTION), Piece::Text("· STOP".into(), ui::CAUTION.gamma_multiply(0.75))];
+            stop_clicked = strip_pill(ui, &pieces, ui::CAUTION, ui::CAUTION.gamma_multiply(0.08), "End the recording").clicked();
+        }
+        // Applications' own icons, left of the rest.
         if let Some(tray) = tray {
-            ui.spacing_mut().item_spacing.x = 20.0;
+            ui.spacing_mut().item_spacing.x = 8.0;
             crate::tray::show(ui, theme, tray);
         }
     });
+    if clock {
+        use chrono::Timelike;
+        ui.ctx().request_repaint_after(Duration::from_secs((60 - chrono::Local::now().second()) as u64));
+    }
     StatusClicks { toggled, settings: settings_clicked, music: music_clicked, notices: notices_clicked, power: power_clicked, stop: stop_clicked, hands: hands_clicked, keyboard: keyboard_clicked, quick: quick_clicked }
+}
+
+/// A short upright rule between groups in the strip.
+fn separator(ui: &mut Ui) {
+    let (rect, _) = ui.allocate_exact_size(vec2(1.0, 14.0), Sense::hover());
+    ui.painter().vline(rect.center().x, rect.y_range(), Stroke::new(1.0, ui::LINE));
 }
 
 /// What was clicked in the status strip this frame.

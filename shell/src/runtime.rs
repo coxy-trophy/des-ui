@@ -428,8 +428,11 @@ impl eframe::App for App {
                 if let Some(rect) = frame_layout.keyboard {
                     self.osk.show(ui, &theme, on_screen(rect));
                 }
+                // What plays, and whether anything else on screen shows the time.
+                let playing = self.music.now().track.map(|track| (track.name, track.artists));
+                let clock = !open.left && self.config.side_panel_behavior != des_common::PanelBehavior::Collapse;
                 let clicks = region(ui, status, vec2(24.0, 0.0), Layout::left_to_right(Align::Center), |ui| {
-                    panels::status(ui, &theme, &self.mon, state.as_ref(), open, if self.dock.captures_keyboard() { Some("APPS") } else { overlay }, self.notices.count(), self.capture.recording.map(|since| since.elapsed()), self.desktop.as_ref().map_or(des_common::ipc::Hands::Off, |desktop| desktop.hands), Some(&self.tray), self.osk.open, self.quick.open)
+                    panels::status(ui, &theme, &self.mon, state.as_ref(), open, if self.dock.captures_keyboard() { Some("APPS") } else { overlay }, self.notices.count(), self.capture.recording.map(|since| since.elapsed()), self.desktop.as_ref().map_or(des_common::ipc::Hands::Off, |desktop| desktop.hands), Some(&self.tray), self.osk.open, self.quick.open, playing.as_ref().map(|(track, artists)| (track.as_str(), artists.as_str())), clock)
                 });
                 let (toggled, settings_clicked, music_clicked, notices_clicked, power_clicked, stop_clicked) =
                     (clicks.toggled, clicks.settings, clicks.music, clicks.notices, clicks.power, clicks.stop);
