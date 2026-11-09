@@ -1,7 +1,8 @@
 # DesOS desktop stabilization candidate — 9 November 2026
 
-Status: automatic checks, installation, actual logout/login, lock/unlock and one
-supervised suspend/resume passed. Remaining hardware acceptance, Ubuntu
+Status: automatic checks, installation, actual logout/login, lock/unlock, one
+supervised suspend/resume and cold-boot/login checks passed on this laptop.
+Remaining hardware acceptance, Ubuntu
 compatibility and DesOS image creation are Pending.
 
 ## Scope and provenance
@@ -107,7 +108,7 @@ the owner saves work and identifies sessions that must be preserved.
 
 | Case | Acceptance condition | Status |
 |---|---|---|
-| Cold boot, login and logout | Desktop initializes; logout returns to greeter; a subsequent login works | Partial: actual logout/login and initialized candidate startup passed; cold boot pending |
+| Cold boot, login and logout | Desktop initializes; logout returns to greeter; a subsequent login works | Passed on this laptop/kernel: actual logout/login, changed boot identity and initialized candidate startup verified |
 | Failed startup and update recovery | Failed candidate reaches the known-working fallback; no login loop | Pending |
 | Lock and shell failure/restart | Applications remain hidden and unfocused until password authentication | Partial: actual lock/unlock and locked control policy passed; forced shell failure/restart pending |
 | Suspend/resume and lid | Lock precedes exposed application content; display/input recover | Partial: actual suspend/resume passed with lock observed before/after sleep and owner visual confirmation; lid pending |
@@ -120,10 +121,13 @@ the owner saves work and identifies sessions that must be preserved.
 
 Current candidate observations and receipts are described in
 [the activation record](2026-11-09-desos-activation.md). Installation, logout/login,
-lock/unlock and one supervised suspend/resume have now been observed; the owner
-confirmed normal display/input/Wi-Fi and lock-first wake behavior. The broader
-gate is not complete. No cold-boot shutdown is scheduled: nine running containers
-were found, so a separate owner-ready shutdown window is needed.
+lock/unlock, one supervised suspend/resume and cold-boot/login have now been
+observed; the owner confirmed normal display/input/Wi-Fi and lock-first wake
+behavior. After the separately approved shutdown, a new boot ran matching
+candidate binaries with valid initialized readiness. All nine original containers
+were running again with unchanged policies; all four configured health checks
+were healthy. Network and audio services were active. The broader gate is not
+complete; no additional shutdown is scheduled.
 
 Existing machine records are historical evidence for their own binaries, not
 passes for this candidate. The older performance samples are active-session
@@ -134,19 +138,20 @@ phone features can be validated separately from the essential desktop gate.
 
 The staged binaries were installed through the existing source installer after
 owner approval and local administrator authentication. The subsequent fresh
-login activated matching shell/compositor hashes. Lock/unlock and one supervised
-suspend/resume passed; see the activation record and private receipts.
+login activated matching shell/compositor hashes. Lock/unlock, one supervised
+suspend/resume and the separately approved cold-boot/login check passed; see the
+activation record and private receipts.
 
-The next disruptive check is a cold boot: normal shutdown, physical power-on and
-DEs-UI login, followed by boot identity, candidate hash, readiness and service
-checks. Nine containers were running at preflight. A shutdown would stop those
-containers and active applications, so it requires a new owner-ready window;
-none is scheduled. Deliberate failed-startup recovery also needs a separate
-disposable/recovery arrangement.
+The next essential gap is recovery from a failed candidate startup. Exercise that
+in a disposable session or virtual machine with a known-working recovery route.
+Do not repeat host shutdown or deliberately break the owner's active session.
+The current cold-boot result does not establish Ubuntu compatibility or test an
+unmodified upstream kernel; the host still uses its existing Kali kernel.
 
 `installed-before.json` records the original pre-installation process hashes.
-The current candidate identities are recorded in `fresh-login.json` and
-`post-resume.json` under the private hardware evidence directory.
+The current candidate identities are recorded in `fresh-login.json`,
+`post-resume.json` and `cold-boot-result.json` under the private hardware evidence
+directory.
 
 DesOS live-image work follows the essential hardware gate;
 upstream-kernel testing follows the established base-system baseline. The installed

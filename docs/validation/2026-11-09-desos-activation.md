@@ -95,9 +95,9 @@ certify audible playback or microphone capture; neither was exercised.
 Evidence: private `suspend-result.json`, `suspend-events.jsonl`,
 `suspend-check.log`, `post-resume.json` and `post-resume-services.json`.
 
-## Remaining cold-boot test
+## Cold-boot preflight (before authorization)
 
-Cold boot, failed-startup recovery, authenticated VT recovery, lid behavior and
+At this checkpoint, cold boot, failed-startup recovery, authenticated VT recovery, lid behavior and
 the broader application/device/performance cases remain unverified for this
 candidate. Successful logout/login and suspend/resume do not close those cases.
 
@@ -108,7 +108,7 @@ power-off available. The only ordinary login session belonged to the owner.
 
 There were **nine running Docker containers** at this checkpoint. A full shutdown
 would stop those containers as well as current applications and terminal jobs.
-No cold-boot shutdown is scheduled or requested by the test helpers so far.
+No cold-boot shutdown had yet been scheduled or requested by the test helpers.
 
 The proposed next test, when the owner is ready, is one normal system shutdown,
 physical power-on, sign-in to DEs-UI, and verification of a changed boot ID,
@@ -136,3 +136,32 @@ DEs-UI and returns. Verify a new boot ID, kernel selection, candidate process
 hashes, initialized readiness, network/audio services and container recovery
 against the recorded policies before claiming a cold-boot pass. A shutdown
 request receipt alone is not cold-boot evidence. Do not repeat shutdown on resume.
+
+## Cold boot and service recovery observed
+
+The owner returned after the approved power-off/power-on and login handoff.
+The normal shutdown request returned exit 0. Boot identity changed from
+`232e5817-1736-4a6f-abd9-2e2bcf9f0e8b` to
+`0b582d7e-281b-46b6-8415-046b51eb8590`; the selected kernel remained
+`7.1.5+kali-amd64`.
+
+The active seat0 session was Wayland, with the candidate compositor using DRM.
+Running shell/compositor hashes and all eight installed executable hashes
+matched the frozen candidate. The previous recovery pair also retained its
+recorded hashes. The initialized-startup acknowledgement had the expected
+contents, owner and private file/directory permissions. The control socket
+answered ping, with a connected, unlocked desktop and one screen.
+
+The display manager and Docker were active; Docker remained enabled.
+NetworkManager reported connected/full, and PipeWire and WirePlumber were active.
+All nine original container IDs were running with unchanged `unless-stopped`
+policies and restart counts of zero. All four configured health checks reported
+healthy; the other five containers had no health check configured. This verifies
+process/service recovery, without certifying application transactions or audible
+playback.
+
+Evidence: private `cold-boot-result.json`, alongside the pre-shutdown handoff and
+shutdown receipt. No additional visual boot acceptance answer was collected.
+This closes the cold-boot/login case on this laptop with this kernel and
+candidate; failed-startup recovery, authenticated VT recovery, lid behavior and
+the broader device/application/performance cases remain pending.
