@@ -7,7 +7,7 @@
 use crate::theme::Theme;
 use crate::ui;
 use eframe::egui::{
-    self, Align2, CentralPanel, Color32, Event, Frame, Key, Rect, Sense, Stroke, TextureHandle, Ui,
+    self, Align2, CentralPanel, Color32, Event, Frame, Key, Rect, Sense, Stroke, StrokeKind, TextureHandle, Ui,
     ViewportCommand, pos2, vec2,
 };
 use serde_json::{Value, json};
@@ -183,80 +183,186 @@ pub fn load_picture(ctx: &egui::Context, user: &str) -> Option<TextureHandle> {
 }
 
 
-/// The middle of the login and lock screens: a picture in corner marks, a name, and a
-/// password line that shows one square per character typed.
+/// The middle of the login and lock screens: the time, a round picture whose ring
+/// says how things stand, a name, and a password field that shows a dot per
+/// character typed, or the characters themselves while asked to.
 pub struct Identity<'a> {
     pub user: &'a str,
     /// The user's own picture; without one, a pattern made from the name is drawn.
     pub picture: Option<&'a TextureHandle>,
-    /// The colour of the corner marks, the line and the cursor, which says how things
+    /// The colour of the ring, the field's edge and the caret, which says how things
     /// stand.
     pub edge: Color32,
     pub message: &'a str,
     pub message_ink: Color32,
     /// How many characters have been typed.
     pub typed: usize,
-    /// True while the password is being checked: the cursor rests.
+    /// What was typed, while it is to be shown; otherwise dots stand for it.
+    pub shown: Option<&'a str>,
+    /// True while the password is being checked: the ring turns and the caret rests.
     pub busy: bool,
     pub hint: &'a str,
+    /// Which account, and of how many, where there is a choice of them.
+    pub accounts: Option<(usize, usize)>,
+}
+
+/// What was clicked in the middle of the screen.
+#[derive(Default, Debug, Clone, Copy, PartialEq)]
+pub struct Asked {
+    /// Show the password, or hide it again.
+    pub reveal: bool,
+    pub submit: bool,
+    pub previous: bool,
+    pub next: bool,
 }
 
 impl Identity<'_> {
-    /// Draws it centred on the screen and returns where the name is.
-    pub fn draw(&self, ui: &mut Ui, theme: &Theme) -> Rect {
+    /// Draws the time and the rest in the middle of the screen.
+    pub fn draw(&self, ui: &mut Ui, theme: &Theme) -> Asked {
+        let mut asked = Asked::default();
         let screen = ui.max_rect();
         let painter = ui.painter().clone();
-        let center = pos2(screen.center().x, screen.center().y - 120.0);
-        let frame = Rect::from_center_size(center, vec2(208.0, 208.0));
-        ui::corners(&painter, frame, 22.0, Stroke::new(2.0, self.edge));
-        let face = Rect::from_center_size(center, vec2(160.0, 160.0));
-        painter.rect_filled(face, 0.0, ui::PANEL);
+        let cx = screen.center().x;
+        let short = screen.height() < 640.0;
+
+        // The time, large, and the date under it.
+        let now = chrono::Local::now();
+        let clock_size = if short { 52.0 } else { (screen.height() * 0.14).clamp(72.0, 128.0) };
+        let mut y = screen.top() + if short { 36.0 } else { screen.height() * 0.13 };
+        let time = ui::galley(ui, &crate::region::hours_minutes(&now), ui::display(clock_size), ui::TEXT, 1.0);
+        painter.galley(pos2(cx - time.size().x / 2.0, y), time.clone(), ui::TEXT);
+        y += time.size().y * 0.92;
+        let date = ui::galley(ui, &now.format("%A %-d %B").to_string().to_uppercase(), ui::display(if short { 12.0 } else { 16.0 }), ui::SECONDARY, 2.5);
+        painter.galley(pos2(cx - date.size().x / 2.0, y), date.clone(), ui::SECONDARY);
+        y += date.size().y + if short { 26.0 } else { (screen.height() * 0.085).max(40.0) };
+
+        // The picture in its ring.
+        let side = if short { 64.0 } else { 104.0 };
+        let face = Rect::from_min_size(pos2(cx - side / 2.0, y), vec2(side, side));
+        let radius = side / 2.0;
+        if self.busy {
+            painter.circle_stroke(face.center(), radius - 1.0, Stroke::new(2.0, ui::LINE_STRONG));
+            let turn = (ui.input(|i| i.time) as f32 * 4.0) % std::f32::consts::TAU;
+            let arc: Vec<egui::Pos2> = (0..=16).map(|k| { let a = turn + k as f32 * std::f32::consts::FRAC_PI_2 / 16.0; face.center() + vec2(a.cos(), a.sin()) * (radius - 1.0) }).collect();
+            painter.line(arc, Stroke::new(2.0, ui::TEXT));
+            ui.ctx().request_repaint();
+        } else {
+            painter.circle_stroke(face.center(), radius - 1.0, Stroke::new(2.0, self.edge));
+        }
+        let inner = face.shrink(6.0);
         match self.picture {
             Some(texture) => {
                 let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-                painter.image(texture.id(), face, uv, Color32::WHITE);
+                painter.add(egui::epaint::RectShape::filled(inner, inner.width() / 2.0, Color32::WHITE).with_texture(texture.id(), uv));
             }
             None => {
-                let cell = face.width() / 5.0;
+                painter.circle_filled(inner.center(), inner.width() / 2.0, ui::TRACK);
+                let grid = inner.shrink(inner.width() * 0.2);
+                let cell = grid.width() / 5.0;
                 for (row, cells) in sigil(self.user).iter().enumerate() {
                     for (column, kind) in cells.iter().enumerate() {
-                        let color = match kind {
-                            1 => theme.main,
-                            2 => theme.muted(),
-                            _ => continue,
-                        };
-                        let at = face.min + vec2(column as f32 * cell, row as f32 * cell);
+                        let color = match kind { 1 => theme.main, 2 => theme.muted(), _ => continue };
+                        let at = grid.min + vec2(column as f32 * cell, row as f32 * cell);
                         painter.rect_filled(Rect::from_min_size(at, vec2(cell, cell)), 0.0, color);
                     }
                 }
             }
         }
-
-        let name = ui::galley(ui, self.user, ui::display_bold(34.0), ui::TEXT, 1.0);
-        let name_rect = Rect::from_center_size(pos2(center.x, frame.bottom() + 46.0), name.size());
-        painter.galley(name_rect.min, name, ui::TEXT);
-        painter.text(pos2(center.x, name_rect.bottom() + 14.0), Align2::CENTER_CENTER, self.message, ui::mono(12.0), self.message_ink);
-
-        // The password: one square per character, on a line.
-        let label = ui::galley(ui, "PASSWORD", ui::display_bold(12.0), ui::LABEL, 3.0);
-        let field_top = name_rect.bottom() + 48.0;
-        painter.galley(pos2(center.x - label.size().x / 2.0, field_top), label, ui::LABEL);
-        let line_y = field_top + 62.0;
-        let count = self.typed.min(24);
-        let (square, gap) = (11.0, 9.0);
-        let width = count as f32 * (square + gap) + 12.0;
-        let mut x = center.x - width / 2.0;
-        for _ in 0..count {
-            painter.rect_filled(Rect::from_min_size(pos2(x, line_y - 28.0), vec2(square, square)), 0.0, ui::TEXT);
-            x += square + gap;
+        // Where there are other accounts, a way to them at either side.
+        if let Some((index, count)) = self.accounts.filter(|(_, count)| *count > 1) {
+            for (dx, label, back) in [(-1.0, "Previous account", true), (1.0, "Next account", false)] {
+                let rect = Rect::from_center_size(face.center() + vec2(dx * (radius + 40.0), 0.0), vec2(36.0, 36.0));
+                let response = ui.interact(rect, ui.id().with(("account", label)), Sense::click());
+                response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+                painter.circle_stroke(rect.center(), 17.5, Stroke::new(1.0, if response.hovered() { ui::TEXT } else { ui::LINE_STRONG }));
+                let c = rect.center();
+                let ink = Stroke::new(1.8, if response.hovered() { ui::TEXT } else { ui::SECONDARY });
+                painter.line(vec![c + vec2(2.5 * dx, -5.0), c + vec2(-2.5 * dx, 0.0), c + vec2(2.5 * dx, 5.0)], ink);
+                if response.on_hover_text(label).clicked() { if back { asked.previous = true; } else { asked.next = true; } }
+            }
+            y = face.bottom() + 12.0;
+            let name = ui::galley(ui, self.user, ui::display_bold(if short { 18.0 } else { 24.0 }), ui::TEXT, 0.5);
+            painter.galley(pos2(cx - name.size().x / 2.0, y), name.clone(), ui::TEXT);
+            y += name.size().y + 4.0;
+            painter.text(pos2(cx, y + 7.0), Align2::CENTER_CENTER, format!("{} of {count} accounts · Tab for the next", index + 1), ui::mono(11.5), ui::LABEL);
+            y += 22.0;
+        } else {
+            y = face.bottom() + 12.0;
+            let name = ui::galley(ui, self.user, ui::display_bold(if short { 18.0 } else { 24.0 }), ui::TEXT, 0.5);
+            painter.galley(pos2(cx - name.size().x / 2.0, y), name.clone(), ui::TEXT);
+            y += name.size().y + 14.0;
         }
-        let blink_on = ui.input(|i| i.time).rem_euclid(1.0) < 0.5;
-        if blink_on && !self.busy {
-            painter.rect_filled(Rect::from_min_size(pos2(x, line_y - 36.0), vec2(12.0, 26.0)), 0.0, self.edge);
+
+        // The field and the button that sends it.
+        let height = if short { 44.0 } else { 48.0 };
+        let width = (screen.width() - 120.0).clamp(160.0, 320.0);
+        let field = Rect::from_min_size(pos2(cx - (width + 8.0 + height) / 2.0, y), vec2(width, height));
+        painter.rect_filled(field, height / 2.0, ui::PANEL);
+        painter.rect_stroke(field, height / 2.0, Stroke::new(1.0, self.edge), StrokeKind::Inside);
+        let eye = Rect::from_center_size(pos2(field.right() - 8.0 - 16.0, field.center().y), vec2(32.0, 32.0));
+        let room = Rect::from_min_max(pos2(field.left() + 18.0, field.top()), pos2(eye.left() - 8.0, field.bottom()));
+        let mut x = room.left();
+        match self.shown {
+            Some(text) => {
+                // The end of what was typed, where the caret is, stays in view.
+                let mut chars: Vec<char> = text.chars().collect();
+                let mut galley = ui::galley(ui, text, ui::mono(15.0), ui::TEXT, 0.0);
+                while galley.size().x > room.width() - 6.0 && !chars.is_empty() {
+                    chars.remove(0);
+                    galley = ui::galley(ui, &format!("…{}", chars.iter().collect::<String>()), ui::mono(15.0), ui::TEXT, 0.0);
+                }
+                painter.galley(pos2(x, field.center().y - galley.size().y / 2.0), galley.clone(), ui::TEXT);
+                x += galley.size().x + 2.0;
+            }
+            None if self.typed == 0 => {}
+            None => {
+                let fit = ((room.width() - 8.0) / 16.0).max(1.0) as usize;
+                for _ in 0..self.typed.min(fit) {
+                    painter.circle_filled(pos2(x + 4.0, field.center().y), 4.0, ui::TEXT);
+                    x += 16.0;
+                }
+            }
         }
-        painter.hline((center.x - 180.0)..=(center.x + 180.0), line_y, Stroke::new(2.0, self.edge));
-        painter.text(pos2(center.x, line_y + 22.0), Align2::CENTER_CENTER, self.hint, ui::mono(12.0), ui::LABEL);
-        name_rect
+        if self.typed == 0 {
+            painter.text(pos2(x + 4.0, field.center().y), Align2::LEFT_CENTER, "Password", ui::display(13.5), ui::LABEL);
+        }
+        if !self.busy && ui.input(|i| i.time).rem_euclid(1.0) < 0.5 {
+            painter.rect_filled(Rect::from_center_size(pos2(x + 1.0, field.center().y), vec2(2.0, 20.0)), 0.0, self.edge);
+        }
+        let shown = self.shown.is_some();
+        let label = if shown { "Hide password (Ctrl+H)" } else { "Show password (Ctrl+H)" };
+        let response = ui.interact(eye, ui.id().with("reveal-password"), Sense::click());
+        response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, shown, label));
+        if shown { painter.circle_filled(eye.center(), 16.0, theme.main.gamma_multiply(0.16)); }
+        else if response.hovered() { painter.circle_filled(eye.center(), 16.0, ui::TRACK); }
+        let ink = if shown { theme.main } else if response.hovered() { ui::TEXT } else { ui::SECONDARY };
+        let c = eye.center();
+        let lid = |s: f32| -> Vec<egui::Pos2> { (0..=12).map(|k| { let t = -1.0 + k as f32 / 6.0; c + vec2(t * 8.0, s * 4.5 * (1.0 - t * t)) }).collect() };
+        painter.line(lid(-1.0), Stroke::new(1.6, ink));
+        painter.line(lid(1.0), Stroke::new(1.6, ink));
+        painter.circle_stroke(c, 2.6, Stroke::new(1.6, ink));
+        if !shown { painter.line_segment([c + vec2(-7.0, -7.0), c + vec2(7.0, 7.0)], Stroke::new(1.6, ink)); }
+        if response.on_hover_text(label).clicked() { asked.reveal = true; }
+
+        let go = Rect::from_min_size(pos2(field.right() + 8.0, field.top()), vec2(height, height));
+        let ready = self.typed > 0 && !self.busy;
+        let response = ui.interact(go, ui.id().with("submit-password"), if ready { Sense::click() } else { Sense::hover() });
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ready, "Go"));
+        let fill = if ready { if response.hovered() { theme.main.gamma_multiply(0.85) } else { theme.main } } else { ui::TRACK };
+        painter.circle_filled(go.center(), height / 2.0, fill);
+        let c = go.center();
+        let ink = Stroke::new(2.2, if ready { ui::GROUND } else { ui::LABEL });
+        painter.line_segment([c - vec2(7.0, 0.0), c + vec2(7.0, 0.0)], ink);
+        painter.line(vec![c + vec2(1.0, -6.0), c + vec2(7.0, 0.0), c + vec2(1.0, 6.0)], ink);
+        if response.clicked() { asked.submit = true; }
+
+        let mut y = field.bottom() + 18.0;
+        if !self.message.is_empty() {
+            painter.text(pos2(cx, y), Align2::CENTER_CENTER, self.message, ui::mono(12.0), self.message_ink);
+            y += 20.0;
+        }
+        painter.text(pos2(cx, y), Align2::CENTER_CENTER, self.hint, ui::mono(11.5), ui::LABEL);
+        asked
     }
 }
 
@@ -283,6 +389,8 @@ pub struct Greeter {
     picture: Option<(usize, Option<TextureHandle>)>,
     /// A power button clicked once, waiting for the second click.
     armed: Option<(usize, Instant)>,
+    /// The password is shown as typed, not as dots, until hidden again.
+    revealed: bool,
     screenshot: Option<PathBuf>,
     started: Instant,
     screenshot_requested: bool,
@@ -306,6 +414,7 @@ impl Greeter {
             socket: std::env::var_os("GREETD_SOCK").map(PathBuf::from),
             picture: None,
             armed: None,
+            revealed: false,
             screenshot,
             started: Instant::now(),
             screenshot_requested: false,
@@ -343,27 +452,16 @@ impl Greeter {
         let theme = self.theme.clone();
         let painter = ui.painter().clone();
         painter.rect_filled(screen, 0.0, ui::GROUND);
-        // What the corner marks, the line and the cursor are drawn in says how things stand.
+        glow(&painter, screen, theme.main);
+        // What the ring, the field's edge and the caret are drawn in says how things stand.
         let edge = match self.state {
             State::Ready => theme.main,
             State::Checking => ui::SECONDARY,
             State::Denied(_) => ui::CAUTION,
         };
-        let inner = screen.shrink2(vec2(64.0, 48.0));
-
-        let brand = ui::galley(ui, "DEs-UI", ui::display_bold(14.0), ui::SECONDARY, 4.0);
+        let inner = screen.shrink2(vec2(56.0, 40.0));
+        let brand = ui::galley(ui, "DEs-UI", ui::display_bold(13.0), ui::SECONDARY, 4.0);
         painter.galley(inner.left_top(), brand, ui::SECONDARY);
-        let now = chrono::Local::now();
-        let date = ui::galley(ui, &now.format("%a %d %b").to_string().to_uppercase(), ui::display(13.0), ui::SECONDARY, 2.0);
-        let date_width = date.size().x;
-        painter.galley(pos2(inner.right() - date_width, inner.top() + 12.0), date, ui::SECONDARY);
-        painter.text(
-            pos2(inner.right() - date_width - 10.0, inner.top() + 30.0),
-            Align2::RIGHT_BOTTOM,
-            crate::region::hours_minutes(&now),
-            ui::display(28.0),
-            ui::TEXT,
-        );
 
         let user = self.users[self.user].clone();
         if self.picture.as_ref().is_none_or(|(index, _)| *index != self.user) {
@@ -381,56 +479,56 @@ impl Greeter {
             message: &message,
             message_ink: ink,
             typed: self.password.chars().count(),
+            shown: self.revealed.then_some(self.password.as_str()),
             busy: matches!(self.state, State::Checking),
-            hint: "ENTER to sign in",
+            hint: "Enter to sign in · Ctrl+H shows or hides the password",
+            accounts: Some((self.user, self.users.len())),
         };
-        let name_rect = identity.draw(ui, &theme);
-        // With several accounts, clicking the name moves to the next.
-        if self.users.len() > 1 && ui.allocate_rect(name_rect.expand(8.0), Sense::click()).on_hover_text("Another account (Tab)").clicked() {
-            self.next_user();
-        }
+        let asked = identity.draw(ui, &theme);
+        if asked.reveal { self.revealed = !self.revealed; }
+        if asked.submit { self.submit(ui.ctx()); }
+        if asked.next { self.next_user(); }
+        if asked.previous { self.previous_user(); }
 
         // Bottom left: which desktop starts next.
-        let session_name = self.sessions.get(self.session).map_or("NONE INSTALLED", |session| session.name.as_str());
-        let prefix = ui::galley(ui, "SESSION", ui::display(13.0), ui::SECONDARY, 2.0);
-        let chosen = ui::galley(ui, session_name, ui::display_bold(13.0), ui::TEXT, 2.0);
-        let row = Rect::from_min_size(
-            pos2(inner.left(), inner.bottom() - 44.0),
-            vec2(prefix.size().x + chosen.size().x + 36.0, 44.0),
-        );
+        let session_name = self.sessions.get(self.session).map_or("NONE INSTALLED", |session| session.name.as_str()).to_uppercase();
+        let prefix = ui::galley(ui, "SESSION", ui::mono(11.0), ui::LABEL, 1.0);
+        let chosen = ui::galley(ui, &session_name, ui::display_bold(13.0), ui::TEXT, 1.5);
+        let several = self.sessions.len() > 1;
+        let pill = Rect::from_min_size(pos2(inner.left(), inner.bottom() - 40.0), vec2(prefix.size().x + chosen.size().x + if several { 58.0 } else { 42.0 }, 40.0));
+        let response = ui.interact(pill, ui.id().with("session"), if several { Sense::click() } else { Sense::hover() });
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, several, format!("Session: {session_name}")));
+        painter.rect_filled(pill, 20.0, if response.hovered() && several { ui::TRACK } else { ui::PANEL });
+        painter.rect_stroke(pill, 20.0, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
         let prefix_width = prefix.size().x;
         let chosen_width = chosen.size().x;
-        painter.galley(pos2(row.left(), row.center().y - prefix.size().y / 2.0), prefix, ui::SECONDARY);
-        painter.galley(pos2(row.left() + prefix_width + 12.0, row.center().y - chosen.size().y / 2.0), chosen, ui::TEXT);
-        if self.sessions.len() > 1 {
-            let tip = pos2(row.left() + prefix_width + chosen_width + 30.0, row.center().y);
-            let arrow = Stroke::new(1.5, ui::SECONDARY);
-            painter.line_segment([tip + vec2(-6.0, -5.0), tip], arrow);
-            painter.line_segment([tip + vec2(-6.0, 5.0), tip], arrow);
-            if ui.allocate_rect(row, Sense::click()).on_hover_text("Another session (F1)").clicked() {
+        painter.galley(pos2(pill.left() + 16.0, pill.center().y - prefix.size().y / 2.0), prefix, ui::LABEL);
+        painter.galley(pos2(pill.left() + 26.0 + prefix_width, pill.center().y - chosen.size().y / 2.0), chosen, ui::TEXT);
+        if several {
+            let c = pos2(pill.left() + 40.0 + prefix_width + chosen_width, pill.center().y);
+            painter.line(vec![c + vec2(-4.0, -2.0), c + vec2(0.0, 2.0), c + vec2(4.0, -2.0)], Stroke::new(1.6, ui::SECONDARY));
+            if response.on_hover_text("Another session (F1)").clicked() {
                 self.session = (self.session + 1) % self.sessions.len();
             }
         }
 
-        // Bottom right: power. Each takes two clicks, so that none happens by accident.
+        // Bottom right: power, each a round button with its name under it. Each takes
+        // two clicks, so that none happens by accident.
         self.armed = self.armed.filter(|(_, at)| at.elapsed() < Duration::from_secs(4));
         for (index, (name, command)) in POWER.iter().enumerate() {
-            let rect = Rect::from_min_size(
-                pos2(inner.right() - 44.0 * (POWER.len() - index) as f32, inner.bottom() - 44.0),
-                vec2(44.0, 44.0),
-            );
+            let column = Rect::from_min_size(pos2(inner.right() - 96.0 * (POWER.len() - index) as f32, inner.bottom() - 66.0), vec2(96.0, 66.0));
+            let circle = Rect::from_center_size(pos2(column.center().x, column.top() + 22.0), vec2(44.0, 44.0));
             let armed = self.armed.is_some_and(|(which, _)| which == index);
-            let response = ui.allocate_rect(rect, Sense::click());
-            let ink = if armed {
-                ui::CAUTION
-            } else if response.hovered() || index == 2 {
-                ui::TEXT
-            } else {
-                ui::SECONDARY
-            };
-            power_icon(&painter, rect.center(), index, Stroke::new(1.5, ink));
-            let hint = if armed { format!("Click again to {}", name.to_lowercase()) } else { name.to_string() };
-            if response.on_hover_text(hint).clicked() {
+            let response = ui.interact(column, ui.id().with(("power", index)), Sense::click());
+            let label = if armed { format!("Click again to {}", name.to_lowercase()) } else { name.to_string() };
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+            let ink = if armed { ui::CAUTION } else if response.hovered() { ui::TEXT } else { ui::SECONDARY };
+            painter.circle_filled(circle.center(), 22.0, if response.hovered() { ui::TRACK } else { ui::PANEL });
+            painter.circle_stroke(circle.center(), 21.5, Stroke::new(1.0, if armed { ui::CAUTION } else { ui::LINE_STRONG }));
+            power_icon(&painter, circle.center(), index, Stroke::new(1.5, ink));
+            let caption = if armed { format!("AGAIN TO {}", name.to_uppercase()) } else { name.to_uppercase() };
+            painter.text(pos2(column.center().x, column.bottom() - 6.0), Align2::CENTER_CENTER, caption, ui::mono(10.0), ink);
+            if response.clicked() {
                 if armed {
                     self.armed = None;
                     let _ = std::process::Command::new("systemctl").arg(command).spawn();
@@ -439,17 +537,43 @@ impl Greeter {
                 }
             }
         }
-        if let Some((which, _)) = self.armed {
-            let text = format!("CLICK AGAIN TO {}", POWER[which].0.to_uppercase());
-            painter.text(pos2(inner.right(), inner.bottom() - 54.0), Align2::RIGHT_BOTTOM, text, ui::mono(11.0), ui::CAUTION);
-        }
     }
 
     fn next_user(&mut self) {
         self.user = (self.user + 1) % self.users.len();
         self.password.clear();
+        self.revealed = false;
         self.state = State::Ready;
     }
+
+    fn previous_user(&mut self) {
+        self.user = (self.user + self.users.len() - 1) % self.users.len();
+        self.password.clear();
+        self.revealed = false;
+        self.state = State::Ready;
+    }
+}
+
+/// A soft light of the accent above the middle of the screen.
+pub fn glow(painter: &egui::Painter, screen: Rect, color: Color32) {
+    let center = pos2(screen.center().x, screen.top() + screen.height() * 0.32);
+    let radius = screen.width().min(screen.height() * 1.4) * 0.5;
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(center, color.gamma_multiply(0.11));
+    let steps = 64;
+    let rings = [(0.45, 0.06), (1.0, 0.0)];
+    for (ring, &(reach, strength)) in rings.iter().enumerate() {
+        for step in 0..steps {
+            let a = step as f32 * std::f32::consts::TAU / steps as f32;
+            mesh.colored_vertex(center + vec2(a.cos(), a.sin() * 0.7) * radius * reach, color.gamma_multiply(strength));
+        }
+        let base = 1 + ring as u32 * steps;
+        for step in 0..steps {
+            let (a, b) = (base + step, base + (step + 1) % steps);
+            if ring == 0 { mesh.add_triangle(0, a, b); } else { mesh.add_triangle(a - steps, a, b); mesh.add_triangle(a - steps, b, b - steps); }
+        }
+    }
+    painter.add(egui::Shape::mesh(mesh));
 }
 
 /// Draws the suspend (moon), restart (turning arrow) and shut down (power) marks.
@@ -493,7 +617,7 @@ impl eframe::App for Greeter {
             match outcome {
                 // greetd starts the session as soon as the login screen is gone.
                 Ok(()) => ctx.send_viewport_cmd(ViewportCommand::Close),
-                Err(why) => self.state = State::Denied(why),
+                Err(why) => { self.state = State::Denied(why); self.revealed = false; }
             }
         }
 
@@ -512,6 +636,7 @@ impl eframe::App for Greeter {
                     Key::Backspace => {
                         self.password.pop();
                     }
+                    Key::H if modifiers.ctrl || modifiers.command => self.revealed = !self.revealed,
                     Key::Escape => self.password.clear(),
                     Key::Enter => self.submit(ctx),
                     Key::F1 if !self.sessions.is_empty() => self.session = (self.session + 1) % self.sessions.len(),

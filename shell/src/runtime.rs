@@ -302,8 +302,9 @@ impl eframe::App for App {
             if let Some(started) = self.idle_saver.started() {
                 self.draw_saver(ctx, started);
             } else {
+                let glance = crate::lock::Glance { battery: self.mon.power.map(|power| (power.percent, power.plugged)), online: !self.mon.ip.is_empty(), notices: self.notices.count() };
                 let music = &mut self.music;
-                if self.lock.show(ctx, &theme, |ui, within| music.lock_card(ui, &theme, within)) {
+                if self.lock.show(ctx, &theme, glance, |ui, within| music.lock_card(ui, &theme, within)) {
                     if self.desktop.is_some() {
                         self.unlock_pending = true;
                         self.lock.await_unlock();

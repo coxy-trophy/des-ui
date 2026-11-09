@@ -283,7 +283,13 @@ fn left_instruments(ui: &mut Ui, theme: &Theme, mon: &SysMon, widgets: &crate::w
     let load = mon.cpu_hist.back().copied().unwrap_or(0.0);
     card(ui, |ui| {
         card_head(ui, "PROCESSOR", |ui| {
-            if let Some(average) = mon.load { ui::meta(ui, &format!("LOAD {:.1} · {:.1} · {:.1}", average[0], average[1], average[2]), ui::LABEL); }
+            if let Some(average) = mon.load {
+                // All three averages where they fit; the last minute's alone where not.
+                let all = format!("LOAD {:.1} · {:.1} · {:.1}", average[0], average[1], average[2]);
+                let fits = ui::galley(ui, &all, ui::mono(11.0), ui::LABEL, 0.0).size().x <= ui.available_width();
+                let text = if fits { all } else { format!("LOAD {:.1}", average[0]) };
+                ui::meta(ui, &text, ui::LABEL);
+            }
         });
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;

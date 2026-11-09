@@ -365,9 +365,15 @@ fn battery_row(ui: &mut Ui, power: crate::sysmon::Battery, health: Option<u8>) {
         (false, Some(m)) => format!("{} left", crate::power::duration(m).to_lowercase()),
         (false, None) => String::new(),
     };
-    painter.text(pos2(rect.left() + 34.0 + figure_width, rect.center().y), egui::Align2::LEFT_CENTER, left, ui::mono(11.0), ui::SECONDARY);
-    if let Some(health) = health.filter(|_| rect.width() >= 230.0) {
-        painter.text(rect.right_center(), egui::Align2::RIGHT_CENTER, format!("HEALTH {health}%"), ui::mono(10.0), ui::LABEL);
+    let left = painter.layout_no_wrap(left, ui::mono(11.0), ui::SECONDARY);
+    let left_end = rect.left() + 34.0 + figure_width + left.size().x;
+    painter.galley(pos2(rect.left() + 34.0 + figure_width, rect.center().y - left.size().y / 2.0), left, ui::SECONDARY);
+    // How much it still holds, where there is room beside the rest.
+    if let Some(health) = health {
+        let health = painter.layout_no_wrap(format!("HEALTH {health}%"), ui::mono(10.0), ui::LABEL);
+        if left_end + 14.0 + health.size().x <= rect.right() {
+            painter.galley(pos2(rect.right() - health.size().x, rect.center().y - health.size().y / 2.0), health, ui::LABEL);
+        }
     }
     response.on_hover_text(crate::power::battery_line(power));
 }

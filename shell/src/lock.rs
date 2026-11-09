@@ -4,10 +4,10 @@
 //! and sends every key to it. The shell draws this screen over all of its own, checks
 //! the password with the system's helper for that, and tells the compositor to unlock.
 
-use crate::greeter::{Identity, load_picture};
+use crate::greeter::{Asked, Identity, load_picture};
 use crate::theme::Theme;
 use crate::ui;
-use eframe::egui::{self, Align2, CentralPanel, Event, Frame, Key, TextureHandle, pos2, vec2};
+use eframe::egui::{self, Align2, CentralPanel, Event, Frame, Key, Rect, TextureHandle, vec2};
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{Receiver, channel};
@@ -133,6 +133,18 @@ pub struct Lock {
     /// The user's picture, once looked for.
     picture: Option<Option<TextureHandle>>,
     preparation: Option<Receiver<Result<(), String>>>,
+    /// The password is shown as typed, not as dots, until hidden again or the next lock.
+    revealed: bool,
+}
+
+/// What the lock screen may say about the machine without unlocking it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Glance {
+    /// How full the battery is, and whether it is on mains power.
+    pub battery: Option<(u8, bool)>,
+    pub online: bool,
+    /// How many notifications wait; never what they say.
+    pub notices: usize,
 }
 
 impl Lock {
@@ -145,6 +157,7 @@ impl Lock {
             result: None,
             picture: None,
             preparation: None,
+            revealed: false,
         }
     }
 
@@ -183,6 +196,7 @@ impl Lock {
         self.result = None;
         self.locked = true;
         self.password.clear();
+        self.revealed = false;
         self.state = State::Ready;
     }
 
@@ -191,6 +205,7 @@ impl Lock {
         self.preparation = None;
         self.locked = false;
         self.password.clear();
+        self.revealed = false;
         self.result = None;
     }
 
@@ -226,7 +241,7 @@ impl Lock {
     ///
     /// `below` draws whatever else belongs on the screen (what is playing), given the
     /// part of it inside the margins.
-    pub fn show(&mut self, ctx: &egui::Context, theme: &Theme, below: impl FnOnce(&mut egui::Ui, egui::Rect)) -> bool {
+    pub fn show(&mut self, ctx: &egui::Context, theme: &Theme, glance: Glance, below: impl FnOnce(&mut egui::Ui, egui::Rect)) -> bool {
         if let Some(outcome) = self.result.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.result = None;
             match outcome {
@@ -234,8 +249,8 @@ impl Lock {
                     self.release();
                     return true;
                 }
-                Ok(false) => self.state = State::Denied("That password did not match".to_string()),
-                Err(why) => self.state = State::Denied(why),
+                Ok(false) => { self.state = State::Denied("That password did not match".to_string()); self.revealed = false; }
+                Err(why) => { self.state = State::Denied(why); self.revealed = false; }
             }
         }
 
@@ -253,6 +268,7 @@ impl Lock {
                     Key::Backspace => {
                         self.password.pop();
                     }
+                    Key::H if modifiers.ctrl || modifiers.command => self.revealed = !self.revealed,
                     Key::Escape => self.password.clear(),
                     Key::Enter => self.submit(ctx),
                     _ => {}
@@ -270,49 +286,59 @@ impl Lock {
             State::Unlocking => (ui::SECONDARY, "Unlocking…".to_string(), ui::SECONDARY),
             State::Denied(why) => (ui::CAUTION, why.clone(), ui::CAUTION),
         };
+        let mut asked = Asked::default();
         CentralPanel::default().frame(Frame::new().fill(ui::GROUND)).show(ctx, |ui| {
             let screen = ui.max_rect();
-            ui.painter().rect_filled(screen, 0.0, ui::GROUND);
-            let inner = screen.shrink2(vec2(64.0, 48.0));
-            let brand = ui::galley(ui, "DEs-UI", ui::display_bold(14.0), ui::SECONDARY, 4.0);
-            let brand_width = brand.size().x;
-            ui.painter().galley(inner.left_top(), brand, ui::SECONDARY);
-            let locked = ui::galley(ui, "LOCKED", ui::display(14.0), edge, 4.0);
-            ui.painter().galley(inner.left_top() + vec2(brand_width + 14.0, 0.0), locked, edge);
+            let painter = ui.painter().clone();
+            painter.rect_filled(screen, 0.0, ui::GROUND);
+            crate::greeter::glow(&painter, screen, theme.main);
+            let inner = screen.shrink2(vec2(56.0, 40.0));
 
-            let now = chrono::Local::now();
-            let date = ui::galley(ui, &now.format("%a %d %b").to_string().to_uppercase(), ui::display(13.0), ui::SECONDARY, 2.0);
-            let date_width = date.size().x;
-            ui.painter().galley(pos2(inner.right() - date_width, inner.top() + 12.0), date, ui::SECONDARY);
-            ui.painter().text(
-                pos2(inner.right() - date_width - 10.0, inner.top() + 30.0),
-                Align2::RIGHT_BOTTOM,
-                crate::region::hours_minutes(&now),
-                ui::display(28.0),
-                ui::TEXT,
-            );
+            // Top: the desktop's name and that it is locked; at the right, the
+            // connection and the battery.
+            let mut top = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(inner.min, vec2(inner.width(), 24.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
+            top.spacing_mut().item_spacing.x = 14.0;
+            ui::tracked(&mut top, "DEs-UI", ui::display_bold(13.0), ui::SECONDARY, 4.0);
+            crate::panels::pill(&mut top, "LOCKED", if matches!(self.state, State::Denied(_)) { ui::CAUTION } else { ui::SECONDARY });
+            top.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                if let Some((percent, plugged)) = glance.battery {
+                    ui::text(ui, &format!("{percent}%"), ui::mono(12.0), if !plugged && percent <= 15 { ui::CAUTION } else { ui::SECONDARY });
+                    ui::icon(ui, if plugged { ui::Icon::Charging } else { ui::Icon::Battery }, 18.0, ui::SECONDARY);
+                    ui.add_space(8.0);
+                }
+                if glance.online { ui::icon(ui, ui::Icon::Wifi, 18.0, ui::SECONDARY); }
+            });
 
-            Identity {
+            asked = Identity {
                 user: &self.user,
                 picture: self.picture.as_ref().and_then(|picture| picture.as_ref()),
                 edge,
                 message: &message,
                 message_ink: ink,
                 typed: self.password.chars().count(),
+                shown: self.revealed.then_some(self.password.as_str()),
                 busy: matches!(self.state, State::Checking | State::Unlocking),
-                hint: "ENTER to unlock",
+                hint: "Enter to unlock · Esc clears · Ctrl+H shows or hides",
+                accounts: None,
             }
             .draw(ui, theme);
 
-            ui.painter().text(
-                inner.left_bottom(),
-                Align2::LEFT_BOTTOM,
-                "Your session is still running behind this screen.",
-                ui::mono(12.0),
-                ui::LABEL,
-            );
+            // Bottom: that the session is still there, and how many notifications
+            // wait, without what they say.
+            painter.text(inner.left_bottom(), Align2::LEFT_BOTTOM, "Your session is still running behind this screen.", ui::mono(12.0), ui::LABEL);
+            if glance.notices > 0 {
+                let label = if glance.notices == 1 { "1 NOTIFICATION".to_string() } else { format!("{} NOTIFICATIONS", glance.notices) };
+                let galley = ui::galley(ui, &label, ui::mono(10.5), ui::SECONDARY, 1.0);
+                let size = galley.size() + vec2(22.0, 10.0);
+                let chip = Rect::from_min_size(inner.right_bottom() - size, size);
+                painter.rect_stroke(chip, size.y / 2.0, egui::Stroke::new(1.0, ui::LINE_STRONG), egui::StrokeKind::Inside);
+                painter.galley(chip.center() - galley.size() / 2.0, galley, ui::SECONDARY);
+            }
             below(ui, inner);
         });
+        if asked.reveal { self.revealed = !self.revealed; }
+        if asked.submit { self.submit(ctx); }
         // The clock and the cursor keep moving.
         ctx.request_repaint_after(Duration::from_millis(250));
         false
@@ -331,6 +357,83 @@ mod tests {
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         (dir, path)
+    }
+
+    fn painted_texts(output: &egui::FullOutput) -> Vec<String> {
+        fn walk(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(text) => out.push(text.galley.job.text.clone()),
+                egui::Shape::Vec(shapes) => for shape in shapes { walk(shape, out); },
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &output.shapes { walk(&clipped.shape, &mut out); }
+        out
+    }
+
+    #[test]
+    fn the_password_shows_only_while_asked_and_hides_again_on_the_next_lock() {
+        let ctx = egui::Context::default();
+        ui::install_fonts(&ctx, None, None);
+        let theme = Theme::load("signal");
+        let mut lock = Lock::new();
+        lock.engage();
+        let key = |key: Key, ctrl: bool| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers { ctrl, ..Default::default() } };
+        let screen = Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(1440.0, 900.0)));
+        let frame = |lock: &mut Lock, events: Vec<Event>| {
+            let output = ctx.run(egui::RawInput { screen_rect: screen, events, ..Default::default() }, |ctx| { lock.show(ctx, &theme, Glance::default(), |_, _| {}); });
+            painted_texts(&output)
+        };
+        let typed = frame(&mut lock, vec![Event::Text("hunter2".into())]);
+        assert!(!typed.iter().any(|text| text.contains("hunter2")), "typed characters show as dots");
+        let shown = frame(&mut lock, vec![key(Key::H, true)]);
+        assert!(lock.revealed);
+        assert!(shown.iter().any(|text| text.contains("hunter2")), "Ctrl+H shows what was typed");
+        assert_eq!(lock.password, "hunter2", "Ctrl+H is not typed into the password");
+        frame(&mut lock, vec![key(Key::H, true)]);
+        assert!(!lock.revealed, "Ctrl+H again hides it");
+        lock.revealed = true;
+        lock.release();
+        lock.engage();
+        assert!(!lock.revealed, "a new lock starts hidden");
+        assert!(lock.password.is_empty());
+    }
+
+    #[test]
+    #[ignore]
+    fn native_lock_preview() {
+        use winit::platform::x11::EventLoopBuilderExtX11;
+        struct Preview { lock: Lock, frames: usize, output: std::path::PathBuf }
+        impl eframe::App for Preview {
+            fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+                for event in ctx.input(|i| i.events.clone()) {
+                    if let Event::Screenshot { image, .. } = event {
+                        let bytes: Vec<u8> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
+                        image::save_buffer(&self.output, &bytes, image.size[0] as u32, image.size[1] as u32, image::ColorType::Rgba8).unwrap();
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                }
+                let theme = Theme::load("signal");
+                self.lock.show(ctx, &theme, Glance { battery: Some((68, false)), online: true, notices: 3 }, |_, _| {});
+                self.frames += 1;
+                if self.frames == 4 { ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default())); }
+                ctx.request_repaint();
+            }
+        }
+        let output = std::path::PathBuf::from(std::env::var("DESUI_LOCK_PREVIEW").expect("preview output"));
+        let mut lock = Lock::new();
+        lock.engage();
+        lock.user = "preview".into();
+        lock.picture = Some(None);
+        lock.password = "correct horse".into();
+        lock.revealed = std::env::var("DESUI_LOCK_PREVIEW_MODE").as_deref() != Ok("hidden");
+        let options = eframe::NativeOptions { viewport: egui::ViewportBuilder::default().with_inner_size([1440.0, 900.0]), event_loop_builder: Some(Box::new(|builder| { builder.with_x11().with_any_thread(true); })), ..Default::default() };
+        eframe::run_native("lock preview", options, Box::new(move |cc| {
+            ui::install_fonts(&cc.egui_ctx, None, None);
+            crate::apply_style(&cc.egui_ctx, &Theme::load("signal"));
+            Ok(Box::new(Preview { lock, frames: 0, output }))
+        })).unwrap();
     }
 
     #[test]
