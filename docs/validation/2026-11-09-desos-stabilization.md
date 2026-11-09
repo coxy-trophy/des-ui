@@ -107,16 +107,23 @@ the owner saves work and identifies sessions that must be preserved.
 
 | Case | Acceptance condition | Status |
 |---|---|---|
-| Cold boot, login and logout | Desktop initializes; logout returns to greeter; a subsequent login works | Pending |
+| Cold boot, login and logout | Desktop initializes; logout returns to greeter; a subsequent login works | Partial: actual logout/login and initialized candidate startup passed; cold boot pending |
 | Failed startup and update recovery | Failed candidate reaches the known-working fallback; no login loop | Pending |
-| Lock and shell failure/restart | Applications remain hidden and unfocused until password authentication | Pending |
-| Suspend/resume and lid | Lock precedes exposed application content; display/input recover | Pending |
+| Lock and shell failure/restart | Applications remain hidden and unfocused until password authentication | Partial: actual lock/unlock and locked control policy passed; forced shell failure/restart pending |
+| Suspend/resume and lid | Lock precedes exposed application content; display/input recover | Partial: actual suspend/resume passed with lock observed before/after sleep and owner visual confirmation; lid pending |
 | Authenticated VT recovery | Text-console access works; only the selected disposable graphical session ends; greeter returns | Pending |
 | Terminals and daily applications | Shell restart preserves required terminal jobs; browser/editor and Wayland/X11 focus work | Pending |
 | Overlays, clipboard and Files | Open/dismiss operations return focus; keyboard copy/paste and file operations preserve expected data | Pending |
-| Wi-Fi, Bluetooth and audio | Required connect/reconnect, device changes and controls work on actual devices | Pending |
+| Wi-Fi, Bluetooth and audio | Required connect/reconnect, device changes and controls work on actual devices | Partial: Wi-Fi recovered after sleep; audio services active; Bluetooth and audible playback/device changes pending |
 | External displays | Required scale, hotplug, mode rollback and saved layout work with correct input coordinates | Pending |
 | Performance and endurance | Record controlled idle/active CPU, memory, battery and repeated-use behavior on matching binaries | Pending |
+
+Current candidate observations and receipts are described in
+[the activation record](2026-11-09-desos-activation.md). Installation, logout/login,
+lock/unlock and one supervised suspend/resume have now been observed; the owner
+confirmed normal display/input/Wi-Fi and lock-first wake behavior. The broader
+gate is not complete. No cold-boot shutdown is scheduled: nine running containers
+were found, so a separate owner-ready shutdown window is needed.
 
 Existing machine records are historical evidence for their own binaries, not
 passes for this candidate. The older performance samples are active-session
@@ -124,6 +131,10 @@ observations, not a controlled idle baseline. Optional music, AI, gestures and
 phone features can be validated separately from the essential desktop gate.
 
 ## Next decision
+
+The activation sequence below was subsequently carried out for installation,
+logout/login, lock/unlock and one suspend/resume; see the activation record.
+Cold boot and the remaining acceptance cases are still pending.
 
 The next proposed action is activation through the existing source installer
 from the pinned worktree, using the staged release binaries. It requires the
@@ -139,5 +150,6 @@ The current running shell/compositor hashes are recorded in
 of inspection. No current session was restarted or ended.
 
 DesOS live-image work follows the essential hardware gate;
-upstream-kernel testing follows the established base-system baseline. No running
-desktop, kernel, login manager or boot configuration is changed by this work.
+upstream-kernel testing follows the established base-system baseline. The installed
+desktop has now been activated through the separately approved test session;
+the kernel, display-manager service choice and boot configuration remain unchanged.

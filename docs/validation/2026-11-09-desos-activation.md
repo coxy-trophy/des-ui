@@ -72,3 +72,47 @@ versus monotonic clock differences and bounded desktop lock state, and checks
 that the same candidate processes survive. It performs only one approved
 suspend. Waking and entering the lock-screen password remain owner-operated.
 Suspend/resume and post-wake visual acceptance are Pending until observed.
+
+## Suspend/resume observed
+
+The approved suspend request returned exit 0. The observer received logind's
+PrepareForSleep true/false pair and measured a 7.641-second increase in the
+boot-time versus monotonic-clock offset, confirming actual sleep on this boot.
+The desktop was observed locked before sleep and after resume. The same shell
+and compositor PIDs survived and still matched the candidate hashes.
+
+The bounded observer ended while the owner had not yet unlocked. A later sample
+after the owner returned verified the same session and candidate processes,
+connected compositor state and a normal unlocked desktop. The original observer
+result is retained unchanged; `post-resume.json` supplies the later unlock.
+
+The owner explicitly confirmed that the lock screen appeared before desktop
+content after wake and that display, keyboard, touchpad and Wi-Fi worked normally.
+NetworkManager subsequently reported connected/full. PipeWire and WirePlumber
+were active, and the default output/input levels were readable. This does not
+certify audible playback or microphone capture; neither was exercised.
+
+Evidence: private `suspend-result.json`, `suspend-events.jsonl`,
+`suspend-check.log`, `post-resume.json` and `post-resume-services.json`.
+
+## Remaining cold-boot test
+
+Cold boot, failed-startup recovery, authenticated VT recovery, lid behavior and
+the broader application/device/performance cases remain unverified for this
+candidate. Successful logout/login and suspend/resume do not close those cases.
+
+Preflight found kernel `7.1.5+kali-amd64`, with that kernel and the older
+`6.19.14+kali-amd64` image present. GRUB's default index was 0 and its timeout
+5 seconds. No kernel or bootloader configuration was changed. Logind reported
+power-off available. The only ordinary login session belonged to the owner.
+
+There were **nine running Docker containers** at this checkpoint. A full shutdown
+would stop those containers as well as current applications and terminal jobs.
+No cold-boot shutdown is scheduled or requested by the test helpers so far.
+
+The proposed next test, when the owner is ready, is one normal system shutdown,
+physical power-on, sign-in to DEs-UI, and verification of a changed boot ID,
+running candidate hashes, readiness acknowledgement and service recovery. Keep
+the recorded previous shell/compositor pair available; if normal startup fails,
+use the existing fallback or authenticated text-console recovery. Do not install
+or rebuild the candidate again merely to perform that boot test.
