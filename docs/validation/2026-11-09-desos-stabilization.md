@@ -1,8 +1,8 @@
 # DesOS desktop stabilization candidate — 9 November 2026
 
-Status: automatic stabilization checks passed; candidate ready for a controlled
-installation and hardware acceptance session. Physical hardware checks, Ubuntu
-compatibility and DesOS image creation remain Pending.
+Status: automatic checks, installation, actual logout/login, lock/unlock and one
+supervised suspend/resume passed. Remaining hardware acceptance, Ubuntu
+compatibility and DesOS image creation are Pending.
 
 ## Scope and provenance
 
@@ -132,22 +132,21 @@ phone features can be validated separately from the essential desktop gate.
 
 ## Next decision
 
-The activation sequence below was subsequently carried out for installation,
-logout/login, lock/unlock and one suspend/resume; see the activation record.
-Cold boot and the remaining acceptance cases are still pending.
+The staged binaries were installed through the existing source installer after
+owner approval and local administrator authentication. The subsequent fresh
+login activated matching shell/compositor hashes. Lock/unlock and one supervised
+suspend/resume passed; see the activation record and private receipts.
 
-The next proposed action is activation through the existing source installer
-from the pinned worktree, using the staged release binaries. It requires the
-owner's administrator authentication. First save or transfer active work and
-identify terminal jobs to preserve. After installation, a full logout/login is
-needed to activate the matching shell and compositor. Compare installed binary
-hashes with `candidate.json`, then exercise login, lock/unlock, applications,
-and a supervised suspend/resume. Authentication remains user-operated. Deliberate
-startup-failure testing needs a separate disposable/recovery arrangement.
+The next disruptive check is a cold boot: normal shutdown, physical power-on and
+DEs-UI login, followed by boot identity, candidate hash, readiness and service
+checks. Nine containers were running at preflight. A shutdown would stop those
+containers and active applications, so it requires a new owner-ready window;
+none is scheduled. Deliberate failed-startup recovery also needs a separate
+disposable/recovery arrangement.
 
-The current running shell/compositor hashes are recorded in
-`installed-before.json`; they matched their on-disk installed files at the time
-of inspection. No current session was restarted or ended.
+`installed-before.json` records the original pre-installation process hashes.
+The current candidate identities are recorded in `fresh-login.json` and
+`post-resume.json` under the private hardware evidence directory.
 
 DesOS live-image work follows the essential hardware gate;
 upstream-kernel testing follows the established base-system baseline. The installed
