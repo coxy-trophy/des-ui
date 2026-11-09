@@ -42,3 +42,33 @@ compositor hashes to `candidate.json`, checks startup/readiness and then proceed
 with lock/unlock and supervised suspend/resume. All those hardware outcomes
 remain Pending until observed. Do not rerun the installer merely to resume this
 handoff: installation is already verified and the recovery pair is preserved.
+
+## Fresh login and lock/unlock observed
+
+The owner returned after signing in. The one-shot logout receipt returned exit 0.
+The old graphical session ended and a new Wayland session initialized on the
+same boot. Both running executable hashes matched the installed candidate.
+The compositor used the DRM backend; the shell's initialized-startup marker had
+the expected contents, owner, mode 0600 and private parent mode 0700. This is
+logout/login evidence, not a cold-boot pass.
+
+An actual lock request was acknowledged. While the desktop remained locked,
+ping succeeded and launcher/workspace mutations returned `error locked`.
+The owner's normal unlock was observed. The owner explicitly confirmed that
+the lock screen fully covered the desktop and typing worked normally afterward.
+
+Evidence: private `fresh-login.json`, `lock-events.jsonl`, `lock-check.log` and
+`lock-result.json`. Only bounded non-title state and control outcomes are saved.
+
+## Suspend/resume preparation
+
+The laptop was on AC power at 98% battery and charging. The kernel advertised
+suspend with deep sleep selected. The candidate held its DEs-UI sleep delay
+inhibitor, and logind allowed suspend from the test's user-service context.
+The configured lock-on-sleep setting used its enabled source default.
+
+The prepared observer subscribes to logind PrepareForSleep, samples boot-time
+versus monotonic clock differences and bounded desktop lock state, and checks
+that the same candidate processes survive. It performs only one approved
+suspend. Waking and entering the lock-screen password remain owner-operated.
+Suspend/resume and post-wake visual acceptance are Pending until observed.
