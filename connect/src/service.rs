@@ -1,5 +1,5 @@
 //! Bounded private IPC and protocol8 TLS device sessions. No capture starts on boot.
-use crate::{cast::{self,Cast},identity::{self,Store,Result},packet::{Identity,Packet,MAX_FRAME},pairing::{Pairing,Session,Attempt,State}};
+use crate::{cast::{self,Cast},phonekey::{self,Purpose,Reject},identity::{self,Store,Result},packet::{Identity,Packet,MAX_FRAME},pairing::{Pairing,Session,Attempt,State}};
 use openssl::{ssl::{Ssl,SslContextBuilder,SslMethod,SslStream,SslVerifyMode,SslVersion},x509::X509};
 use serde::{Serialize,Deserialize};
 use serde_json::{json,Value};
@@ -28,6 +28,8 @@ impl Job {fn content_guard(&self)->Result<()> {
 struct Shared {
  store:Mutex<Store>,ips:Mutex<BTreeMap<IpAddr,usize>>,devices:Mutex<BTreeMap<String,Device>>,routes:Mutex<BTreeMap<String,Route>>,
  screens:Mutex<crate::screens::ScreenBridge>,screen_peer:Mutex<Option<String>>,cast:Mutex<Option<Cast>>,transfers:Mutex<Option<crate::transfers::TransferManager>>,loopback:bool,stop:AtomicBool,
+ /// Never held together with `store`: take one, let it go, then take the other.
+ phonekey:Mutex<phonekey::Manager>,
  next:AtomicU64,next_approval:AtomicU64,active:AtomicUsize,unpaired:AtomicUsize,ipc_active:AtomicUsize,id:String,name:String,port:u16,
 }
 impl Shared {
@@ -64,6 +66,9 @@ impl Shared {
   let mut identity=self.identity_with_policies(files,media,volume);
   for key in ["incomingCapabilities","outgoingCapabilities"] {
    identity.body[key].as_array_mut().unwrap().push(json!(cast::CAPABILITY));
+   // Says only that this desktop speaks the phone-key packets. Nothing is asked of
+   // a phone until the user enrols it, and a phone that does not list it is never sent one.
+   identity.body[key].as_array_mut().unwrap().push(json!(phonekey::CAPABILITY));
   }
   Ok((identity,(files,media,volume)))
  }
@@ -127,7 +132,7 @@ fn handshake(shared:&Shared,mut tcp:TcpStream,claim:Option<Packet>)->Result<(Ssl
  stream.get_ref().set_read_timeout(Some(Duration::from_millis(200)))?;
  Ok((stream,after,cert,files_advertised))
 }
-struct Actor {shared:Arc<Shared>,view:Device,stream:SslStream<TcpStream>,cert:X509,pair:Pairing,session:Session,started:Instant,timestamp:Option<i64>,write_failed:bool,public_attempt:Option<(Attempt,u64)>,unpaired_permit:Option<UnpairedPermit>,ip:AddressPermit,incoming_capabilities:Vec<String>,outgoing_capabilities:Vec<String>,files_advertised:bool,media_advertised:bool,volume_advertised:bool,reconnect_requested:bool,media_dispatched:bool,cast_id:Option<String>,last_cast_lease:Instant}
+struct Actor {shared:Arc<Shared>,view:Device,stream:SslStream<TcpStream>,cert:X509,pair:Pairing,session:Session,started:Instant,timestamp:Option<i64>,write_failed:bool,public_attempt:Option<(Attempt,u64)>,unpaired_permit:Option<UnpairedPermit>,ip:AddressPermit,incoming_capabilities:Vec<String>,outgoing_capabilities:Vec<String>,files_advertised:bool,media_advertised:bool,volume_advertised:bool,reconnect_requested:bool,media_dispatched:bool,cast_id:Option<String>,last_cast_lease:Instant,presence_seq:u64,presence_answered:u64,last_presence:Instant}
 impl Actor {
  fn send(&mut self,packet:Packet)->Result<()> {let result=write_packet(&mut self.stream,packet);if result.is_err(){self.write_failed=true;}result}
  fn request_battery(&mut self)->Result<()> {
@@ -248,11 +253,56 @@ impl Actor {
   self.shared.clear_cast(|cast|cast.owned_by(&self.view.id,self.view.epoch));
   self.cast_id=None;
  }
+ fn phonekey_capable(&self)->bool {
+  [&self.incoming_capabilities,&self.outgoing_capabilities].iter().all(|caps|caps.iter().any(|cap|cap==phonekey::CAPABILITY))
+ }
+ /// Ask the walk-away phone whether it is still there. Its answers can only ever
+ /// postpone a lock; see `phonekey::Walkaway`.
+ fn phonekey_tick(&mut self)->Result<()> {
+  if self.last_presence.elapsed()<bounded_duration("DES_CONNECT_PRESENCE_MS",phonekey::PRESENCE_INTERVAL_MS){return Ok(());}
+  self.last_presence=Instant::now();
+  if !self.pair.authorized()||!self.phonekey_capable(){return Ok(());}
+  if !self.shared.store.lock().unwrap().peers.get(&self.view.id).is_some_and(|peer|peer.walkaway){return Ok(());}
+  self.presence_seq+=1;
+  self.send(packet(phonekey::CAPABILITY,json!({"v":phonekey::VERSION,"op":"presence","seq":self.presence_seq})))
+ }
+ fn phonekey_received(&mut self,np:&Packet) {
+  if np.payload_size.is_some()||!self.pair.authorized()||!self.phonekey_capable(){return;}
+  if np.body.get("v").and_then(Value::as_u64)!=Some(phonekey::VERSION){return;}
+  match np.body.get("op").and_then(Value::as_str).unwrap_or("") {
+   "present"=>{
+    // Only the answer to the newest question counts, and only once.
+    if np.body.get("seq").and_then(Value::as_u64)!=Some(self.presence_seq)||self.presence_seq==self.presence_answered{return;}
+    self.presence_answered=self.presence_seq;
+    if self.shared.store.lock().unwrap().peers.get(&self.view.id).is_some_and(|peer|peer.walkaway){self.shared.phonekey.lock().unwrap().walkaway.seen(mono_ms());}
+   }
+   "response"|"enrolled"=>{
+    // The binding and the key are read from the trust store now, not from when the
+    // request was made: unpairing or revoking refuses an answer already in flight.
+    let Ok(binding)=phonekey_binding(&self.shared,&self.view.id)else{return;};
+    if self.pair.pinned()!=Some(binding.phone_cert){return;}
+    let key=phonekey_key(&self.shared,&self.view.id);
+    let _=self.shared.phonekey.lock().unwrap().resolve(mono_ms(),&self.view.id,&np.body,key.as_ref(),&binding);
+   }
+   "revoke"=>{
+    // The phone deleted its key. Forget ours; it can only be enrolled again from here.
+    let had=self.shared.store.lock().unwrap().update_peer(&self.view.id,|peer|{peer.phonekey=None;Ok(())}).is_ok();
+    if had{self.shared.phonekey.lock().unwrap().revoke_device(mono_ms(),&self.view.id);}
+   }
+   _=>{},
+  }
+ }
  fn pending(&self,id:Option<u64>)->Result<Attempt>{self.public_attempt.filter(|a|Some(a.1)==id&&self.pair.pending()==Some(a.0)).map(|a|a.0).ok_or_else(||"pairing request changed; refresh before accepting".into())}
  fn command(&mut self,job:&Job)->Result<()> {
   match job.op.as_str() {
    "cast_phone"=>self.cast_start(job)?,
    "cast_input"=>return self.cast_input(job),
+   "phonekey_send"=>{
+    if !self.pair.authorized(){return Err("pair this device before using it as a key".into());}
+    if !self.phonekey_capable(){return Err("this device's DES Connect does not support phone-key requests".into());}
+    let body=job.args.get("body").filter(|body|body.is_object()).cloned().ok_or("missing phone-key body")?;
+    return self.send(packet(phonekey::CAPABILITY,body));
+   }
    "set_files"|"set_media"|"set_volume"=>{
     if !self.pair.authorized()||!session_unlocked(){return Err("permission changes require a paired device and unlocked DES UI session".into());}
     let enabled=job.args.get("enabled").and_then(Value::as_bool).ok_or("enabled must be a boolean")?;
@@ -293,7 +343,7 @@ impl Actor {
     let _=self.request_battery();
    }
    "reject"=>{let attempt=self.pending(job.attempt)?;self.pair.cancel(self.session,attempt)?;self.send(packet("kdeconnect.pair",json!({"pair":false})))?;}
-   "unpair"=>{self.cast_clear_link();self.shared.cancel_peer_files(&self.view.id);self.shared.store.lock().unwrap().forget(&self.view.id)?;self.pair.unpair(self.session)?;self.send(packet("kdeconnect.pair",json!({"pair":false})))?;}
+   "unpair"=>{self.cast_clear_link();self.shared.cancel_peer_files(&self.view.id);self.shared.store.lock().unwrap().forget(&self.view.id)?;self.shared.phonekey.lock().unwrap().revoke_device(mono_ms(),&self.view.id);self.pair.unpair(self.session)?;self.send(packet("kdeconnect.pair",json!({"pair":false})))?;}
    "ping"=>{if !self.pair.authorized(){return Err("pair device before sending commands".into());}
     self.send(packet("kdeconnect.ping",json!({"message":"DES Connect"})))?;
    }
@@ -302,6 +352,7 @@ impl Actor {
  }
  fn received(&mut self,np:Packet)->Result<()> {
   if np.kind==cast::CAPABILITY {self.cast_received(&np);return Ok(());}
+  if np.kind==phonekey::CAPABILITY {self.phonekey_received(&np);return Ok(());}
   if np.payload_size.is_some(){
    if !self.pair.authorized(){return Ok(());}
    if matches!(np.kind.as_str(),crate::media::MPRIS_REQUEST|crate::media::SYSTEM_VOLUME_REQUEST){self.view.error=Some("Media payloads are unsupported".into());self.publish();return Ok(());}
@@ -313,7 +364,7 @@ impl Actor {
   }
   if np.kind=="kdeconnect.pair" {
    let wants=np.body.get("pair").and_then(Value::as_bool).ok_or("invalid pairing packet")?;
-   if !wants {self.cast_clear_link();self.shared.cancel_peer_files(&self.view.id);self.shared.store.lock().unwrap().forget(&self.view.id)?;self.pair.unpair(self.session)?;self.timestamp=None;}
+   if !wants {self.cast_clear_link();self.shared.cancel_peer_files(&self.view.id);self.shared.store.lock().unwrap().forget(&self.view.id)?;self.shared.phonekey.lock().unwrap().revoke_device(mono_ms(),&self.view.id);self.pair.unpair(self.session)?;self.timestamp=None;}
    else if self.pair.state()==State::Outgoing {
     // A simultaneous v8 request carries a timestamp; only a bare response is consent.
     if np.body.contains_key("timestamp"){return Ok(());}
@@ -369,6 +420,7 @@ impl Actor {
    if self.shared.stop.load(Ordering::Acquire){return Ok(());}
    if let Ok(replacement)=replacements.try_recv(){self.replace(replacement)?;pending.clear();carry.clear();frame_start=None;}
    self.cast_tick()?;
+   self.phonekey_tick()?;
    if self.pair.authorized(){self.unpaired_permit=None;}else{
     let limit=bounded_duration("DES_CONNECT_UNPAIRED_MS",90_000);let elapsed=self.started.elapsed();
     if elapsed>limit&&(self.pair.state()==State::Unpaired||elapsed>limit+Duration::from_secs(30)){return Err("unpaired session expired; discover again".into());}
@@ -430,7 +482,7 @@ fn peer_worker(shared:Arc<Shared>,tcp:TcpStream,claim:Option<Packet>){
   let epoch=shared.next.fetch_add(1,Ordering::Relaxed);let (tx,rx)=mpsc::sync_channel(8);let (replacement_tx,replacement_rx)=mpsc::sync_channel(1);
   {let mut routes=shared.routes.lock().unwrap();if routes.contains_key(&id.device_id){return Err("simultaneous device connection".into());}routes.insert(id.device_id.clone(),Route{epoch,digest,commands:tx,replacement:replacement_tx});}
   let view=Device{id:id.device_id.clone(),name:id.name,kind:id.device_type,connected:true,paired:pair.authorized(),pair_state:"unpaired".into(),attempt:None,verification_key:None,battery:None,charging:false,last_ping:None,error:None,files_enabled:false,files_reconnect_needed:false,media_enabled:false,volume_enabled:false,media_reconnect_needed:false,volume_reconnect_needed:false,wireless_cast:false,epoch};
-  let mut actor=Actor{shared:shared.clone(),view,stream,cert,pair,session,started:Instant::now(),timestamp:None,write_failed:false,public_attempt:None,unpaired_permit:None,ip:ip.unwrap(),incoming_capabilities:id.incoming_capabilities,outgoing_capabilities:id.outgoing_capabilities,files_advertised,media_advertised,volume_advertised,reconnect_requested:false,media_dispatched:false,cast_id:None,last_cast_lease:Instant::now()};actor.publish();
+  let mut actor=Actor{shared:shared.clone(),view,stream,cert,pair,session,started:Instant::now(),timestamp:None,write_failed:false,public_attempt:None,unpaired_permit:None,ip:ip.unwrap(),incoming_capabilities:id.incoming_capabilities,outgoing_capabilities:id.outgoing_capabilities,files_advertised,media_advertised,volume_advertised,reconnect_requested:false,media_dispatched:false,cast_id:None,last_cast_lease:Instant::now(),presence_seq:0,presence_answered:0,last_presence:Instant::now()};actor.publish();
   let result=actor.run(rx,replacement_rx);actor.cast_clear_link();let _=actor.stream.get_ref().shutdown(std::net::Shutdown::Both);shared.cancel_peer_files(&id.device_id);actor.pair.disconnected(session);
   let mut routes=shared.routes.lock().unwrap();if routes.get(&id.device_id).is_some_and(|r|r.epoch==epoch){routes.remove(&id.device_id);actor.view.connected=false;actor.view.wireless_cast=false;actor.view.paired=shared.store.lock().unwrap().peers.contains_key(&id.device_id);actor.view.pair_state="offline".into();actor.view.files_reconnect_needed=false;actor.view.media_reconnect_needed=false;actor.view.volume_reconnect_needed=false;actor.view.attempt=None;actor.view.verification_key=None;actor.view.error=result.as_ref().err().map(ToString::to_string);if actor.view.paired{shared.update(actor.view.clone());}else{shared.devices.lock().unwrap().remove(&id.device_id);}}
   result
@@ -440,6 +492,7 @@ fn start_peer(shared:&Arc<Shared>,tcp:TcpStream,claim:Option<Packet>){
  if shared.active.fetch_update(Ordering::AcqRel,Ordering::Relaxed,|n|(n<8).then_some(n+1)).is_ok(){let shared=shared.clone();thread::spawn(move||peer_worker(shared,tcp,claim));}
 }
 fn handle_ipc(shared:&Arc<Shared>,request:Request,udp:&UdpSocket,client:&UnixStream)->Value {
+ if request.op.starts_with("phonekey_") {return phonekey_ipc(shared,&request,client);}
  if request.op=="usb_devices" {
   let result=if session_unlocked() {crate::screens::usb_devices()} else {Err("Unlock DES UI to choose a USB device".into())};
   let mut state=shared.snapshot();
@@ -486,7 +539,7 @@ fn handle_ipc(shared:&Arc<Shared>,request:Request,udp:&UdpSocket,client:&UnixStr
     if let Some(view)=shared.devices.lock().unwrap().get_mut(id){match request.op.as_str(){"set_files"=>{view.files_enabled=enabled;view.files_reconnect_needed=false;},"set_media"=>{view.media_enabled=enabled;view.media_reconnect_needed=false;},_=>{view.volume_enabled=enabled;view.volume_reconnect_needed=false;}}}
    }
    "discover"=>{udp.send_to(&shared.identity().encode()?,"255.255.255.255:1716")?;}
-   "unpair" if !shared.routes.lock().unwrap().contains_key(request.device_id.as_deref().unwrap_or(""))=>{let id=request.device_id.as_deref().ok_or("device_id required")?;shared.cancel_peer_files(id);shared.store.lock().unwrap().forget(id)?;shared.devices.lock().unwrap().remove(id);}
+   "unpair" if !shared.routes.lock().unwrap().contains_key(request.device_id.as_deref().unwrap_or(""))=>{let id=request.device_id.as_deref().ok_or("device_id required")?;shared.cancel_peer_files(id);shared.store.lock().unwrap().forget(id)?;shared.phonekey.lock().unwrap().revoke_device(mono_ms(),id);shared.devices.lock().unwrap().remove(id);}
    "pair"|"accept"|"reject"|"unpair"|"ping"|"set_files"|"set_media"|"set_volume"|"reconnect"|"send_file"|"accept_transfer"|"cast_phone"|"cast_input"=>{
     let id=request.device_id.as_deref().ok_or("device_id required")?;
     let route=shared.routes.lock().unwrap().get(id).cloned().ok_or("device is not connected")?;let tx=route.commands;
@@ -515,11 +568,12 @@ pub fn run_options(socket:&Path,state:&Path,name:&str,loopback:bool)->Result<()>
  let ipc=UnixListener::bind(socket)?;fs::set_permissions(socket,fs::Permissions::from_mode(0o600))?;let _guard=SocketGuard{path:socket.into(),ino:fs::symlink_metadata(socket)?.ino()};ipc.set_nonblocking(true)?;
  let tcp=if loopback{TcpListener::bind(("127.0.0.1",0))?}else{(1716..=1764).find_map(|port|TcpListener::bind(("0.0.0.0",port)).ok()).ok_or("no available KDE Connect TCP port")?};tcp.set_nonblocking(true)?;let port=tcp.local_addr()?.port();
  let udp=UdpSocket::bind(if loopback{("127.0.0.1",0)}else{("0.0.0.0",1716)})?;udp.set_broadcast(true)?;udp.set_nonblocking(true)?;
+ let audit=state.join("phonekey-audit.log");
  let devices=store.peers.iter().map(|(id,p)|(id.clone(),Device::offline(id.clone(),p.name.clone(),p.kind.clone(),p.files_enabled,p.media_enabled,p.volume_enabled))).collect();
  let mut random=[0;8];openssl::rand::rand_bytes(&mut random)?;let approval_seed=u64::from_be_bytes(random)&(u64::MAX>>1);
- let shared=Arc::new(Shared{id:store.id().into(),store:Mutex::new(store),ips:Mutex::new(Default::default()),devices:Mutex::new(devices),routes:Mutex::new(Default::default()),screens:Mutex::new(crate::screens::ScreenBridge::new()),screen_peer:Mutex::new(None),cast:Mutex::new(None),transfers:Mutex::new(None),loopback,stop:AtomicBool::new(false),next:AtomicU64::new(1),next_approval:AtomicU64::new(approval_seed),unpaired:AtomicUsize::new(0),active:AtomicUsize::new(0),ipc_active:AtomicUsize::new(0),name:name.into(),port});
+ let shared=Arc::new(Shared{id:store.id().into(),store:Mutex::new(store),ips:Mutex::new(Default::default()),devices:Mutex::new(devices),routes:Mutex::new(Default::default()),screens:Mutex::new(crate::screens::ScreenBridge::new()),screen_peer:Mutex::new(None),cast:Mutex::new(None),transfers:Mutex::new(None),loopback,stop:AtomicBool::new(false),phonekey:Mutex::new(phonekey::Manager::new(Some(audit))),next:AtomicU64::new(1),next_approval:AtomicU64::new(approval_seed),unpaired:AtomicUsize::new(0),active:AtomicUsize::new(0),ipc_active:AtomicUsize::new(0),name:name.into(),port});
  eprintln!("DES Connect listening on private control socket and LAN TCP {port}");
- let mut screen_check=Instant::now();let mut broadcast=Instant::now()-Duration::from_secs(31);let mut rate=HashMap::<IpAddr,Instant>::new();let mut data=[0;MAX_FRAME+1];
+ let mut screen_check=Instant::now();let mut walkaway_check=Instant::now();let mut broadcast=Instant::now()-Duration::from_secs(31);let mut rate=HashMap::<IpAddr,Instant>::new();let mut data=[0;MAX_FRAME+1];
  while !shared.stop.load(Ordering::Acquire) {
   if !loopback&&broadcast.elapsed()>Duration::from_secs(30){let _=udp.send_to(&shared.identity().encode()?,"255.255.255.255:1716");broadcast=Instant::now();}
   for _ in 0..8 {let Ok((stream,addr))=tcp.accept()else{break};if local(addr.ip()){
@@ -548,6 +602,7 @@ pub fn run_options(socket:&Path,state:&Path,name:&str,loopback:bool)->Result<()>
    });
   }
   if screen_check.elapsed()>Duration::from_millis(500) {screen_check=Instant::now();revocation_tick(&shared);}
+  if walkaway_check.elapsed()>bounded_duration("DES_CONNECT_WALKAWAY_CHECK_MS",2000) {walkaway_check=Instant::now();phonekey_tick(&shared);}
 
   thread::sleep(Duration::from_millis(100));
  }
@@ -574,24 +629,214 @@ fn revocation_tick(shared:&Shared) {
  }
 }
 
-pub fn request(socket:&Path,request:&Request)->Result<Value> {
- let mut stream=connect_control(socket)?;stream.set_read_timeout(Some(Duration::from_secs(5)))?;stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+pub fn request(socket:&Path,request:&Request)->Result<Value> {request_within(socket,request,Duration::from_secs(5))}
+/// A request whose answer waits on a person, such as a phone-key approval.
+pub fn request_within(socket:&Path,request:&Request,patience:Duration)->Result<Value> {
+ let mut stream=connect_control(socket)?;stream.set_read_timeout(Some(patience))?;stream.set_write_timeout(Some(Duration::from_secs(2)))?;
  let mut bytes=serde_json::to_vec(request)?;bytes.push(b'\n');stream.write_all(&bytes)?;
  Ok(serde_json::from_slice(&read_line(&mut stream,1024*1024)?)?)
 }
 
-/// Fail closed when the compositor/shell cannot establish lock state.
-pub fn session_unlocked()->bool {
+/// One line to the shell's private control socket, and its one-line answer.
+fn shell_line(command:&str)->Result<String> {
  let path=std::env::var_os("DES_UI_CONTROL_SOCKET").map(PathBuf::from).unwrap_or_else(||std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(||std::env::temp_dir().join(format!("des-ui-{}",rustix::process::getuid().as_raw()))).join("des-ui-control.sock"));
- let result=(||->Result<bool>{
-  use rustix::net::{socket_with,connect,AddressFamily,SocketType,SocketFlags,SocketAddrUnix};
-  let fd=socket_with(AddressFamily::UNIX,SocketType::STREAM,SocketFlags::CLOEXEC|SocketFlags::NONBLOCK,None)?;connect(&fd,&SocketAddrUnix::new(&path)?)?;
-  let mut stream=UnixStream::from(fd);stream.set_nonblocking(false)?;
-  if rustix::net::sockopt::socket_peercred(&stream)?.uid!=rustix::process::getuid(){return Err("wrong shell owner".into());}
-  stream.set_read_timeout(Some(Duration::from_millis(300)))?;stream.set_write_timeout(Some(Duration::from_millis(300)))?;stream.write_all(b"state\n")?;
-  let bytes=read_line(&mut stream,256*1024)?;let text=std::str::from_utf8(&bytes)?;let body=text.strip_prefix("ok ").ok_or("shell rejected state")?;
-  let state:Value=serde_json::from_str(body)?;Ok(state.get("locked").and_then(Value::as_bool)==Some(false))
- })();result.unwrap_or(false)
+ use rustix::net::{socket_with,connect,AddressFamily,SocketType,SocketFlags,SocketAddrUnix};
+ let fd=socket_with(AddressFamily::UNIX,SocketType::STREAM,SocketFlags::CLOEXEC|SocketFlags::NONBLOCK,None)?;connect(&fd,&SocketAddrUnix::new(&path)?)?;
+ let mut stream=UnixStream::from(fd);stream.set_nonblocking(false)?;
+ if rustix::net::sockopt::socket_peercred(&stream)?.uid!=rustix::process::getuid(){return Err("wrong shell owner".into());}
+ stream.set_read_timeout(Some(Duration::from_millis(300)))?;stream.set_write_timeout(Some(Duration::from_millis(300)))?;stream.write_all(format!("{command}\n").as_bytes())?;
+ Ok(String::from_utf8(read_line(&mut stream,256*1024)?)?)
+}
+/// Whether the session is locked, or `None` when there is no shell to say.
+pub fn session_locked()->Option<bool> {
+ let text=shell_line("state").ok()?;let state:Value=serde_json::from_str(text.strip_prefix("ok ")?).ok()?;
+ state.get("locked").and_then(Value::as_bool)
+}
+/// Fail closed when the compositor/shell cannot establish lock state.
+pub fn session_unlocked()->bool {session_locked()==Some(false)}
+/// The same request `des-ui-ctl lock` makes. There is no counterpart that unlocks.
+fn request_lock()->Result<()> {
+ if shell_line("lock")?.trim_end()=="ok"{Ok(())}else{Err("the shell refused to lock".into())}
+}
+fn mono_ms()->u64 {static START:std::sync::OnceLock<Instant>=std::sync::OnceLock::new();START.get_or_init(Instant::now).elapsed().as_millis() as u64}
+/// This session's login name: the only user a phone-key request may name.
+fn login_name()->Result<String> {
+ let uid=rustix::process::getuid().as_raw();
+ let listed=fs::read_to_string("/etc/passwd").ok().and_then(|text|text.lines().find_map(|line|{
+  let mut fields=line.split(':');let name=fields.next()?;fields.next()?;
+  (fields.next()?.parse::<u32>().ok()?==uid).then(||name.to_owned())
+ }));
+ listed.or_else(||std::env::var("USER").ok()).filter(|name|phonekey::valid_user(name)).ok_or_else(||"cannot tell this session's login name".into())
+}
+fn phonekey_binding(shared:&Shared,id:&str)->Result<phonekey::Binding> {
+ let store=shared.store.lock().unwrap();
+ Ok(phonekey::Binding{desktop_id:shared.id.clone(),desktop_cert:store.certificate_digest()?,phone_id:id.into(),phone_cert:store.pin(id)?.ok_or("device is not paired")?})
+}
+fn phonekey_key(shared:&Shared,id:&str)->Option<phonekey::PublicKey> {
+ shared.store.lock().unwrap().peers.get(id)?.phonekey.as_ref().and_then(|record|phonekey::PublicKey::from_base64(&record.public_key).ok())
+}
+fn walkaway_grace(peer:&identity::PeerRecord)->u64 {
+ let seconds=if peer.walkaway_seconds==0{phonekey::WALKAWAY_DEFAULT}else{peer.walkaway_seconds}.clamp(phonekey::WALKAWAY_MIN,phonekey::WALKAWAY_MAX) as u64;
+ // The override can only shorten the wait, which only locks sooner.
+ bounded_duration("DES_CONNECT_WALKAWAY_MS",seconds*1000).as_millis() as u64
+}
+/// Lock the session when the walk-away phone has been gone for its grace period.
+/// This is the whole of what presence can do.
+fn phonekey_tick(shared:&Shared) {
+ let target=shared.store.lock().unwrap().peers.values().find(|peer|peer.walkaway).map(|peer|(peer.id.clone(),walkaway_grace(peer)));
+ let now=mono_ms();shared.phonekey.lock().unwrap().expire(now);
+ let Some((id,grace))=target else{shared.phonekey.lock().unwrap().walkaway.forget();return;};
+ let unlocked=session_locked()==Some(false);
+ let lock=shared.phonekey.lock().unwrap().walkaway.tick(now,grace,unlocked);
+ if lock {
+  let result=request_lock();
+  shared.phonekey.lock().unwrap().audit("walkaway_lock",json!({"device":id,"grace_seconds":grace/1000,"locked":result.is_ok()}));
+  if let Err(error)=result{eprintln!("DES Connect walk-away lock: {error}");}
+ }
+}
+fn phonekey_status(shared:&Shared)->Value {
+ let peers:Vec<_>=shared.store.lock().unwrap().peers.values().cloned().collect();
+ let connected:Vec<String>=shared.devices.lock().unwrap().values().filter(|device|device.connected&&device.paired).map(|device|device.id.clone()).collect();
+ let now=mono_ms();let manager=shared.phonekey.lock().unwrap();
+ let devices:Vec<Value>=peers.iter().map(|peer|{
+  let key=peer.phonekey.as_ref().and_then(|record|phonekey::PublicKey::from_base64(&record.public_key).ok());
+  let grace=walkaway_grace(peer);
+  json!({"id":peer.id,"name":peer.name,"connected":connected.contains(&peer.id),
+   "enrolled":key.is_some(),"key_id":key.as_ref().map(|key|identity::hex(&key.id())),"fingerprint":key.as_ref().map(|key|phonekey::fingerprint(&key.id())),"public_key":key.as_ref().map(|key|key.base64()),
+   "unlock":key.is_some()&&peer.phonekey.as_ref().is_some_and(|record|record.unlock),"approve":key.is_some()&&peer.phonekey.as_ref().is_some_and(|record|record.approve),
+   "walkaway":peer.walkaway,"walkaway_seconds":grace/1000,
+   "present":peer.walkaway.then(||manager.walkaway.present(now,grace)),"last_seen_seconds":if peer.walkaway{manager.walkaway.last_seen().map(|at|now.saturating_sub(at)/1000)}else{None},
+   "armed":peer.walkaway&&manager.walkaway.armed(),"locked_out":manager.locked_out(&peer.id,now)})
+ }).collect();
+ json!({"version":phonekey::VERSION,"capability":phonekey::CAPABILITY,"devices":devices})
+}
+/// Hand one phone-key packet to the device's own session thread.
+fn phonekey_send(shared:&Shared,id:&str,body:Value,client:&UnixStream)->Result<()> {
+ let route=shared.routes.lock().unwrap().get(id).cloned().ok_or("the phone is not connected")?;
+ let (reply,rx)=mpsc::sync_channel(1);
+ route.commands.try_send(Job{op:"phonekey_send".into(),attempt:None,args:BTreeMap::from([("body".to_owned(),body)]),reply,client:client.try_clone()?,expires_at:Instant::now()+Duration::from_secs(4)}).map_err(|_|"device command queue is full")?;
+ rx.recv_timeout(Duration::from_secs(4)).map_err(|_|"device action timed out")?.map_err(Into::into)
+}
+/// Send a challenge and wait for the one decision it can have. The wait ends at
+/// the deadline, or sooner if whoever asked goes away; either way the phone is told.
+fn phonekey_exchange(shared:&Shared,id:&str,challenge:phonekey::Challenge,key_id:Option<[u8;32]>,client:&UnixStream)->Result<phonekey::Outcome> {
+ let request_id=challenge.request_id;let patience=Duration::from_secs(challenge.ttl())+Duration::from_millis(250);let body=challenge.body(key_id.as_ref());
+ shared.phonekey.lock().unwrap().issue(mono_ms(),id,challenge).map_err(|why|format!("phone-key request refused: {why}"))?;
+ if let Err(error)=phonekey_send(shared,id,body,client){shared.phonekey.lock().unwrap().abandon(mono_ms(),&request_id,Reject::Cancelled);return Err(error);}
+ let deadline=Instant::now()+patience;
+ let outcome=loop {
+  if let Some(outcome)=shared.phonekey.lock().unwrap().take(&request_id){break outcome;}
+  let ended=if shared.stop.load(Ordering::Acquire)||!control_alive(client){Some(Reject::Cancelled)}else if Instant::now()>=deadline{Some(Reject::Timeout)}else{None};
+  if let Some(why)=ended {
+   let outcome=shared.phonekey.lock().unwrap().abandon(mono_ms(),&request_id,why);
+   let _=phonekey_send(shared,id,json!({"v":phonekey::VERSION,"op":"cancel","request_id":identity::hex(&request_id),"reason":why.code()}),client);
+   break outcome.ok_or("phone-key request was lost")?;
+  }
+  thread::sleep(Duration::from_millis(50));
+ };
+ if outcome.suspend {
+  // Repeated forged answers: both signature capabilities go off until the user
+  // turns them on again from an unlocked session.
+  let _=shared.store.lock().unwrap().update_peer(id,|peer|{if let Some(key)=peer.phonekey.as_mut(){key.unlock=false;key.approve=false;}Ok(())});
+  shared.phonekey.lock().unwrap().audit("suspended",json!({"device":id}));
+ }
+ Ok(outcome)
+}
+fn phonekey_ipc(shared:&Arc<Shared>,request:&Request,client:&UnixStream)->Value {
+ let result=phonekey_op(shared,request,client);let status=phonekey_status(shared);
+ match result {
+  Ok(mut reply)=>{reply["ok"]=json!(true);reply["phonekey"]=status;reply},
+  Err(error)=>json!({"ok":false,"error":error.to_string(),"phonekey":status}),
+ }
+}
+fn phonekey_op(shared:&Arc<Shared>,request:&Request,client:&UnixStream)->Result<Value> {
+ let text=|name:&str|request.args.get(name).and_then(Value::as_str);
+ let device=||request.device_id.as_deref().ok_or("device_id required");
+ match request.op.as_str() {
+  "phonekey_status"=>Ok(json!({})),
+  "phonekey_set"=>{
+   if !session_unlocked(){return Err("phone-key settings can only be changed in an unlocked DES UI session".into());}
+   let id=device()?;let capability=text("capability").unwrap_or("");
+   let enabled=request.args.get("enabled").and_then(Value::as_bool).ok_or("enabled must be a boolean")?;
+   let seconds=request.args.get("seconds").map(|value|value.as_u64().filter(|n|(phonekey::WALKAWAY_MIN as u64..=phonekey::WALKAWAY_MAX as u64).contains(n)).ok_or("seconds must be between 30 and 3600")).transpose()?;
+   {
+    let mut store=shared.store.lock().unwrap();
+    if capability=="walkaway"&&enabled&&store.peers.values().any(|peer|peer.walkaway&&peer.id!=id){return Err("walk-away lock is already on for another device; turn that off first".into());}
+    store.update_peer(id,|peer|{
+     match capability {
+      "walkaway"=>{peer.walkaway=enabled;if let Some(seconds)=seconds{peer.walkaway_seconds=seconds as u32;}else if peer.walkaway_seconds==0{peer.walkaway_seconds=phonekey::WALKAWAY_DEFAULT;}},
+      "unlock"|"approve"=>{
+       let key=peer.phonekey.as_mut().ok_or("enrol this phone's key first")?;
+       if capability=="unlock"{key.unlock=enabled;}else{key.approve=enabled;}
+      },
+      _=>return Err("capability must be walkaway, unlock or approve".into()),
+     }Ok(())
+    })?;
+   }
+   let mut manager=shared.phonekey.lock().unwrap();if capability=="walkaway"{manager.walkaway.forget();}
+   manager.audit("set",json!({"device":id,"capability":capability,"enabled":enabled}));Ok(json!({}))
+  }
+  "phonekey_revoke"=>{
+   // Always allowed, locked or not: it can only take a capability away.
+   let id=device()?;shared.store.lock().unwrap().update_peer(id,|peer|{peer.phonekey=None;Ok(())})?;
+   shared.phonekey.lock().unwrap().revoke_device(mono_ms(),id);
+   let _=phonekey_send(shared,id,json!({"v":phonekey::VERSION,"op":"revoke","reason":"desktop"}),client);Ok(json!({}))
+  }
+  "phonekey_enrol"=>{
+   if !session_unlocked(){return Err("a phone can only be enrolled from an unlocked DES UI session".into());}
+   let id=device()?;if !shared.paired(id){return Err("the phone must be paired and connected".into());}
+   let user=login_name()?;
+   let name:String=shared.name.chars().filter(|c|phonekey::valid_action(&c.to_string())||*c==' ').take(64).collect();
+   let action=format!("Enrol this phone as a key for {user} on {}",name.trim());
+   let challenge=phonekey::Challenge::new(Purpose::Enrol,&user,action.trim(),wall() as u64,phonekey::ENROL_TTL)?;
+   let outcome=phonekey_exchange(shared,id,challenge,None,client)?;
+   let phonekey::Decision::Approved{key,..}=&outcome.decision else{return Err(format!("enrolment was not completed: {}",outcome.word()).into());};
+   // A new key starts with unlock and approve off, whatever the old one had.
+   shared.store.lock().unwrap().update_peer(id,|peer|{peer.phonekey=Some(identity::PhoneKeyRecord{public_key:key.base64(),enrolled_at:wall(),unlock:false,approve:false});Ok(())})?;
+   shared.phonekey.lock().unwrap().audit("enrolled",json!({"device":id,"key_id":identity::hex(&key.id())}));
+   Ok(json!({"decision":"approved","device_id":id,"key_id":identity::hex(&key.id()),"fingerprint":phonekey::fingerprint(&key.id())}))
+  }
+  "phonekey_request"=>{
+   let purpose=match text("purpose"){Some("unlock")=>Purpose::Unlock,Some("approve")=>Purpose::Approve,_=>return Err("purpose must be unlock or approve".into())};
+   let wants=|peer:&identity::PeerRecord|peer.phonekey.as_ref().is_some_and(|key|if purpose==Purpose::Unlock{key.unlock}else{key.approve});
+   let enabled:Vec<String>=shared.store.lock().unwrap().peers.values().filter(|peer|wants(peer)).map(|peer|peer.id.clone()).collect();
+   let id=match request.device_id.as_deref() {
+    Some(id)=>{if !enabled.iter().any(|known|known==id){return Err(format!("disabled: {} by phone is off for that device",purpose.as_str()).into());}id.to_owned()},
+    None=>{
+     let mut here:Vec<&String>=enabled.iter().filter(|id|shared.paired(id)).collect();
+     match (enabled.len(),here.len()) {(0,_)=>return Err(format!("disabled: {} by phone is off",purpose.as_str()).into()),(_,0)=>return Err("the phone is not connected".into()),(_,1)=>here.remove(0).clone(),_=>return Err("more than one phone could answer; name one".into())}
+    }
+   };
+   if !shared.paired(&id){return Err("the phone is not connected".into());}
+   let key=phonekey_key(shared,&id).ok_or("no_key: this phone has no enrolled key")?;
+   let me=login_name()?;let user=text("user").unwrap_or(&me);
+   if user!=me {
+    shared.phonekey.lock().unwrap().audit("refused",json!({"device":id,"purpose":purpose.as_str(),"user":user,"reason":Reject::WrongUser.code()}));
+    return Err("wrong_user: a request can only name this session's own user".into());
+   }
+   // An approval is for someone at an unlocked desktop; an unlock is only for a locked one.
+   match (purpose,session_locked()) {
+    (Purpose::Approve,Some(false))|(Purpose::Unlock,Some(true))=>{},
+    (Purpose::Approve,_)=>return Err("approvals need an unlocked DES UI session".into()),
+    _=>return Err("unlock requests need a locked DES UI session".into()),
+   }
+   let action=text("action").ok_or("action text required")?;let now=wall() as u64;
+   let ttl=request.args.get("ttl").map(|value|value.as_u64().filter(|n|(5..=phonekey::MAX_TTL).contains(n)).ok_or("ttl must be between 5 and 120 seconds")).transpose()?.unwrap_or(phonekey::REQUEST_TTL);
+   let challenge=match phonekey::Challenge::from_fields(purpose,user,action,&request.args)? {
+    Some(own)=>{if own.expires_at<=now||own.issued_at>now+60{return Err("expired: the caller's challenge is not current".into());}own},
+    None=>phonekey::Challenge::new(purpose,user,action,now,ttl)?,
+   };
+   let binding=phonekey_binding(shared,&id)?;let sent=challenge.clone();
+   let outcome=phonekey_exchange(shared,&id,challenge,Some(key.id()),client)?;
+   // Everything a verifier needs to check the signature for itself.
+   let mut reply=sent.body(Some(&key.id()));reply.as_object_mut().unwrap().remove("op");
+   reply["decision"]=json!(outcome.word());reply["device_id"]=json!(id);reply["public_key"]=json!(key.base64());
+   reply["desktop_id"]=json!(binding.desktop_id);reply["desktop_cert"]=json!(identity::hex(&binding.desktop_cert));reply["phone_cert"]=json!(identity::hex(&binding.phone_cert));
+   if let phonekey::Decision::Approved{signature,..}=&outcome.decision {use base64::Engine;reply["signature"]=json!(base64::engine::general_purpose::STANDARD.encode(signature));}
+   Ok(reply)
+  }
+  _=>Err("unsupported operation".into()),
+ }
 }
 
 /// Check live authorization on both sides of acquiring a frame. A revocation
@@ -720,7 +965,7 @@ fn control_alive(client:&UnixStream)->bool {
    let listener=UnixListener::bind(base.join("shell.sock")).unwrap();
    let shell=thread::spawn(move||{let(mut stream,_)=listener.accept().unwrap();let mut bytes=[0;6];stream.read_exact(&mut bytes).unwrap();stream.write_all(b"ok {\"locked\":true}\n").unwrap();});
    let mut screens=crate::screens::ScreenBridge::new();screens.start_phone_guarded("TEST",false,||Ok(())).unwrap();
-   let shared=Arc::new(Shared{id:store.id().into(),store:Mutex::new(store),ips:Mutex::new(Default::default()),devices:Mutex::new(BTreeMap::from([(peer.id().into(),device)])),routes:Mutex::new(Default::default()),screens:Mutex::new(screens),screen_peer:Mutex::new(Some(peer.id().into())),cast:Mutex::new(None),transfers:Mutex::new(None),loopback:true,stop:AtomicBool::new(false),next:AtomicU64::new(1),next_approval:AtomicU64::new(1),unpaired:AtomicUsize::new(0),active:AtomicUsize::new(0),ipc_active:AtomicUsize::new(0),name:"Fixture".into(),port:0});
+   let shared=Arc::new(Shared{id:store.id().into(),store:Mutex::new(store),ips:Mutex::new(Default::default()),devices:Mutex::new(BTreeMap::from([(peer.id().into(),device)])),routes:Mutex::new(Default::default()),screens:Mutex::new(screens),screen_peer:Mutex::new(Some(peer.id().into())),cast:Mutex::new(None),transfers:Mutex::new(None),loopback:true,stop:AtomicBool::new(false),phonekey:Mutex::new(phonekey::Manager::new(None)),next:AtomicU64::new(1),next_approval:AtomicU64::new(1),unpaired:AtomicUsize::new(0),active:AtomicUsize::new(0),ipc_active:AtomicUsize::new(0),name:"Fixture".into(),port:0});
    let stalled=shared.transfers.lock().unwrap();let(tx,rx)=mpsc::sync_channel(1);let worker=shared.clone();
    let watchdog=thread::spawn(move||{revocation_tick(&worker);tx.send(()).unwrap();});
    let prompt=rx.recv_timeout(Duration::from_secs(1)).is_ok();drop(stalled);watchdog.join().unwrap();shell.join().unwrap();
