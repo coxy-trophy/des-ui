@@ -11,6 +11,8 @@ mod companion;
 mod config;
 mod control;
 mod desktop;
+#[allow(dead_code)] // used by the desktop surfaces added next
+mod desos;
 mod devices;
 mod geo;
 mod health;
