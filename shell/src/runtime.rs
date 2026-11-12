@@ -29,6 +29,14 @@ impl eframe::App for App {
         for message in self.settings.poll_devices(ctx) {
             self.notices.post("Devices", &message, false);
         }
+        // What DesOS has to tell the user at the start of a session, such as that the
+        // system recovered itself. Held back while locked, so it is seen; it stays in
+        // the notification list until dismissed.
+        if !self.lock.locked {
+            for notice in self.desos.session_notices() {
+                self.notices.post("DesOS", &notice.message, true);
+            }
+        }
         // While the terminal in use is in an ssh session, the panels show that machine.
         let focused = self.focus_tab();
         self.remote.follow_tab(self.tabs.get(focused), ctx);
@@ -472,7 +480,7 @@ impl eframe::App for App {
                     let next_event = self.agenda.next_today();
                     let rect = on_screen(frame_layout.left.expect("open left panel"));
                     frame_region(ui, rect, column, Layout::top_down(Align::Min), |ui| {
-                        panels::left(ui, &theme, &self.mon, &mut self.pet, &self.widgets, next_event.as_ref())
+                        panels::left(ui, &theme, &self.mon, &mut self.pet, &self.widgets, next_event.as_ref(), self.desos.integrity_line().as_ref())
                     });
                 }
                 if open.right {
@@ -626,7 +634,7 @@ impl eframe::App for App {
                         self.settings.set_music_status(self.music.connection_status());
                         self.settings.set_live_terminal_counts(self.tabs.iter().filter(|tab| tab.persistent_id.is_some()).count(), self.tabs.len());
                         self.settings.set_desktop_connected(self.desktop.as_ref().is_some_and(|d|d.connected()));
-                        self.settings.show(ui, mine, &theme, &self.config, open, &self.mon, &places, displays, &self.input, &mut self.companion)
+                        self.settings.show(ui, mine, &theme, &self.config, open, &self.mon, &places, displays, &self.input, &mut self.companion, &mut self.desos)
                     });
                     for change in changes {
                         self.apply(ctx, change);
@@ -882,6 +890,12 @@ impl eframe::App for App {
             covered = Some(covered.map_or(meter, |toasts| toasts.union(meter)));
         }
         // The calendar opened from the clock; lifted with the toasts, so it shows over applications.
+        // The integrity line was clicked: its explanation is in Settings.
+        if desos::take_details_request(ctx) {
+            self.files_browser = None; self.launcher.open = false; self.music.open = false; self.notices.open = false; self.power_menu.open = false;
+            self.settings.open_at(&self.config, "history");
+            self.send(Command::Terminal);
+        }
         if let Some(anchor) = agenda::take_request(ctx) {
             self.agenda.toggle(ctx, anchor);
         }

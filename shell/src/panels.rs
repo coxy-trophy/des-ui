@@ -189,7 +189,7 @@ fn area_chart(ui: &mut Ui, values: &[f32], max: f32, size: eframe::egui::Vec2, c
 
 /// The machine whose readings these are: its name, whether it is this one or one
 /// followed through ssh, and services that failed.
-fn machine_card(ui: &mut Ui, theme: &Theme, mon: &SysMon) {
+fn machine_card(ui: &mut Ui, theme: &Theme, mon: &SysMon, integrity: Option<&crate::desos::Line>) {
     card(ui, |ui| {
         let name = mon.remote.as_ref().map_or(mon.host.as_str(), |remote| if remote.live { mon.host.as_str() } else { remote.name.as_str() });
         card_head(ui, &truncate(&name.to_uppercase(), 16), |ui| {
@@ -209,11 +209,30 @@ fn machine_card(ui: &mut Ui, theme: &Theme, mon: &SysMon) {
         for unit in mon.failed_units.iter().take(2) {
             ui::text(ui, &truncate(unit, fit), ui::mono(11.5), ui::CAUTION);
         }
+        // DesOS only, and only for this machine: a host followed through ssh has no
+        // such reading here.
+        if let Some(line) = integrity.filter(|_| mon.remote.is_none()) { integrity_row(ui, theme, line); }
     });
 }
 
+/// Whether the system matches its signed build record, as one reading. The pointer
+/// reads the reason; a click opens it in Settings.
+fn integrity_row(ui: &mut Ui, theme: &Theme, line: &crate::desos::Line) {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 16.0), Sense::click());
+    let lit = response.hovered() || response.has_focus();
+    ui.painter().text(rect.left_center(), Align2::LEFT_CENTER, "INTEGRITY", ui::mono(11.5), if lit { ui::SECONDARY } else { ui::LABEL });
+    ui.painter().text(rect.right_center(), Align2::RIGHT_CENTER, line.value, ui::mono(11.5), crate::desos_view::tone_color(line.tone));
+    if response.has_focus() {
+        ui.painter().rect_stroke(rect.expand2(vec2(3.0, 2.0)), ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside);
+    }
+    response.widget_info(|| eframe::egui::WidgetInfo::labeled(eframe::egui::WidgetType::Button, true, format!("Integrity: {}", line.value.to_lowercase())));
+    if response.on_hover_cursor(eframe::egui::CursorIcon::PointingHand).on_hover_text(format!("{}\n\nClick for the details in Settings.", line.detail)).clicked() {
+        crate::desos::request_details(ui.ctx());
+    }
+}
+
 /// Keep the companion's footer independent of telemetry flow and clipping.
-pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon, pet: &mut crate::pet::Pet, widgets: &crate::widgets::Widgets, next: Option<&(String, chrono::NaiveDateTime)>) {
+pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon, pet: &mut crate::pet::Pet, widgets: &crate::widgets::Widgets, next: Option<&(String, chrono::NaiveDateTime)>, integrity: Option<&crate::desos::Line>) {
     let rect = ui.max_rect();
     let footer = pet.room().min(rect.height());
     let body = Rect::from_min_max(rect.min, pos2(rect.right(), (rect.bottom()-footer-if footer>0.0 {8.0}else{0.0}).max(rect.top()+1.0)));
@@ -222,7 +241,7 @@ pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon, pet: &mut crate::pet::Pet,
     if body.height() < 560.0 {
         left_compact(&mut instruments, theme, mon);
     } else {
-        left_instruments(&mut instruments, theme, mon, widgets, next);
+        left_instruments(&mut instruments, theme, mon, widgets, next, integrity);
     }
     if footer > 0.0 {
         let area = Rect::from_min_max(pos2(rect.left(), rect.bottom()-footer), rect.max);
@@ -266,7 +285,7 @@ fn left_compact(ui: &mut Ui, theme: &Theme, mon: &SysMon) {
     }
 }
 
-fn left_instruments(ui: &mut Ui, theme: &Theme, mon: &SysMon, widgets: &crate::widgets::Widgets, next: Option<&(String, chrono::NaiveDateTime)>) {
+fn left_instruments(ui: &mut Ui, theme: &Theme, mon: &SysMon, widgets: &crate::widgets::Widgets, next: Option<&(String, chrono::NaiveDateTime)>, integrity: Option<&crate::desos::Line>) {
     // At the start of a session the column comes on with the rest of the frame.
     let stage = powerup::stage(ui.ctx());
     stage.apply(ui, Part::Left);
@@ -278,7 +297,7 @@ fn left_instruments(ui: &mut Ui, theme: &Theme, mon: &SysMon, widgets: &crate::w
     ui.add_space(6.0);
 
     // Following a host through ssh: its name, and whether its readings are the ones shown.
-    machine_card(ui, theme, mon);
+    machine_card(ui, theme, mon, integrity);
 
     let load = mon.cpu_hist.back().copied().unwrap_or(0.0);
     card(ui, |ui| {
@@ -1538,7 +1557,7 @@ mod left_footer_tests {
                 eframe::egui::CentralPanel::default().show(ctx,|ui| {
                     let mut column = ui.new_child(eframe::egui::UiBuilder::new().max_rect(area));
                     column.set_clip_rect(area);
-                    left(&mut column,&theme,&mon,&mut pet,&widgets,None);
+                    left(&mut column,&theme,&mon,&mut pet,&widgets,None,None);
                 });
             });
             assert!(output.shapes.iter().any(|shape| match &shape.shape {
@@ -1546,5 +1565,75 @@ mod left_footer_tests {
                 _ => false,
             }), "pet missing from reserved footer at {height}px");
         }
+    }
+}
+
+#[cfg(test)]
+mod integrity_row_tests {
+    use super::*;
+    use crate::desos::{Integrity, Line};
+
+    /// Draws the left column `width` wide and returns its texts with where they are,
+    /// and whether the integrity line asked for its details after a click at `click`.
+    fn drawn(width: f32, line: Option<&Line>, remote: bool, click: Option<eframe::egui::Pos2>) -> (Vec<(String, Rect)>, bool) {
+        let ctx = eframe::egui::Context::default();
+        ui::install_fonts(&ctx, None, None);
+        let theme = Theme::load("signal");
+        let mut mon = SysMon::new();
+        if remote { mon.remote = Some(crate::sysmon::Following { name: "build-host".into(), live: true, word: "" }); }
+        let widgets = crate::widgets::Widgets::new(ctx.clone());
+        let mut pet = crate::pet::Pet::new("crab");
+        let area = Rect::from_min_size(pos2(20.0, 20.0), vec2(width, 900.0));
+        let press = |pressed| click.map(|pos| eframe::egui::Event::PointerButton { pos, button: eframe::egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+        let mut output = None;
+        for events in [vec![], click.map(eframe::egui::Event::PointerMoved).into_iter().collect(), press(true).into_iter().collect(), press(false).into_iter().collect::<Vec<_>>()] {
+            output = Some(ctx.run(eframe::egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 940.0))), events, ..Default::default() }, |ctx| {
+                eframe::egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut column = ui.new_child(eframe::egui::UiBuilder::new().max_rect(area));
+                    column.set_clip_rect(area);
+                    left(&mut column, &theme, &mon, &mut pet, &widgets, None, line);
+                });
+            }));
+        }
+        let texts = output.unwrap().shapes.iter().filter_map(|shape| match &shape.shape {
+            eframe::egui::Shape::Text(text) => Some((text.galley.job.text.clone(), Rect::from_min_size(text.pos, text.galley.size()))),
+            _ => None,
+        }).collect();
+        (texts, crate::desos::take_details_request(&ctx))
+    }
+
+    #[test]
+    fn the_line_is_one_reading_in_the_machine_card_and_fits_the_narrowest_column() {
+        let lines = [Integrity::NotRun.line(), Integrity::Unreadable("x".into()).line(),
+            crate::desos::parse_verify(br#"{"schema":"desos-verify-v1","mode":"quick","overall":"pass","checks":[]}"#, None).line(),
+            crate::desos::parse_verify(br#"{"schema":"desos-verify-v1","mode":"full","overall":"fail","checks":[]}"#, None).line()];
+        for line in &lines {
+            // 180 is the column's content width on a 1280-pixel display (240 less the
+            // frame's gaps and margins); the card pads 12 a side.
+            for width in [180.0, 292.0] {
+                let (texts, _) = drawn(width, Some(line), false, None);
+                let label = texts.iter().find(|(text, _)| text == "INTEGRITY").unwrap_or_else(|| panic!("no label at {width}"));
+                let value = texts.iter().find(|(text, _)| text == line.value).unwrap_or_else(|| panic!("no {:?} at {width}", line.value));
+                assert!((label.1.center().y - value.1.center().y).abs() < 1.0, "one line");
+                assert!(label.1.right() + 6.0 <= value.1.left(), "{:?} runs into its label at {width}: {:?} {:?}", line.value, label.1, value.1);
+                assert!(value.1.right() <= 20.0 + width - CARD_PAD + 0.5 && label.1.left() >= 20.0 + CARD_PAD - 0.5);
+            }
+        }
+    }
+
+    #[test]
+    fn nothing_is_drawn_without_a_reading_or_for_another_machine() {
+        let line = Integrity::NotRun.line();
+        assert!(!drawn(292.0, None, false, None).0.iter().any(|(text, _)| text == "INTEGRITY"), "not DesOS: no line at all");
+        assert!(!drawn(292.0, Some(&line), true, None).0.iter().any(|(text, _)| text == "INTEGRITY"), "a host followed through ssh is not this system");
+    }
+
+    #[test]
+    fn a_click_asks_for_the_details() {
+        let line = Integrity::NotRun.line();
+        let (texts, asked) = drawn(292.0, Some(&line), false, None);
+        assert!(!asked);
+        let at = texts.iter().find(|(text, _)| text == "INTEGRITY").unwrap().1.center();
+        assert!(drawn(292.0, Some(&line), false, Some(at)).1);
     }
 }

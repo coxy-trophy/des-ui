@@ -111,9 +111,11 @@ enum Section {
     Users,
     Session,
     Health,
+    /// DesOS only: the integrity result and the system's snapshots.
+    History,
 }
 
-const SECTIONS: [(Section, &str); 19] = [
+const SECTIONS: [(Section, &str); 20] = [
     (Section::Appearance, "APPEARANCE"),
     (Section::Terminal, "TERMINAL"),
     (Section::Frame, "FRAME"),
@@ -133,6 +135,7 @@ const SECTIONS: [(Section, &str); 19] = [
     (Section::Users, "USERS"),
     (Section::Session, "SESSION"),
     (Section::Health, "HEALTH"),
+    (Section::History, "HISTORY"),
 ];
 
 // Keep protocol names in SECTIONS stable. Navigation and search share this catalog,
@@ -151,7 +154,7 @@ struct SectionInfo {
     summary: &'static str,
     keywords: &'static str,
 }
-const SETTINGS_CATALOG: [SectionInfo; 19] = [
+const SETTINGS_CATALOG: [SectionInfo; 20] = [
     SectionInfo { section: Section::Appearance, group: SettingsGroup::Desktop, title: "Appearance", summary: "Wallpaper, theme, accent and visual effects", keywords: "background color colour transparency frosted blur glow scanlines night light reduce motion" },
     SectionInfo { section: Section::Frame, group: SettingsGroup::Desktop, title: "Desktop & panels", summary: "Panel visibility, application shelf and pet", keywords: "frame dock sidebar sidebars taskbar apps minimized collapsed animal companion pet" },
     SectionInfo { section: Section::Terminal, group: SettingsGroup::Desktop, title: "Terminal", summary: "Font, text size, cursor and scrollback", keywords: "console shell typeface line height copy select clipboard blink" },
@@ -171,7 +174,13 @@ const SETTINGS_CATALOG: [SectionInfo; 19] = [
     SectionInfo { section: Section::Users, group: SettingsGroup::Personal, title: "Users", summary: "Accounts, password and login picture", keywords: "user account avatar profile photo picture login password" },
     SectionInfo { section: Section::Session, group: SettingsGroup::System, title: "Session & startup", summary: "Save, restore, autostart, lock and log out", keywords: "session startup autostart programs recovery reconnect terminal save restore lock logout log out sign out idle screen off sleep" },
     SectionInfo { section: Section::Health, group: SettingsGroup::System, title: "System health", summary: "Service status, diagnostics and music connection", keywords: "health system service diagnostics troubleshoot failure error connected music status" },
+    SectionInfo { section: Section::History, group: SettingsGroup::System, title: "System history", summary: "Snapshots of the system, what changed, and going back", keywords: "history undo rollback roll back snapshot restore revert earlier state recover recovery update upgrade integrity verify signed build record desos" },
 ];
+/// Whether a section exists on this machine. System history is DesOS's alone: on
+/// any other system it is not listed, not found by search and not opened by name.
+fn offered(section: Section) -> bool {
+    section != Section::History || crate::desos::present()
+}
 fn section_info(section: Section) -> &'static SectionInfo {
     SETTINGS_CATALOG.iter().find(|info| info.section == section).expect("every section has navigation metadata")
 }
@@ -184,7 +193,7 @@ fn normalized_settings_query(query: &str) -> String {
 fn settings_matches(query: &str) -> Vec<&'static SectionInfo> {
     let query = normalized_settings_query(query);
     if query.is_empty() { return Vec::new(); }
-    let mut matches = SETTINGS_CATALOG.iter().filter_map(|info| {
+    let mut matches = SETTINGS_CATALOG.iter().filter(|info| offered(info.section)).filter_map(|info| {
         let title = normalized_settings_query(info.title);
         let haystack = normalized_settings_query(&format!("{} {} {} {}", info.title, info.summary, info.keywords, group_title(info.group)));
         query.split_whitespace().all(|word| haystack.contains(word)).then_some((if title == query { 0 } else if title.starts_with(&query) { 1 } else { 2 }, info))
@@ -266,11 +275,14 @@ const SETTING_INDEX: &[SettingEntry] = &[
     entry(Section::Session, "Turn the screen off", "Blank the screen when the machine is left alone"),
     entry(Section::Session, "Lock before sleep", "Wake to the lock screen"),
     entry(Section::Session, "Log out", "End the session"),
+    entry(Section::History, "Integrity", "Whether the system matches its signed build record"),
+    entry(Section::History, "Take a snapshot", "Keep the system as it is now, to go back to"),
+    entry(Section::History, "Go back to an earlier state", "Make a snapshot the system at the next restart"),
 ];
 fn setting_entry_matches(query: &str) -> Vec<&'static SettingEntry> {
     let query = normalized_settings_query(query);
     if query.is_empty() { return Vec::new(); }
-    let mut matches = SETTING_INDEX.iter().filter_map(|entry| {
+    let mut matches = SETTING_INDEX.iter().filter(|entry| offered(entry.section)).filter_map(|entry| {
         let label = normalized_settings_query(entry.label);
         let haystack = normalized_settings_query(&format!("{} {}", entry.label, entry.about));
         query.split_whitespace().all(|word| haystack.contains(word)).then_some((if label.starts_with(&query) { 0 } else if label.contains(&query) { 1 } else { 2 }, entry))
@@ -301,7 +313,7 @@ fn related(section: Section) -> &'static [(Section, &'static str)] {
 
 /// Canonical settings destinations used by the command palette.
 pub fn destinations() -> Vec<(&'static str, &'static str)> {
-    SECTIONS.iter().map(|(section, id)| (*id, section_info(*section).title)).collect()
+    SECTIONS.iter().filter(|(section, _)| offered(*section)).map(|(section, id)| (*id, section_info(*section).title)).collect()
 }
 
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -471,7 +483,7 @@ impl Settings {
     pub fn open_at(&mut self, config: &Config, name: &str) {
         self.open(config);
         let wanted = name.to_uppercase();
-        if let Some((section, _)) = SECTIONS.iter().find(|(_, title)| title.starts_with(&wanted)) {
+        if let Some((section, _)) = SECTIONS.iter().find(|(section, title)| offered(*section) && title.starts_with(&wanted)) {
             self.section = *section;
         } else if let Some(info) = settings_matches(name).first() {
             self.section = info.section;
@@ -496,6 +508,7 @@ impl Settings {
         displays: Option<&Displays>,
         input: &InputSettings,
         companion: &mut crate::companion::Companion,
+        desos: &mut crate::desos::Desos,
     ) -> Vec<Change> {
         let mut changes = Vec::new();
         // Escape closes, unless it is being used to leave the text field.
@@ -561,6 +574,7 @@ impl Settings {
                             Section::Region => settings.region.get_or_insert_with(|| crate::region::Region::new(ui.ctx().clone())).show(ui, theme, config.twelve_hour, &mut changes),
                             Section::Users => settings.users.get_or_insert_with(|| crate::users::Users::new(ui.ctx().clone())).show(ui, theme),
                             Section::Session => settings.session(ui, theme, config, input, &mut changes),
+                            Section::History => desos.show(ui, theme),
                         }
         });
         if !self.open { self.appearance_editor.reset(&config.appearance); }
@@ -679,7 +693,7 @@ impl Settings {
             for (group, title) in SETTINGS_GROUPS {
                 ui.add_space(10.0);
                 group_label(ui, title);
-                for info in SETTINGS_CATALOG.iter().filter(|info| info.group == group) {
+                for info in SETTINGS_CATALOG.iter().filter(|info| info.group == group && offered(info.section)) {
                     let count = hits.iter().find(|(section, _)| *section == info.section).map_or(0, |(_, count)| *count);
                     let hint = if count > 0 { count.to_string() } else { String::new() };
                     let current = !searching && self.section == info.section;
@@ -700,7 +714,7 @@ impl Settings {
             for (group, title) in SETTINGS_GROUPS {
                 ui.add_space(10.0);
                 group_label(ui, title);
-                for info in SETTINGS_CATALOG.iter().filter(|info| info.group == group) {
+                for info in SETTINGS_CATALOG.iter().filter(|info| info.group == group && offered(info.section)) {
                     if entry_row(ui, theme, None, info.title, info.summary).clicked() {
                         self.go(info.section, None);
                     }
@@ -2264,11 +2278,43 @@ mod tests {
     fn a_wide_sidebar_lists_every_section_at_once() {
         let mut settings = Settings { section: Section::Sound, ..Default::default() };
         let texts = page_texts(&mut settings, 1400.0, |_, _| {});
-        for info in &SETTINGS_CATALOG {
+        for info in SETTINGS_CATALOG.iter().filter(|info| info.section != Section::History) {
             assert!(texts.iter().any(|text| text == info.title), "missing {} from the sidebar", info.title);
         }
+        assert!(!texts.iter().any(|text| text == "System history"), "DesOS's section is not listed on another system");
         assert!(texts.iter().any(|text| text == "HARDWARE / SOUND"), "the header says where this is");
         assert!(texts.iter().any(|text| text == "Brightness"), "a wide page shows related sections");
+    }
+
+    #[test]
+    fn system_history_exists_only_on_desos() {
+        let config = Config::default();
+        let ids = || destinations().into_iter().map(|(id, _)| id).collect::<Vec<_>>();
+        let found = |query: &str| settings_matches(query).iter().any(|info| info.section == Section::History);
+        let entries = |query: &str| setting_entry_matches(query).iter().any(|entry| entry.section == Section::History);
+
+        // Any other system, such as Ubuntu with DEs-UI from the apt repository.
+        crate::desos::set_present_for_test(false);
+        assert!(!ids().contains(&"HISTORY"), "not offered to the command palette");
+        assert!(!found("history") && !found("undo") && !found("rollback") && !found("integrity") && !found("system"));
+        assert!(!entries("snapshot") && !entries("go back") && !entries("integrity"));
+        let mut settings = Settings::default();
+        settings.open_at(&config, "history");
+        assert!(settings.section != Section::History, "not opened by name");
+        let narrow = page_texts(&mut Settings { narrow_list: true, ..Default::default() }, 420.0, |_, _| {});
+        assert!(!narrow.iter().any(|text| text == "System history"));
+
+        crate::desos::set_present_for_test(true);
+        assert!(ids().contains(&"HISTORY"));
+        assert!(found("undo") && found("rollback") && found("integrity") && entries("snapshot") && entries("go back"));
+        let mut settings = Settings::default();
+        settings.open_at(&config, "history");
+        assert!(settings.section == Section::History);
+        let wide = page_texts(&mut settings, 1400.0, |_, _| {});
+        assert!(wide.iter().any(|text| text == "System history") && wide.iter().any(|text| text == "SYSTEM / SYSTEM HISTORY"), "{wide:?}");
+        let narrow = page_texts(&mut Settings { narrow_list: true, ..Default::default() }, 420.0, |_, _| {});
+        assert!(narrow.iter().any(|text| text == "System history"));
+        crate::desos::set_present_for_test(false);
     }
 
     #[test]
