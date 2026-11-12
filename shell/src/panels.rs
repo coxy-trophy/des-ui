@@ -239,7 +239,7 @@ pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon, pet: &mut crate::pet::Pet,
     let mut instruments = ui.new_child(eframe::egui::UiBuilder::new().id_salt("left-instruments").max_rect(body).layout(Layout::top_down(Align::Min)));
     instruments.set_clip_rect(body.intersect(ui.clip_rect()));
     if body.height() < 560.0 {
-        left_compact(&mut instruments, theme, mon);
+        left_compact(&mut instruments, theme, mon, integrity);
     } else {
         left_instruments(&mut instruments, theme, mon, widgets, next, integrity);
     }
@@ -253,7 +253,7 @@ pub fn left(ui: &mut Ui, theme: &Theme, mon: &SysMon, pet: &mut crate::pet::Pet,
 
 /// On a short screen: the time, the processor and memory together, and the busiest
 /// processes for as far as they fit.
-fn left_compact(ui: &mut Ui, theme: &Theme, mon: &SysMon) {
+fn left_compact(ui: &mut Ui, theme: &Theme, mon: &SysMon, integrity: Option<&crate::desos::Line>) {
     ui.spacing_mut().item_spacing.y = 5.0;
     clock(ui, theme, if ui.max_rect().height() < 300.0 {38.0}else{46.0});
     date_line(ui, mon, ui::mono(10.5));
@@ -268,6 +268,8 @@ fn left_compact(ui: &mut Ui, theme: &Theme, mon: &SysMon) {
         if let Some(temperature) = mon.cpu_temperature() {
             reading_row(ui, "CPU TEMP", &format!("{temperature:.0}°"), if temperature >= 100.0 * ui::CAUTION_ABOVE { ui::CAUTION } else { ui::TEXT });
         }
+        // The short column has no machine card; the reading sits with the others.
+        if let Some(line) = integrity.filter(|_| mon.remote.is_none()) { integrity_row(ui, theme, line); }
     });
     if ui.available_height() >= CARD_CHROME + 24.0 {
         let floor = ui.max_rect().bottom() - CARD_PAD - CARD_GAP;
@@ -1575,7 +1577,9 @@ mod integrity_row_tests {
 
     /// Draws the left column `width` wide and returns its texts with where they are,
     /// and whether the integrity line asked for its details after a click at `click`.
-    fn drawn(width: f32, line: Option<&Line>, remote: bool, click: Option<eframe::egui::Pos2>) -> (Vec<(String, Rect)>, bool) {
+    fn drawn(width: f32, line: Option<&Line>, remote: bool, click: Option<eframe::egui::Pos2>) -> (Vec<(String, Rect)>, bool) { drawn_tall(width, 900.0, line, remote, click) }
+
+    fn drawn_tall(width: f32, height: f32, line: Option<&Line>, remote: bool, click: Option<eframe::egui::Pos2>) -> (Vec<(String, Rect)>, bool) {
         let ctx = eframe::egui::Context::default();
         ui::install_fonts(&ctx, None, None);
         let theme = Theme::load("signal");
@@ -1583,7 +1587,7 @@ mod integrity_row_tests {
         if remote { mon.remote = Some(crate::sysmon::Following { name: "build-host".into(), live: true, word: "" }); }
         let widgets = crate::widgets::Widgets::new(ctx.clone());
         let mut pet = crate::pet::Pet::new("crab");
-        let area = Rect::from_min_size(pos2(20.0, 20.0), vec2(width, 900.0));
+        let area = Rect::from_min_size(pos2(20.0, 20.0), vec2(width, height));
         let press = |pressed| click.map(|pos| eframe::egui::Event::PointerButton { pos, button: eframe::egui::PointerButton::Primary, pressed, modifiers: Default::default() });
         let mut output = None;
         for events in [vec![], click.map(eframe::egui::Event::PointerMoved).into_iter().collect(), press(true).into_iter().collect(), press(false).into_iter().collect::<Vec<_>>()] {
@@ -1619,6 +1623,18 @@ mod integrity_row_tests {
                 assert!(value.1.right() <= 20.0 + width - CARD_PAD + 0.5 && label.1.left() >= 20.0 + CARD_PAD - 0.5);
             }
         }
+    }
+
+    #[test]
+    fn the_short_column_of_a_1280_by_800_display_carries_the_line_too() {
+        let line = Integrity::NotRun.line();
+        let (texts, _) = drawn_tall(180.0, 520.0, Some(&line), false, None);
+        assert!(texts.iter().any(|(text, _)| text == "PROCESSES") && !texts.iter().any(|(text, _)| text == "LOCAL"), "this is the compact column");
+        let label = texts.iter().find(|(text, _)| text == "INTEGRITY").expect("the line");
+        let value = texts.iter().find(|(text, _)| text == line.value).expect("its reading");
+        assert!(label.1.right() + 6.0 <= value.1.left() && value.1.right() <= 20.0 + 180.0 - CARD_PAD + 0.5);
+        assert!(!drawn_tall(180.0, 520.0, None, false, None).0.iter().any(|(text, _)| text == "INTEGRITY"));
+        assert!(!drawn_tall(180.0, 520.0, Some(&line), true, None).0.iter().any(|(text, _)| text == "INTEGRITY"));
     }
 
     #[test]

@@ -70,7 +70,16 @@ pub struct Paths {
 }
 
 impl Paths {
+    /// The real places. A debug build can be pointed at a directory of stand-ins
+    /// with DES_UI_DESOS_FIXTURE, to look at these surfaces on a machine that is
+    /// not DesOS; a release build never reads it, so nothing in the environment can
+    /// change which program is run as root.
     pub fn system() -> Paths {
+        if cfg!(debug_assertions) {
+            if let Some(dir) = std::env::var_os("DES_UI_DESOS_FIXTURE").map(PathBuf::from).filter(|dir| dir.is_absolute()) {
+                return Paths { os_release: dir.join("os-release"), verify: dir.join("verify.json"), boot_id: dir.join("boot_id"), undo: dir.join("desos-undo"), pkexec: dir.join("pkexec") };
+            }
+        }
         Paths {
             os_release: "/etc/os-release".into(),
             verify: "/run/desos/verify.json".into(),
