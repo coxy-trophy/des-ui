@@ -657,11 +657,12 @@ pub fn paint_wifi(painter: &egui::Painter, c: egui::Pos2, color: Color32, lit: u
     let (from, to) = (-PI * 0.75, -PI * 0.25);
     let apex = c + vec2(0.0, 7.4) * scale;
     let ink = |part: u8| if lit > part { color } else { color.gamma_multiply(UNLIT) };
+    // A small wedge and thin arcs with clear gaps, so it stays light at strip size.
     let mut wedge = vec![apex];
-    wedge.extend(arc(apex, 5.8 * scale, from, to));
+    wedge.extend(arc(apex, 4.4 * scale, from, to));
     painter.add(egui::Shape::convex_polygon(wedge, ink(0), Stroke::NONE));
-    round_arc(painter, apex, 9.8 * scale, from, to, 2.3 * scale, ink(1));
-    round_arc(painter, apex, 13.8 * scale, from, to, 2.3 * scale, ink(2));
+    round_arc(painter, apex, 8.6 * scale, from, to, 1.7 * scale, ink(1));
+    round_arc(painter, apex, 12.8 * scale, from, to, 1.7 * scale, ink(2));
 }
 
 /// A wired connection, shown in place of Wi-Fi.
@@ -695,12 +696,12 @@ pub fn paint_volume(painter: &egui::Painter, c: egui::Pos2, color: Color32, wave
 /// mains. 27 by 13 at `scale` 1.
 #[allow(clippy::too_many_arguments)]
 pub fn paint_battery(painter: &egui::Painter, c: egui::Pos2, color: Color32, percent: u8, charging: bool, full_on_mains: bool, scale: f32) {
-    use std::f32::consts::PI;
     let at = |x: f32, y: f32| c + vec2(x - 13.5, y - 6.5) * scale;
     let frame = color.gamma_multiply(if color == TEXT { 0.45 } else { 0.6 });
     let body = Rect::from_min_max(at(0.6, 0.6), at(23.4, 12.4));
     painter.rect_stroke(body, 3.4 * scale, Stroke::new(1.2 * scale, frame), StrokeKind::Middle);
-    painter.line(arc(at(24.9, 6.5), 2.1 * scale, -PI / 2.0, PI / 2.0), Stroke::new(1.6 * scale, frame));
+    // The cap: a short rounded stub against the body, not a separate stroke.
+    painter.rect_filled(Rect::from_min_max(at(24.0, 4.3), at(25.9, 8.7)), 1.0 * scale, frame);
     let tenths = battery_tenths(percent);
     if tenths > 0 {
         let width = (18.8 * tenths as f32 / 10.0).max(2.6);

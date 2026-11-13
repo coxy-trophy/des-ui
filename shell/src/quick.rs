@@ -346,13 +346,15 @@ impl Quick {
             });
             if with_sliders {
                 group(ui, |ui| {
+                    // The pills sit inside the group, in line with their labels.
                     ui.add_space(7.0);
                     if let Some(level) = brightness {
                         section_label(ui, "DISPLAY");
-                        let width = ui.available_width() - PERCENT;
+                        let width = ui.available_width() - PERCENT - INSET;
                         let sun = |painter: &egui::Painter, c: egui::Pos2, color: egui::Color32| ui::paint_icon(painter, Rect::from_center_size(c, vec2(14.0, 14.0)), ui::Icon::Brightness, color, false);
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 0.0;
+                            ui.add_space(INSET);
                             let (picked, _) = ui::pill_slider(ui, theme, width, level.min(100) as f32 / 100.0, "Brightness", SLIDER, false, &sun);
                             percent(ui, level);
                             if let Some(frac) = picked {
@@ -364,11 +366,12 @@ impl Quick {
                     if let Some(level) = volume {
                         if brightness.is_some() { ui.add_space(6.0 - ui.spacing().item_spacing.y); }
                         section_label(ui, "SOUND");
-                        let width = ui.available_width() - PERCENT;
+                        let width = ui.available_width() - PERCENT - INSET;
                         let waves = ui::volume_waves(level);
                         let speaker = move |painter: &egui::Painter, c: egui::Pos2, color: egui::Color32| ui::paint_volume(painter, c + vec2(2.0, 0.0), color, waves, level == 0);
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 0.0;
+                            ui.add_space(INSET);
                             let (picked, mute) = ui::pill_slider(ui, theme, width, level.min(100) as f32 / 100.0, "Volume", SLIDER, true, &speaker);
                             percent(ui, level);
                             if mute { actions.push(Action::Mute); }
@@ -400,6 +403,8 @@ const ROW: f32 = 42.0;
 const LABEL: f32 = 13.0;
 const SLIDER: f32 = 22.0;
 const PERCENT: f32 = 40.0;
+/// How far a slider sits in from its group's left edge, as its label does.
+const INSET: f32 = 10.0;
 /// The fill of a group of rows inside a card: between the card and a track.
 const WELL: egui::Color32 = egui::Color32::from_rgb(0x11, 0x16, 0x1C);
 
