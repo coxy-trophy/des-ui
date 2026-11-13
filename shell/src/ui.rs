@@ -511,8 +511,6 @@ pub enum Icon {
     Volume,
     Muted,
     Brightness,
-    Battery,
-    Charging,
     Wifi,
     Download,
     Upload,
@@ -779,7 +777,7 @@ impl Icon {
             Self::Settings => "Settings", Self::Music => "Music", Self::Power => "Power",
             Self::Notifications => "Notifications", Self::Apps => "Applications", Self::Fullscreen => "Full screen",
             Self::Volume => "Volume", Self::Muted => "Muted", Self::Brightness => "Brightness",
-            Self::Battery => "Battery", Self::Charging => "Charging", Self::Wifi => "Wi-Fi signal",
+            Self::Wifi => "Wi-Fi signal",
             Self::Download => "Download", Self::Upload => "Upload", Self::Display => "Displays",
             Self::Copy => "Copy last command output",
             Self::LayoutSingle => "One application", Self::LayoutSplit => "Two side by side",
@@ -905,11 +903,6 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color3
                 let v = vec2(a.cos(), a.sin());
                 painter.line_segment([c + v * 4.8, c + v * 6.8], stroke);
             }
-        }
-        Icon::Battery | Icon::Charging => {
-            painter.rect_stroke(Rect::from_center_size(c - vec2(1.0,0.0), vec2(12.0,8.0)), 0.0, stroke, StrokeKind::Inside);
-            line((6.0,-1.0),(6.0,1.0));
-            if matches!(icon, Icon::Charging) { path(&[(0.0,-3.0),(-2.0,0.5),(1.0,0.5),(-1.0,3.0)]); }
         }
         Icon::Bluetooth => {
             path(&[(-4.5,-3.5),(4.5,3.5),(0.0,7.0),(0.0,-7.0),(4.5,-3.5),(-4.5,3.5)]);

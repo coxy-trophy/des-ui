@@ -4,10 +4,10 @@
 //! and sends every key to it. The shell draws this screen over all of its own, checks
 //! the password with the system's helper for that, and tells the compositor to unlock.
 
-use crate::greeter::{Asked, Identity, load_picture};
+use crate::greeter::load_picture;
 use crate::theme::Theme;
 use crate::ui;
-use eframe::egui::{self, Align2, CentralPanel, Event, Frame, Key, Rect, TextureHandle, vec2};
+use eframe::egui::{self, Align2, CentralPanel, Color32, Event, Frame, Key, Rect, Sense, Stroke, StrokeKind, TextureHandle, Ui, pos2, vec2};
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{Receiver, channel};
@@ -282,67 +282,217 @@ impl Lock {
         }
         let (edge, message, ink) = match &self.state {
             State::Ready => (theme.main, String::new(), ui::SECONDARY),
-            State::Checking => (ui::SECONDARY, "Checking…".to_string(), ui::SECONDARY),
-            State::Unlocking => (ui::SECONDARY, "Unlocking…".to_string(), ui::SECONDARY),
+            State::Checking => (ui::SECONDARY, "Checking…".to_string(), GLASS_TEXT),
+            State::Unlocking => (ui::SECONDARY, "Unlocking…".to_string(), GLASS_TEXT),
             State::Denied(why) => (ui::CAUTION, why.clone(), ui::CAUTION),
         };
-        let mut asked = Asked::default();
+        let denied = matches!(self.state, State::Denied(_));
+        let busy = matches!(self.state, State::Checking | State::Unlocking);
+        let mut submit = false;
         CentralPanel::default().frame(Frame::new().fill(ui::GROUND)).show(ctx, |ui| {
             let screen = ui.max_rect();
             let painter = ui.painter().clone();
-            painter.rect_filled(screen, 0.0, ui::GROUND);
-            crate::greeter::glow(&painter, screen, theme.main);
-            let inner = screen.shrink2(vec2(56.0, 40.0));
-
-            // Top: the desktop's name and that it is locked; at the right, the
-            // connection and the battery.
-            let mut top = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(inner.min, vec2(inner.width(), 24.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
-            top.spacing_mut().item_spacing.x = 14.0;
-            ui::tracked(&mut top, "DEs-UI", ui::display_bold(13.0), ui::SECONDARY, 4.0);
-            crate::panels::pill(&mut top, "LOCKED", if matches!(self.state, State::Denied(_)) { ui::CAUTION } else { ui::SECONDARY });
-            top.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                if let Some((percent, plugged)) = glance.battery {
-                    ui::text(ui, &format!("{percent}%"), ui::mono(12.0), if !plugged && percent <= 15 { ui::CAUTION } else { ui::SECONDARY });
-                    ui::icon(ui, if plugged { ui::Icon::Charging } else { ui::Icon::Battery }, 18.0, ui::SECONDARY);
-                    ui.add_space(8.0);
+            // The desktop's own wallpaper, whole and sharp, darkened a little at the
+            // top and bottom where the words are; without one, the usual glow.
+            let soft = match wallpaper(ctx) {
+                Some((sharp, soft, dest, uv)) => {
+                    painter.rect_filled(screen, 0.0, ui::GROUND);
+                    painter.image(sharp, dest, uv, Color32::WHITE);
+                    scrim(&painter, screen, true);
+                    scrim(&painter, screen, false);
+                    Some((soft, dest, uv))
                 }
-                if glance.online { ui::icon(ui, ui::Icon::Wifi, 18.0, ui::SECONDARY); }
-            });
+                None => {
+                    painter.rect_filled(screen, 0.0, ui::GROUND);
+                    crate::greeter::glow(&painter, screen, theme.main);
+                    None
+                }
+            };
+            let cx = screen.center().x;
+            let short = screen.height() < 640.0;
 
-            asked = Identity {
-                user: &self.user,
-                picture: self.picture.as_ref().and_then(|picture| picture.as_ref()),
-                edge,
-                message: &message,
-                message_ink: ink,
-                typed: self.password.chars().count(),
-                shown: self.revealed.then_some(self.password.as_str()),
-                busy: matches!(self.state, State::Checking | State::Unlocking),
-                hint: "Enter to unlock · Esc clears · Ctrl+H shows or hides",
-                accounts: None,
+            // At the top right: the connection and the battery.
+            let mut x = screen.right() - 30.0;
+            let y = screen.top() + 28.0;
+            if let Some((percent, plugged)) = glance.battery {
+                let low = !plugged && percent < 20;
+                let ink = if low { ui::CAUTION } else { GLASS_TEXT };
+                let galley = painter.layout_no_wrap(format!("{percent}%"), ui::mono(12.5), ink);
+                x -= galley.size().x;
+                painter.galley(pos2(x, y - galley.size().y / 2.0), galley, ink);
+                x -= 20.0;
+                ui::paint_battery(&painter, pos2(x, y), ink, percent, plugged && percent < 100, plugged && percent >= 100, 1.0);
+                x -= 34.0;
             }
-            .draw(ui, theme);
+            if glance.online { ui::paint_wifi(&painter, pos2(x, y), GLASS_TEXT, 3, 0.9); }
 
-            // Bottom: that the session is still there, and how many notifications
-            // wait, without what they say.
-            painter.text(inner.left_bottom(), Align2::LEFT_BOTTOM, "Your session is still running behind this screen.", ui::mono(12.0), ui::LABEL);
+            // The padlock, the date, and the time, large; glass, so the picture
+            // shows through it.
+            let now = chrono::Local::now();
+            let mut y = screen.top() + if short { 24.0 } else { (screen.height() * 0.065).max(40.0) };
+            ui::paint_icon(&painter, Rect::from_center_size(pos2(cx, y + 8.0), vec2(16.0, 16.0)), ui::Icon::Lock, GLASS_TEXT, false);
+            y += 30.0;
+            let date = ui::galley(ui, &now.format("%A %-d %B").to_string(), ui::display_bold(if short { 15.0 } else { 21.0 }), GLASS_TEXT, 1.5);
+            painter.galley(pos2(cx - date.size().x / 2.0, y), date.clone(), GLASS_TEXT);
+            y += date.size().y - 4.0;
+            let size = if short { 84.0 } else { (screen.height() * 0.2).clamp(96.0, 240.0) };
+            let time = ui::galley(ui, &crate::region::hours_minutes(&now), ui::display_bold(size), CLOCK, 2.0);
+            let at = pos2(cx - time.size().x / 2.0, y);
+            painter.galley(at + vec2(0.0, 3.0), time.clone(), Color32::from_black_alpha(70));
+            painter.galley(at, time.clone(), CLOCK);
+            y += time.size().y;
+            // How many notifications wait, never what they say.
             if glance.notices > 0 {
-                let label = if glance.notices == 1 { "1 NOTIFICATION".to_string() } else { format!("{} NOTIFICATIONS", glance.notices) };
-                let galley = ui::galley(ui, &label, ui::mono(10.5), ui::SECONDARY, 1.0);
-                let size = galley.size() + vec2(22.0, 10.0);
-                let chip = Rect::from_min_size(inner.right_bottom() - size, size);
-                painter.rect_stroke(chip, size.y / 2.0, egui::Stroke::new(1.0, ui::LINE_STRONG), egui::StrokeKind::Inside);
-                painter.galley(chip.center() - galley.size() / 2.0, galley, ui::SECONDARY);
+                let label = if glance.notices == 1 { "1 notification".to_string() } else { format!("{} notifications", glance.notices) };
+                let galley = painter.layout_no_wrap(label, ui::mono(11.5), GLASS_TEXT);
+                let size = galley.size() + vec2(40.0, 14.0);
+                let chip = Rect::from_center_size(pos2(cx, y + 6.0 + size.y / 2.0), size);
+                glass(&painter, chip, soft.as_ref(), Stroke::new(1.0, Color32::from_white_alpha(36)));
+                ui::paint_icon(&painter, Rect::from_center_size(pos2(chip.left() + 17.0, chip.center().y), vec2(13.0, 13.0)), ui::Icon::Notifications, GLASS_TEXT, false);
+                painter.galley(pos2(chip.left() + 28.0, chip.center().y - galley.size().y / 2.0), galley, GLASS_TEXT);
             }
-            below(ui, inner);
+
+            // At the bottom: the picture, the name and the password field.
+            let side = if short { 52.0 } else { 64.0 };
+            let field_height = 40.0;
+            let bottom = screen.bottom() - if short { 28.0 } else { (screen.height() * 0.06).max(40.0) } - 22.0;
+            let field = Rect::from_center_size(pos2(cx, bottom - field_height / 2.0), vec2(268.0_f32.min(screen.width() - 48.0), field_height));
+            let name = ui::galley(ui, &self.user, ui::display_bold(17.0), GLASS_TEXT, 0.5);
+            let name_top = field.top() - 14.0 - name.size().y;
+            painter.galley(pos2(cx - name.size().x / 2.0, name_top), name, GLASS_TEXT);
+            let face = Rect::from_center_size(pos2(cx, name_top - 10.0 - side / 2.0), vec2(side, side));
+            self.paint_face(ui, &painter, theme, face, if denied { ui::CAUTION } else { Color32::from_white_alpha(90) }, busy);
+
+            glass(&painter, field, soft.as_ref(), Stroke::new(1.0, if denied { ui::CAUTION } else if self.password.is_empty() { Color32::from_white_alpha(56) } else { edge }));
+            let go = Rect::from_center_size(pos2(field.right() - 20.0, field.center().y), vec2(28.0, 28.0));
+            let room = Rect::from_min_max(pos2(field.left() + 16.0, field.top()), pos2(go.left() - 8.0, field.bottom()));
+            let mut x = room.left();
+            if self.revealed && !self.password.is_empty() {
+                // The end of what was typed, where the caret is, stays in view.
+                let mut chars: Vec<char> = self.password.chars().collect();
+                let mut galley = ui::galley(ui, &self.password, ui::mono(14.0), GLASS_TEXT, 0.0);
+                while galley.size().x > room.width() - 6.0 && !chars.is_empty() {
+                    chars.remove(0);
+                    galley = ui::galley(ui, &format!("…{}", chars.iter().collect::<String>()), ui::mono(14.0), GLASS_TEXT, 0.0);
+                }
+                painter.galley(pos2(x, field.center().y - galley.size().y / 2.0), galley.clone(), GLASS_TEXT);
+                x += galley.size().x + 2.0;
+            } else if self.password.is_empty() {
+                painter.text(pos2(x, field.center().y), Align2::LEFT_CENTER, "Enter password", ui::display(13.5), Color32::from_white_alpha(150));
+            } else {
+                let fit = ((room.width() - 8.0) / 14.0).max(1.0) as usize;
+                for _ in 0..self.password.chars().count().min(fit) {
+                    painter.circle_filled(pos2(x + 3.5, field.center().y), 3.5, GLASS_TEXT);
+                    x += 14.0;
+                }
+            }
+            if !busy && !self.password.is_empty() && ui.input(|i| i.time).rem_euclid(1.0) < 0.5 {
+                painter.rect_filled(Rect::from_center_size(pos2(x + 1.0, field.center().y), vec2(2.0, 18.0)), 0.0, theme.main);
+            }
+            let ready = !self.password.is_empty() && !busy;
+            let response = ui.interact(go, ui.id().with("submit-password"), if ready { Sense::click() } else { Sense::hover() });
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ready, "Unlock"));
+            let fill = if ready { if response.hovered() { theme.main.gamma_multiply(0.85) } else { theme.main } } else { Color32::from_white_alpha(28) };
+            painter.circle_filled(go.center(), 14.0, fill);
+            let c = go.center();
+            let stroke = Stroke::new(1.8, if ready { ui::GROUND } else { Color32::from_white_alpha(170) });
+            painter.line_segment([c - vec2(5.0, 0.0), c + vec2(5.0, 0.0)], stroke);
+            painter.line(vec![c + vec2(0.5, -4.5), c + vec2(5.0, 0.0), c + vec2(0.5, 4.5)], stroke);
+            if response.clicked() { submit = true; }
+            // Only what happened: checking, or why it did not unlock. No instructions.
+            if !message.is_empty() {
+                painter.text(pos2(cx, field.bottom() + 16.0), Align2::CENTER_CENTER, &message, ui::mono(11.5), ink);
+            }
+
+            // What plays, between the time and the sign-in.
+            let within = Rect::from_min_max(pos2(screen.left() + 56.0, screen.top() + 40.0), pos2(screen.right() - 56.0, face.top() - 24.0));
+            below(ui, within);
         });
-        if asked.reveal { self.revealed = !self.revealed; }
-        if asked.submit { self.submit(ctx); }
+        if submit { self.submit(ctx); }
         // The clock and the cursor keep moving.
         ctx.request_repaint_after(Duration::from_millis(250));
         false
     }
+
+    /// The user's picture, or the pattern made from their name, in a thin ring that
+    /// turns while the password is checked.
+    fn paint_face(&self, ui: &Ui, painter: &egui::Painter, theme: &Theme, face: Rect, ring: Color32, busy: bool) {
+        let radius = face.width() / 2.0;
+        if busy {
+            painter.circle_stroke(face.center(), radius - 1.0, Stroke::new(2.0, Color32::from_white_alpha(40)));
+            let turn = (ui.input(|i| i.time) as f32 * 4.0) % std::f32::consts::TAU;
+            let arc: Vec<egui::Pos2> = (0..=16).map(|k| { let a = turn + k as f32 * std::f32::consts::FRAC_PI_2 / 16.0; face.center() + vec2(a.cos(), a.sin()) * (radius - 1.0) }).collect();
+            painter.line(arc, Stroke::new(2.0, GLASS_TEXT));
+            ui.ctx().request_repaint();
+        } else {
+            painter.circle_stroke(face.center(), radius - 1.0, Stroke::new(2.0, ring));
+        }
+        let inner = face.shrink(5.0);
+        match self.picture.as_ref().and_then(|picture| picture.as_ref()) {
+            Some(texture) => {
+                let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+                painter.add(egui::epaint::RectShape::filled(inner, inner.width() / 2.0, Color32::WHITE).with_texture(texture.id(), uv));
+            }
+            None => {
+                painter.circle_filled(inner.center(), inner.width() / 2.0, ui::TRACK);
+                let grid = inner.shrink(inner.width() * 0.2);
+                let cell = grid.width() / 5.0;
+                for (row, cells) in crate::greeter::sigil(&self.user).iter().enumerate() {
+                    for (column, kind) in cells.iter().enumerate() {
+                        let color = match kind { 1 => theme.main, 2 => theme.muted(), _ => continue };
+                        painter.rect_filled(Rect::from_min_size(grid.min + vec2(column as f32 * cell, row as f32 * cell), vec2(cell, cell)), 0.0, color);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Light text over a picture.
+const GLASS_TEXT: Color32 = Color32::from_rgba_premultiplied(236, 242, 246, 235);
+/// The clock: glass, see-through so the picture shows in the numerals.
+const CLOCK: Color32 = Color32::from_rgba_premultiplied(150, 154, 157, 160);
+
+/// The desktop's wallpaper as published for the panels: the sharp and the blurred
+/// texture, and where they go on the screen.
+fn wallpaper(ctx: &egui::Context) -> Option<(egui::TextureId, egui::TextureId, Rect, Rect)> {
+    let (view, fit) = crate::material::wallpaper(ctx)?;
+    let sharp = view.texture(false);
+    let (dest, uv) = crate::wallpaper::geometry(ctx.screen_rect(), sharp.size_vec2(), fit);
+    Some((sharp.id(), view.texture(true).id(), dest, uv))
+}
+
+/// A soft dark band along the top or the bottom, for the words over the picture.
+fn scrim(painter: &egui::Painter, screen: Rect, top: bool) {
+    let height = (screen.height() * if top { 0.34 } else { 0.4 }).min(380.0);
+    let band = if top { Rect::from_min_size(screen.min, vec2(screen.width(), height)) } else { Rect::from_min_max(pos2(screen.left(), screen.bottom() - height), screen.max) };
+    let dark = Color32::from_black_alpha(if top { 100 } else { 140 });
+    let (edge, open) = if top { (band.top(), band.bottom()) } else { (band.bottom(), band.top()) };
+    let mut mesh = egui::Mesh::default();
+    for (y, color) in [(edge, dark), (open, Color32::TRANSPARENT)] {
+        mesh.colored_vertex(pos2(band.left(), y), color);
+        mesh.colored_vertex(pos2(band.right(), y), color);
+    }
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(1, 3, 2);
+    painter.add(egui::Shape::mesh(mesh));
+}
+
+/// A rounded pane of frosted glass: the blurred wallpaper behind `rect`, a light
+/// wash over it and an edge. Without a wallpaper, a dark translucent pane.
+fn glass(painter: &egui::Painter, rect: Rect, soft: Option<&(egui::TextureId, Rect, Rect)>, edge: Stroke) {
+    let radius = rect.height() / 2.0;
+    match soft {
+        Some((texture, dest, uv)) if dest.is_positive() => {
+            let local_min = (rect.min - dest.min) / dest.size();
+            let local_max = (rect.max - dest.min) / dest.size();
+            let sample = Rect::from_min_max(uv.min + local_min * uv.size(), uv.min + local_max * uv.size());
+            painter.add(egui::epaint::RectShape::filled(rect, radius, Color32::WHITE).with_texture(*texture, sample));
+            painter.rect_filled(rect, radius, Color32::from_white_alpha(18));
+        }
+        _ => { painter.rect_filled(rect, radius, Color32::from_rgba_unmultiplied(20, 24, 30, 150)); }
+    }
+    painter.rect_stroke(rect, radius, edge, StrokeKind::Inside);
 }
 
 #[cfg(test)]
@@ -393,6 +543,12 @@ mod tests {
         assert_eq!(lock.password, "hunter2", "Ctrl+H is not typed into the password");
         frame(&mut lock, vec![key(Key::H, true)]);
         assert!(!lock.revealed, "Ctrl+H again hides it");
+        // The screen gives no instructions: the keys work without being spelled out.
+        for text in typed.iter().chain(&shown) {
+            for word in ["Ctrl", "Enter to", "Esc", "shows or hides", "session is still running"] {
+                assert!(!text.contains(word), "{text:?} explains the keys");
+            }
+        }
         lock.revealed = true;
         lock.release();
         lock.engage();

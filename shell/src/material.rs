@@ -10,6 +10,11 @@ fn key() -> egui::Id { egui::Id::new("des-ui-materials") }
 pub fn publish(ctx: &egui::Context, appearance: AppearanceSettings, wallpaper: Option<WallpaperView>) {
     ctx.data_mut(|data| data.insert_temp(key(), State { appearance, wallpaper }));
 }
+/// The wallpaper as published for the surfaces, and how it is fitted, if any.
+pub fn wallpaper(ctx: &egui::Context) -> Option<(WallpaperView, des_common::appearance::WallpaperFit)> {
+    let state = ctx.data(|data| data.get_temp::<State>(key()))?;
+    Some((state.wallpaper?, state.appearance.fit))
+}
 #[derive(Clone, Copy)]
 pub enum Role { Background, Panel, Terminal, Floating, Notification }
 pub fn opacity(settings: &AppearanceSettings, role: Role) -> f32 {
