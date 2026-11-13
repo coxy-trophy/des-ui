@@ -29,6 +29,7 @@ mod file_dialogs;
 mod files;
 mod file_ops;
 mod lock;
+mod login_share;
 mod music;
 mod notify;
 mod oklch;
@@ -206,6 +207,8 @@ struct App {
     saver_preview: Option<Instant>,
     config: config::Config,
     wallpaper: wallpaper::Wallpaper,
+    /// The wallpaper and accent, shared with the login screen.
+    login_share: login_share::Sharer,
     /// The keyboard, mouse and touchpad settings, as last saved.
     input: des_common::input::InputSettings,
     /// The font that supplies prompt symbols, kept for when fonts are set up again.
@@ -428,7 +431,7 @@ impl App {
             world: globe::Explorer::default(),
             local_panels: config.panels,
             config,
-            wallpaper: Default::default(),            input: des_common::input::InputSettings::load(),
+            wallpaper: Default::default(), login_share: Default::default(),            input: des_common::input::InputSettings::load(),
             symbols,
             panels_synced: false,
             frame_synced: false,

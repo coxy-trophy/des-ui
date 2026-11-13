@@ -50,6 +50,8 @@ fi
 sudo install -Dm755 session/des-ui-greeter /usr/local/bin/des-ui-greeter
 # Pictures for the login screen: each user can add their own, none can remove another's.
 sudo install -d -m 1777 /var/lib/des-ui/avatars
+# Each user's wallpaper and accent, so the login screen looks like their lock screen.
+sudo install -d -m 1777 /var/lib/des-ui/wallpapers
 # Where the login screen keeps its log, for when it misbehaves.
 sudo install -d -o "$greeter_user" -m 755 /var/lib/des-ui/greeter
 

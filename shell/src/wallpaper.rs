@@ -13,7 +13,7 @@ pub fn check_dimensions(width: u32, height: u32) -> Result<(), String> {
         Err("Choose an image no larger than 8192px per side and 16 megapixels".into())
     } else { Ok(()) }
 }
-fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
+pub(crate) fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
     use std::os::unix::fs::OpenOptionsExt;
     // Nonblocking protects the worker from a FIFO substituted for a selected file.
     let file = std::fs::OpenOptions::new().read(true).custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32).open(path).map_err(|e| e.to_string())?;
@@ -24,7 +24,7 @@ fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
     if bytes.len() as u64 > ENCODED_LIMIT { return Err("The image exceeds 32 MiB".into()); }
     Ok(bytes)
 }
-fn decode(bytes: &[u8]) -> Result<image::DynamicImage, String> {
+pub(crate) fn decode(bytes: &[u8]) -> Result<image::DynamicImage, String> {
     let format = image::guess_format(bytes).map_err(|_| "Choose a valid PNG or JPEG image")?;
     if !matches!(format, image::ImageFormat::Png | image::ImageFormat::Jpeg) { return Err("Only static PNG and JPEG images are supported".into()); }
     // Reject APNG before decode, walking PNG chunks rather than searching pixel bytes.

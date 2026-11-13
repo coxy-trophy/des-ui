@@ -358,6 +358,7 @@ impl eframe::App for App {
             self.notices.post("Wallpaper unavailable", &format!("{error}. Choose another image in Settings → Appearance."), false);
         }
         self.wallpaper.publish(ctx, &self.config.appearance);
+        self.login_share.sync(self.config.appearance.wallpaper.as_deref(), self.theme.main, self.config.appearance.fit);
         shortcuts::publish(ctx, &self.config.shortcuts);
         let animate = self.config.animate && !self.config.appearance.reduce_motion;
         let stage = self.powerup.publish(ctx, animate, false);

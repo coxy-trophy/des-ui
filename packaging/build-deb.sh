@@ -95,6 +95,8 @@ install -Dm644 README.md "$root/usr/share/doc/des-ui/README.md"
 # Pictures for the lock and login screens: each user can add their own, none can
 # remove another's.
 install -d -m 1777 "$root/var/lib/des-ui/avatars"
+# Each user's wallpaper and accent, shared the same way, for the login screen.
+install -d -m 1777 "$root/var/lib/des-ui/wallpapers"
 
 # Wayland and the graphics libraries are loaded while running, so nothing finds them
 # by looking at the programs: they are named here.

@@ -444,34 +444,40 @@ impl Lock {
         false
     }
 
-    /// The user's picture, or the pattern made from their name, in a thin ring that
-    /// turns while the password is checked.
     fn paint_face(&self, ui: &Ui, painter: &egui::Painter, theme: &Theme, face: Rect, ring: Color32, busy: bool) {
-        let radius = face.width() / 2.0;
-        if busy {
-            painter.circle_stroke(face.center(), radius - 1.0, Stroke::new(2.0, Color32::from_white_alpha(40)));
-            let turn = (ui.input(|i| i.time) as f32 * 4.0) % std::f32::consts::TAU;
-            let arc: Vec<egui::Pos2> = (0..=16).map(|k| { let a = turn + k as f32 * std::f32::consts::FRAC_PI_2 / 16.0; face.center() + vec2(a.cos(), a.sin()) * (radius - 1.0) }).collect();
-            painter.line(arc, Stroke::new(2.0, GLASS_TEXT));
-            ui.ctx().request_repaint();
-        } else {
-            painter.circle_stroke(face.center(), radius - 1.0, Stroke::new(2.0, ring));
+        let picture = self.picture.as_ref().and_then(|picture| picture.as_ref());
+        paint_face(ui, painter, theme, face, ring, busy, picture, &self.user);
+    }
+}
+
+/// The user's picture, or the pattern made from their name, in a thin ring that
+/// turns while the password is checked.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn paint_face(ui: &Ui, painter: &egui::Painter, theme: &Theme, face: Rect, ring: Color32, busy: bool, picture: Option<&TextureHandle>, user: &str) {
+    let radius = face.width() / 2.0;
+    if busy {
+        painter.circle_stroke(face.center(), radius - 1.0, Stroke::new(2.0, Color32::from_white_alpha(40)));
+        let turn = (ui.input(|i| i.time) as f32 * 4.0) % std::f32::consts::TAU;
+        let arc: Vec<egui::Pos2> = (0..=16).map(|k| { let a = turn + k as f32 * std::f32::consts::FRAC_PI_2 / 16.0; face.center() + vec2(a.cos(), a.sin()) * (radius - 1.0) }).collect();
+        painter.line(arc, Stroke::new(2.0, GLASS_TEXT));
+        ui.ctx().request_repaint();
+    } else {
+        painter.circle_stroke(face.center(), radius - 1.0, Stroke::new(2.0, ring));
+    }
+    let inner = face.shrink(5.0);
+    match picture {
+        Some(texture) => {
+            let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+            painter.add(egui::epaint::RectShape::filled(inner, inner.width() / 2.0, Color32::WHITE).with_texture(texture.id(), uv));
         }
-        let inner = face.shrink(5.0);
-        match self.picture.as_ref().and_then(|picture| picture.as_ref()) {
-            Some(texture) => {
-                let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-                painter.add(egui::epaint::RectShape::filled(inner, inner.width() / 2.0, Color32::WHITE).with_texture(texture.id(), uv));
-            }
-            None => {
-                painter.circle_filled(inner.center(), inner.width() / 2.0, ui::TRACK);
-                let grid = inner.shrink(inner.width() * 0.2);
-                let cell = grid.width() / 5.0;
-                for (row, cells) in crate::greeter::sigil(&self.user).iter().enumerate() {
-                    for (column, kind) in cells.iter().enumerate() {
-                        let color = match kind { 1 => theme.main, 2 => theme.muted(), _ => continue };
-                        painter.rect_filled(Rect::from_min_size(grid.min + vec2(column as f32 * cell, row as f32 * cell), vec2(cell, cell)), 0.0, color);
-                    }
+        None => {
+            painter.circle_filled(inner.center(), inner.width() / 2.0, ui::TRACK);
+            let grid = inner.shrink(inner.width() * 0.2);
+            let cell = grid.width() / 5.0;
+            for (row, cells) in crate::greeter::sigil(user).iter().enumerate() {
+                for (column, kind) in cells.iter().enumerate() {
+                    let color = match kind { 1 => theme.main, 2 => theme.muted(), _ => continue };
+                    painter.rect_filled(Rect::from_min_size(grid.min + vec2(column as f32 * cell, row as f32 * cell), vec2(cell, cell)), 0.0, color);
                 }
             }
         }
@@ -479,13 +485,13 @@ impl Lock {
 }
 
 /// Light text over a picture.
-const GLASS_TEXT: Color32 = Color32::from_rgba_premultiplied(236, 242, 246, 235);
+pub(crate) const GLASS_TEXT: Color32 = Color32::from_rgba_premultiplied(236, 242, 246, 235);
 /// The clock: glass, see-through so the picture shows in the numerals.
-const CLOCK: Color32 = Color32::from_rgba_premultiplied(150, 154, 157, 160);
+pub(crate) const CLOCK: Color32 = Color32::from_rgba_premultiplied(150, 154, 157, 160);
 
 /// The desktop's wallpaper as published for the panels: the sharp and the blurred
 /// texture, and where they go on the screen.
-fn wallpaper(ctx: &egui::Context) -> Option<(egui::TextureId, egui::TextureId, Rect, Rect)> {
+pub(crate) fn wallpaper(ctx: &egui::Context) -> Option<(egui::TextureId, egui::TextureId, Rect, Rect)> {
     let (view, fit) = crate::material::wallpaper(ctx)?;
     let sharp = view.texture(false);
     let (dest, uv) = crate::wallpaper::geometry(ctx.screen_rect(), sharp.size_vec2(), fit);
@@ -493,7 +499,7 @@ fn wallpaper(ctx: &egui::Context) -> Option<(egui::TextureId, egui::TextureId, R
 }
 
 /// A soft dark band along the top or the bottom, for the words over the picture.
-fn scrim(painter: &egui::Painter, screen: Rect, top: bool) {
+pub(crate) fn scrim(painter: &egui::Painter, screen: Rect, top: bool) {
     let height = (screen.height() * if top { 0.34 } else { 0.4 }).min(380.0);
     let band = if top { Rect::from_min_size(screen.min, vec2(screen.width(), height)) } else { Rect::from_min_max(pos2(screen.left(), screen.bottom() - height), screen.max) };
     let dark = Color32::from_black_alpha(if top { 100 } else { 140 });
@@ -510,7 +516,7 @@ fn scrim(painter: &egui::Painter, screen: Rect, top: bool) {
 
 /// A rounded pane of frosted glass: the blurred wallpaper behind `rect`, a light
 /// wash over it and an edge. Without a wallpaper, a dark translucent pane.
-fn glass(painter: &egui::Painter, rect: Rect, soft: Option<&(egui::TextureId, Rect, Rect)>, edge: Stroke) {
+pub(crate) fn glass(painter: &egui::Painter, rect: Rect, soft: Option<&(egui::TextureId, Rect, Rect)>, edge: Stroke) {
     let radius = rect.height() / 2.0;
     match soft {
         Some((texture, dest, uv)) if dest.is_positive() => {
