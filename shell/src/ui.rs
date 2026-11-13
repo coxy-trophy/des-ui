@@ -728,7 +728,7 @@ pub fn paint_battery(painter: &egui::Painter, c: egui::Pos2, color: Color32, per
 #[allow(clippy::too_many_arguments)]
 pub fn pill_slider(ui: &mut Ui, theme: &Theme, width: f32, value: f32, name: &str, height: f32, icon_toggles: bool, icon: &dyn Fn(&egui::Painter, egui::Pos2, Color32)) -> (Option<f32>, bool) {
     // A taller target than what is drawn, so it is easy to grab.
-    let target = height.max(30.0);
+    let target = (height + 14.0).max(30.0);
     let (rect, response) = ui.allocate_exact_size(vec2(width, target), Sense::click_and_drag());
     let pill = Rect::from_center_size(rect.center(), vec2(width, height));
     let icon_zone = pill.left() + height + 6.0;

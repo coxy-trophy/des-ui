@@ -154,19 +154,25 @@ impl Quick {
             ui.ctx().request_repaint_after(Duration::from_secs(1));
             return;
         }
-        // The head: what this is, and the battery in a word or two.
+        // The head: what this is, and the battery.
         ui.horizontal(|ui| {
             ui::tracked(ui, "QUICK SETTINGS", ui::display_bold(12.0), ui::SECONDARY, 1.4);
             if let Some(power) = readings.power {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let low = !power.plugged && power.percent <= 15;
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    let low = !power.plugged && power.percent < 20;
+                    let charging = power.plugged && power.percent < 100;
                     let left = match (power.plugged, power.minutes) {
-                        (true, Some(m)) => format!("{}% · full in {}", power.percent, crate::power::duration(m).to_lowercase()),
-                        (true, None) => format!("{}% · on mains", power.percent),
-                        (false, Some(m)) => format!("{}% · {} left", power.percent, crate::power::duration(m).to_lowercase()),
-                        (false, None) => format!("{}%", power.percent),
+                        (true, Some(m)) => format!("· full in {}", crate::power::duration(m).to_lowercase()),
+                        (false, Some(m)) => format!("· {} left", crate::power::duration(m).to_lowercase()),
+                        _ => String::new(),
                     };
-                    crate::panels::pill(ui, &left, if low { ui::CAUTION } else { ui::SECONDARY }).on_hover_text(crate::power::battery_line(power));
+                    if !left.is_empty() { ui::text(ui, &left, ui::mono(11.0), ui::SECONDARY); }
+                    let ink = if low { ui::CAUTION } else if charging { theme.main } else { ui::TEXT };
+                    ui::text(ui, &format!("{}%", power.percent), ui::mono(12.0), if low { ui::CAUTION } else { ui::TEXT });
+                    let (rect, response) = ui.allocate_exact_size(vec2(28.0, 16.0), Sense::hover());
+                    ui::paint_battery(ui.painter(), rect.center(), ink, power.percent, charging, power.plugged && power.percent >= 100, 1.0);
+                    response.on_hover_text(crate::power::battery_line(power));
                 });
             }
         });
@@ -177,49 +183,65 @@ impl Quick {
         let volume = shown(self.volume, readings.volume, now);
         let brightness = shown(self.brightness, readings.brightness, now);
         let state = |glance: &crate::radio::Glance| match glance.powered {
-            None => "unavailable".to_string(),
-            Some(on) => glance.working.clone().or_else(|| glance.detail.clone().filter(|_| on)).unwrap_or_else(|| (if on { "on" } else { "off" }).to_string()),
+            None => "Unavailable".to_string(),
+            Some(on) => glance.working.clone().or_else(|| glance.detail.clone().filter(|_| on)).unwrap_or_else(|| (if on { "On" } else { "Off" }).to_string()),
         };
         let night = readings.night_light;
-        let night_detail = night.map_or("off".to_string(), |(from, to, _)| format!("{from:02}:00 – {to:02}:00"));
-        let sound_detail = match volume { None => "—".to_string(), Some(0) => "muted".to_string(), Some(level) => format!("{level}%") };
-        // Six switches, as the right panel's; Wi-Fi, Bluetooth and sound open a list
-        // from the arrow at their edge.
+        let sound_detail = match volume { None => "Unavailable".to_string(), Some(0) => "Muted".to_string(), Some(level) => format!("{level}%") };
+        // Left: the three things with a list of their own, as rows. Right: the
+        // switches without one, as tiles.
         let gap = 8.0;
-        let width = ((ui.available_width() - 2.0 * gap) / 3.0).floor();
-        let size = vec2(width, 66.0);
-        let tiles: [(ui::Icon, &str, String, Option<bool>, bool); 6] = [
-            (ui::Icon::Wifi, "Wi-Fi", state(&wifi), wifi.powered, true),
-            (ui::Icon::Bluetooth, "Bluetooth", state(&bluetooth), bluetooth.powered, true),
-            (ui::Icon::Moon, "Quiet", (if readings.do_not_disturb { "on" } else { "off" }).into(), Some(readings.do_not_disturb), false),
-            (ui::Icon::Brightness, "Night light", night_detail, Some(night.is_some()), false),
-            (ui::Icon::Keyboard, "Keyboard", (if readings.keyboard { "on" } else { "off" }).into(), Some(readings.keyboard), false),
-            (if volume == Some(0) { ui::Icon::Muted } else { ui::Icon::Volume }, "Sound", sound_detail, volume.map(|level| level > 0), true),
-        ];
-        for chunk in tiles.chunks(3).enumerate() {
-            let (row_index, row) = chunk;
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = gap;
-                for (column, (icon, name, detail, on, arrow)) in row.iter().enumerate() {
-                    let hit = tile(ui, theme, size, *icon, name, detail, *on, *arrow, self.view == View::Outputs && row_index * 3 + column == 5);
-                    match (row_index * 3 + column, hit) {
-                        (0, Hit::Switch) => if let Some(on) = wifi.powered { radio.toggle_wifi(on); },
-                        (1, Hit::Switch) => if let Some(on) = bluetooth.powered { radio.toggle_bluetooth(on); },
-                        (2, Hit::Switch) => actions.push(Action::DoNotDisturb(!readings.do_not_disturb)),
-                        (3, Hit::Switch) => {
-                            let value = night.is_none().then(|| crate::config::night_light_value((19, 7, 4500)));
-                            actions.push(Action::Change(Change::Set("night_light", value)));
+        let column = ((ui.available_width() - gap) / 2.0).floor();
+        let height = 3.0 * ROW + 2.0;
+        let mut open_view = None;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            ui.allocate_ui_with_layout(vec2(column, height), Layout::top_down(Align::Min), |ui| {
+                ui.set_width(column);
+                group(ui, |ui| {
+                    let sound_icon = if volume == Some(0) { ui::Icon::Muted } else { ui::Icon::Volume };
+                    let rows: [(RowIcon, &str, String, Option<bool>); 3] = [
+                        (RowIcon::Wifi, "Wi-Fi", state(&wifi), wifi.powered),
+                        (RowIcon::Plain(ui::Icon::Bluetooth), "Bluetooth", state(&bluetooth), bluetooth.powered),
+                        (RowIcon::Plain(sound_icon), "Sound", sound_detail.clone(), volume.map(|level| level > 0)),
+                    ];
+                    for (index, (icon, name, detail, on)) in rows.into_iter().enumerate() {
+                        let opened = index == 2 && self.view == View::Outputs;
+                        match switch_row(ui, theme, icon, name, &detail, on, true, index < 2) {
+                            Hit::Switch => match (index, on) {
+                                (0, Some(on)) => radio.toggle_wifi(on),
+                                (1, Some(on)) => radio.toggle_bluetooth(on),
+                                (2, _) => actions.push(Action::Mute),
+                                _ => {}
+                            },
+                            Hit::Arrow => open_view = Some(match index { 0 => View::Wifi, 1 => View::Bluetooth, _ if opened => View::Levels, _ => View::Outputs }),
+                            Hit::None => {}
                         }
-                        (4, Hit::Switch) => actions.push(Action::Keyboard),
-                        (5, Hit::Switch) => actions.push(Action::Mute),
-                        (0, Hit::Arrow) => self.view = View::Wifi,
-                        (1, Hit::Arrow) => self.view = View::Bluetooth,
-                        (5, Hit::Arrow) => self.view = if self.view == View::Outputs { View::Levels } else { View::Outputs },
-                        _ => {}
                     }
-                }
+                });
             });
-        }
+            ui.allocate_ui_with_layout(vec2(column, height), Layout::top_down(Align::Min), |ui| {
+                ui.set_width(column);
+                ui.spacing_mut().item_spacing.y = gap;
+                let tile_height = ((height - gap) / 2.0).floor();
+                let quiet = readings.do_not_disturb;
+                if round_tile(ui, theme, vec2(column, tile_height), ui::Icon::Moon, "Do not disturb", Some(if quiet { "On" } else { "Off" }), Some(quiet)) {
+                    actions.push(Action::DoNotDisturb(!quiet));
+                }
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = gap;
+                    let half = ((column - gap) / 2.0).floor();
+                    if round_tile(ui, theme, vec2(half, tile_height), ui::Icon::Brightness, "Night light", None, Some(night.is_some())) {
+                        let value = night.is_none().then(|| crate::config::night_light_value((19, 7, 4500)));
+                        actions.push(Action::Change(Change::Set("night_light", value)));
+                    }
+                    if round_tile(ui, theme, vec2(half, tile_height), ui::Icon::Keyboard, "Keyboard", None, Some(readings.keyboard)) {
+                        actions.push(Action::Keyboard);
+                    }
+                });
+            });
+        });
+        if let Some(view) = open_view { self.view = view; }
 
         match self.view {
             View::Outputs => {
@@ -233,22 +255,9 @@ impl Quick {
                 sound.quick_outputs(ui, theme);
             }
             View::Levels | View::Wifi | View::Bluetooth => {
-                ui.spacing_mut().item_spacing.y = 4.0;
-                if let Some(level) = brightness {
-                    if let Some(to) = level_row(ui, theme, ui::Icon::Brightness, None, level, "Brightness", 40.0) {
-                        let to = to.max(5);
-                        if to != level { self.brightness = Some((to, now)); actions.push(Action::Change(Change::Brightness(to))); }
-                    }
+                if brightness.is_some() || volume.is_some() {
+                    levels(ui, theme, brightness, volume, &mut self.brightness, &mut self.volume, now, actions, 26.0);
                 }
-                if let Some(level) = volume {
-                    let icon = if level == 0 { ui::Icon::Muted } else { ui::Icon::Volume };
-                    let mut mute = false;
-                    if let Some(to) = level_row(ui, theme, icon, Some(&mut mute), level, "Volume", 40.0) {
-                        if to != level { self.volume = Some((to, now)); actions.push(Action::Change(Change::Volume(to))); }
-                    }
-                    if mute { actions.push(Action::Mute); }
-                }
-                ui.spacing_mut().item_spacing.y = 10.0;
             }
         }
 
@@ -345,44 +354,7 @@ impl Quick {
                 }
             });
             if with_sliders {
-                group(ui, |ui| {
-                    // The pills sit inside the group, in line with their labels.
-                    ui.add_space(7.0);
-                    if let Some(level) = brightness {
-                        section_label(ui, "DISPLAY");
-                        let width = ui.available_width() - PERCENT - INSET;
-                        let sun = |painter: &egui::Painter, c: egui::Pos2, color: egui::Color32| ui::paint_icon(painter, Rect::from_center_size(c, vec2(14.0, 14.0)), ui::Icon::Brightness, color, false);
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 0.0;
-                            ui.add_space(INSET);
-                            let (picked, _) = ui::pill_slider(ui, theme, width, level.min(100) as f32 / 100.0, "Brightness", SLIDER, false, &sun);
-                            percent(ui, level);
-                            if let Some(frac) = picked {
-                                let to = ((frac * 100.0).round() as u8).max(5);
-                                if to != level { self.brightness = Some((to, now)); actions.push(Action::Change(Change::Brightness(to))); }
-                            }
-                        });
-                    }
-                    if let Some(level) = volume {
-                        if brightness.is_some() { ui.add_space(6.0 - ui.spacing().item_spacing.y); }
-                        section_label(ui, "SOUND");
-                        let width = ui.available_width() - PERCENT - INSET;
-                        let waves = ui::volume_waves(level);
-                        let speaker = move |painter: &egui::Painter, c: egui::Pos2, color: egui::Color32| ui::paint_volume(painter, c + vec2(2.0, 0.0), color, waves, level == 0);
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 0.0;
-                            ui.add_space(INSET);
-                            let (picked, mute) = ui::pill_slider(ui, theme, width, level.min(100) as f32 / 100.0, "Volume", SLIDER, true, &speaker);
-                            percent(ui, level);
-                            if mute { actions.push(Action::Mute); }
-                            if let Some(frac) = picked {
-                                let to = (frac * 100.0).round() as u8;
-                                if to != level { self.volume = Some((to, now)); actions.push(Action::Change(Change::Volume(to))); }
-                            }
-                        });
-                    }
-                    ui.add_space(3.0);
-                });
+                levels(ui, theme, brightness, volume, &mut self.brightness, &mut self.volume, now, &mut actions, SLIDER);
             }
             if let Some(power) = readings.power.filter(|_| with_battery) {
                 battery_row(ui, theme, power, readings.battery_health);
@@ -430,6 +402,88 @@ fn section_label(ui: &mut Ui, text: &str) {
     let galley = ui.painter().layout_no_wrap(text.to_string(), ui::mono(9.0), ui::SECONDARY);
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), LABEL), Sense::hover());
     ui.painter().galley(pos2(rect.left() + 11.0, rect.top()), galley, ui::SECONDARY);
+}
+
+/// Brightness and volume as pill sliders `slider` tall in one group, each under a
+/// small label; a level just set is held in `held_*` until the system catches up.
+/// The speaker mutes when its icon is clicked.
+#[allow(clippy::too_many_arguments)]
+fn levels(ui: &mut Ui, theme: &Theme, brightness: Option<u8>, volume: Option<u8>, held_brightness: &mut Option<(u8, Instant)>, held_volume: &mut Option<(u8, Instant)>, now: Instant, actions: &mut Vec<Action>, slider: f32) {
+    group(ui, |ui| {
+        // The pills sit inside the group, in line with their labels.
+        ui.add_space(7.0);
+        if let Some(level) = brightness {
+            section_label(ui, "DISPLAY");
+            let width = ui.available_width() - PERCENT - INSET;
+            let sun = |painter: &egui::Painter, c: egui::Pos2, color: egui::Color32| ui::paint_icon(painter, Rect::from_center_size(c, vec2(14.0, 14.0)), ui::Icon::Brightness, color, false);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.add_space(INSET);
+                let (picked, _) = ui::pill_slider(ui, theme, width, level.min(100) as f32 / 100.0, "Brightness", slider, false, &sun);
+                percent(ui, level);
+                if let Some(frac) = picked {
+                    let to = ((frac * 100.0).round() as u8).max(5);
+                    if to != level { *held_brightness = Some((to, now)); actions.push(Action::Change(Change::Brightness(to))); }
+                }
+            });
+        }
+        if let Some(level) = volume {
+            if brightness.is_some() { ui.add_space(6.0); }
+            section_label(ui, "SOUND");
+            let width = ui.available_width() - PERCENT - INSET;
+            let waves = ui::volume_waves(level);
+            let speaker = move |painter: &egui::Painter, c: egui::Pos2, color: egui::Color32| ui::paint_volume(painter, c + vec2(2.0, 0.0), color, waves, level == 0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.add_space(INSET);
+                let (picked, mute) = ui::pill_slider(ui, theme, width, level.min(100) as f32 / 100.0, "Volume", slider, true, &speaker);
+                percent(ui, level);
+                if mute { actions.push(Action::Mute); }
+                if let Some(frac) = picked {
+                    let to = (frac * 100.0).round() as u8;
+                    if to != level { *held_volume = Some((to, now)); actions.push(Action::Change(Change::Volume(to))); }
+                }
+            });
+        }
+        ui.add_space(3.0);
+    });
+}
+
+/// A rounded tile with a round icon, its name and, when `detail` is given, its
+/// state beside the icon; without it the name sits under the icon. The icon's
+/// circle fills with the accent while on. True on a click.
+fn round_tile(ui: &mut Ui, theme: &Theme, size: egui::Vec2, icon: ui::Icon, name: &str, detail: Option<&str>, on: Option<bool>) -> bool {
+    let (rect, response) = ui.allocate_exact_size(size, if on.is_some() { Sense::click() } else { Sense::hover() });
+    let lit = on == Some(true);
+    let said = detail.map_or_else(|| format!("{name}: {}", if lit { "on" } else { "off" }), |detail| format!("{name}: {detail}"));
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, on.is_some(), lit, said.clone()));
+    let painter = ui.painter();
+    painter.rect_filled(rect, 11.0, if response.hovered() { ui::TRACK } else { WELL });
+    painter.rect_stroke(rect, 11.0, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
+    if response.has_focus() { painter.rect_stroke(rect.shrink(1.0), 10.0, Stroke::new(1.0, ui::TEXT), StrokeKind::Inside); }
+    let ink = if lit { ui::GROUND } else { ui::SECONDARY };
+    let job = |text: &str, font: egui::FontId, color: egui::Color32, width: f32| {
+        let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), font, color);
+        job.wrap = egui::text::TextWrapping::truncate_at_width(width);
+        painter.layout_job(job)
+    };
+    match detail {
+        Some(detail) => {
+            let disc = pos2(rect.left() + 24.0, rect.center().y);
+            painter.circle_filled(disc, 14.0, if lit { theme.main } else { ui::LINE });
+            ui::paint_icon(painter, Rect::from_center_size(disc, vec2(14.0, 14.0)), icon, ink, lit);
+            let width = rect.right() - rect.left() - 56.0;
+            painter.galley(pos2(rect.left() + 46.0, rect.center().y - 15.0), job(name, ui::display_bold(12.5), ui::TEXT, width), ui::TEXT);
+            painter.galley(pos2(rect.left() + 46.0, rect.center().y + 2.0), job(detail, ui::mono(10.0), ui::SECONDARY, width), ui::SECONDARY);
+        }
+        None => {
+            let disc = pos2(rect.left() + 22.0, rect.top() + 21.0);
+            painter.circle_filled(disc, 12.0, if lit { theme.main } else { ui::LINE });
+            ui::paint_icon(painter, Rect::from_center_size(disc, vec2(14.0, 14.0)), icon, ink, lit);
+            painter.galley(pos2(rect.left() + 10.0, rect.bottom() - 22.0), job(name, ui::display_bold(11.5), ui::TEXT, rect.width() - 16.0), ui::TEXT);
+        }
+    }
+    response.on_hover_text(said).clicked() && on.is_some()
 }
 
 /// A level's percent, right-aligned in its own room beside a slider.
@@ -487,55 +541,6 @@ fn switch_row(ui: &mut Ui, theme: &Theme, icon: RowIcon, name: &str, detail: &st
     if response.on_hover_text(format!("{name}: {detail}")).clicked() && on.is_some() { Hit::Switch } else { Hit::None }
 }
 
-/// A square switch with an icon, a name and its state, lit while on, with an arrow down its right edge when `arrow`
-/// is set, that opens a list of its own; `opened` lights the arrow while it is.
-#[allow(clippy::too_many_arguments)]
-fn tile(ui: &mut Ui, theme: &Theme, size: egui::Vec2, icon: ui::Icon, name: &str, detail: &str, on: Option<bool>, arrow: bool, opened: bool) -> Hit {
-    let (rect, response) = ui.allocate_exact_size(size, if on.is_some() { Sense::click() } else { Sense::hover() });
-    let lit = on == Some(true);
-    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, on.is_some(), lit, format!("{name}: {detail}")));
-    let edge = 26.0;
-    let arrow_rect = Rect::from_min_max(pos2(rect.right() - edge, rect.top()), rect.max);
-    let arrow_response = arrow.then(|| {
-        let response = ui.interact(arrow_rect, response.id.with("arrow"), Sense::click());
-        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{name}: show the list")));
-        response
-    });
-    let on_arrow = arrow_response.as_ref().is_some_and(|r| r.hovered());
-    let painter = ui.painter();
-    let fill = if lit { theme.main.gamma_multiply(0.14) } else if response.hovered() && !on_arrow { ui::LINE } else { ui::TRACK };
-    let line = if lit || opened { theme.main } else { ui::LINE };
-    painter.rect_filled(rect, ui::SURFACE_RADIUS, fill);
-    painter.rect_stroke(rect, ui::SURFACE_RADIUS, Stroke::new(1.0, line), StrokeKind::Inside);
-    if response.has_focus() { painter.rect_stroke(rect.expand(2.0), ui::SURFACE_RADIUS + 2.0, Stroke::new(1.0, ui::TEXT), StrokeKind::Inside); }
-    let ink = if lit { theme.main } else { ui::SECONDARY };
-    let text_width = rect.width() - 18.0 - if arrow { edge } else { 0.0 };
-    if size.y >= 56.0 {
-        ui::paint_icon(painter, Rect::from_min_size(rect.min + vec2(8.0, 8.0), vec2(16.0, 16.0)), icon, ink, lit);
-        let mut job = egui::text::LayoutJob::simple_singleline(name.to_string(), ui::display(12.5), ui::TEXT);
-        job.wrap = egui::text::TextWrapping::truncate_at_width(text_width);
-        painter.galley(rect.min + vec2(10.0, 30.0), painter.layout_job(job), ui::TEXT);
-        let mut job = egui::text::LayoutJob::simple_singleline(detail.to_uppercase(), ui::mono(9.5), if lit { theme.main } else { ui::LABEL });
-        job.wrap = egui::text::TextWrapping::truncate_at_width(text_width);
-        let galley = painter.layout_job(job);
-        painter.galley(rect.min + vec2(10.0, 46.0), galley, ui::LABEL);
-    } else {
-        ui::paint_icon(painter, Rect::from_center_size(rect.center(), vec2(16.0, 16.0)), icon, ink, lit);
-    }
-    if let Some(arrow_response) = &arrow_response {
-        if arrow_response.hovered() || opened {
-            painter.rect_filled(arrow_rect.shrink(1.0), egui::CornerRadius { nw: 0, sw: 0, ne: (ui::SURFACE_RADIUS - 1.0) as u8, se: (ui::SURFACE_RADIUS - 1.0) as u8 }, theme.main.gamma_multiply(0.12));
-        }
-        painter.vline(arrow_rect.left(), arrow_rect.y_range().shrink(10.0), Stroke::new(1.0, if lit { theme.main.gamma_multiply(0.5) } else { ui::LINE }));
-        let c = arrow_rect.center();
-        let tone = if lit || opened || arrow_response.hovered() { theme.main } else { ui::SECONDARY };
-        painter.line(vec![c + vec2(-2.0, -5.0), c + vec2(3.0, 0.0), c + vec2(-2.0, 5.0)], Stroke::new(1.6, tone));
-    }
-    let arrow_clicked = arrow_response.is_some_and(|r| r.on_hover_text(format!("{name}: show the list")).clicked());
-    if arrow_clicked { return Hit::Arrow; }
-    if response.on_hover_text(format!("{name}: {detail}")).clicked() { Hit::Switch } else { Hit::None }
-}
-
 /// A word that does something, in the accent.
 fn link(ui: &mut Ui, theme: &Theme, text: &str) -> egui::Response {
     let galley = ui.painter().layout_no_wrap(text.to_string(), ui::mono(10.5), theme.main);
@@ -544,24 +549,6 @@ fn link(ui: &mut Ui, theme: &Theme, text: &str) -> egui::Response {
     let tone = if response.hovered() { ui::TEXT } else { theme.main };
     ui.painter().galley(rect.min, galley, tone);
     response
-}
-
-/// An icon, a slider and its percent. The icon mutes when `mute` is given.
-fn level_row(ui: &mut Ui, theme: &Theme, icon: ui::Icon, mute: Option<&mut bool>, level: u8, name: &str, height: f32) -> Option<u8> {
-    let mut changed = None;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        match mute {
-            Some(mute) => { *mute = ui::icon_button(ui, theme, icon, 24.0, level == 0).on_hover_text("Mute or unmute").clicked(); }
-            None => { ui::icon(ui, icon, 24.0, ui::SECONDARY); }
-        }
-        let width = (ui.available_width() - 48.0).max(20.0);
-        if let Some(frac) = ui::slider_sized(ui, theme, width, level.min(100) as f32 / 100.0, name, height) {
-            changed = Some((frac * 100.0).round() as u8);
-        }
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| { ui::text(ui, &format!("{level}%"), ui::mono(12.0), ui::TEXT); });
-    });
-    changed
 }
 
 /// The battery: its icon, how full, how long it lasts or takes, and how much it
