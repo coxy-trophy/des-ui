@@ -588,7 +588,7 @@ mod status_island_tests {
 
     #[test]
     fn levels_move_in_steps() {
-        assert_eq!([0, 24, 25, 49, 50, 74, 75, 100].map(ui::wifi_bars), [0, 0, 1, 1, 2, 2, 3, 3]);
+        assert_eq!([0, 33, 34, 66, 67, 100].map(ui::wifi_bars), [1, 1, 2, 2, 3, 3]);
         assert_eq!([0, 1, 33, 34, 66, 67, 100].map(ui::volume_waves), [0, 1, 1, 2, 2, 3, 3]);
         assert_eq!([0, 1, 9, 10, 11, 55, 99, 100, 120].map(ui::battery_tenths), [0, 1, 1, 1, 2, 6, 10, 10, 10]);
     }
@@ -720,13 +720,13 @@ enum Piece { Icon(Icon, eframe::egui::Color32), Glyph(Glyph, eframe::egui::Color
 
 /// The status glyphs that show their state.
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Glyph { Wifi(u8), Wired, Volume { waves: u8, muted: bool }, Battery { percent: u8, charging: bool } }
+enum Glyph { Wifi(u8), Wired, Volume { waves: u8, muted: bool }, Battery { percent: u8, charging: bool, full: bool } }
 
 impl Piece {
     fn width(&self, galley: Option<&eframe::egui::Galley>) -> f32 {
         match self {
             Piece::Icon(..) => 14.0,
-            Piece::Glyph(Glyph::Battery { .. }, _) => 24.0,
+            Piece::Glyph(Glyph::Battery { .. }, _) => 28.0,
             Piece::Glyph(Glyph::Volume { .. }, _) => 20.0,
             Piece::Glyph(..) => 22.0,
             Piece::Text(..) => galley.map_or(0.0, |g| g.size().x),
@@ -835,7 +835,7 @@ pub fn status(
             // Low and running down is the one reading here that asks for something.
             let charging = battery.plugged && battery.percent < 100;
             let ink = if !battery.plugged && battery.percent < 20 { ui::CAUTION } else if charging { theme.main } else { ui::TEXT };
-            pieces.push(Piece::Glyph(Glyph::Battery { percent: battery.percent, charging }, ink));
+            pieces.push(Piece::Glyph(Glyph::Battery { percent: battery.percent, charging, full: battery.plugged && battery.percent >= 100 }, ink));
             pieces.push(Piece::Text(format!("{}%", battery.percent), ink));
             if let Some(minutes) = battery.minutes {
                 // "1 H 21" with hours; minutes alone keep their unit.
@@ -1005,10 +1005,10 @@ fn paint_pieces(painter: &eframe::egui::Painter, pieces: &[Piece], galleys: Vec<
         let c = pos2(x + width / 2.0, y);
         match piece {
             Piece::Icon(icon, color) => ui::paint_icon(painter, Rect::from_center_size(c, vec2(14.0, 14.0)), *icon, *color, false),
-            Piece::Glyph(Glyph::Wifi(bars), color) => ui::paint_wifi(painter, c, *color, *bars),
+            Piece::Glyph(Glyph::Wifi(bars), color) => ui::paint_wifi(painter, c, *color, *bars, 1.0),
             Piece::Glyph(Glyph::Wired, color) => ui::paint_wired(painter, c, *color),
             Piece::Glyph(Glyph::Volume { waves, muted }, color) => ui::paint_volume(painter, c, *color, *waves, *muted),
-            Piece::Glyph(Glyph::Battery { percent, charging }, color) => ui::paint_battery(painter, c, *color, *percent, *charging),
+            Piece::Glyph(Glyph::Battery { percent, charging, full }, color) => ui::paint_battery(painter, c, *color, *percent, *charging, *full, 1.0),
             Piece::Text(_, color) => if let Some(galley) = galley {
                 painter.galley(pos2(x, y - galley.size().y / 2.0), galley, *color);
             },

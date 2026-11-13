@@ -619,9 +619,9 @@ pub fn round_icon_button(ui: &mut Ui, theme: &Theme, icon: Icon, size: f32, lit:
 /// never changes when the level does.
 pub const UNLIT: f32 = 0.28;
 
-/// Wi-Fi arcs lit for a signal in percent: 0 (the dot alone) to 3.
+/// Wi-Fi parts lit for a signal in percent: the wedge alone, then one and two arcs.
 pub fn wifi_bars(percent: u8) -> u8 {
-    match percent { 75.. => 3, 50..=74 => 2, 25..=49 => 1, _ => 0 }
+    match percent { 67.. => 3, 34..=66 => 2, _ => 1 }
 }
 
 /// Speaker waves lit for a volume in percent: none at zero, then 1 to 3.
@@ -636,21 +636,32 @@ pub fn battery_tenths(percent: u8) -> u8 {
 }
 
 fn arc(center: egui::Pos2, radius: f32, from: f32, to: f32) -> Vec<egui::Pos2> {
-    (0..=12).map(|i| {
-        let a = from + (to - from) * i as f32 / 12.0;
+    (0..=16).map(|i| {
+        let a = from + (to - from) * i as f32 / 16.0;
         center + vec2(a.cos(), a.sin()) * radius
     }).collect()
 }
 
-/// Wi-Fi as a dot under three arcs, `bars` of them lit.
-pub fn paint_wifi(painter: &egui::Painter, c: egui::Pos2, color: Color32, bars: u8) {
+/// A stroked arc with round ends, which egui's lines do not draw themselves.
+fn round_arc(painter: &egui::Painter, center: egui::Pos2, radius: f32, from: f32, to: f32, width: f32, color: Color32) {
+    let points = arc(center, radius, from, to);
+    painter.circle_filled(points[0], width / 2.0, color);
+    painter.circle_filled(points[points.len() - 1], width / 2.0, color);
+    painter.line(points, Stroke::new(width, color));
+}
+
+/// Wi-Fi as one 90-degree fan: a solid wedge under two thick round-ended arcs,
+/// `lit` of the three parts lit from the bottom. `scale` 1 is about 20 by 16.
+pub fn paint_wifi(painter: &egui::Painter, c: egui::Pos2, color: Color32, lit: u8, scale: f32) {
     use std::f32::consts::PI;
-    let base = c + vec2(0.0, 5.5);
-    for (index, radius) in [4.5_f32, 8.5, 12.5].into_iter().enumerate() {
-        let ink = if bars as usize > index { color } else { color.gamma_multiply(UNLIT) };
-        painter.line(arc(base, radius, -PI * 0.76, -PI * 0.24), Stroke::new(1.7, ink));
-    }
-    painter.circle_filled(base, 1.6, color);
+    let (from, to) = (-PI * 0.75, -PI * 0.25);
+    let apex = c + vec2(0.0, 7.4) * scale;
+    let ink = |part: u8| if lit > part { color } else { color.gamma_multiply(UNLIT) };
+    let mut wedge = vec![apex];
+    wedge.extend(arc(apex, 5.8 * scale, from, to));
+    painter.add(egui::Shape::convex_polygon(wedge, ink(0), Stroke::NONE));
+    round_arc(painter, apex, 9.8 * scale, from, to, 2.3 * scale, ink(1));
+    round_arc(painter, apex, 13.8 * scale, from, to, 2.3 * scale, ink(2));
 }
 
 /// A wired connection, shown in place of Wi-Fi.
@@ -679,24 +690,82 @@ pub fn paint_volume(painter: &egui::Painter, c: egui::Pos2, color: Color32, wave
     }
 }
 
-/// A battery filled to the nearest tenth, with a bolt while charging.
-pub fn paint_battery(painter: &egui::Painter, c: egui::Pos2, color: Color32, percent: u8, charging: bool) {
-    let body = Rect::from_center_size(c - vec2(1.5, 0.0), vec2(21.0, 11.0));
-    let frame = color.gamma_multiply(0.6);
-    painter.rect_stroke(body, 3.0, Stroke::new(1.3, frame), StrokeKind::Inside);
-    painter.rect_filled(Rect::from_min_size(pos2(body.right() + 1.0, c.y - 2.0), vec2(1.8, 4.0)), 1.0, frame);
-    let inner = body.shrink(2.3);
+/// A battery: a thin outline with its own cap, filled to the nearest tenth with
+/// square-cornered fill, a bolt over it while charging and a plug when full on
+/// mains. 27 by 13 at `scale` 1.
+#[allow(clippy::too_many_arguments)]
+pub fn paint_battery(painter: &egui::Painter, c: egui::Pos2, color: Color32, percent: u8, charging: bool, full_on_mains: bool, scale: f32) {
+    use std::f32::consts::PI;
+    let at = |x: f32, y: f32| c + vec2(x - 13.5, y - 6.5) * scale;
+    let frame = color.gamma_multiply(if color == TEXT { 0.45 } else { 0.6 });
+    let body = Rect::from_min_max(at(0.6, 0.6), at(23.4, 12.4));
+    painter.rect_stroke(body, 3.4 * scale, Stroke::new(1.2 * scale, frame), StrokeKind::Middle);
+    painter.line(arc(at(24.9, 6.5), 2.1 * scale, -PI / 2.0, PI / 2.0), Stroke::new(1.6 * scale, frame));
     let tenths = battery_tenths(percent);
     if tenths > 0 {
-        let fill = Rect::from_min_size(inner.min, vec2((inner.width() * tenths as f32 / 10.0).max(2.0), inner.height()));
-        painter.rect_filled(fill, 1.6, color);
+        let width = (18.8 * tenths as f32 / 10.0).max(2.6);
+        painter.rect_filled(Rect::from_min_max(at(2.6, 2.6), at(2.6 + width, 10.4)), 1.4 * scale, color);
     }
     if charging {
-        let bolt = [(1.0, -4.5), (-2.5, 0.6), (0.2, 0.6), (-1.0, 4.5), (2.8, -0.8), (0.0, -0.8)];
-        let points: Vec<egui::Pos2> = bolt.iter().map(|&(x, y)| body.center() + vec2(x, y)).collect();
-        painter.add(egui::Shape::closed_line(points.clone(), Stroke::new(1.6, GROUND)));
-        painter.line(points.into_iter().chain(std::iter::once(body.center() + vec2(1.0, -4.5))).collect(), Stroke::new(0.9, color));
+        // The bolt in two convex halves, light on the fill, edged in the ground.
+        let outline = vec![at(13.2, 1.2), at(8.6, 7.0), at(11.8, 7.0), at(10.5, 11.8), at(15.5, 5.5), at(12.2, 5.5)];
+        painter.add(egui::Shape::closed_line(outline, Stroke::new(1.8 * scale, GROUND)));
+        painter.add(egui::Shape::convex_polygon(vec![at(13.2, 1.2), at(8.6, 7.0), at(11.8, 7.0), at(12.4, 5.5)], TEXT, Stroke::NONE));
+        painter.add(egui::Shape::convex_polygon(vec![at(12.2, 5.5), at(15.5, 5.5), at(10.5, 11.8), at(11.8, 7.0)], TEXT, Stroke::NONE));
+    } else if full_on_mains {
+        let stroke = Stroke::new(1.1 * scale, GROUND);
+        painter.line_segment([at(10.4, 3.4), at(10.4, 5.0)], stroke);
+        painter.line_segment([at(13.6, 3.4), at(13.6, 5.0)], stroke);
+        painter.line(vec![at(9.2, 5.0), at(14.8, 5.0), at(14.5, 6.6), at(12.0, 8.4), at(9.5, 6.6), at(9.2, 5.0)], stroke);
+        painter.line_segment([at(12.0, 8.4), at(12.0, 9.6)], stroke);
     }
+}
+
+/// A slider drawn as a filled pill with its icon inside, at the left of the fill.
+/// Returns a level picked by pointer or keys, and whether the icon itself was
+/// clicked when `icon_toggles` (as a mute switch).
+#[allow(clippy::too_many_arguments)]
+pub fn pill_slider(ui: &mut Ui, theme: &Theme, width: f32, value: f32, name: &str, height: f32, icon_toggles: bool, icon: &dyn Fn(&egui::Painter, egui::Pos2, Color32)) -> (Option<f32>, bool) {
+    // A taller target than what is drawn, so it is easy to grab.
+    let target = height.max(30.0);
+    let (rect, response) = ui.allocate_exact_size(vec2(width, target), Sense::click_and_drag());
+    let pill = Rect::from_center_size(rect.center(), vec2(width, height));
+    let icon_zone = pill.left() + height + 6.0;
+    if response.clicked() || response.drag_started() { response.request_focus(); }
+    let pressed_icon = icon_toggles && response.clicked() && response.interact_pointer_pos().is_some_and(|pos| pos.x <= icon_zone);
+    let mut picked = response.interact_pointer_pos()
+        .filter(|_| !pressed_icon && (response.dragged() || response.clicked()))
+        .map(|pos| ((pos.x - pill.left()) / pill.width()).clamp(0.0, 1.0));
+    if response.has_focus() && ui.is_enabled() {
+        let modifiers = ui.input(|input| input.modifiers);
+        if !modifiers.alt && !modifiers.ctrl && !modifiers.command {
+            let step = if modifiers.shift { 0.1 } else { 0.01 };
+            let adjustment = ui.input_mut(|input| {
+                if input.consume_key(modifiers, egui::Key::Home) { Some(0.0) }
+                else if input.consume_key(modifiers, egui::Key::End) { Some(1.0) }
+                else if input.consume_key(modifiers, egui::Key::ArrowRight) || input.consume_key(modifiers, egui::Key::ArrowUp) { Some((value + step).clamp(0.0, 1.0)) }
+                else if input.consume_key(modifiers, egui::Key::ArrowLeft) || input.consume_key(modifiers, egui::Key::ArrowDown) { Some((value - step).clamp(0.0, 1.0)) }
+                else { None }
+            });
+            picked = adjustment.or(picked);
+        }
+    }
+    let shown = picked.unwrap_or(value).clamp(0.0, 1.0);
+    let painter = control_painter(ui);
+    let radius = height / 2.0;
+    painter.rect_filled(pill, radius, LINE);
+    if shown > 0.0 {
+        // Never narrower than its own round end, so a low level still reads as a fill.
+        let fill = Rect::from_min_size(pill.min, vec2((pill.width() * shown).max(height), height));
+        painter.rect_filled(fill, radius, theme.main);
+    }
+    let centre = pos2(pill.left() + radius + 3.0, pill.center().y);
+    icon(&painter, centre, if shown > 0.0 { GROUND } else { SECONDARY });
+    if response.has_focus() {
+        painter.rect_stroke(pill.expand(2.0), radius + 2.0, Stroke::new(1.0, TEXT), StrokeKind::Inside);
+    }
+    response.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), shown as f64, name));
+    (picked, pressed_icon)
 }
 
 impl Icon {

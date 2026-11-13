@@ -49,6 +49,8 @@ pub struct MenuNode {
 #[derive(Clone, Default)]
 pub struct Item {
     key: String,
+    /// The item's own name for itself (StatusNotifierItem `Id`).
+    id: String,
     bus: String,
     path: String,
     /// The bus's unique name, which its signals arrive from.
@@ -180,6 +182,16 @@ impl Registry {
 /// A Passive item says it has nothing to show.
 pub fn visible(status: &str) -> bool {
     status != "Passive"
+}
+
+/// Tray items of other desktops' network and Bluetooth applets, by their `Id`.
+/// DEs-UI shows both itself, in the status islands and the quick settings, so
+/// these would only repeat them. Every other application's item stays.
+pub const DUPLICATES: [&str; 4] = ["nm-applet", "nm-tray", "blueman", "blueman-applet"];
+
+/// Whether an item with this `Id` repeats something DEs-UI already shows.
+pub fn duplicate(id: &str) -> bool {
+    DUPLICATES.contains(&id)
 }
 
 pub fn attention(status: &str) -> bool {
@@ -560,6 +572,7 @@ fn refresh(connection: &Connection, items: &mut Vec<Item>, key: &str, generation
         bus: bus.to_string(),
         path: path.to_string(),
         owner,
+        id: word("Id").unwrap_or_default(),
         title: crate::notify::plain(&word("Title").or_else(|| word("Id")).unwrap_or_default()),
         tooltip: property("ToolTip").map(tooltip).unwrap_or_default(),
         status,
@@ -625,7 +638,7 @@ fn act(connection: &Connection, items: &mut [Item], command: Command) {
 
 /// The tray's icons, in a row, for the status strip. Nothing when no application has one.
 pub fn show(ui: &mut Ui, theme: &Theme, tray: &Tray) {
-    let items: Vec<Item> = tray.shared.lock().unwrap().iter().filter(|item| visible(&item.status)).cloned().collect();
+    let items: Vec<Item> = tray.shared.lock().unwrap().iter().filter(|item| visible(&item.status) && !duplicate(&item.id)).cloned().collect();
     if items.is_empty() {
         return;
     }
@@ -747,6 +760,12 @@ fn entries(ui: &mut Ui, tray: &Tray, key: &str, nodes: &[MenuNode]) -> bool {
 mod tests {
     use super::*;
     use zbus::zvariant::StructureBuilder;
+
+    #[test]
+    fn only_the_network_and_bluetooth_applets_are_left_out() {
+        for id in ["nm-applet", "blueman"] { assert!(duplicate(id), "{id}"); }
+        for id in ["", "Network", "steam", "discord", "printer-applet", "org.kde.StatusNotifierItem-1-1"] { assert!(!duplicate(id), "{id}"); }
+    }
 
     #[test]
     fn items_register_by_name_path_or_both() {

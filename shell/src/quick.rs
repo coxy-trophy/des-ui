@@ -299,8 +299,9 @@ fn round(ui: &mut Ui, theme: &Theme, icon: ui::Icon, name: &str, warm: bool) -> 
 
 impl Quick {
     /// The quick settings as the right panel's first card: Wi-Fi, Bluetooth and Do not
-    /// disturb as three switches, brightness and volume as sliders, and the battery.
-    /// It asks for the same things the pull-down does.
+    /// disturb as three rows in one group, brightness and volume as pill sliders in a
+    /// second, and the battery. It asks for the same things the pull-down does; a
+    /// row's arrow opens the pull-down at that list.
     /// `room` is the height it may take; with less, it keeps the switches first,
     /// then the sliders, and leaves out the rest.
     pub fn panel_card(&mut self, ui: &mut Ui, theme: &Theme, readings: &Readings, room: f32) -> Vec<Action> {
@@ -311,69 +312,177 @@ impl Quick {
         let now = Instant::now();
         let volume = shown(self.volume, readings.volume, now);
         let brightness = shown(self.brightness, readings.brightness, now);
+        let mut open_list = None;
         crate::panels::card(ui, |ui| {
-            let gap = 6.0;
-            let width = ((ui.available_width() - 2.0 * gap) / 3.0).floor();
-            let height = if width >= 74.0 && room >= 200.0 { 62.0 } else { 40.0 };
+            ui.spacing_mut().item_spacing.y = 8.0;
             let sliders = brightness.is_some() as usize + volume.is_some() as usize;
-            let with_sliders = room >= 24.0 + height + 7.0 + 31.0 * sliders as f32 + 8.0;
-            let with_battery = room >= 24.0 + height + 7.0 + 31.0 * sliders as f32 + 38.0 + 8.0;
+            let rows_height = 3.0 * ROW + 2.0;
+            let levels_height = if sliders == 0 { 0.0 } else { 14.0 + sliders as f32 * (LABEL + SLIDER) + (sliders - 1) as f32 * 6.0 };
+            let with_sliders = sliders > 0 && room >= 24.0 + rows_height + 8.0 + levels_height;
+            let with_battery = room >= 24.0 + rows_height + 8.0 + if with_sliders { levels_height + 8.0 } else { 0.0 } + 28.0;
             let quiet = readings.do_not_disturb;
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = gap;
-                let state = |glance: &crate::radio::Glance| match glance.powered {
-                    None => "—".to_string(),
-                    Some(on) => glance.working.clone().or_else(|| glance.detail.clone().filter(|_| on)).unwrap_or_else(|| (if on { "ON" } else { "OFF" }).to_string()),
-                };
-                let tiles = [
-                    (ui::Icon::Wifi, "Wi-Fi", state(&wifi), wifi.powered, 0),
-                    (ui::Icon::Bluetooth, "Bluetooth", state(&bluetooth), bluetooth.powered, 1),
-                    (ui::Icon::Moon, "Quiet", (if quiet { "ON" } else { "OFF" }).to_string(), Some(quiet), 2),
+            let state = |glance: &crate::radio::Glance| match glance.powered {
+                None => "Unavailable".to_string(),
+                Some(on) => glance.working.clone().or_else(|| glance.detail.clone().filter(|_| on)).unwrap_or_else(|| (if on { "On" } else { "Off" }).to_string()),
+            };
+            group(ui, |ui| {
+                let rows: [(RowIcon, &str, String, Option<bool>, bool); 3] = [
+                    (RowIcon::Wifi, "Wi-Fi", state(&wifi), wifi.powered, true),
+                    (RowIcon::Plain(ui::Icon::Bluetooth), "Bluetooth", state(&bluetooth), bluetooth.powered, true),
+                    (RowIcon::Plain(ui::Icon::Moon), "Do not disturb", (if quiet { "On" } else { "Off" }).to_string(), Some(quiet), false),
                 ];
-                for (icon, name, detail, on, which) in tiles {
-                    if switch_tile(ui, theme, vec2(width, height), icon, name, &detail, on) {
-                        match (which, on) {
+                for (index, (icon, name, detail, on, arrow)) in rows.into_iter().enumerate() {
+                    match switch_row(ui, theme, icon, name, &detail, on, arrow, index < 2) {
+                        Hit::Switch => match (index, on) {
                             (0, Some(on)) => radio.toggle_wifi(on),
                             (1, Some(on)) => radio.toggle_bluetooth(on),
                             (2, _) => actions.push(Action::DoNotDisturb(!quiet)),
                             _ => {}
-                        }
+                        },
+                        Hit::Arrow => open_list = Some(if index == 0 { View::Wifi } else { View::Bluetooth }),
+                        Hit::None => {}
                     }
                 }
             });
-            if let Some(level) = brightness.filter(|_| with_sliders) {
-                if let Some(to) = level_row(ui, theme, ui::Icon::Brightness, None, level, "Brightness", 22.0) {
-                    let to = to.max(5);
-                    if to != level { self.brightness = Some((to, now)); actions.push(Action::Change(Change::Brightness(to))); }
-                }
-            }
-            if let Some(level) = volume.filter(|_| with_sliders) {
-                let icon = if level == 0 { ui::Icon::Muted } else { ui::Icon::Volume };
-                let mut mute = false;
-                if let Some(to) = level_row(ui, theme, icon, Some(&mut mute), level, "Volume", 22.0) {
-                    if to != level { self.volume = Some((to, now)); actions.push(Action::Change(Change::Volume(to))); }
-                }
-                if mute { actions.push(Action::Mute); }
+            if with_sliders {
+                group(ui, |ui| {
+                    ui.add_space(7.0);
+                    if let Some(level) = brightness {
+                        section_label(ui, "DISPLAY");
+                        let width = ui.available_width() - PERCENT;
+                        let sun = |painter: &egui::Painter, c: egui::Pos2, color: egui::Color32| ui::paint_icon(painter, Rect::from_center_size(c, vec2(14.0, 14.0)), ui::Icon::Brightness, color, false);
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            let (picked, _) = ui::pill_slider(ui, theme, width, level.min(100) as f32 / 100.0, "Brightness", SLIDER, false, &sun);
+                            percent(ui, level);
+                            if let Some(frac) = picked {
+                                let to = ((frac * 100.0).round() as u8).max(5);
+                                if to != level { self.brightness = Some((to, now)); actions.push(Action::Change(Change::Brightness(to))); }
+                            }
+                        });
+                    }
+                    if let Some(level) = volume {
+                        if brightness.is_some() { ui.add_space(6.0 - ui.spacing().item_spacing.y); }
+                        section_label(ui, "SOUND");
+                        let width = ui.available_width() - PERCENT;
+                        let waves = ui::volume_waves(level);
+                        let speaker = move |painter: &egui::Painter, c: egui::Pos2, color: egui::Color32| ui::paint_volume(painter, c + vec2(2.0, 0.0), color, waves, level == 0);
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            let (picked, mute) = ui::pill_slider(ui, theme, width, level.min(100) as f32 / 100.0, "Volume", SLIDER, true, &speaker);
+                            percent(ui, level);
+                            if mute { actions.push(Action::Mute); }
+                            if let Some(frac) = picked {
+                                let to = (frac * 100.0).round() as u8;
+                                if to != level { self.volume = Some((to, now)); actions.push(Action::Change(Change::Volume(to))); }
+                            }
+                        });
+                    }
+                    ui.add_space(3.0);
+                });
             }
             if let Some(power) = readings.power.filter(|_| with_battery) {
-                let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
-                ui.painter().hline(line.x_range(), line.center().y, Stroke::new(1.0, ui::LINE));
-                battery_row(ui, power, readings.battery_health);
+                battery_row(ui, theme, power, readings.battery_health);
             }
         });
+        if let Some(view) = open_list {
+            self.open = true;
+            self.view = view;
+        }
         // Wi-Fi and Bluetooth are read in the background; look again now and then.
         ui.ctx().request_repaint_after(Duration::from_secs(2));
         actions
     }
 }
 
-/// A square switch with an icon, a name and its state; lit while on. True on a click.
-/// `on` of `None` means it cannot be switched here.
-fn switch_tile(ui: &mut Ui, theme: &Theme, size: egui::Vec2, icon: ui::Icon, name: &str, detail: &str, on: Option<bool>) -> bool {
-    tile(ui, theme, size, icon, name, detail, on, false, false) == Hit::Switch
+/// Height of a switch row, a section label, a pill slider, and the room for a percent.
+const ROW: f32 = 42.0;
+const LABEL: f32 = 13.0;
+const SLIDER: f32 = 22.0;
+const PERCENT: f32 = 40.0;
+/// The fill of a group of rows inside a card: between the card and a track.
+const WELL: egui::Color32 = egui::Color32::from_rgb(0x11, 0x16, 0x1C);
+
+/// A rounded group inside a card, sized to what `add` puts in it.
+fn group(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
+    let background = ui.painter().add(egui::Shape::Noop);
+    let response = ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        egui::Frame::new().inner_margin(egui::Margin { left: 0, right: 0, top: 0, bottom: 0 }).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add(ui);
+        });
+    }).response;
+    let rect = response.rect;
+    ui.painter().set(background, egui::Shape::Vec(vec![
+        egui::Shape::rect_filled(rect, 11.0, WELL),
+        egui::Shape::rect_stroke(rect, 11.0, Stroke::new(1.0, ui::LINE), StrokeKind::Inside),
+    ]));
 }
 
-/// A square switch, as `switch_tile`, with an arrow down its right edge when `arrow`
+/// A small spaced label above a slider.
+fn section_label(ui: &mut Ui, text: &str) {
+    let galley = ui.painter().layout_no_wrap(text.to_string(), ui::mono(9.0), ui::SECONDARY);
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), LABEL), Sense::hover());
+    ui.painter().galley(pos2(rect.left() + 11.0, rect.top()), galley, ui::SECONDARY);
+}
+
+/// A level's percent, right-aligned in its own room beside a slider.
+fn percent(ui: &mut Ui, level: u8) {
+    let (rect, _) = ui.allocate_exact_size(vec2(PERCENT, 30.0), Sense::hover());
+    let galley = ui.painter().layout_no_wrap(format!("{level}%"), ui::mono(11.0), ui::TEXT);
+    ui.painter().galley(pos2(rect.right() - 11.0 - galley.size().x, rect.center().y - galley.size().y / 2.0), galley, ui::TEXT);
+}
+
+/// What a switch row's round icon shows.
+#[derive(Clone, Copy)]
+enum RowIcon { Wifi, Plain(ui::Icon) }
+
+/// A row with a round switch, a name and its state; the switch fills with the accent
+/// while on. `arrow` adds a chevron at the right that opens a list; `rule` draws the
+/// line under the row. A click on the row works the switch, one on the chevron opens.
+#[allow(clippy::too_many_arguments)]
+fn switch_row(ui: &mut Ui, theme: &Theme, icon: RowIcon, name: &str, detail: &str, on: Option<bool>, arrow: bool, rule: bool) -> Hit {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), if on.is_some() { Sense::click() } else { Sense::hover() });
+    let lit = on == Some(true);
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, on.is_some(), lit, format!("{name}: {detail}")));
+    let chevron = Rect::from_min_max(pos2(rect.right() - 30.0, rect.top()), rect.max);
+    let arrow_response = arrow.then(|| {
+        let response = ui.interact(chevron, response.id.with("arrow"), Sense::click());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{name}: show the list")));
+        response
+    });
+    let on_arrow = arrow_response.as_ref().is_some_and(|r| r.hovered());
+    let painter = ui.painter();
+    if response.hovered() && !on_arrow { painter.rect_filled(rect.shrink(2.0), 9.0, ui::TRACK); }
+    if response.has_focus() { painter.rect_stroke(rect.shrink(1.0), 10.0, Stroke::new(1.0, ui::TEXT), StrokeKind::Inside); }
+    if rule { painter.hline(rect.x_range().shrink(10.0), rect.bottom(), Stroke::new(1.0, ui::LINE)); }
+    let disc = pos2(rect.left() + 23.0, rect.center().y);
+    painter.circle_filled(disc, 13.0, if lit { theme.main } else { ui::LINE });
+    let ink = if lit { ui::GROUND } else if on.is_none() { ui::LABEL } else { ui::SECONDARY };
+    match icon {
+        RowIcon::Wifi => ui::paint_wifi(painter, disc + vec2(0.0, 0.5), ink, 3, 0.62),
+        RowIcon::Plain(icon) => ui::paint_icon(painter, Rect::from_center_size(disc, vec2(14.0, 14.0)), icon, ink, lit),
+    }
+    let text_left = rect.left() + 46.0;
+    let text_width = rect.right() - text_left - if arrow { 30.0 } else { 10.0 };
+    let mut job = egui::text::LayoutJob::simple_singleline(name.to_string(), ui::display_bold(12.5), ui::TEXT);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(text_width);
+    painter.galley(pos2(text_left, rect.top() + 6.0), painter.layout_job(job), ui::TEXT);
+    let mut job = egui::text::LayoutJob::simple_singleline(detail.to_string(), ui::mono(10.0), ui::SECONDARY);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(text_width);
+    painter.galley(pos2(text_left, rect.top() + 23.0), painter.layout_job(job), ui::SECONDARY);
+    if let Some(arrow_response) = &arrow_response {
+        if arrow_response.hovered() { painter.rect_filled(chevron.shrink(4.0), 8.0, ui::TRACK); }
+        let c = chevron.center();
+        let tone = if arrow_response.hovered() { ui::TEXT } else { ui::SECONDARY };
+        painter.line(vec![c + vec2(-2.0, -4.5), c + vec2(2.5, 0.0), c + vec2(-2.0, 4.5)], Stroke::new(1.6, tone));
+    }
+    if arrow_response.is_some_and(|r| r.on_hover_text(format!("{name}: show the list")).clicked()) { return Hit::Arrow; }
+    if response.on_hover_text(format!("{name}: {detail}")).clicked() && on.is_some() { Hit::Switch } else { Hit::None }
+}
+
+/// A square switch with an icon, a name and its state, lit while on, with an arrow down its right edge when `arrow`
 /// is set, that opens a list of its own; `opened` lights the arrow while it is.
 #[allow(clippy::too_many_arguments)]
 fn tile(ui: &mut Ui, theme: &Theme, size: egui::Vec2, icon: ui::Icon, name: &str, detail: &str, on: Option<bool>, arrow: bool, opened: bool) -> Hit {
@@ -450,30 +559,36 @@ fn level_row(ui: &mut Ui, theme: &Theme, icon: ui::Icon, mute: Option<&mut bool>
     changed
 }
 
-/// The battery: how full, how long it lasts or takes, and how much it still holds.
-fn battery_row(ui: &mut Ui, power: crate::sysmon::Battery, health: Option<u8>) {
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
+/// The battery: its icon, how full, how long it lasts or takes, and how much it
+/// still holds as a small tag.
+fn battery_row(ui: &mut Ui, theme: &Theme, power: crate::sysmon::Battery, health: Option<u8>) {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::hover());
     let painter = ui.painter();
-    let icon = if power.plugged { ui::Icon::Charging } else { ui::Icon::Battery };
-    ui::paint_icon(painter, Rect::from_center_size(rect.left_center() + vec2(9.0, 0.0), vec2(18.0, 18.0)), icon, ui::SECONDARY, false);
-    let low = !power.plugged && power.percent <= 15;
-    let figure = painter.layout_no_wrap(format!("{}%", power.percent), ui::display_bold(15.0), if low { ui::CAUTION } else { ui::TEXT });
+    let low = !power.plugged && power.percent < 20;
+    let charging = power.plugged && power.percent < 100;
+    let ink = if low { ui::CAUTION } else if charging { theme.main } else { ui::TEXT };
+    ui::paint_battery(painter, pos2(rect.left() + 18.0, rect.center().y), ink, power.percent, charging, power.plugged && power.percent >= 100, 1.0);
+    let figure = painter.layout_no_wrap(format!("{}%", power.percent), ui::display_bold(16.0), if low { ui::CAUTION } else { ui::TEXT });
     let figure_width = figure.size().x;
-    painter.galley(pos2(rect.left() + 26.0, rect.center().y - figure.size().y / 2.0), figure, ui::TEXT);
+    painter.galley(pos2(rect.left() + 38.0, rect.center().y - figure.size().y / 2.0), figure, ui::TEXT);
     let left = match (power.plugged, power.minutes) {
         (true, Some(m)) => format!("full in {}", crate::power::duration(m).to_lowercase()),
-        (true, None) => "on mains".to_string(),
+        (true, None) => if power.percent >= 100 { "full".to_string() } else { "on mains".to_string() },
         (false, Some(m)) => format!("{} left", crate::power::duration(m).to_lowercase()),
         (false, None) => String::new(),
     };
-    let left = painter.layout_no_wrap(left, ui::mono(11.0), ui::SECONDARY);
-    let left_end = rect.left() + 34.0 + figure_width + left.size().x;
-    painter.galley(pos2(rect.left() + 34.0 + figure_width, rect.center().y - left.size().y / 2.0), left, ui::SECONDARY);
-    // How much it still holds, where there is room beside the rest.
+    let left = painter.layout_no_wrap(left, ui::mono(10.5), ui::SECONDARY);
+    let left_x = rect.left() + 46.0 + figure_width;
+    let left_end = left_x + left.size().x;
+    painter.galley(pos2(left_x, rect.center().y - left.size().y / 2.0), left, ui::SECONDARY);
+    // How much it still holds, as a tag where there is room beside the rest.
     if let Some(health) = health {
-        let health = painter.layout_no_wrap(format!("HEALTH {health}%"), ui::mono(10.0), ui::LABEL);
-        if left_end + 14.0 + health.size().x <= rect.right() {
-            painter.galley(pos2(rect.right() - health.size().x, rect.center().y - health.size().y / 2.0), health, ui::LABEL);
+        let tag = painter.layout_no_wrap(format!("HEALTH {health}%"), ui::mono(9.0), ui::SECONDARY);
+        let size = tag.size() + vec2(14.0, 6.0);
+        let chip = Rect::from_min_size(pos2(rect.right() - 4.0 - size.x, rect.center().y - size.y / 2.0), size);
+        if left_end + 10.0 <= chip.left() {
+            painter.rect_stroke(chip, size.y / 2.0, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
+            painter.galley(chip.center() - tag.size() / 2.0, tag, ui::SECONDARY);
         }
     }
     response.on_hover_text(crate::power::battery_line(power));
@@ -567,6 +682,47 @@ mod tests {
         let escape = egui::Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() };
         frame(&mut quick, &ctx, vec![escape], &readings);
         assert!(!quick.open);
+    }
+
+    /// The right panel's card drawn `width` wide with `room` to spare: the labels of
+    /// its switches and sliders, and where they went.
+    fn card(width: f32, room: f32) -> (Rect, Vec<(String, egui::accesskit::Role, egui::accesskit::Rect)>) {
+        let ctx = egui::Context::default(); crate::ui::install_fonts(&ctx, None, None); ctx.enable_accesskit();
+        let mut quick = Quick::default();
+        let readings = Readings { volume: Some(40), brightness: Some(100), power: Some(crate::sysmon::Battery { percent: 48, plugged: false, minutes: Some(50) }), battery_health: Some(67), ..Default::default() };
+        let area = Rect::from_min_size(pos2(20.0, 20.0), vec2(width, room));
+        let output = ctx.run(egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(width + 40.0, room + 40.0))), ..Default::default() }, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(area));
+                quick.panel_card(&mut child, &Theme::load("signal"), &readings, room);
+            });
+        });
+        let tree = output.platform_output.accesskit_update.unwrap();
+        let nodes = tree.nodes.iter().filter_map(|(_, node)| Some((node.label()?.to_string(), node.role(), node.bounds()?))).collect();
+        (area, nodes)
+    }
+
+    #[test]
+    fn the_panel_card_groups_its_switches_and_sliders_inside_the_card() {
+        for width in [252.0, 292.0] {
+            let (area, nodes) = card(width, 400.0);
+            for name in ["Wi-Fi", "Bluetooth", "Do not disturb"] {
+                assert!(nodes.iter().any(|(label, role, _)| *role == egui::accesskit::Role::CheckBox && label.starts_with(name)), "{name} switch at {width}");
+            }
+            for name in ["Brightness", "Volume"] {
+                let (_, _, bounds) = nodes.iter().find(|(label, role, _)| *role == egui::accesskit::Role::Slider && label == name).expect(name);
+                assert!(bounds.x0 >= area.left() as f64 && bounds.x1 <= area.right() as f64, "{name} outside the card at {width}: {bounds:?}");
+                assert!(bounds.y1 - bounds.y0 >= 30.0, "{name} needs a drag target");
+            }
+            assert!(nodes.iter().any(|(label, _, _)| label == "Wi-Fi: show the list"));
+        }
+    }
+
+    #[test]
+    fn a_short_panel_keeps_the_switches_and_drops_the_sliders_first() {
+        let (_, nodes) = card(272.0, 170.0);
+        assert!(nodes.iter().any(|(label, _, _)| label.starts_with("Wi-Fi")));
+        assert!(!nodes.iter().any(|(label, role, _)| *role == egui::accesskit::Role::Slider && label == "Volume"));
     }
 
     #[test]
