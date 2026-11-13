@@ -135,6 +135,8 @@ pub struct Lock {
     preparation: Option<Receiver<Result<(), String>>>,
     /// The password is shown as typed, not as dots, until hidden again or the next lock.
     revealed: bool,
+    /// The clock, the notifications tag and the field, as coloured liquid glass.
+    glass: crate::glass::Glass,
 }
 
 /// What the lock screen may say about the machine without unlocking it.
@@ -158,6 +160,7 @@ impl Lock {
             picture: None,
             preparation: None,
             revealed: false,
+            glass: crate::glass::Glass::default(),
         }
     }
 
@@ -294,7 +297,15 @@ impl Lock {
             let painter = ui.painter().clone();
             // The desktop's own wallpaper, whole and sharp, darkened a little at the
             // top and bottom where the words are; without one, the usual glow.
-            let soft = match wallpaper(ctx) {
+            let backdrop = wallpaper(ctx);
+            // Where the glass goes, under everything drawn on it, once the shapes
+            // are known; it paints the whole screen when the GPU can draw it.
+            // Glass is worked out whenever it can be drawn; until the first is
+            // ready, the plain version shows.
+            let glassy = backdrop.is_some() && self.glass.available();
+            let liquid = glassy && self.glass.ready();
+            let mut panes = Vec::new();
+            let soft = match backdrop {
                 Some((sharp, soft, dest, uv)) => {
                     painter.rect_filled(screen, 0.0, ui::GROUND);
                     painter.image(sharp, dest, uv, Color32::WHITE);
@@ -308,6 +319,7 @@ impl Lock {
                     None
                 }
             };
+            let slot = painter.add(egui::Shape::Noop);
             let cx = screen.center().x;
             let short = screen.height() < 640.0;
 
@@ -338,8 +350,11 @@ impl Lock {
             let size = if short { 84.0 } else { (screen.height() * 0.2).clamp(96.0, 240.0) };
             let time = ui::galley(ui, &crate::region::hours_minutes(&now), ui::display_bold(size), CLOCK, 2.0);
             let at = pos2(cx - time.size().x / 2.0, y);
-            painter.galley(at + vec2(0.0, 3.0), time.clone(), Color32::from_black_alpha(70));
-            painter.galley(at, time.clone(), CLOCK);
+            if glassy { panes.push(crate::glass::Shape::Text(time.clone(), at)); }
+            if !liquid {
+                painter.galley(at + vec2(0.0, 3.0), time.clone(), Color32::from_black_alpha(70));
+                painter.galley(at, time.clone(), CLOCK);
+            }
             y += time.size().y;
             // How many notifications wait, never what they say.
             if glance.notices > 0 {
@@ -347,7 +362,8 @@ impl Lock {
                 let galley = painter.layout_no_wrap(label, ui::mono(11.5), GLASS_TEXT);
                 let size = galley.size() + vec2(40.0, 14.0);
                 let chip = Rect::from_center_size(pos2(cx, y + 6.0 + size.y / 2.0), size);
-                glass(&painter, chip, soft.as_ref(), Stroke::new(1.0, Color32::from_white_alpha(36)));
+                if glassy { panes.push(crate::glass::Shape::Pill(chip)); }
+                if !liquid { glass(&painter, chip, soft.as_ref(), Stroke::new(1.0, Color32::from_white_alpha(36))); }
                 ui::paint_icon(&painter, Rect::from_center_size(pos2(chip.left() + 17.0, chip.center().y), vec2(13.0, 13.0)), ui::Icon::Notifications, GLASS_TEXT, false);
                 painter.galley(pos2(chip.left() + 28.0, chip.center().y - galley.size().y / 2.0), galley, GLASS_TEXT);
             }
@@ -363,7 +379,14 @@ impl Lock {
             let face = Rect::from_center_size(pos2(cx, name_top - 10.0 - side / 2.0), vec2(side, side));
             self.paint_face(ui, &painter, theme, face, if denied { ui::CAUTION } else { Color32::from_white_alpha(90) }, busy);
 
-            glass(&painter, field, soft.as_ref(), Stroke::new(1.0, if denied { ui::CAUTION } else if self.password.is_empty() { Color32::from_white_alpha(56) } else { edge }));
+            let field_edge = if denied { ui::CAUTION } else if self.password.is_empty() { Color32::from_white_alpha(56) } else { edge };
+            if glassy { panes.push(crate::glass::Shape::Pill(field)); }
+            if liquid {
+                // Only a change of state is outlined on the glass: typing or denied.
+                if denied || !self.password.is_empty() { painter.rect_stroke(field, field.height() / 2.0, Stroke::new(1.0, field_edge), StrokeKind::Inside); }
+            } else {
+                glass(&painter, field, soft.as_ref(), Stroke::new(1.0, field_edge));
+            }
             let go = Rect::from_center_size(pos2(field.right() - 20.0, field.center().y), vec2(28.0, 28.0));
             let room = Rect::from_min_max(pos2(field.left() + 16.0, field.top()), pos2(go.left() - 8.0, field.bottom()));
             let mut x = room.left();
@@ -402,6 +425,13 @@ impl Lock {
             // Only what happened: checking, or why it did not unlock. No instructions.
             if !message.is_empty() {
                 painter.text(pos2(cx, field.bottom() + 16.0), Align2::CENTER_CENTER, &message, ui::mono(11.5), ink);
+            }
+
+            if let (true, Some((sharp, soft, dest, uv))) = (glassy, backdrop) {
+                let backdrop = crate::glass::Backdrop { sharp, soft, dest, uv };
+                if let Some(shape) = self.glass.shape(ctx, screen, backdrop, &panes, theme.main, crate::glass::Look::default()) {
+                    painter.set(slot, shape);
+                }
             }
 
             // What plays, between the time and the sign-in.
@@ -560,7 +590,7 @@ mod tests {
     #[ignore]
     fn native_lock_preview() {
         use winit::platform::x11::EventLoopBuilderExtX11;
-        struct Preview { lock: Lock, frames: usize, output: std::path::PathBuf }
+        struct Preview { lock: Lock, frames: usize, output: std::path::PathBuf, loader: crate::wallpaper::Loader, wallpaper: Option<std::path::PathBuf> }
         impl eframe::App for Preview {
             fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
                 for event in ctx.input(|i| i.events.clone()) {
@@ -570,10 +600,20 @@ mod tests {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 }
+                // An optional wallpaper, published the way the desktop publishes it.
+                if let Some(path) = &self.wallpaper {
+                    if self.frames == 0 { self.loader.request(ctx, path, 18.0, false); }
+                    self.loader.poll(ctx);
+                    if self.loader.loading { self.frames = 1; ctx.request_repaint(); }
+                    // The glass is worked out off the UI thread; wait for it.
+                    if self.loader.view.is_some() && !self.lock.glass.ready() && self.frames > 2 { self.frames = 2; }
+                    let appearance = des_common::appearance::AppearanceSettings { wallpaper: Some(path.clone()), fit: des_common::appearance::WallpaperFit::Fill, ..Default::default() };
+                    crate::material::publish(ctx, appearance, self.loader.view.clone());
+                }
                 let theme = Theme::load("signal");
                 self.lock.show(ctx, &theme, Glance { battery: Some((68, false)), online: true, notices: 3 }, |_, _| {});
                 self.frames += 1;
-                if self.frames == 4 { ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default())); }
+                if self.frames == 6 { ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default())); }
                 ctx.request_repaint();
             }
         }
@@ -588,7 +628,8 @@ mod tests {
         eframe::run_native("lock preview", options, Box::new(move |cc| {
             ui::install_fonts(&cc.egui_ctx, None, None);
             crate::apply_style(&cc.egui_ctx, &Theme::load("signal"));
-            Ok(Box::new(Preview { lock, frames: 0, output }))
+            let wallpaper = std::env::var_os("DESUI_LOCK_PREVIEW_WALLPAPER").map(std::path::PathBuf::from);
+            Ok(Box::new(Preview { lock, frames: 0, output, loader: Default::default(), wallpaper }))
         })).unwrap();
     }
 

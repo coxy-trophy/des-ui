@@ -15,6 +15,7 @@ mod devices;
 mod geo;
 mod health;
 mod globe;
+mod glass;
 mod greeter;
 mod launcher;
 mod palette;
