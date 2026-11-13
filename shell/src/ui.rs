@@ -598,6 +598,107 @@ pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: Icon, size: f32, lit: bool)
     response
 }
 
+/// `icon_button` in a circle, for the floating status islands.
+pub fn round_icon_button(ui: &mut Ui, theme: &Theme, icon: Icon, size: f32, lit: bool) -> Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(size, size), Sense::click());
+    let active = response.hovered() || response.has_focus();
+    let color = if lit { theme.main } else if active { TEXT } else { SECONDARY };
+    let painter = control_painter(ui);
+    if lit || active {
+        painter.circle_filled(rect.center(), size / 2.0 - 1.0, if lit { theme.tint() } else { TRACK });
+    }
+    if response.has_focus() {
+        painter.circle_stroke(rect.center(), size / 2.0 - 1.0, Stroke::new(1.0, theme.main));
+    }
+    paint_icon(&painter, rect, icon, color, lit);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), icon.label()));
+    response
+}
+
+/// How much of a status glyph is lit. The unlit parts stay, dimmed, so the shape
+/// never changes when the level does.
+pub const UNLIT: f32 = 0.28;
+
+/// Wi-Fi arcs lit for a signal in percent: 0 (the dot alone) to 3.
+pub fn wifi_bars(percent: u8) -> u8 {
+    match percent { 75.. => 3, 50..=74 => 2, 25..=49 => 1, _ => 0 }
+}
+
+/// Speaker waves lit for a volume in percent: none at zero, then 1 to 3.
+pub fn volume_waves(percent: u8) -> u8 {
+    match percent { 0 => 0, 1..=33 => 1, 34..=66 => 2, _ => 3 }
+}
+
+/// The battery's fill in tenths, so it moves in steps rather than every percent;
+/// anything above empty shows at least one step.
+pub fn battery_tenths(percent: u8) -> u8 {
+    if percent == 0 { 0 } else { percent.min(100).div_ceil(10) }
+}
+
+fn arc(center: egui::Pos2, radius: f32, from: f32, to: f32) -> Vec<egui::Pos2> {
+    (0..=12).map(|i| {
+        let a = from + (to - from) * i as f32 / 12.0;
+        center + vec2(a.cos(), a.sin()) * radius
+    }).collect()
+}
+
+/// Wi-Fi as a dot under three arcs, `bars` of them lit.
+pub fn paint_wifi(painter: &egui::Painter, c: egui::Pos2, color: Color32, bars: u8) {
+    use std::f32::consts::PI;
+    let base = c + vec2(0.0, 5.5);
+    for (index, radius) in [4.5_f32, 8.5, 12.5].into_iter().enumerate() {
+        let ink = if bars as usize > index { color } else { color.gamma_multiply(UNLIT) };
+        painter.line(arc(base, radius, -PI * 0.76, -PI * 0.24), Stroke::new(1.7, ink));
+    }
+    painter.circle_filled(base, 1.6, color);
+}
+
+/// A wired connection, shown in place of Wi-Fi.
+pub fn paint_wired(painter: &egui::Painter, c: egui::Pos2, color: Color32) {
+    let stroke = Stroke::new(1.4, color);
+    painter.rect_stroke(Rect::from_center_size(c + vec2(0.0, -4.0), vec2(9.0, 6.0)), 1.5, stroke, StrokeKind::Inside);
+    painter.line_segment([c + vec2(0.0, -1.0), c + vec2(0.0, 2.5)], stroke);
+    painter.line_segment([c + vec2(-6.0, 2.5), c + vec2(6.0, 2.5)], stroke);
+    for x in [-6.0, 0.0, 6.0] { painter.line_segment([c + vec2(x, 2.5), c + vec2(x, 7.0)], stroke); }
+}
+
+/// A speaker with `waves` of three lit, or crossed out when muted.
+pub fn paint_volume(painter: &egui::Painter, c: egui::Pos2, color: Color32, waves: u8, muted: bool) {
+    use std::f32::consts::PI;
+    let body = [(-9.0, -2.5), (-5.5, -2.5), (-1.5, -6.0), (-1.5, 6.0), (-5.5, 2.5), (-9.0, 2.5)];
+    painter.add(egui::Shape::convex_polygon(body.iter().map(|&(x, y)| c + vec2(x, y)).collect(), color, Stroke::NONE));
+    if muted {
+        let stroke = Stroke::new(1.6, color);
+        painter.line_segment([c + vec2(3.0, -3.0), c + vec2(9.0, 3.0)], stroke);
+        painter.line_segment([c + vec2(3.0, 3.0), c + vec2(9.0, -3.0)], stroke);
+        return;
+    }
+    for (index, radius) in [3.5_f32, 7.0, 10.5].into_iter().enumerate() {
+        let ink = if waves as usize > index { color } else { color.gamma_multiply(UNLIT) };
+        painter.line(arc(c + vec2(-1.5, 0.0), radius, -PI * 0.24, PI * 0.24), Stroke::new(1.6, ink));
+    }
+}
+
+/// A battery filled to the nearest tenth, with a bolt while charging.
+pub fn paint_battery(painter: &egui::Painter, c: egui::Pos2, color: Color32, percent: u8, charging: bool) {
+    let body = Rect::from_center_size(c - vec2(1.5, 0.0), vec2(21.0, 11.0));
+    let frame = color.gamma_multiply(0.6);
+    painter.rect_stroke(body, 3.0, Stroke::new(1.3, frame), StrokeKind::Inside);
+    painter.rect_filled(Rect::from_min_size(pos2(body.right() + 1.0, c.y - 2.0), vec2(1.8, 4.0)), 1.0, frame);
+    let inner = body.shrink(2.3);
+    let tenths = battery_tenths(percent);
+    if tenths > 0 {
+        let fill = Rect::from_min_size(inner.min, vec2((inner.width() * tenths as f32 / 10.0).max(2.0), inner.height()));
+        painter.rect_filled(fill, 1.6, color);
+    }
+    if charging {
+        let bolt = [(1.0, -4.5), (-2.5, 0.6), (0.2, 0.6), (-1.0, 4.5), (2.8, -0.8), (0.0, -0.8)];
+        let points: Vec<egui::Pos2> = bolt.iter().map(|&(x, y)| body.center() + vec2(x, y)).collect();
+        painter.add(egui::Shape::closed_line(points.clone(), Stroke::new(1.6, GROUND)));
+        painter.line(points.into_iter().chain(std::iter::once(body.center() + vec2(1.0, -4.5))).collect(), Stroke::new(0.9, color));
+    }
+}
+
 impl Icon {
     pub fn label(self) -> &'static str {
         match self {

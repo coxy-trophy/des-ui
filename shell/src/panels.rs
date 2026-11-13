@@ -582,6 +582,82 @@ pub fn right(
 }
 
 #[cfg(test)]
+mod status_island_tests {
+    use super::*;
+    use eframe::egui;
+
+    #[test]
+    fn levels_move_in_steps() {
+        assert_eq!([0, 24, 25, 49, 50, 74, 75, 100].map(ui::wifi_bars), [0, 0, 1, 1, 2, 2, 3, 3]);
+        assert_eq!([0, 1, 33, 34, 66, 67, 100].map(ui::volume_waves), [0, 1, 1, 2, 2, 3, 3]);
+        assert_eq!([0, 1, 9, 10, 11, 55, 99, 100, 120].map(ui::battery_tenths), [0, 1, 1, 1, 2, 6, 10, 10, 10]);
+    }
+
+    #[test]
+    fn wired_means_up_and_not_wireless() {
+        assert!(wired("enp0s4") && wired("eth0"));
+        assert!(!wired("") && !wired("wlp2s0") && !wired("lo"));
+    }
+
+    /// Draws the islands across a screen `width` wide and returns where they went,
+    /// after a second frame so the centre island has its own width.
+    fn islands(width: f32, playing: bool, clock: bool) -> (Rect, [Rect; 3]) {
+        let ctx = egui::Context::default();
+        ui::install_fonts(&ctx, None, None);
+        let theme = Theme::load("signal");
+        let mut mon = SysMon::new();
+        mon.wifi = Some(80);
+        mon.power = Some(crate::sysmon::Battery { percent: 14, plugged: false, minutes: Some(81) });
+        let band = Rect::from_min_size(pos2(0.0, 1080.0 - des_common::STATUS_HEIGHT), vec2(width, des_common::STATUS_HEIGHT));
+        let desktop = DesktopState { screens: 1, ..Default::default() };
+        let mut found = [Rect::NOTHING; 3];
+        for _ in 0..4 {
+            let _ = ctx.run(egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(width, 1080.0))), ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(band).layout(Layout::left_to_right(Align::Center)));
+                    let panels = Panels { left: true, right: true, bottom: true };
+                    let clicks = status(&mut child, &theme, &mon, Some(&desktop), panels, None, 3, None, des_common::ipc::Hands::Off, None, false, false,
+                        playing.then_some(("Midnight City", "M83")), clock);
+                    found = clicks.islands;
+                });
+            });
+        }
+        (band, found)
+    }
+
+    #[test]
+    fn islands_float_apart_inside_the_band_at_every_width() {
+        for width in [1024.0, 1280.0, 1366.0, 1920.0, 3840.0] {
+            for playing in [false, true] {
+                for clock in [false, true] {
+                    let (band, [left, centre, right]) = islands(width, playing, clock);
+                    let case = format!("{width} wide, playing {playing}, clock {clock}");
+                    let drawn: Vec<Rect> = [left, centre, right].into_iter().filter(|island| *island != Rect::NOTHING).collect();
+                    assert!(drawn.len() >= 2 && left != Rect::NOTHING && right != Rect::NOTHING, "{case}");
+                    if width >= 1280.0 { assert_eq!(drawn.len(), 3, "{case}: the centre fits"); }
+                    for island in drawn {
+                        assert_eq!(island.height(), ISLAND_HEIGHT, "{case}");
+                        assert_eq!(island.top(), band.top(), "{case}");
+                        assert_eq!(band.bottom() - island.bottom(), des_common::frame::GAP, "{case}: floats above the screen edge");
+                        assert!(island.width() > ISLAND_HEIGHT, "{case}: {island:?} has contents");
+                    }
+                    assert_eq!(left.left(), band.left() + des_common::frame::GAP, "{case}");
+                    assert_eq!(right.right(), band.right() - des_common::frame::GAP, "{case}");
+                    if centre != Rect::NOTHING {
+                        assert!(left.right() + des_common::frame::GAP <= centre.left() + 0.5, "{case}: left {left:?} centre {centre:?}");
+                        assert!(centre.right() + des_common::frame::GAP <= right.left() + 0.5, "{case}: centre {centre:?} right {right:?}");
+                    }
+                    assert!(left.right() + des_common::frame::GAP <= right.left() + 0.5, "{case}");
+                    if width >= 1920.0 {
+                        assert!((centre.center().x - band.center().x).abs() < 1.0, "{case}: centred when there is room");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod right_column_tests {
     use super::*;
     use eframe::egui;
@@ -638,47 +714,50 @@ mod right_column_tests {
     }
 }
 
-/// A piece of a pill in the status strip: an icon, or text in a colour.
-enum Piece { Icon(Icon, eframe::egui::Color32), Text(String, eframe::egui::Color32) }
+/// A piece of a pill in the status strip: an icon, a glyph that shows a level, or
+/// text in a colour.
+enum Piece { Icon(Icon, eframe::egui::Color32), Glyph(Glyph, eframe::egui::Color32), Text(String, eframe::egui::Color32) }
+
+/// The status glyphs that show their state.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Glyph { Wifi(u8), Wired, Volume { waves: u8, muted: bool }, Battery { percent: u8, charging: bool } }
+
+impl Piece {
+    fn width(&self, galley: Option<&eframe::egui::Galley>) -> f32 {
+        match self {
+            Piece::Icon(..) => 14.0,
+            Piece::Glyph(Glyph::Battery { .. }, _) => 24.0,
+            Piece::Glyph(Glyph::Volume { .. }, _) => 20.0,
+            Piece::Glyph(..) => 22.0,
+            Piece::Text(..) => galley.map_or(0.0, |g| g.size().x),
+        }
+    }
+}
 
 /// A rounded pill of icons and text, one control. `edge` and `fill` say how it stands.
 fn strip_pill(ui: &mut Ui, pieces: &[Piece], edge: eframe::egui::Color32, fill: eframe::egui::Color32, label: &str) -> eframe::egui::Response {
     let galleys: Vec<Option<std::sync::Arc<eframe::egui::Galley>>> = pieces.iter().map(|piece| match piece {
         Piece::Text(text, color) => Some(ui.painter().layout_no_wrap(text.clone(), ui::mono(11.0), *color)),
-        Piece::Icon(..) => None,
+        _ => None,
     }).collect();
     let gap = 5.0;
-    let width: f32 = pieces.iter().zip(&galleys).map(|(piece, galley)| match piece { Piece::Icon(..) => 14.0, Piece::Text(..) => galley.as_ref().map_or(0.0, |g| g.size().x) }).sum::<f32>()
+    let width: f32 = pieces.iter().zip(&galleys).map(|(piece, galley)| piece.width(galley.as_deref())).sum::<f32>()
         + gap * (pieces.len().saturating_sub(1)) as f32 + 20.0;
-    let (rect, response) = ui.allocate_exact_size(vec2(width, 22.0), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 26.0), Sense::click());
     let response = response.on_hover_text(label);
     response.widget_info(|| eframe::egui::WidgetInfo::labeled(eframe::egui::WidgetType::Button, true, label));
     let painter = ui.painter();
-    painter.rect_filled(rect, 11.0, if response.hovered() { ui::TRACK } else { fill });
-    painter.rect_stroke(rect, 11.0, Stroke::new(1.0, edge), StrokeKind::Inside);
-    let mut x = rect.left() + 10.0;
-    for (piece, galley) in pieces.iter().zip(galleys) {
-        match piece {
-            Piece::Icon(icon, color) => {
-                ui::paint_icon(painter, Rect::from_center_size(pos2(x + 7.0, rect.center().y), vec2(14.0, 14.0)), *icon, *color, false);
-                x += 14.0 + gap;
-            }
-            Piece::Text(_, color) => {
-                if let Some(galley) = galley {
-                    let width = galley.size().x;
-                    painter.galley(pos2(x, rect.center().y - galley.size().y / 2.0), galley, *color);
-                    x += width + gap;
-                }
-            }
-        }
-    }
+    painter.rect_filled(rect, 13.0, if response.hovered() { ui::TRACK } else { fill });
+    painter.rect_stroke(rect, 13.0, Stroke::new(1.0, edge), StrokeKind::Inside);
+    paint_pieces(painter, pieces, galleys, rect.left() + 10.0, rect.center().y, gap);
     response
 }
 
-/// The strip along the bottom edge: the ways in, what has the keyboard and what
-/// plays at the left; at the right, what is happening to the user, the panels, and
-/// one pill of readings that opens the quick settings, with the time when nothing
-/// else on screen shows it. `overlay` names what is shown in place of the terminal.
+/// The status islands along the bottom edge, floating like the panels. Left: the
+/// ways in. Centre: what has the keyboard and what plays. Right: applications'
+/// own icons, the panels, one run of readings that opens the quick settings, and
+/// the time when nothing else on screen shows it. `overlay` names what is shown in
+/// place of the terminal. `ui.max_rect()` is the whole band, its gap included.
 #[allow(clippy::too_many_arguments)]
 pub fn status(
     ui: &mut Ui,
@@ -696,84 +775,67 @@ pub fn status(
     playing: Option<(&str, &str)>,
     clock: bool,
 ) -> StatusClicks {
-    let mut toggled = None;
     let stage = powerup::stage(ui.ctx());
     if stage.alpha(Part::Status) < 1.0 {
         ui.set_opacity(stage.alpha(Part::Status));
     }
-    ui.spacing_mut().item_spacing.x = 4.0;
-    ui::tracked(ui, "DEs-UI", ui::display_bold(11.0), theme.main, 3.0);
-    ui.add_space(12.0);
-    // The ways in, each lit while what it opens is open.
-    let way_in = |ui: &mut Ui, name: &str, icon: Icon, hint: &str| {
-        ui::icon_button(ui, theme, icon, 24.0, overlay == Some(name)).on_hover_text(hint)
-    };
-    let shortcut_context = ui.ctx().clone();
-    let settings_clicked = way_in(ui, "SETTINGS", Icon::Settings, &crate::shortcuts::hint(&shortcut_context, "Settings", "desktop.settings")).clicked();
-    let music_clicked = way_in(ui, "MUSIC", Icon::Music, &crate::shortcuts::hint(&shortcut_context, "Music", "desktop.music")).clicked();
-    let power_clicked = way_in(ui, "POWER", Icon::Power, &crate::shortcuts::hint(&shortcut_context, "Sleep, restart, shut down", "desktop.power")).clicked();
-    let bell = way_in(ui, "NOTIFICATIONS", Icon::Notifications, &crate::shortcuts::hint(&shortcut_context, "Notifications", "desktop.notifications"));
-    let notices_clicked = bell.clicked();
-    if notices > 0 {
-        // How many wait, as a badge on the bell.
-        let text = if notices > 99 { "99+".to_string() } else { notices.to_string() };
-        let galley = ui.painter().layout_no_wrap(text, ui::mono(9.0), ui::GROUND);
-        let size = vec2((galley.size().x + 6.0).max(14.0), 14.0);
-        let badge = Rect::from_min_size(pos2(bell.rect.right() - size.x * 0.55, bell.rect.top() - 3.0), size);
-        ui.painter().rect_filled(badge, 7.0, theme.main);
-        ui.painter().galley(badge.center() - galley.size() / 2.0, galley, ui::GROUND);
-    }
-    ui.add_space(14.0);
-    separator(ui);
-    ui.add_space(10.0);
+    let band = ui.max_rect();
+    let gap = des_common::frame::GAP;
+    let row = Rect::from_min_size(pos2(band.left() + gap, band.top()), vec2((band.width() - 2.0 * gap).max(1.0), ISLAND_HEIGHT));
+    let mut clicks = StatusClicks::default();
 
-    // What has the keyboard, and how many applications are open.
-    let holder = match (overlay, desktop.and_then(|d| d.focus.and_then(|index| d.apps.get(index)))) {
-        (Some(overlay), _) => overlay.to_string(),
-        (None, Some(app)) => truncate(&app.title, 28).to_uppercase(),
-        (None, None) => "TERMINAL".to_string(),
-    };
-    let mut pieces = vec![Piece::Icon(Icon::Keyboard, ui::SECONDARY), Piece::Text(holder.clone(), ui::TEXT)];
-    if let Some(count) = desktop.map(|desktop| desktop.apps.len()) {
-        pieces.push(Piece::Text(format!("· {count} {}", if count == 1 { "APP" } else { "APPS" }), ui::LABEL));
-    }
-    if desktop.is_some_and(|desktop| desktop.screens > 1) {
-        pieces.push(Piece::Text(format!("· {} DISPLAYS", desktop.map_or(0, |d| d.screens)), ui::LABEL));
-    }
-    strip_pill(ui, &pieces, ui::LINE, ui::PANEL, &format!("{} has the keyboard", holder.to_lowercase()));
-    // What plays, as a way into Music.
-    let mut music_clicked = music_clicked;
-    if let Some((track, artists)) = playing {
-        ui.add_space(6.0);
-        let pieces = [Piece::Icon(Icon::Music, theme.main), Piece::Text(truncate(track, 28), ui::TEXT), Piece::Text(format!("· {}", truncate(artists, 22)), ui::LABEL)];
-        music_clicked |= strip_pill(ui, &pieces, ui::LINE, ui::PANEL, &format!("{track} — {artists}. Open Music")).clicked();
-    }
-
-    let mut stop_clicked = false;
-    let mut hands_clicked = false;
-    let (mut keyboard_clicked, mut quick_clicked) = (false, false);
-    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        if clock {
-            ui::text(ui, &crate::region::hours_minutes(&chrono::Local::now()), ui::display_bold(13.0), ui::TEXT);
-            ui.add_space(4.0);
+    // Left: the ways in, each lit while what it opens is open.
+    let left = island(ui, row, Layout::left_to_right(Align::Center), ISLAND_PADDING, |ui| {
+        ui.spacing_mut().item_spacing.x = ICON_GAP;
+        ui::tracked(ui, "DEs-UI", ui::display_bold(11.0), theme.main, 3.0);
+        ui.add_space(18.0 - ICON_GAP);
+        let context = ui.ctx().clone();
+        let way_in = |ui: &mut Ui, name: &str, icon: Icon, hint: &str, id: &str| {
+            ui::round_icon_button(ui, theme, icon, BUTTON, overlay == Some(name)).on_hover_text(crate::shortcuts::hint(&context, hint, id))
+        };
+        clicks.settings = way_in(ui, "SETTINGS", Icon::Settings, "Settings", "desktop.settings").clicked();
+        clicks.music = way_in(ui, "MUSIC", Icon::Music, "Music", "desktop.music").clicked();
+        clicks.power = way_in(ui, "POWER", Icon::Power, "Sleep, restart, shut down", "desktop.power").clicked();
+        let bell = way_in(ui, "NOTIFICATIONS", Icon::Notifications, "Notifications", "desktop.notifications");
+        clicks.notices = bell.clicked();
+        if notices > 0 {
+            // How many wait, as a badge on the bell.
+            let text = if notices > 99 { "99+".to_string() } else { notices.to_string() };
+            let galley = ui.painter().layout_no_wrap(text, ui::mono(9.0), ui::GROUND);
+            let size = vec2((galley.size().x + 6.0).max(15.0), 15.0);
+            let badge = Rect::from_min_size(pos2(bell.rect.right() - size.x * 0.7, bell.rect.top() + 1.0), size);
+            ui.painter().rect_filled(badge, 7.5, theme.main);
+            ui.painter().galley(badge.center() - galley.size() / 2.0, galley, ui::GROUND);
         }
-        // One pill of readings; it opens the quick settings, and is lit while they are open.
+    });
+
+    // Right, laid out from the right edge inwards.
+    let right = island(ui, row, Layout::right_to_left(Align::Center), ISLAND_PADDING, |ui| {
+        ui.spacing_mut().item_spacing.x = 12.0;
+        if clock {
+            ui::text(ui, &crate::region::hours_minutes(&chrono::Local::now()), ui::display_bold(14.0), ui::TEXT);
+            separator(ui);
+        }
+        // One run of readings; it opens the quick settings, and is lit while they are open.
         let mut pieces = Vec::new();
         let mut said = Vec::new();
         if let Some(wifi) = mon.wifi {
-            pieces.push(Piece::Icon(Icon::Wifi, ui::TEXT));
+            pieces.push(Piece::Glyph(Glyph::Wifi(ui::wifi_bars(wifi)), ui::TEXT));
             said.push(format!("Wi-Fi {wifi}%"));
+        } else if wired(&mon.iface) {
+            pieces.push(Piece::Glyph(Glyph::Wired, ui::TEXT));
+            said.push("wired network".to_string());
         }
         if let Some(volume) = mon.volume() {
-            pieces.push(Piece::Icon(if volume == 0 { Icon::Muted } else { Icon::Volume }, ui::TEXT));
+            pieces.push(Piece::Glyph(Glyph::Volume { waves: ui::volume_waves(volume), muted: volume == 0 }, ui::TEXT));
             pieces.push(Piece::Text(format!("{volume}%"), ui::TEXT));
             said.push(format!("volume {volume}%"));
         }
         if let Some(battery) = mon.power {
             // Low and running down is the one reading here that asks for something.
-            let ink = if !battery.plugged && battery.percent <= 15 { ui::CAUTION } else { ui::TEXT };
-            pieces.push(Piece::Icon(if battery.plugged { Icon::Charging } else { Icon::Battery }, ink));
+            let charging = battery.plugged && battery.percent < 100;
+            let ink = if !battery.plugged && battery.percent < 20 { ui::CAUTION } else if charging { theme.main } else { ui::TEXT };
+            pieces.push(Piece::Glyph(Glyph::Battery { percent: battery.percent, charging }, ink));
             pieces.push(Piece::Text(format!("{}%", battery.percent), ink));
             if let Some(minutes) = battery.minutes {
                 // "1 H 21" with hours; minutes alone keep their unit.
@@ -785,31 +847,22 @@ pub fn status(
         }
         if pieces.is_empty() { pieces.push(Piece::Icon(Icon::Quick, ui::TEXT)); }
         let label = crate::shortcuts::hint(ui.ctx(), &format!("Quick settings{}{}", if said.is_empty() { "" } else { ": " }, said.join(", ")), "desktop.quick");
-        let (edge, fill) = if quick_open { (theme.main, theme.tint()) } else { (ui::LINE, ui::PANEL) };
-        quick_clicked = strip_pill(ui, &pieces, edge, fill, &label).clicked();
-
-        keyboard_clicked = ui::icon_button(ui, theme, Icon::Keyboard, 22.0, keyboard_open)
-            .on_hover_text(crate::shortcuts::hint(ui.ctx(), "On-screen keyboard", "shell.keyboard"))
-            .clicked();
+        clicks.quick = readings(ui, theme, &pieces, quick_open, &label).clicked();
+        separator(ui);
         // The panels' switches, together.
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            let mut buttons = Vec::new();
             for (icon, panel, open) in [(Icon::PanelRight, Panel::Right, panels.right), (Icon::PanelBottom, Panel::Bottom, panels.bottom), (Icon::PanelLeft, Panel::Left, panels.left)] {
                 let name = match panel { Panel::Left => "left", Panel::Right => "right", Panel::Bottom => "file" };
                 let action = if open { "Collapse" } else { "Open" };
-                let button = ui::icon_button(ui, theme, icon, 22.0, open).on_hover_text(format!("{action} the {name} panel"));
-                if button.clicked() { toggled = Some(panel); }
-                buttons.push(button.rect);
-            }
-            if let (Some(first), Some(last)) = (buttons.first(), buttons.last()) {
-                let well = first.union(*last).expand2(vec2(2.0, 1.0));
-                ui.painter().rect_stroke(well, 8.0, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
+                if ui::round_icon_button(ui, theme, icon, TOGGLE, open).on_hover_text(format!("{action} the {name} panel")).clicked() {
+                    clicks.toggled = Some(panel);
+                }
             }
         });
-        ui.add_space(4.0);
-        separator(ui);
-        ui.add_space(4.0);
+        clicks.keyboard = ui::round_icon_button(ui, theme, Icon::Keyboard, TOGGLE, keyboard_open)
+            .on_hover_text(crate::shortcuts::hint(ui.ctx(), "On-screen keyboard", "shell.keyboard"))
+            .clicked();
         // While hand control is on, the camera is: said plainly, and one click from off.
         let hand = match hands {
             des_common::ipc::Hands::Off => None,
@@ -819,34 +872,158 @@ pub fn status(
         };
         if let Some((text, ink, hint)) = hand {
             let label = crate::shortcuts::hint(ui.ctx(), hint, "desktop.hands");
-            hands_clicked = strip_pill(ui, &[Piece::Text(format!("● {text}"), ink)], ink, ui::PANEL, &label).clicked();
+            clicks.hands = strip_pill(ui, &[Piece::Text(format!("● {text}"), ink)], ink, ui::PANEL, &label).clicked();
         }
         if let Some(running) = recording {
             // The one thing here that is happening to the user, so it is the one in colour.
             let seconds = running.as_secs();
             let pieces = [Piece::Text(format!("● REC {:02}:{:02}", seconds / 60, seconds % 60), ui::CAUTION), Piece::Text("· STOP".into(), ui::CAUTION.gamma_multiply(0.75))];
-            stop_clicked = strip_pill(ui, &pieces, ui::CAUTION, ui::CAUTION.gamma_multiply(0.08), "End the recording").clicked();
+            clicks.stop = strip_pill(ui, &pieces, ui::CAUTION, ui::CAUTION.gamma_multiply(0.08), "End the recording").clicked();
         }
         // Applications' own icons, left of the rest.
         if let Some(tray) = tray {
-            ui.spacing_mut().item_spacing.x = 8.0;
+            ui.spacing_mut().item_spacing.x = ICON_GAP;
             crate::tray::show(ui, theme, tray);
         }
     });
+
+    // Centre: placed on the middle of the screen when it fits, using last frame's
+    // width, and never over its neighbours.
+    // Measured widths of the full and the compact centre, from earlier frames: the
+    // compact one leaves out what plays and the counts, and with no room for even
+    // that the centre is left out.
+    let width_id = ui.id().with("status-centre-width");
+    let (full, compact): (f32, f32) = ui.ctx().data(|data| data.get_temp(width_id)).unwrap_or((240.0, 160.0));
+    let lo = left.right() + gap;
+    let hi = (right.left() - gap).max(lo);
+    let fits = |width: f32| width <= hi - lo;
+    let short = !fits(full);
+    let width = if short { compact } else { full };
+    let x = (row.center().x - width / 2.0).clamp(lo, (hi - width).max(lo));
+    let room = Rect::from_min_max(pos2(x, row.top()), pos2(hi.max(x + 1.0), row.bottom()));
+    let centre = if short && !fits(compact) { Rect::NOTHING } else { island(ui, room, Layout::left_to_right(Align::Center), 20.0, |ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        let holder = match (overlay, desktop.and_then(|d| d.focus.and_then(|index| d.apps.get(index)))) {
+            (Some(overlay), _) => overlay.to_string(),
+            (None, Some(app)) => truncate(&app.title, 28).to_uppercase(),
+            (None, None) => "TERMINAL".to_string(),
+        };
+        ui::icon(ui, Icon::Keyboard, 16.0, ui::SECONDARY).on_hover_text(format!("{} has the keyboard", holder.to_lowercase()));
+        ui::text(ui, &holder, ui::display_bold(12.0), ui::TEXT);
+        if short { return; }
+        if let Some(count) = desktop.map(|desktop| desktop.apps.len()) {
+            ui::text(ui, &format!("· {count} {}", if count == 1 { "APP" } else { "APPS" }), ui::mono(11.0), ui::SECONDARY);
+        }
+        if desktop.is_some_and(|desktop| desktop.screens > 1) {
+            ui::text(ui, &format!("· {} DISPLAYS", desktop.map_or(0, |d| d.screens)), ui::mono(11.0), ui::SECONDARY);
+        }
+        // What plays, as a way into Music.
+        if let Some((track, artists)) = playing {
+            separator(ui);
+            let pieces = [Piece::Icon(Icon::Music, theme.main), Piece::Text(truncate(track, 28), ui::TEXT), Piece::Text(format!("· {}", truncate(artists, 22)), ui::SECONDARY)];
+            clicks.music |= readings(ui, theme, &pieces, false, &format!("{track} — {artists}. Open Music")).clicked();
+        }
+    }) };
+    // Remember what was measured; a changed width redraws once more to place it.
+    if centre.width() > 0.0 && (centre.width() - width).abs() > 0.5 {
+        let measured = if short { (full, centre.width()) } else { (centre.width(), compact) };
+        ui.ctx().data_mut(|data| data.insert_temp(width_id, measured));
+        ui.ctx().request_repaint();
+    }
+    clicks.islands = [left, centre, right];
+
     if clock {
         use chrono::Timelike;
         ui.ctx().request_repaint_after(Duration::from_secs((60 - chrono::Local::now().second()) as u64));
     }
-    StatusClicks { toggled, settings: settings_clicked, music: music_clicked, notices: notices_clicked, power: power_clicked, stop: stop_clicked, hands: hands_clicked, keyboard: keyboard_clicked, quick: quick_clicked }
+    clicks
+}
+
+/// Height of each status island, inside `des_common::STATUS_HEIGHT`.
+pub const ISLAND_HEIGHT: f32 = des_common::STATUS_ISLAND_HEIGHT;
+const ISLAND_PADDING: f32 = 14.0;
+/// Round buttons in the islands, and the room between them.
+const BUTTON: f32 = 36.0;
+const TOGGLE: f32 = 32.0;
+const ICON_GAP: f32 = 10.0;
+
+/// A rounded island in `area` sized to its contents, drawn with the panels' own
+/// surface, edge and shadow behind them. Returns where it was drawn.
+fn island(ui: &mut Ui, area: Rect, layout: Layout, padding: f32, add: impl FnOnce(&mut Ui)) -> Rect {
+    let background = ui.painter().add(eframe::egui::Shape::Noop);
+    let inner = area.shrink2(vec2(padding, 0.0));
+    let mut child = ui.new_child(eframe::egui::UiBuilder::new().max_rect(inner).layout(layout));
+    child.set_clip_rect(area.intersect(ui.clip_rect()));
+    add(&mut child);
+    let used = child.min_rect();
+    let rect = if used.width() > 0.0 {
+        Rect::from_min_max(pos2(used.left() - padding, area.top()), pos2(used.right() + padding, area.bottom()))
+    } else {
+        Rect::from_min_size(area.min, vec2(0.0, area.height()))
+    };
+    let radius = rect.height() / 2.0;
+    let mut shapes = vec![eframe::egui::Shadow { offset: [0, 6], blur: 18, spread: 0, color: eframe::egui::Color32::from_black_alpha(110) }.as_shape(rect, radius).into()];
+    shapes.extend(crate::material::shapes(ui.ctx(), rect, radius, crate::material::Role::Panel));
+    shapes.push(eframe::egui::Shape::rect_stroke(rect, radius, Stroke::new(1.0, ui::LINE), StrokeKind::Inside));
+    ui.painter().set(background, eframe::egui::Shape::Vec(shapes));
+    rect
+}
+
+/// A wired connection: an interface that is up and is not wireless.
+fn wired(iface: &str) -> bool {
+    !iface.is_empty() && !iface.starts_with("wl") && iface != "lo"
+}
+
+/// A run of readings or of what plays: one control, a soft pill only while
+/// hovered or `lit`.
+fn readings(ui: &mut Ui, theme: &Theme, pieces: &[Piece], lit: bool, label: &str) -> eframe::egui::Response {
+    let galleys: Vec<Option<std::sync::Arc<eframe::egui::Galley>>> = pieces.iter().map(|piece| match piece {
+        Piece::Text(text, color) => Some(ui.painter().layout_no_wrap(text.clone(), ui::mono(12.0), *color)),
+        _ => None,
+    }).collect();
+    let gap = 6.0;
+    let width: f32 = pieces.iter().zip(&galleys).map(|(piece, galley)| piece.width(galley.as_deref())).sum::<f32>()
+        + gap * (pieces.len().saturating_sub(1)) as f32 + 24.0;
+    let (rect, response) = ui.allocate_exact_size(vec2(width, TOGGLE), Sense::click());
+    let response = response.on_hover_text(label);
+    response.widget_info(|| eframe::egui::WidgetInfo::labeled(eframe::egui::WidgetType::Button, true, label));
+    let painter = ui.painter();
+    if lit || response.hovered() {
+        painter.rect_filled(rect, TOGGLE / 2.0, if lit { theme.tint() } else { ui::TRACK });
+    }
+    if response.has_focus() {
+        painter.rect_stroke(rect, TOGGLE / 2.0, Stroke::new(1.0, theme.main), StrokeKind::Inside);
+    }
+    paint_pieces(painter, pieces, galleys, rect.left() + 12.0, rect.center().y, gap);
+    response
+}
+
+/// Paints `pieces` from `x` along the line at `y`.
+fn paint_pieces(painter: &eframe::egui::Painter, pieces: &[Piece], galleys: Vec<Option<std::sync::Arc<eframe::egui::Galley>>>, mut x: f32, y: f32, gap: f32) {
+    for (piece, galley) in pieces.iter().zip(galleys) {
+        let width = piece.width(galley.as_deref());
+        let c = pos2(x + width / 2.0, y);
+        match piece {
+            Piece::Icon(icon, color) => ui::paint_icon(painter, Rect::from_center_size(c, vec2(14.0, 14.0)), *icon, *color, false),
+            Piece::Glyph(Glyph::Wifi(bars), color) => ui::paint_wifi(painter, c, *color, *bars),
+            Piece::Glyph(Glyph::Wired, color) => ui::paint_wired(painter, c, *color),
+            Piece::Glyph(Glyph::Volume { waves, muted }, color) => ui::paint_volume(painter, c, *color, *waves, *muted),
+            Piece::Glyph(Glyph::Battery { percent, charging }, color) => ui::paint_battery(painter, c, *color, *percent, *charging),
+            Piece::Text(_, color) => if let Some(galley) = galley {
+                painter.galley(pos2(x, y - galley.size().y / 2.0), galley, *color);
+            },
+        }
+        x += width + gap;
+    }
 }
 
 /// A short upright rule between groups in the strip.
 fn separator(ui: &mut Ui) {
-    let (rect, _) = ui.allocate_exact_size(vec2(1.0, 14.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(1.0, 18.0), Sense::hover());
     ui.painter().vline(rect.center().x, rect.y_range(), Stroke::new(1.0, ui::LINE));
 }
 
-/// What was clicked in the status strip this frame.
+/// What was clicked in the status strip this frame, and where its islands were drawn.
 pub struct StatusClicks {
     pub toggled: Option<Panel>,
     pub settings: bool,
@@ -858,6 +1035,14 @@ pub struct StatusClicks {
     pub hands: bool,
     pub keyboard: bool,
     pub quick: bool,
+    /// Left, centre and right.
+    pub islands: [Rect; 3],
+}
+
+impl Default for StatusClicks {
+    fn default() -> Self {
+        Self { toggled: None, settings: false, music: false, notices: false, power: false, stop: false, hands: false, keyboard: false, quick: false, islands: [Rect::NOTHING; 3] }
+    }
 }
 
 /// What a further display shows while no application is on it.

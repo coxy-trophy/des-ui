@@ -21,8 +21,12 @@ pub mod terminal;
 /// applications. It stays visible while an application is shown.
 pub const TOP_BAR_HEIGHT: f32 = 44.0;
 
-/// Height of the status strip along the bottom edge, across the full width.
-pub const STATUS_HEIGHT: f32 = 28.0;
+/// Height kept along the bottom edge for the floating status islands: the islands
+/// themselves and the gap below them. The panels keep their usual gap above.
+pub const STATUS_HEIGHT: f32 = STATUS_ISLAND_HEIGHT + frame::GAP;
+
+/// Height of each floating status island.
+pub const STATUS_ISLAND_HEIGHT: f32 = 44.0;
 
 /// Width of the gap between the two halves of a split workspace.
 pub const SPLIT_GAP: f32 = 2.0;
