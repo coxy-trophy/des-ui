@@ -84,21 +84,21 @@ impl eframe::App for App {
                 self.settings.open = false; self.files_browser = None;
                 self.music.open = false;
                 self.notices.open = false;
-                self.power_menu.open = false;
+                self.power_menu.open = false; self.calculator.open = false;
                 self.launcher.open();
             }
             if std::mem::take(&mut desktop.settings_requested) && !self.settings.open {
                 self.launcher.open = false;
                 self.music.open = false;
                 self.notices.open = false;
-                self.power_menu.open = false;
+                self.power_menu.open = false; self.calculator.open = false;
                 self.settings.open(&self.config);
             }
             if std::mem::take(&mut desktop.music_requested) && !self.music.open {
                 self.launcher.open = false;
                 self.settings.open = false; self.files_browser = None;
                 self.notices.open = false;
-                self.power_menu.open = false;
+                self.power_menu.open = false; self.calculator.open = false;
                 self.music.open = true;
             }
             if std::mem::take(&mut desktop.power_requested) {
@@ -106,6 +106,7 @@ impl eframe::App for App {
                 self.settings.open = false; self.files_browser = None;
                 self.music.open = false;
                 self.notices.open = false;
+                self.calculator.open = false;
                 self.power_menu.open = true;
             }
             if std::mem::take(&mut desktop.quick_requested) {
@@ -372,7 +373,7 @@ impl eframe::App for App {
         if self.polkit.active() || self.capture.marking() || self.lock.locked { self.companion.close(); }
         let events = self.take_shortcuts(ctx);
         let mut reference_input = shortcuts::take_modal_input(ctx, self.shortcut_reference.open || self.companion.open);
-        if self.launcher.open || self.settings.open || self.music.open || self.notices.open || self.power_menu.open {
+        if self.launcher.open || self.settings.open || self.music.open || self.notices.open || self.power_menu.open || self.calculator.open {
             self.world.expanded = false;
             self.connect.expanded = false;
             self.files_browser = None;
@@ -395,6 +396,8 @@ impl eframe::App for App {
             Some("NOTIFICATIONS")
         } else if self.power_menu.open {
             Some("POWER")
+        } else if self.calculator.open {
+            Some("CALCULATOR")
         } else if self.files_browser.is_some() {
             Some("FILES")
         } else if self.connect.expanded {
@@ -500,7 +503,7 @@ impl eframe::App for App {
                             scratch_keys |= self.connect.has_keyboard();
                             if !expanded && self.connect.expanded {
                                 self.files_browser=None;self.settings.open=false;self.launcher.open=false;
-                                self.music.open=false;self.notices.open=false;self.power_menu.open=false;self.world.expanded=false;
+                                self.music.open=false;self.notices.open=false;self.power_menu.open=false;self.calculator.open=false;self.world.expanded=false;
                                 self.send(Command::Terminal);
                             }
                             return false;
@@ -531,7 +534,7 @@ impl eframe::App for App {
                             self.launcher.open = false;
                             self.music.open = false;
                             self.notices.open = false;
-                            self.power_menu.open = false;
+                            self.power_menu.open = false; self.calculator.open = false;
                             self.send(Command::Terminal);
                         }
                         wanted
@@ -604,7 +607,7 @@ impl eframe::App for App {
                     self.top_bar(ui, &theme, state.as_ref())
                 });
                 if actions.find_terminal {
-                    self.launcher.open=false;self.settings.open=false;self.files_browser=None;self.music.open=false;self.notices.open=false;self.power_menu.open=false;self.connect.expanded=false;
+                    self.launcher.open=false;self.settings.open=false;self.files_browser=None;self.music.open=false;self.notices.open=false;self.power_menu.open=false;self.calculator.open=false;self.connect.expanded=false;
                     let i=self.focus_tab();self.tabs[i].open_search();
                 }
                 if actions.open_tab {
@@ -678,6 +681,12 @@ impl eframe::App for App {
                     region(ui, mine, vec2(0.0, 0.0), Layout::top_down(Align::Min), |ui| {
                         self.music.set_lyrics_motion(self.config.animate && !self.config.appearance.reduce_motion);
                         self.music.show(ui, mine, &theme)
+                    });
+                    return;
+                }
+                if self.calculator.open {
+                    region(ui, mine, vec2(0.0, 0.0), Layout::top_down(Align::Min), |ui| {
+                        self.calculator.show(ui, mine, &theme)
                     });
                     return;
                 }
@@ -814,7 +823,7 @@ impl eframe::App for App {
         // left/right rectangles: doing so would cover native windows between them.
         for action in panel_actions {
             if open_network && action == quick::Action::Settings {
-                self.launcher.open = false; self.music.open = false; self.notices.open = false; self.power_menu.open = false;
+                self.launcher.open = false; self.music.open = false; self.notices.open = false; self.power_menu.open = false; self.calculator.open = false;
                 self.settings.open_at(&self.config, "wifi");
                 self.send(Command::Terminal);
             } else {
@@ -943,7 +952,7 @@ impl eframe::App for App {
         if self.polkit.active() { self.shortcut_reference.close(); }
         ctx.input_mut(|input| input.events.extend(reference_input));
         if self.shortcut_reference.show(ctx, &theme, &self.config.shortcuts) {
-            self.files_browser = None; self.launcher.open = false; self.music.open = false; self.notices.open = false; self.power_menu.open = false;
+            self.files_browser = None; self.launcher.open = false; self.music.open = false; self.notices.open = false; self.power_menu.open = false; self.calculator.open = false;
             self.settings.open_at(&self.config, "shortcuts");
             self.send(Command::Terminal);
         }
@@ -1070,7 +1079,7 @@ impl App {
                     self.launcher.open = false;
                     self.music.open = false;
                     self.notices.open = false;
-                    self.power_menu.open = false;
+                    self.power_menu.open = false; self.calculator.open = false;
                     self.settings.open_at(&self.config, &section);
                     self.send(Command::Terminal);
                     Answer::Ok
@@ -1078,6 +1087,7 @@ impl App {
                 Request::Scratchpad => { self.scratchpad.toggle(); Answer::Ok }
                 Request::Overview => { self.send(Command::Overview); Answer::Ok }
                 Request::Quick => { self.quick.toggle(); Answer::Ok }
+                Request::Calculator => { if !self.calculator.open { self.toggle_calculator(); } Answer::Ok }
                 Request::Music(word) => { self.music.command(word.word()); Answer::Ok }
                 Request::Panel(panel) => { self.send(Command::TogglePanel(panel)); Answer::Ok }
                 Request::Screenshot(mode) => { self.send(Command::Shot(mode)); Answer::Ok }
@@ -1134,7 +1144,7 @@ impl App {
             }
             quick::Action::SettingsAt(page) => {
                 self.quick.open = false;
-                self.launcher.open = false; self.music.open = false; self.notices.open = false; self.power_menu.open = false;
+                self.launcher.open = false; self.music.open = false; self.notices.open = false; self.power_menu.open = false; self.calculator.open = false;
                 self.settings.open_at(&self.config, page);
                 self.send(Command::Terminal);
             }

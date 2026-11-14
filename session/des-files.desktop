@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Files
+GenericName=File Manager
+Comment=Browse, open, copy and move your files
+Icon=des-ui
+Exec=/usr/local/bin/des-ui --files %U
+TryExec=/usr/local/bin/des-ui
+StartupWMClass=des-files
+MimeType=inode/directory;
+Categories=System;FileManager;Utility;Core;
+Keywords=folder;directory;explorer;browse;

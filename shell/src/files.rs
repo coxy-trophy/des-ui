@@ -246,8 +246,9 @@ impl Browser {
                 } else {
                     self.selected = None; self.marked.clear(); self.anchor = None; self.filter.clear(); self.list_offset = 0.0; self.thumbs.clear();
                     self.search = None; self.found.clear(); self.lines.clear();
-                    if let Some(path) = self.reveal_after.take().filter(|p| self.entries.iter().any(|e| &e.path == p)) { self.select_only(path); self.reveal = true; }
                 }
+                // An entry asked for, once its folder is read (the first read is a refresh).
+                if let Some(path) = self.reveal_after.take().filter(|p| self.entries.iter().any(|e| &e.path == p)) { self.select_only(path); self.reveal = true; }
             },
             Err(error) => { self.pending = None; self.error = Some(error); self.path_text = self.path.to_string_lossy().into_owned(); },
         }
@@ -1389,6 +1390,8 @@ const MAX_FILE_TABS: usize = 12;
 impl Window {
     pub fn new(path: PathBuf) -> Self { Window { tabs: vec![Browser::new(path, Mode::Browse)], active: 0, split: None, right_focus: false } }
     pub fn captures_keyboard(&self) -> bool { self.tabs[self.active].captures_keyboard() || self.split.as_ref().is_some_and(Browser::captures_keyboard) }
+    /// Selects this entry once its folder has been read.
+    pub fn reveal(&mut self, entry: PathBuf) { self.tabs[self.active].reveal_after = Some(entry); }
     pub fn set_phones(&mut self, phones: Vec<(String, String)>) {
         for tab in self.tabs.iter_mut().chain(self.split.as_mut()) { tab.set_phones(phones.clone()); }
     }

@@ -531,6 +531,17 @@ pub fn evaluate(text: &str) -> Option<f64> {
     (parser.at == parser.tokens.len() && value.is_finite()).then_some(value)
 }
 
+/// Works out arithmetic for the calculator, saying why when it cannot.
+pub fn evaluate_explained(text: &str) -> Result<f64, &'static str> {
+    let tokens = tokenize(text).ok_or("Not a calculation")?;
+    let mut parser = Parser { tokens, at: 0, depth: 0 };
+    let value = parser.expression();
+    let value = value.filter(|_| parser.at == parser.tokens.len()).ok_or("Not finished")?;
+    if value.is_infinite() { return Err(if text.contains('/') || text.contains('÷') { "Can't divide by zero" } else { "Too large" }); }
+    if value.is_nan() { return Err("Not a number"); }
+    Ok(value)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum Token { Number(f64), Word(String), Op(char), Open, Close }
 

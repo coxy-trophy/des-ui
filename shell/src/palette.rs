@@ -7,7 +7,7 @@ use des_common::ipc::{Command, DesktopState};
 #[derive(Debug,Clone,PartialEq)]
 pub enum Action {
     Launch(AppEntry), Command(Command), Settings(&'static str), File(std::path::PathBuf),
-    Shortcuts, Files, Music, Notifications, Power, Lock, SaveSession, RestoreSession, FindTerminal, CopyLastOutput, Scratchpad,
+    Shortcuts, Files, Music, Notifications, Power, Calculator, Lock, SaveSession, RestoreSession, FindTerminal, CopyLastOutput, Scratchpad,
     /// Run this program with these arguments in a new terminal tab; no shell between.
     RunInTerminal(Vec<String>),
     /// Put this text on the clipboard, which the palette does itself before reporting it.
@@ -83,7 +83,7 @@ pub fn results(query:&str, entries:&[AppEntry], state:Option<&DesktopState>, cat
         ("Split workspace",Action::Command(Command::Split)),
         ("Toggle fullscreen",Action::Command(Command::Fullscreen)),
         ("Take screenshot",Action::Command(Command::Shot(des_common::ipc::ShotMode::Pick))),
-        ("Lock screen",Action::Lock),("Music player",Action::Music),("Notifications",Action::Notifications),("Power menu",Action::Power),
+        ("Lock screen",Action::Lock),("Music player",Action::Music),("Notifications",Action::Notifications),("Power menu",Action::Power),("Calculator",Action::Calculator),
         ("Save session",Action::SaveSession),("Restore session",Action::RestoreSession),
     ];
     for (label,action) in commands.drain(..) { items.push(item(label.into(),"Desktop action".into(),"ACTION",action)); }

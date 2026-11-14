@@ -90,6 +90,11 @@ install -Dm755 session/des-ui-session "$root/usr/bin/des-ui-session"
 install -Dm755 session/des-ui-startup "$root/usr/bin/des-ui-startup"
 install -Dm644 session/des-ui.desktop "$root/usr/share/wayland-sessions/des-ui.desktop"
 sed -i 's|/usr/local/bin/|/usr/bin/|' "$root/usr/share/wayland-sessions/des-ui.desktop"
+# Files (a window of its own, the handler for folders) and the calculator.
+for entry in des-files des-calculator; do
+    install -Dm644 "session/$entry.desktop" "$root/usr/share/applications/$entry.desktop"
+    sed -i 's|/usr/local/bin/|/usr/bin/|' "$root/usr/share/applications/$entry.desktop"
+done
 install -Dm644 session/des-ui-portals.conf "$root/usr/share/xdg-desktop-portal/des-ui-portals.conf"
 install -Dm644 session/des-ui.portal "$root/usr/share/xdg-desktop-portal/portals/des-ui.portal"
 install -Dm644 session/org.freedesktop.impl.portal.desktop.des-ui.service "$root/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.des-ui.service"

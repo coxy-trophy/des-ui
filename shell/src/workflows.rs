@@ -18,6 +18,7 @@ impl App {
             palette::Action::Music=>self.toggle_music(),
             palette::Action::Notifications=>self.toggle_notices(),
             palette::Action::Power=>self.toggle_power(),
+            palette::Action::Calculator=>{ if !self.calculator.open { self.toggle_calculator(); } },
             palette::Action::Lock=>self.lock_now(),
             palette::Action::Scratchpad=>{self.launcher.open=false;self.scratchpad.toggle();}
             palette::Action::FindTerminal=>{self.launcher.open=false;self.send(Command::Terminal);let i=self.focus_tab();self.tabs[i].open_search();}

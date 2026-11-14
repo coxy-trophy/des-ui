@@ -547,9 +547,13 @@ impl DesComp {
                 self.motions.hide(&window, now, animate);
                 self.space.unmap_elem(&window);
             } else {
-                self.motions.show(window.clone(), area, now, animate);
+                // An application that will not shrink to its slot is kept whole on its display.
+                let display = self.screens.get(screen).copied().unwrap_or(whole);
+                let at = layout::fit_oversized(area, window.geometry().size, display);
+                let shown = Rectangle::new(at, area.size);
+                self.motions.show(window.clone(), shown, now, animate);
                 // Mapping also raises, which puts the application above what is behind it.
-                self.space.map_element(window, area.loc, false);
+                self.space.map_element(window, at, false);
             }
         }
 
@@ -1787,6 +1791,8 @@ fn configure(window: &Window, area: Rectangle<i32, Logical>, fullscreen: bool, a
     };
     toplevel.with_pending_state(|state| {
         state.size = Some(area.size);
+        // The largest it should make itself, for clients that choose their own size.
+        state.bounds = Some(area.size);
         let (on, off) = if fullscreen {
             (xdg_toplevel::State::Fullscreen, xdg_toplevel::State::Maximized)
         } else {

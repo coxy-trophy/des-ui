@@ -91,3 +91,4 @@ touch "$last"
             self.assertIn("/usr/local/bin/des-hands", log.read_text().splitlines())
             self.assertIn("/usr/local/share/icons/DEs-UI", log.read_text().splitlines())
             self.assertIn("/usr/local/share/icons/hicolor/scalable/apps/des-ui.svg", log.read_text().splitlines())
+            self.assertIn("/usr/local/share/applications/des-files.desktop", log.read_text().splitlines())
