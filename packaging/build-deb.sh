@@ -13,7 +13,16 @@ cd "$(dirname "$0")/.."
 
 [ "${1:-}" = --no-build ] || cargo build --release
 
-version=$(sed -n 's/^version *= *"\(.*\)"/\1/p' shell/Cargo.toml | head -n 1)
+# DESUI_DEB_VERSION overrides the crate's version: desos-dev builds are
+# <version>+devYYYYMMDDHHMM.g<commit>, newer than the release they follow.
+version=${DESUI_DEB_VERSION:-$(sed -n 's/^version *= *"\(.*\)"/\1/p' shell/Cargo.toml | head -n 1)}
+case $version in
+    [0-9]*) ;;
+    *) echo "build-deb.sh: not a package version: $version" >&2; exit 2 ;;
+esac
+case $version in
+    *[!A-Za-z0-9.+~-]*) echo "build-deb.sh: not a package version: $version" >&2; exit 2 ;;
+esac
 arch=$(dpkg --print-architecture)
 maintainer="${DEB_MAINTAINER:-$(git config user.name) <$(git config user.email)>}"
 out=target/deb

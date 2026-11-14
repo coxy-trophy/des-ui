@@ -68,6 +68,16 @@ touch "$last"
             result = subprocess.run(["sh", "packaging/build-deb.sh", "--no-build"],
                                     cwd=root, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
+            # desos-dev's versions name the packages; anything else is refused.
+            dev = "0.2.0+dev202611141200.gabcdef123"
+            result = subprocess.run(["sh", "packaging/build-deb.sh", "--no-build"], cwd=root,
+                                    env=dict(env, DESUI_DEB_VERSION=dev), capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((root / f"target/deb/des-ui_{dev}_amd64.deb").exists())
+            for bad in ("x1", "1.0;rm", "1.0 2"):
+                result = subprocess.run(["sh", "packaging/build-deb.sh", "--no-build"], cwd=root,
+                                        env=dict(env, DESUI_DEB_VERSION=bad), capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0, bad)
 
     def test_uninstall_removes_hand_control(self):
         with tempfile.TemporaryDirectory() as directory:
