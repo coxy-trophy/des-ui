@@ -338,12 +338,11 @@ impl Lock {
             }
             if glance.online { ui::paint_wifi(&painter, pos2(x, y), GLASS_TEXT, 3, 0.9); }
 
-            // The padlock, the date, and the time, large; glass, so the picture
-            // shows through it.
+            // The bird, the date, and the time, large; glass, so the picture shows
+            // through it.
             let now = chrono::Local::now();
             let mut y = screen.top() + if short { 24.0 } else { (screen.height() * 0.065).max(40.0) };
-            ui::paint_icon(&painter, Rect::from_center_size(pos2(cx, y + 8.0), vec2(16.0, 16.0)), ui::Icon::Lock, GLASS_TEXT, false);
-            y += 30.0;
+            y += bird(&painter, &mut panes, glassy, liquid, cx, y, short);
             let date = ui::galley(ui, &now.format("%A %-d %B").to_string(), ui::display_bold(if short { 15.0 } else { 21.0 }), GLASS_TEXT, 1.5);
             painter.galley(pos2(cx - date.size().x / 2.0, y), date.clone(), GLASS_TEXT);
             y += date.size().y - 4.0;
@@ -448,6 +447,22 @@ impl Lock {
         let picture = self.picture.as_ref().and_then(|picture| picture.as_ref());
         paint_face(ui, painter, theme, face, ring, busy, picture, &self.user);
     }
+}
+
+/// The DesOS bird above the date, in glass when the glass is drawn; the room it
+/// takes, gap included.
+pub(crate) fn bird(painter: &egui::Painter, panes: &mut Vec<crate::glass::Shape>, glassy: bool, liquid: bool, cx: f32, top: f32, short: bool) -> f32 {
+    let height = if short { 34.0 } else { 92.0 };
+    let rect = Rect::from_center_size(pos2(cx, top + height / 2.0), vec2(height * crate::bird::aspect(), height));
+    if glassy { panes.push(crate::glass::Shape::Bird(rect)); }
+    if !liquid {
+        let ppp = painter.ctx().pixels_per_point();
+        let texture = crate::bird::texture(painter.ctx(), (height * ppp).round() as usize);
+        let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+        painter.image(texture.id(), rect.translate(vec2(0.0, 2.0)), uv, Color32::from_black_alpha(60));
+        painter.image(texture.id(), rect, uv, GLASS_TEXT);
+    }
+    height + if short { 10.0 } else { 18.0 }
 }
 
 /// The user's picture, or the pattern made from their name, in a thin ring that

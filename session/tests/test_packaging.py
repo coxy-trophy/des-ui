@@ -13,7 +13,7 @@ class PackagingTests(unittest.TestCase):
     def test_desktop_package_contains_hand_control_and_its_dependencies(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for name in ("packaging", "session", "themes", "companion", "scripts"):
+            for name in ("packaging", "session", "themes", "companion", "scripts", "branding"):
                 shutil.copytree(ROOT / name, root / name,
                                 ignore=shutil.ignore_patterns("tests", "__pycache__"))
             (root / "shell").mkdir()
@@ -80,3 +80,4 @@ touch "$last"
             subprocess.run(["sh", str(ROOT / "uninstall.sh")], env=env, check=True, capture_output=True)
             self.assertIn("/usr/local/bin/des-hands", log.read_text().splitlines())
             self.assertIn("/usr/local/share/icons/DEs-UI", log.read_text().splitlines())
+            self.assertIn("/usr/local/share/icons/hicolor/scalable/apps/des-ui.svg", log.read_text().splitlines())

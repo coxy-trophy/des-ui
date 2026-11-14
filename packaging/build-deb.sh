@@ -91,6 +91,11 @@ install -Dm644 scripts/virtual-display-viewer.py "$root/usr/share/des-ui/virtual
 install -d "$root/usr/share/des-ui/themes"
 install -m644 themes/*.json "$root/usr/share/des-ui/themes/"
 target/release/des-comp --write-cursor-theme "$root/usr/share/icons/DEs-UI"
+# The bird, as the desktop's icon (made by branding/bird.py).
+for size in 16 24 32 48 64 128 256 512; do
+    install -Dm644 "branding/icons/des-ui-$size.png" "$root/usr/share/icons/hicolor/${size}x${size}/apps/des-ui.png"
+done
+install -Dm644 branding/bird.svg "$root/usr/share/icons/hicolor/scalable/apps/des-ui.svg"
 install -Dm644 README.md "$root/usr/share/doc/des-ui/README.md"
 # Pictures for the lock and login screens: each user can add their own, none can
 # remove another's.

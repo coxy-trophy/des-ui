@@ -1,4 +1,5 @@
 [Desktop Entry]
+Icon=des-ui
 Name=DEs-UI
 Comment=Sci-fi terminal desktop
 Exec=/usr/local/bin/des-ui-session

@@ -27,6 +27,8 @@ pub enum Shape {
     Pill(Rect),
     /// Text, laid out, with the top-left corner of its galley.
     Text(Arc<egui::Galley>, Pos2),
+    /// The DesOS bird, its ink filling the rectangle.
+    Bird(Rect),
 }
 
 /// The wallpaper the glass stands over: the sharp and the blurred texture, where it
@@ -186,6 +188,7 @@ fn key(size: [usize; 2], shapes: &[Shape], look: Look) -> String {
     for shape in shapes {
         match shape {
             Shape::Pill(r) => key.push_str(&format!(" p{:.1},{:.1},{:.1},{:.1}", r.min.x, r.min.y, r.max.x, r.max.y)),
+            Shape::Bird(r) => key.push_str(&format!(" b{:.1},{:.1},{:.1},{:.1}", r.min.x, r.min.y, r.max.x, r.max.y)),
             Shape::Text(galley, at) => key.push_str(&format!(" t{:?}@{:.1},{:.1}/{:.1}", galley.text(), at.x, at.y, galley.size().y)),
         }
     }
@@ -202,6 +205,11 @@ fn fields(atlas: Option<&egui::epaint::FontImage>, size: [usize; 2], origin: Pos
     for shape in shapes {
         let bounds = match shape {
             Shape::Pill(rect) => { pill(&mut cover, size, origin, ppp, *rect); *rect }
+            Shape::Bird(rect) => {
+                let pixels = Rect::from_min_max(((rect.min - origin) * ppp).to_pos2(), ((rect.max - origin) * ppp).to_pos2());
+                crate::bird::cover(&mut cover, size, pixels);
+                *rect
+            }
             Shape::Text(galley, at) => {
                 if let Some(atlas) = atlas { text(&mut cover, size, origin, ppp, galley, *at, atlas); }
                 Rect::from_min_size(*at, galley.size())

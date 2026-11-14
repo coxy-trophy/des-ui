@@ -6,10 +6,11 @@
 use crate::theme::Theme;
 use std::path::Path;
 
-/// The name, at twice the size it is shown at: two bytes a pixel, how much of it is
-/// letter and how much is the hyphen. The compositor's splash is drawn from the same.
+/// The bird and the name, at twice the size they are shown at (made by
+/// `branding/bird.py`): two bytes a pixel, how much of it is white and how much
+/// takes the accent ("-UI"). The compositor's splash is drawn from the same.
 const WORDMARK: &[u8] = include_bytes!("../../compositor/assets/wordmark.la");
-const WORDMARK_SIZE: (u32, u32) = (642, 126);
+const WORDMARK_SIZE: (u32, u32) = (848, 198);
 pub const STRIPS: u32 = 9;
 const TEXT: [u8; 3] = [0xDC, 0xE7, 0xEC];
 const COOL: [u8; 3] = [0x4F, 0xD8, 0xCE];
@@ -66,7 +67,7 @@ mod tests {
         let theme = Theme::load(crate::theme::DEFAULT_NAME);
         assert_eq!(write(&dir, &theme), Ok(29));
         let strip = image::open(dir.join("strip-0-4.png")).unwrap().to_rgba8();
-        assert_eq!((strip.width(), strip.height()), (321, 7));
+        assert_eq!((strip.width(), strip.height()), (424, 11));
         // The middle strip crosses the letters: some of it is drawn, some is not.
         assert!(strip.pixels().any(|pixel| pixel[3] > 200) && strip.pixels().any(|pixel| pixel[3] == 0));
         let block = image::open(dir.join("block-on.png")).unwrap().to_rgba8();

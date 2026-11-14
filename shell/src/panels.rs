@@ -787,6 +787,13 @@ pub fn status(
     // Left: the ways in, each lit while what it opens is open.
     let left = island(ui, row, Layout::left_to_right(Align::Center), ISLAND_PADDING, |ui| {
         ui.spacing_mut().item_spacing.x = ICON_GAP;
+        // The bird, then the name.
+        let bird = 20.0;
+        let ppp = ui.ctx().pixels_per_point();
+        let texture = crate::bird::texture(ui.ctx(), (bird * ppp).round() as usize);
+        let (mark, _) = ui.allocate_exact_size(vec2(bird * crate::bird::aspect(), bird), Sense::hover());
+        ui.painter().image(texture.id(), mark, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), ui::TEXT);
+        ui.add_space(7.0 - ICON_GAP);
         ui::tracked(ui, "DEs-UI", ui::display_bold(11.0), theme.main, 3.0);
         ui.add_space(18.0 - ICON_GAP);
         let context = ui.ctx().clone();

@@ -14,7 +14,7 @@ class ConnectPackagingTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        for name in ("packaging", "session", "themes", "companion"):
+        for name in ("packaging", "session", "themes", "companion", "branding"):
             shutil.copytree(ROOT / name, self.root / name,
                             ignore=shutil.ignore_patterns("tests", "__pycache__"))
         (self.root / "scripts").mkdir()

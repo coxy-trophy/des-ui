@@ -4,6 +4,7 @@ mod agenda;
 mod apps;
 mod connect;
 mod autostart;
+mod bird;
 mod app_icons;
 mod dock;
 mod capture;

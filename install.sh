@@ -62,6 +62,11 @@ sudo install -Dm644 session/org.freedesktop.impl.portal.desktop.des-ui.service /
 sudo install -d /usr/local/share/des-ui/companion
 sudo install -m644 companion/service.py companion/voice.py companion/credentials.py /usr/local/share/des-ui/companion/
 sudo install -Dm644 scripts/virtual-display-viewer.py /usr/local/share/des-ui/virtual-display-viewer.py
+# The bird, as the desktop's icon.
+for size in 16 24 32 48 64 128 256 512; do
+    sudo install -Dm644 "branding/icons/des-ui-$size.png" "/usr/local/share/icons/hicolor/${size}x${size}/apps/des-ui.png"
+done
+sudo install -Dm644 branding/bird.svg /usr/local/share/icons/hicolor/scalable/apps/des-ui.svg
 sudo install -d /usr/local/share/des-ui/themes
 sudo install -m644 themes/*.json /usr/local/share/des-ui/themes/
 sudo install -d /usr/local/share/icons/DEs-UI/cursors

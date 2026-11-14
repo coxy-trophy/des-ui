@@ -335,9 +335,10 @@ impl Greeter {
         let cx = screen.center().x;
         let short = screen.height() < 640.0;
 
-        // The date and the time, large; glass, so the picture shows through it.
+        // The bird, the date and the time, large; glass, so the picture shows through it.
         let now = chrono::Local::now();
-        let mut y = screen.top() + if short { 24.0 } else { (screen.height() * 0.065).max(40.0) } + 30.0;
+        let mut y = screen.top() + if short { 24.0 } else { (screen.height() * 0.065).max(40.0) };
+        y += crate::lock::bird(&painter, &mut panes, glassy, liquid, cx, y, short);
         let date = ui::galley(ui, &now.format("%A %-d %B").to_string(), ui::display_bold(if short { 15.0 } else { 21.0 }), text, 1.5);
         painter.galley(pos2(cx - date.size().x / 2.0, y), date.clone(), text);
         y += date.size().y - 4.0;

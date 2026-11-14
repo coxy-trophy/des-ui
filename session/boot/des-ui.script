@@ -1,4 +1,4 @@
-# The DEs-UI boot splash: the desktop's name over a bar of blocks that fills as the
+# The DEs-UI boot splash: the bird and the desktop's name over a bar of blocks that fills as the
 # machine starts. The name is still most of the time; now and then it glitches, its
 # strips sliding apart with slices of colour showing through. It is the same screen
 # the desktop shows while a session starts.
@@ -7,9 +7,9 @@ Window.SetBackgroundTopColor(0.024, 0.031, 0.043);
 Window.SetBackgroundBottomColor(0.024, 0.031, 0.043);
 
 STRIPS = 9;
-STRIP_HEIGHT = 7;
-NAME_WIDTH = 321;
-NAME_HEIGHT = 63;
+STRIP_HEIGHT = 11;
+NAME_WIDTH = 424;
+NAME_HEIGHT = 99;
 BLOCKS = 20;
 BLOCK_STEP = 16;
 BAR_WIDTH = 316;

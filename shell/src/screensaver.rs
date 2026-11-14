@@ -7,9 +7,9 @@ use std::f32::consts::{PI, TAU};
 use std::sync::OnceLock;
 use std::time::Duration;
 
-const WORDMARK: &[u8; 642 * 126 * 2] = include_bytes!("../../compositor/assets/wordmark.la");
-const MARK_W: usize = 642;
-const MARK_H: usize = 126;
+const WORDMARK: &[u8; 848 * 198 * 2] = include_bytes!("../../compositor/assets/wordmark.la");
+const MARK_W: usize = 848;
+const MARK_H: usize = 198;
 const MARK_ASPECT: f32 = MARK_H as f32 / MARK_W as f32;
 type Rgb = [u8; 3];
 
