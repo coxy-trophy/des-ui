@@ -66,6 +66,8 @@ pub enum Request {
     Overview,
     /// Open the quick settings, or close them.
     Quick,
+    /// Open the calculator.
+    Calculator,
 }
 
 impl Request {
@@ -160,6 +162,7 @@ pub fn parse(line: &str) -> Result<Request, String> {
         "scratchpad" => none(Request::Scratchpad),
         "overview" => none(Request::Overview),
         "quick" => none(Request::Quick),
+        "calculator" => none(Request::Calculator),
         "" => Err("nothing asked".to_string()),
         other => Err(format!("unknown request '{}'; des-ui-ctl --help lists them", other.chars().take(32).collect::<String>())),
     }
@@ -503,6 +506,7 @@ mod tests {
         assert_eq!(parse("overview"), Ok(Request::Overview));
         assert!(parse("overview all").is_err());
         assert_eq!(parse("quick"), Ok(Request::Quick));
+        assert_eq!(parse("calculator"), Ok(Request::Calculator));
         assert!(parse("scratchpad now").is_err());
         assert_eq!(parse("pick-color"), Ok(Request::PickColor));
         for bad in ["", "reboot", "workspace 4", "workspace x", "workspace", "toast", "toast \t\n",

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Calculator
+Comment=Work out sums in the desktop, with no window of its own
+Icon=des-ui
+Exec=/usr/local/bin/des-ui-ctl calculator
+TryExec=/usr/local/bin/des-ui-ctl
+NoDisplay=false
+Categories=Utility;Calculator;
+Keywords=calculate;sum;arithmetic;maths;math;

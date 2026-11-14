@@ -56,6 +56,9 @@ sudo install -Dm755 target/release/des-hands /usr/local/bin/des-hands
 sudo install -Dm755 session/des-ui-session /usr/local/bin/des-ui-session
 sudo install -Dm755 session/des-ui-startup /usr/local/bin/des-ui-startup
 sudo install -Dm644 session/des-ui.desktop /usr/share/wayland-sessions/des-ui.desktop
+# Files (a window of its own, the handler for folders) and the calculator.
+sudo install -Dm644 session/des-files.desktop /usr/local/share/applications/des-files.desktop
+sudo install -Dm644 session/des-calculator.desktop /usr/local/share/applications/des-calculator.desktop
 sudo install -Dm644 session/des-ui-portals.conf /usr/share/xdg-desktop-portal/des-ui-portals.conf
 sudo install -Dm644 session/des-ui.portal /usr/share/xdg-desktop-portal/portals/des-ui.portal
 sudo install -Dm644 session/org.freedesktop.impl.portal.desktop.des-ui.service /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.des-ui.service

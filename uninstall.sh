@@ -7,6 +7,7 @@ sudo rm -f /usr/local/bin/des-ui /usr/local/bin/des-ui-ctl /usr/local/bin/des-co
     /usr/share/xdg-desktop-portal/portals/des-ui.portal /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.des-ui.service
 sudo rm -rf /usr/local/share/des-ui /usr/local/lib/des-ui
 sudo rm -rf /usr/local/share/icons/DEs-UI
+sudo rm -f /usr/local/share/applications/des-files.desktop /usr/local/share/applications/des-calculator.desktop
 sudo rm -f /usr/local/share/icons/hicolor/scalable/apps/des-ui.svg \
     /usr/local/share/icons/hicolor/16x16/apps/des-ui.png /usr/local/share/icons/hicolor/24x24/apps/des-ui.png \
     /usr/local/share/icons/hicolor/32x32/apps/des-ui.png /usr/local/share/icons/hicolor/48x48/apps/des-ui.png \

@@ -5,6 +5,7 @@ mod apps;
 mod connect;
 mod autostart;
 mod bird;
+mod calculator;
 mod app_icons;
 mod dock;
 mod capture;
@@ -28,6 +29,7 @@ mod deep_search;
 mod drives;
 mod file_dialogs;
 mod files;
+mod files_app;
 mod file_ops;
 mod lock;
 mod login_share;
@@ -110,6 +112,9 @@ Options:
                        keyboard, mouse, globe, sound, date, users, session)
   --list-apps          Print the applications the launcher would offer, and exit
   --greeter            Run as the login screen (under greetd; alone, as a preview)
+  --files [FOLDER|FILE|URI...]
+                       Open Files in a window of its own, at a folder, or at a file's
+                       folder with it selected; takes the rest of the line
   --set-avatar <FILE>  Use this picture on the login screen
   --write-boot-splash <DIR>
                        Write the boot splash's pictures, in your theme's colours
@@ -192,6 +197,8 @@ struct App {
     /// Sleep, and what holds off the lock.
     power: power::Power,
     power_menu: power::Menu,
+    /// The calculator card, drawn in the workspace like the power menu.
+    calculator: calculator::Calculator,
     /// Screenshots and recordings.
     capture: capture::Capture,
     /// Whether the compositor was last told that something is being watched.
@@ -419,6 +426,7 @@ impl App {
             notices,
             power,
             power_menu: power::Menu::default(),
+            calculator: calculator::Calculator::default(),
             capture,
             idle_held: false,
             watch: notify::Watch::default(),
@@ -467,7 +475,7 @@ impl App {
                 self.settings.open=false;self.files_browser=None;
                 self.music.open=false;
                 self.notices.open=false;
-                self.power_menu.open=false;
+                self.power_menu.open=false;self.calculator.open=false;
                 self.send(command);
             }
             dock::Action::Launcher => self.toggle_launcher(),
@@ -477,14 +485,14 @@ impl App {
                 self.settings.open=false;self.files_browser=None;
                 self.music.open=false;
                 self.notices.open=false;
-                self.power_menu.open=false;
+                self.power_menu.open=false;self.calculator.open=false;
                 if entry.terminal {
                     self.run_in_terminal(&entry);
                     self.launcher.open=false;
                     self.settings.open=false;self.files_browser=None;
                     self.music.open=false;
                     self.notices.open=false;
-                    self.power_menu.open=false;
+                    self.power_menu.open=false;self.calculator.open=false;
                     self.send(Command::Terminal);
                 } else if let Err(error) = apps::launch(&entry) {
                     self.notices.post("Could not open application", &format!("{}: {error}",entry.name),true);
@@ -613,13 +621,13 @@ impl App {
             self.settings.open = false; self.files_browser = None;
             self.music.open = false;
             self.notices.open = false;
-            self.power_menu.open = false;
+            self.power_menu.open = false; self.calculator.open = false;
             return;
         }
         self.launcher.open = false;
         self.music.open = false;
         self.notices.open = false;
-        self.power_menu.open = false;
+        self.power_menu.open = false; self.calculator.open = false;
         self.settings.open(&self.config);
         self.send(Command::Terminal);
     }
@@ -632,7 +640,7 @@ impl App {
         self.launcher.open = false;
         self.settings.open = false; self.files_browser = None;
         self.notices.open = false;
-        self.power_menu.open = false;
+        self.power_menu.open = false; self.calculator.open = false;
         self.music.toggle();
         if self.music.open {
             self.send(Command::Terminal);
@@ -669,8 +677,25 @@ impl App {
         self.settings.open = false; self.files_browser = None;
         self.music.open = false;
         self.notices.open = false;
+        self.calculator.open = false;
         self.power_menu.toggle();
         if self.power_menu.open {
+            self.send(Command::Terminal);
+        }
+    }
+
+    /// Opens or closes the calculator, which takes the terminal's place like the power menu.
+    fn toggle_calculator(&mut self) {
+        self.companion.blur_text();
+        self.world.expanded = false;
+        self.connect.expanded = false;
+        self.launcher.open = false;
+        self.settings.open = false; self.files_browser = None;
+        self.music.open = false;
+        self.notices.open = false;
+        self.power_menu.open = false;
+        self.calculator.toggle();
+        if self.calculator.open {
             self.send(Command::Terminal);
         }
     }
@@ -683,7 +708,7 @@ impl App {
         });
         if let Some(index) = index {
             self.notices.open = false;
-            self.power_menu.open = false;
+            self.power_menu.open = false; self.calculator.open = false;
             self.send(Command::Activate(index));
         }
     }
@@ -720,7 +745,7 @@ impl App {
         self.settings.open = false; self.files_browser = None;
         self.music.open = false;
         self.notices.open = false;
-        self.power_menu.open = false;
+        self.power_menu.open = false; self.calculator.open = false;
         // Nothing is captured over the lock; whoever waited is told so.
         self.capture.cancel();
         self.answer_held(None, true);
@@ -977,7 +1002,7 @@ impl App {
         self.settings.open = false; self.files_browser = None;
         self.music.open = false;
         self.notices.open = false;
-        self.power_menu.open = false;
+        self.power_menu.open = false; self.calculator.open = false;
         self.launcher.toggle();
         if self.launcher.open {
             self.send(Command::Terminal);
@@ -1280,7 +1305,7 @@ impl App {
         let mut actions = BarActions::default();
         ui.spacing_mut().item_spacing.x = 4.0;
         let covered = state.and_then(|s| s.covering()).is_some();
-        let terminal_in_use = !covered && !self.launcher.open && !self.settings.open && self.files_browser.is_none() && !self.music.open && !self.notices.open && !self.power_menu.open;
+        let terminal_in_use = !covered && !self.launcher.open && !self.settings.open && self.files_browser.is_none() && !self.music.open && !self.notices.open && !self.power_menu.open && !self.calculator.open;
 
         // Reserve the right-hand controls first; tabs can scroll in their own clipped area.
         let available = ui.available_rect_before_wrap();
@@ -1413,7 +1438,7 @@ impl App {
                 self.settings.open = false; self.files_browser = None;
                 self.music.open = false;
                 self.notices.open = false;
-                self.power_menu.open = false;
+                self.power_menu.open = false; self.calculator.open = false;
                 actions.command = Some(Command::Terminal);
             }
         }
@@ -1436,7 +1461,7 @@ impl App {
             self.settings.open = false; self.files_browser = None;
             self.music.open = false;
             self.notices.open = false;
-            self.power_menu.open = false;
+            self.power_menu.open = false; self.calculator.open = false;
             actions.command = Some(Command::Terminal);
         }
         });
@@ -1584,6 +1609,7 @@ fn main() -> eframe::Result {
     let mut locked = false;
     let mut split = None;
     let mut settings: Option<String> = None;
+    let mut files_window: Option<Vec<String>> = None;
     let mut config = config::Config::load();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -1597,6 +1623,7 @@ fn main() -> eframe::Result {
             }
             "--power" => power_menu = true,
             "--greeter" => greeter = true,
+            "--files" => files_window = Some(args.by_ref().collect()),
             "--locked" => locked = true,
             "--split-terminal" => split = Some(false),
             "--split-terminal=below" => split = Some(true),
@@ -1701,6 +1728,26 @@ fn main() -> eframe::Result {
     }
 
     let theme = config.resolved_theme();
+    if let Some(arguments) = files_window {
+        let (folder, select) = files_app::start_at(&arguments);
+        let options = eframe::NativeOptions {
+            viewport: ViewportBuilder::default()
+                .with_title("Files")
+                .with_app_id("des-files")
+                .with_inner_size([1100.0, 720.0])
+                .with_min_inner_size([480.0, 320.0]),
+            ..Default::default()
+        };
+        return eframe::run_native(
+            "des-files",
+            options,
+            Box::new(move |cc| {
+                apply_style(&cc.egui_ctx, &theme);
+                ui::install_fonts(&cc.egui_ctx, None, None);
+                Ok(Box::new(files_app::FilesApp::new(folder, select, theme, screenshot)))
+            }),
+        );
+    }
     if greeter {
         let options = eframe::NativeOptions {
             viewport: ViewportBuilder::default()
