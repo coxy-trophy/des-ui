@@ -82,6 +82,14 @@ struct Shared<T> {
     refreshed: Option<Instant>,
 }
 
+impl<T> Shared<T> {
+    /// The action in progress as the user should see it. A re-read in the background,
+    /// once something has been read, keeps the last reading on screen instead.
+    fn shown_work(&self) -> Option<String> {
+        self.working.clone().filter(|doing| !(doing == "READING" && self.refreshed.is_some()))
+    }
+}
+
 impl<T> Default for Shared<T> {
     fn default() -> Self {
         Shared {
@@ -301,7 +309,32 @@ fn read_wifi(rescan: bool) -> (Option<bool>, Vec<Network>) {
         .collect();
     let rescan = if rescan { "yes" } else { "no" };
     let list = run("nmcli", &["-t", "-f", "IN-USE,SIGNAL,SECURITY,SSID", "device", "wifi", "list", "--rescan", rescan]);
-    (powered, parse_networks(&list.unwrap_or_default(), &known))
+    let mut networks = parse_networks(&list.unwrap_or_default(), &known);
+    // The scan list can miss the mark on the network in use while the radio is busy
+    // scanning; the device itself still knows what it is connected to.
+    if !networks.iter().any(|n| n.in_use) {
+        if let Some(ssid) = connected_ssid() {
+            if let Some(network) = networks.iter_mut().find(|n| n.ssid == ssid) { network.in_use = true; }
+            networks.sort_by_key(|n| (!n.in_use, !n.known, std::cmp::Reverse(n.signal)));
+        }
+    }
+    (powered, networks)
+}
+
+/// The SSID of the Wi-Fi connection a device is connected on, if any.
+fn connected_ssid() -> Option<String> {
+    let devices = run("nmcli", &["-t", "-f", "TYPE,STATE,CONNECTION", "device"]).ok()?;
+    let name = connected_wifi(&devices)?;
+    run("nmcli", &["-g", "802-11-wireless.ssid", "connection", "show", &name]).ok().map(|ssid| ssid.trim().to_string()).filter(|ssid| !ssid.is_empty()).or(Some(name))
+}
+
+/// The connection name of the first connected Wi-Fi device in `nmcli -t -f TYPE,STATE,CONNECTION device`.
+fn connected_wifi(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let fields = split_terse(line, 3);
+        let [kind, state, name] = fields.as_slice() else { return None };
+        (kind == "wifi" && state == "connected" && !name.is_empty() && name != "--").then(|| name.clone())
+    })
 }
 
 fn read_links() -> (Option<bool>, Vec<Link>) {
@@ -560,7 +593,7 @@ impl Radio {
         let (found, links, working, problem, stale) = {
             let state = self.links.lock().unwrap();
             let stale = state.refreshed.is_none_or(|at| at.elapsed() > Duration::from_secs(12));
-            (state.powered, state.items.clone(), state.working.clone(), state.problem.clone(), stale)
+            (state.powered, state.items.clone(), state.shown_work(), state.problem.clone(), stale)
         };
         if stale && working.is_none() {
             self.links_do("READING", Vec::new());
@@ -780,7 +813,7 @@ impl Radio {
             let state = self.wifi.lock().unwrap();
             let stale = state.refreshed.is_none_or(|at| at.elapsed() > Duration::from_secs(12));
             let detail = state.items.iter().find(|network| network.in_use).map(|network| network.ssid.clone());
-            (Glance { powered: state.powered, detail, working: state.working.clone() }, stale && state.working.is_none())
+            (Glance { powered: state.powered, detail, working: state.shown_work() }, stale && state.working.is_none())
         };
         if stale {
             self.wifi_do("READING", Vec::new(), false);
@@ -805,7 +838,7 @@ impl Radio {
                 [one] => Some(one.to_string()),
                 many => Some(format!("{} devices", many.len())),
             };
-            (Glance { powered: state.powered, detail, working: state.working.clone() }, stale && state.working.is_none())
+            (Glance { powered: state.powered, detail, working: state.shown_work() }, stale && state.working.is_none())
         };
         if stale {
             self.bluetooth_do("READING", Vec::new());
@@ -822,7 +855,7 @@ impl Radio {
         let (powered, networks, working, problem, stale) = {
             let state = self.wifi.lock().unwrap();
             let stale = state.refreshed.is_none_or(|at| at.elapsed() > Duration::from_secs(12));
-            (state.powered, state.items.clone(), state.working.clone(), state.problem.clone(), stale)
+            (state.powered, state.items.clone(), state.shown_work(), state.problem.clone(), stale)
         };
         if stale && working.is_none() {
             self.wifi_do("READING", Vec::new(), false);
@@ -912,7 +945,7 @@ impl Radio {
         let (powered, devices, working, problem, stale) = {
             let state = self.bluetooth.lock().unwrap();
             let stale = state.refreshed.is_none_or(|at| at.elapsed() > Duration::from_secs(12));
-            (state.powered, state.items.clone(), state.working.clone(), state.problem.clone(), stale)
+            (state.powered, state.items.clone(), state.shown_work(), state.problem.clone(), stale)
         };
         if stale && working.is_none() {
             self.bluetooth_do("READING", Vec::new());
@@ -1007,7 +1040,7 @@ impl Radio {
         let (powered, mut networks, working, problem, stale) = {
             let state = self.wifi.lock().unwrap();
             let stale = state.refreshed.is_none_or(|at| at.elapsed() > Duration::from_secs(12));
-            (state.powered, state.items.clone(), state.working.clone(), state.problem.clone(), stale)
+            (state.powered, state.items.clone(), state.shown_work(), state.problem.clone(), stale)
         };
         if stale && working.is_none() {
             self.wifi_do("READING", Vec::new(), false);
@@ -1095,7 +1128,7 @@ impl Radio {
         let (powered, devices, working, problem, stale) = {
             let state = self.bluetooth.lock().unwrap();
             let stale = state.refreshed.is_none_or(|at| at.elapsed() > Duration::from_secs(12));
-            (state.powered, state.items.clone(), state.working.clone(), state.problem.clone(), stale)
+            (state.powered, state.items.clone(), state.shown_work(), state.problem.clone(), stale)
         };
         if stale && working.is_none() {
             self.bluetooth_do("READING", Vec::new());
@@ -1408,6 +1441,23 @@ fn row(ui: &mut Ui, theme: &Theme, name: &str, reading: &str, state: &str, live:
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_background_reread_keeps_the_last_reading_on_screen() {
+        let mut state: Shared<Network> = Shared { working: Some("READING".into()), ..Shared::default() };
+        assert_eq!(state.shown_work().as_deref(), Some("READING"), "the first read is shown");
+        state.refreshed = Some(Instant::now());
+        assert_eq!(state.shown_work(), None, "a re-read is quiet");
+        state.working = Some("TURNING OFF".into());
+        assert_eq!(state.shown_work().as_deref(), Some("TURNING OFF"), "what the user asked for is shown");
+    }
+
+    #[test]
+    fn the_connected_wifi_device_names_its_connection() {
+        let devices = "ethernet:unavailable:--\nwifi:connected:Home 5G\nloopback:connected (externally):lo\n";
+        assert_eq!(connected_wifi(devices).as_deref(), Some("Home 5G"));
+        assert_eq!(connected_wifi("wifi:disconnected:--\n"), None);
+    }
     use super::*;
 
     #[test]
