@@ -70,6 +70,50 @@ impl Saver {
     }
 }
 
+/// The colour of the lock and login screens' glass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LockGlass {
+    /// The desktop's accent.
+    #[default]
+    Desktop,
+    /// A colour of its own.
+    Custom([u8; 3]),
+    /// Clear glass, no colour.
+    Plain,
+}
+
+impl LockGlass {
+    /// Clear glass: white absorbs nothing, so the glass takes no colour.
+    pub const CLEAR: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(242, 246, 248);
+
+    pub fn parse(value: &str) -> LockGlass {
+        match value {
+            "plain" => LockGlass::Plain,
+            // Six hex digits, without "#", which starts a comment in the config file.
+            hex if hex.len() == 6 => eframe::egui::Color32::from_hex(&format!("#{hex}")).ok().map_or(LockGlass::Desktop, |c| LockGlass::Custom([c.r(), c.g(), c.b()])),
+            _ => LockGlass::Desktop,
+        }
+    }
+
+    /// The config value; `None` for the default.
+    pub fn value(self) -> Option<String> {
+        match self {
+            LockGlass::Desktop => None,
+            LockGlass::Plain => Some("plain".into()),
+            LockGlass::Custom([r, g, b]) => Some(format!("{r:02x}{g:02x}{b:02x}")),
+        }
+    }
+
+    /// The colour the lock screen uses, given the desktop's accent.
+    pub fn colour(self, accent: eframe::egui::Color32) -> eframe::egui::Color32 {
+        match self {
+            LockGlass::Desktop => accent,
+            LockGlass::Custom([r, g, b]) => eframe::egui::Color32::from_rgb(r, g, b),
+            LockGlass::Plain => Self::CLEAR,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub shortcuts: des_common::shortcuts::Bindings,
@@ -106,6 +150,8 @@ pub struct Config {
     pub location: Option<Place>,
     /// Whether the screen locks before the machine sleeps.
     pub lock_on_sleep: bool,
+    /// The colour of the lock and login screens' glass.
+    pub lock_glass: LockGlass,
     /// What the shell shows after the compositor locks an idle session.
     pub screensaver: Saver,
     /// Whether a notification that shows also makes a sound.
@@ -162,6 +208,7 @@ impl Default for Config {
             lookups: true,
             location: None,
             lock_on_sleep: true,
+            lock_glass: LockGlass::Desktop,
             screensaver: Saver::Off,
             notification_sounds: true,
             processor_temperature_warnings: true,
@@ -249,6 +296,7 @@ impl Config {
                 "do_not_disturb" => config.do_not_disturb = value == "on",
                 "dnd_schedule" => config.dnd_schedule = crate::notify::parse_schedule(value),
                 "lock_on_sleep" => config.lock_on_sleep = value != "off",
+                "lock_glass" => config.lock_glass = LockGlass::parse(value),
                 "screensaver" => config.screensaver = Saver::ALL.into_iter().find(|scene| scene.value() == value).unwrap_or_default(),
                 "notification_sounds" => config.notification_sounds = value != "off",
                 "processor_temperature_warnings" => config.processor_temperature_warnings = value != "off",
@@ -438,6 +486,22 @@ pub fn night_light_value((from, to, kelvin): (u8, u8, u32)) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lock_glass_is_the_desktop_colour_a_colour_of_its_own_or_clear() {
+        use super::{Config, LockGlass};
+        let accent = eframe::egui::Color32::from_rgb(241, 0, 166);
+        assert_eq!(Config::parse("").lock_glass, LockGlass::Desktop);
+        assert_eq!(Config::parse("").lock_glass.colour(accent), accent);
+        let own = Config::parse("lock_glass = 4fd8ce").lock_glass;
+        assert_eq!(own, LockGlass::Custom([0x4f, 0xd8, 0xce]));
+        assert_eq!(own.colour(accent), eframe::egui::Color32::from_rgb(0x4f, 0xd8, 0xce));
+        assert_eq!(LockGlass::parse(&own.value().unwrap()), own, "what is written reads back");
+        let clear = Config::parse("lock_glass = plain").lock_glass;
+        assert_eq!((clear, clear.colour(accent)), (LockGlass::Plain, LockGlass::CLEAR));
+        assert_eq!(LockGlass::Desktop.value(), None);
+        assert_eq!(Config::parse("lock_glass = nonsense").lock_glass, LockGlass::Desktop);
+    }
+
     #[test]
     fn screensaver_defaults_off_and_rejects_unknown_scenes() {
         assert_eq!(Config::parse("").screensaver, Saver::Off);

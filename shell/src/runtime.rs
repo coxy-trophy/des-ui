@@ -298,7 +298,9 @@ impl eframe::App for App {
                 self.toast_area = Some(None);
                 self.send(Command::Toast(None));
             }
-            let theme = self.theme.clone();
+            // The lock screen's glass: the desktop's accent, a colour of its own, or clear.
+            let mut theme = self.theme.clone();
+            theme.main = self.config.lock_glass.colour(theme.main);
             if let Some(started) = self.idle_saver.started() {
                 self.draw_saver(ctx, started);
             } else {
@@ -358,7 +360,8 @@ impl eframe::App for App {
             self.notices.post("Wallpaper unavailable", &format!("{error}. Choose another image in Settings → Appearance."), false);
         }
         self.wallpaper.publish(ctx, &self.config.appearance);
-        self.login_share.sync(self.config.appearance.wallpaper.as_deref(), self.theme.main, self.config.appearance.fit);
+        // The login screen takes the lock screen's colour.
+        self.login_share.sync(self.config.appearance.wallpaper.as_deref(), self.config.lock_glass.colour(self.theme.main), self.config.appearance.fit);
         shortcuts::publish(ctx, &self.config.shortcuts);
         let animate = self.config.animate && !self.config.appearance.reduce_motion;
         let stage = self.powerup.publish(ctx, animate, false);

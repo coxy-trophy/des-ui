@@ -169,7 +169,7 @@ const SETTINGS_CATALOG: [SectionInfo; 19] = [
     SectionInfo { section: Section::Notifications, group: SettingsGroup::Personal, title: "Notifications", summary: "Alert sounds, warnings and quiet hours", keywords: "notification notifications alert alerts sound quiet hours do not disturb dnd temperature warning" },
     SectionInfo { section: Section::Region, group: SettingsGroup::Personal, title: "Date & region", summary: "Clock, time zone and regional formats", keywords: "date region time timezone time zone clock 12 24 hour language locale calendar" },
     SectionInfo { section: Section::Users, group: SettingsGroup::Personal, title: "Users", summary: "Accounts, password and login picture", keywords: "user account avatar profile photo picture login password" },
-    SectionInfo { section: Section::Session, group: SettingsGroup::System, title: "Session & startup", summary: "Save, restore, autostart, lock and log out", keywords: "session startup autostart programs recovery reconnect terminal save restore lock logout log out sign out idle screen off sleep" },
+    SectionInfo { section: Section::Session, group: SettingsGroup::System, title: "Session & startup", summary: "Save, restore, autostart, lock and log out", keywords: "session startup autostart programs recovery reconnect terminal save restore lock logout log out sign out idle screen off sleep lock screen glass colour color clear plain login" },
     SectionInfo { section: Section::Health, group: SettingsGroup::System, title: "System health", summary: "Service status, diagnostics and music connection", keywords: "health system service diagnostics troubleshoot failure error connected music status" },
 ];
 fn section_info(section: Section) -> &'static SectionInfo {
@@ -317,6 +317,8 @@ pub struct Settings {
     themes: Vec<(String, Color32)>,
     accent_draft: Option<([u8; 3], [u8; 3])>,
     cursor_color_draft: Option<([u8; 3], [u8; 3])>,
+    /// The lock screen's own colour while it is being chosen.
+    lock_colour_draft: Option<[u8; 3]>,
     pub appearance_editor: crate::appearance_editor::Editor,
     location_text: String,
     location_error: bool,
@@ -357,6 +359,7 @@ impl Default for Settings {
             themes: Vec::new(),
             accent_draft: None,
             cursor_color_draft: None,
+            lock_colour_draft: None,
             appearance_editor: Default::default(),
             location_text: String::new(),
             location_error: false,
@@ -1755,6 +1758,42 @@ impl Settings {
         if switch_row(ui, theme, "Lock before sleep", "When the lid closes or the machine is put to sleep, it wakes to the lock screen", config.lock_on_sleep) {
             changes.push(Change::Set("lock_on_sleep", config.lock_on_sleep.then(|| "off".to_string())));
         }
+        ui.add_space(22.0);
+
+        // The lock and login screens' glass: the desktop's accent, its own colour, or clear.
+        use crate::config::LockGlass;
+        heading(ui, "LOCK SCREEN GLASS", "The colour of the glass on the lock screen and the login screen.");
+        ui.add_space(8.0);
+        let accent = [theme.main.r(), theme.main.g(), theme.main.b()];
+        let draft = *self.lock_colour_draft.get_or_insert(match config.lock_glass { LockGlass::Custom(c) => c, _ => accent });
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            let choices = [
+                (LockGlass::Desktop, "DESKTOP COLOUR", Some(theme.main)),
+                (LockGlass::Custom(draft), "OWN COLOUR", Some(Color32::from_rgb(draft[0], draft[1], draft[2]))),
+                (LockGlass::Plain, "CLEAR GLASS", Some(LockGlass::CLEAR)),
+            ];
+            for (choice, label, swatch) in choices {
+                let chosen = std::mem::discriminant(&config.lock_glass) == std::mem::discriminant(&choice);
+                if ui::chip(ui, theme, label, swatch, chosen).clicked() && !chosen {
+                    changes.push(Change::Set("lock_glass", choice.value()));
+                }
+            }
+        });
+        if let LockGlass::Custom(current) = config.lock_glass {
+            ui.add_space(8.0);
+            let draft = self.lock_colour_draft.get_or_insert(current);
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Lock screen colour");
+                ui.color_edit_button_srgb(draft).on_hover_text("Choose the lock screen's colour");
+                ui.label(egui::RichText::new(format!("#{:02X}{:02X}{:02X}", draft[0], draft[1], draft[2])).font(ui::mono(12.0)));
+                if ui.add_enabled(*draft != current, egui::Button::new("Apply color")).clicked() {
+                    changes.push(Change::Set("lock_glass", LockGlass::Custom(*draft).value()));
+                }
+            });
+        }
+        ui.add_space(8.0);
+        note(ui, "The login screen follows after your next sign-in.");
         ui.add_space(22.0);
 
         let armed = self.log_out_armed.is_some_and(|at| at.elapsed() < Duration::from_secs(5));

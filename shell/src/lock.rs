@@ -631,7 +631,9 @@ mod tests {
                     let appearance = des_common::appearance::AppearanceSettings { wallpaper: Some(path.clone()), fit: des_common::appearance::WallpaperFit::Fill, ..Default::default() };
                     crate::material::publish(ctx, appearance, self.loader.view.clone());
                 }
-                let theme = Theme::load("signal");
+                let mut theme = Theme::load("signal");
+                // The lock screen glass setting, as written in the config (`plain`, `rrggbb`).
+                if let Ok(glass) = std::env::var("DESUI_LOCK_PREVIEW_GLASS") { theme.main = crate::config::LockGlass::parse(&glass).colour(theme.main); }
                 self.lock.show(ctx, &theme, Glance { battery: Some((68, false)), online: true, notices: 3 }, |_, _| {});
                 self.frames += 1;
                 if self.frames == 6 { ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default())); }
