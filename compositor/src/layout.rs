@@ -6,7 +6,7 @@
 //! the terminal, when an application shares the workspace with it.
 
 use des_common::ipc::{LayoutKind, Place};
-use smithay::utils::{Logical, Point, Rectangle};
+use smithay::utils::{Logical, Point, Rectangle, Size};
 
 /// The space between two windows that share a workspace, as between split halves.
 pub const GAP: i32 = des_common::SPLIT_GAP as i32;
@@ -165,6 +165,20 @@ pub fn effective(kind: LayoutKind, count: usize) -> LayoutKind {
 /// because the terminal is there. A layout never shows more than its slots; asked for
 /// fewer, it shows those in the same manner (three columns with two in use are two
 /// columns). One slot is always the whole workspace.
+/// Where a window goes when it is larger than its slot: an application whose
+/// smallest size is wider or taller than the slot (an installer page, say) is
+/// centred on the slot and kept on its display, over the panels if need be, so that
+/// all of it can be seen and reached. A window that fits stays in its slot.
+pub fn fit_oversized(slot: Rectangle<i32, Logical>, size: Size<i32, Logical>, display: Rectangle<i32, Logical>) -> Point<i32, Logical> {
+    let along = |slot_at: i32, slot_len: i32, len: i32, display_at: i32, display_len: i32| {
+        if len <= slot_len { return slot_at; }
+        let centred = slot_at - (len - slot_len) / 2;
+        // On the display where it fits; from the display's start where it does not.
+        centred.min(display_at + display_len - len).max(display_at)
+    };
+    (along(slot.loc.x, slot.size.w, size.w, display.loc.x, display.size.w), along(slot.loc.y, slot.size.h, size.h, display.loc.y, display.size.h)).into()
+}
+
 pub fn slot_rects(kind: LayoutKind, ratios: &Ratios, area: Rectangle<i32, Logical>, count: usize) -> Vec<Rectangle<i32, Logical>> {
     // A layout of one with two in use is the split the user asked for some other way.
     let count = count.clamp(1, kind.slots().max(2));
@@ -378,6 +392,31 @@ mod tests {
                 assert!(!a.overlaps(*b), "{a:?} overlaps {b:?}");
             }
         }
+    }
+
+    #[test]
+    fn a_window_larger_than_its_slot_stays_whole_on_its_display() {
+        // A 1366 x 768 display whose workspace, between the panels, is 900 x 640.
+        let display = Rectangle::new((0, 0).into(), (1366, 768).into());
+        let slot = Rectangle::new((233, 40).into(), (900, 640).into());
+        // What fits stays where the slot is.
+        assert_eq!(fit_oversized(slot, (900, 640).into(), display), slot.loc);
+        assert_eq!(fit_oversized(slot, (600, 400).into(), display), slot.loc);
+        // An installer page 1100 wide is centred on the slot, over the panels.
+        let at = fit_oversized(slot, (1100, 640).into(), display);
+        assert_eq!(at, (133, 40).into());
+        assert!(at.x >= 0 && at.x + 1100 <= 1366);
+        // Near the display's edge it is pushed back onto the display.
+        let edge = Rectangle::new((900, 40).into(), (466, 640).into());
+        assert_eq!(fit_oversized(edge, (800, 640).into(), display).x, 1366 - 800);
+        // Taller than the slot: the same, down the display.
+        assert_eq!(fit_oversized(slot, (900, 760).into(), display), (233, 0).into());
+        // Larger than the display: its start, so the top and left can be reached.
+        assert_eq!(fit_oversized(slot, (1600, 900).into(), display), (0, 0).into());
+        // On a second display, the same within that display.
+        let second = Rectangle::new((1366, 0).into(), (1920, 1080).into());
+        let slot2 = Rectangle::new((1700, 40).into(), (1200, 1000).into());
+        assert_eq!(fit_oversized(slot2, (1300, 1000).into(), second), (1650, 40).into());
     }
 
     #[test]
