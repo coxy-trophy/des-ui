@@ -515,7 +515,7 @@ impl Polkit {
             .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
             .show(ctx, |ui| {
                 let width = 440.0_f32.min(ctx.screen_rect().width() - 32.0);
-                egui::Frame::new().fill(ui::PANEL).stroke(Stroke::new(1.0, theme.main)).inner_margin(24.0).show(ui, |ui| {
+                egui::Frame::new().fill(ui::PANEL).stroke(Stroke::new(1.0_f32, theme.main)).inner_margin(24.0).show(ui, |ui| {
                     ui.set_width(width);
                     ui.spacing_mut().item_spacing.y = 10.0;
                     ui::tracked(ui, "AUTHENTICATION REQUIRED", ui::display(15.0), theme.main, 1.5);
@@ -537,7 +537,7 @@ impl Polkit {
                     ui::text(ui, &prompt, ui::mono(12.0), ui::SECONDARY);
                     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), egui::Sense::hover());
                     ui.painter().rect_filled(rect, 0.0, ui::GROUND);
-                    ui.painter().rect_stroke(rect, 0.0, Stroke::new(1.0, theme.main), StrokeKind::Inside);
+                    ui.painter().rect_stroke(rect, 0.0, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside);
                     let edit = ui.put(
                         rect.shrink2(vec2(8.0, 4.0)),
                         TextEdit::singleline(&mut dialog.password).vertical_align(eframe::egui::Align::Center)

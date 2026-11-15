@@ -77,9 +77,9 @@ fn placeholder(painter: &egui::Painter, rect: Rect) {
     {
         let body=rect.shrink(rect.width()*0.1);
         painter.rect_filled(body,4.0,crate::ui::TRACK);
-        painter.rect_stroke(body,4.0,Stroke::new(1.2,crate::ui::SECONDARY),egui::StrokeKind::Inside);
+        painter.rect_stroke(body,4.0,Stroke::new(1.2_f32,crate::ui::SECONDARY),egui::StrokeKind::Inside);
         let line=body.top()+body.height()*0.28;
-        painter.line_segment([egui::pos2(body.left()+2.0,line),egui::pos2(body.right()-2.0,line)],Stroke::new(1.0,crate::ui::SECONDARY));
+        painter.line_segment([egui::pos2(body.left()+2.0,line),egui::pos2(body.right()-2.0,line)],Stroke::new(1.0_f32,crate::ui::SECONDARY));
         painter.rect_filled(Rect::from_center_size(body.center()+vec2(0.0,3.0),body.size()*0.28),1.0,crate::ui::LABEL);
     }
 }

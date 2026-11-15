@@ -103,7 +103,7 @@ impl Music {
         let galley = ui.painter().layout_job(job);
         ui.painter().galley(pos2(head.left(), head.center().y - galley.size().y / 2.0), galley, ui::LABEL);
         ui.painter().text(head.right_center(), Align2::RIGHT_CENTER, "OPEN ↗", ui::mono(10.5), if opener.hovered() { ui::TEXT } else { ui::SECONDARY });
-        if opener.has_focus() { ui.painter().rect_stroke(opener.rect, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
+        if opener.has_focus() { ui.painter().rect_stroke(opener.rect, ui::CONTROL_RADIUS, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside); }
         // The track, and the heart that keeps it.
         let mut a = line(ui, cover_row, "track");
         a.spacing_mut().item_spacing.x = 8.0;
@@ -160,7 +160,7 @@ impl Music {
         }
         let radius = 14.0;
         crate::material::paint(ui.ctx(), ui.painter(), card, radius, crate::material::Role::Panel);
-        ui.painter().rect_stroke(card, radius, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
+        ui.painter().rect_stroke(card, radius, Stroke::new(1.0_f32, ui::LINE), StrokeKind::Inside);
         // How far along, as a thin line along the bottom edge.
         let frac = (now.position_ms() as f32 / track.duration_ms.max(1) as f32).clamp(0.0, 1.0);
         let line = Rect::from_min_size(pos2(card.left() + 18.0, card.bottom() - 6.0), vec2(card.width() - 36.0, 2.0));

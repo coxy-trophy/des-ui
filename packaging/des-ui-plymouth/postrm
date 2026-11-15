@@ -1,5 +1,5 @@
 #!/bin/sh
 set -e
 if [ "$1" = remove ] && command -v update-initramfs >/dev/null; then
-    update-initramfs -u || true
+    update-initramfs -u -k all || true
 fi

@@ -638,7 +638,7 @@ impl Agenda {
         let on_day = expand(&events, day_from, day_from + Duration::days(1));
 
         let area = Area::new(Id::new("agenda")).order(Order::Foreground).fixed_pos(self.anchor).show(ctx, |ui| {
-            crate::material::surface(ui, egui::Frame::new().corner_radius(ui::SURFACE_RADIUS).stroke(Stroke::new(1.0, ui::LINE_STRONG)).inner_margin(14.0), crate::material::Role::Floating, |ui| {
+            crate::material::surface(ui, egui::Frame::new().corner_radius(ui::SURFACE_RADIUS).stroke(Stroke::new(1.0_f32, ui::LINE_STRONG)).inner_margin(14.0), crate::material::Role::Floating, |ui| {
                 let cell = vec2(34.0, 26.0);
                 ui.set_width(cell.x * 7.0);
                 ui.spacing_mut().item_spacing = vec2(0.0, 6.0);
@@ -677,7 +677,7 @@ impl Agenda {
                                 painter.rect_filled(rect.shrink(2.0), 0.0, ui::TRACK);
                             }
                             if date == self.selected {
-                                painter.rect_stroke(rect.shrink(1.0), 0.0, Stroke::new(1.0, if is_today { ui::TEXT } else { theme.main }), StrokeKind::Inside);
+                                painter.rect_stroke(rect.shrink(1.0), 0.0, Stroke::new(1.0_f32, if is_today { ui::TEXT } else { theme.main }), StrokeKind::Inside);
                             }
                             let ink = if is_today { ui::GROUND } else { ui::TEXT };
                             painter.text(rect.center() - vec2(0.0, 2.0), egui::Align2::CENTER_CENTER, date.day().to_string(), ui::mono(12.0), ink);
@@ -691,7 +691,7 @@ impl Agenda {
                     });
                 }
                 ui.add_space(8.0);
-                ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top(), Stroke::new(1.0, ui::TRACK));
+                ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top(), Stroke::new(1.0_f32, ui::TRACK));
                 ui.add_space(8.0);
                 let heading = self.selected.format("%A %-d %B").to_string().to_uppercase();
                 ui::tracked(ui, &heading, ui::display_bold(11.0), theme.main, 2.0);

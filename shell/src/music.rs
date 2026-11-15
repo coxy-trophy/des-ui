@@ -636,7 +636,7 @@ fn control(ui: &mut Ui, theme: &Theme, which: Control, size: f32, lit: bool) -> 
     let ink = if lit { ui::TEXT } else if response.hovered() { ui::TEXT } else { ui::SECONDARY };
     let painter = ui.painter();
     if lit || response.hovered() { painter.rect_filled(rect, ui::CONTROL_RADIUS, if lit { theme.tint() } else { ui::TRACK }); }
-    if response.has_focus() { painter.rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
+    if response.has_focus() { painter.rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside); }
     let c = rect.center();
     let unit = size / 6.0;
     let triangle = |tip_x: f32, back_x: f32| {
@@ -849,7 +849,7 @@ impl Music {
                 ui.painter().image(texture.id(), rect, uv, egui::Color32::WHITE);
             }
             None => {
-                ui.painter().rect_stroke(rect, 0.0, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
+                ui.painter().rect_stroke(rect, 0.0, Stroke::new(1.0_f32, ui::LINE), StrokeKind::Inside);
             }
         }
     }
@@ -943,7 +943,7 @@ impl Music {
         ui.add_space(14.0);
         let (field, _) = ui.allocate_exact_size(vec2(ui.available_width().min(340.0), 36.0), Sense::hover());
         ui.painter().rect_filled(field, ui::CONTROL_RADIUS, ui::PANEL);
-        ui.painter().rect_stroke(field, ui::CONTROL_RADIUS, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
+        ui.painter().rect_stroke(field, ui::CONTROL_RADIUS, Stroke::new(1.0_f32, ui::LINE_STRONG), StrokeKind::Inside);
         ui.put(
             field.shrink2(vec2(10.0, 7.0)),
             TextEdit::singleline(&mut self.client_id).vertical_align(eframe::egui::Align::Center).frame(false).font(ui::mono(13.0)).text_color(ui::TEXT).hint_text(crate::ui::hint("client ID")),
@@ -1372,7 +1372,7 @@ impl Music {
                         let painter = ui.painter_at(rect);
                         crate::material::paint(ui.ctx(), &painter, rect, ui::CONTROL_RADIUS, crate::material::Role::Panel);
                         if response.hovered() { painter.rect_filled(rect, ui::CONTROL_RADIUS, ui::TRACK); }
-                        if response.has_focus() { painter.rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
+                        if response.has_focus() { painter.rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside); }
                         let art = Rect::from_min_size(rect.min + vec2(8.0, 8.0), vec2((tile - 16.0).max(8.0), (tile - 16.0).max(8.0)));
                         let cover = if ui.is_rect_visible(rect) { self.covers.get(ui.ctx(), item.cover.as_deref()) } else { None };
                         if let Some(texture) = cover {
@@ -1534,7 +1534,7 @@ fn track_row(ui: &mut Ui, theme: &Theme, item: &Item, cover: Option<&TextureHand
     let painter = ui.painter_at(rect);
     if playing { painter.rect_filled(rect, ui::CONTROL_RADIUS, theme.main.gamma_multiply(0.14)); }
     else if response.hovered() { painter.rect_filled(rect, ui::CONTROL_RADIUS, ui::PANEL); }
-    if response.has_focus() { painter.rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
+    if response.has_focus() { painter.rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside); }
     let middle = rect.center().y;
     let mut x = rect.left() + 10.0;
     if let Some(n) = number {
@@ -1568,8 +1568,8 @@ fn track_row(ui: &mut Ui, theme: &Theme, item: &Item, cover: Option<&TextureHand
         let spot = Rect::from_min_size(from, galley.size()).expand2(vec2(2.0, 4.0));
         let over = ui.interact(spot, ui.id().with(id), Sense::click());
         over.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, ui.is_enabled(), accessible_name.clone()));
-        if over.has_focus() { painter.rect_stroke(spot, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
-        if over.hovered() { painter.hline(Rect::from_min_size(from, galley.size()).x_range(), from.y + galley.size().y + 1.0, Stroke::new(1.0, ui::TEXT)); }
+        if over.has_focus() { painter.rect_stroke(spot, ui::CONTROL_RADIUS, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside); }
+        if over.hovered() { painter.hline(Rect::from_min_size(from, galley.size()).x_range(), from.y + galley.size().y + 1.0, Stroke::new(1.0_f32, ui::TEXT)); }
         painter.galley(from, galley, if over.hovered() { ui::TEXT } else { quiet });
         if over.clicked() { went = Some(to); }
     };
@@ -1595,7 +1595,7 @@ fn track_row(ui: &mut Ui, theme: &Theme, item: &Item, cover: Option<&TextureHand
             (false, false) => ("+ QUEUE", ui::SECONDARY),
         };
         painter.text(spot.right_center() - vec2(10.0, 0.0), Align2::RIGHT_CENTER, label, ui::display_bold(11.0), ink);
-        if adding.has_focus() { painter.rect_stroke(spot.shrink(1.0), ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
+        if adding.has_focus() { painter.rect_stroke(spot.shrink(1.0), ui::CONTROL_RADIUS, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside); }
         if adding.clicked() {
             return Picked::Queue;
         }

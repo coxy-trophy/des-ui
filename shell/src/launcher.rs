@@ -123,7 +123,7 @@ impl Launcher {
         if selected || response.hovered() || response.has_focus() {
             painter.rect_filled(rect,ui::SURFACE_RADIUS+2.0,if selected{theme.main.gamma_multiply(0.14)}else{ui::TRACK});
         }
-        if selected || response.has_focus(){painter.rect_stroke(rect,ui::SURFACE_RADIUS+2.0,Stroke::new(1.0,theme.main),StrokeKind::Inside);}
+        if selected || response.has_focus(){painter.rect_stroke(rect,ui::SURFACE_RADIUS+2.0,Stroke::new(1.0_f32,theme.main),StrokeKind::Inside);}
         let icon=Rect::from_center_size(egui::pos2(rect.center().x,rect.top()+36.0),vec2(44.0,44.0));
         if item.kind=="APP"{
             if !self.icons.paint_found(ui,icon,item.icon.as_deref()) {
@@ -199,7 +199,7 @@ impl Launcher {
         let selected=index==self.selected;
         response.widget_info(||egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel,true,selected,format!("{}, {}: {}",item.label,item.kind,item.detail)));
         let painter=ui.painter_at(rect);
-        if selected{painter.rect_filled(rect,9.0,theme.main.gamma_multiply(0.14));painter.rect_stroke(rect,9.0,Stroke::new(1.0,theme.main),StrokeKind::Inside);}
+        if selected{painter.rect_filled(rect,9.0,theme.main.gamma_multiply(0.14));painter.rect_stroke(rect,9.0,Stroke::new(1.0_f32,theme.main),StrokeKind::Inside);}
         else if response.hovered(){painter.rect_filled(rect,9.0,ui::TRACK);}
         let badge=Rect::from_center_size(rect.left_center()+vec2(23.0,0.0),vec2(26.0,26.0));
         painter.rect_filled(badge,7.0,ui::TRACK);
@@ -232,7 +232,7 @@ impl Launcher {
         response.widget_info(||egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel,true,selected,format!("{}, {}: {}",item.label,item.kind,item.detail)));
         let painter=ui.painter_at(rect);
         painter.rect_filled(rect,14.0,if selected{theme.main.gamma_multiply(0.14)}else if response.hovered(){ui::TRACK}else{ui::PANEL});
-        painter.rect_stroke(rect,14.0,Stroke::new(1.0,if selected{theme.main}else{ui::LINE}),StrokeKind::Inside);
+        painter.rect_stroke(rect,14.0,Stroke::new(1.0_f32,if selected{theme.main}else{ui::LINE}),StrokeKind::Inside);
         let pad=20.0;
         if item.kind=="CALC" {
             let (sum,result)=item.label.split_once(" = ").unwrap_or((item.label.as_str(),""));
@@ -369,7 +369,7 @@ impl Launcher {
     /// Where file search looks, one folder to a line, with a way to take one away
     /// and to add another.
     fn folders_editor(&mut self,ui:&mut Ui,theme:&Theme){
-        egui::Frame::new().fill(ui::PANEL).stroke(Stroke::new(1.0,ui::LINE)).corner_radius(12.0).inner_margin(14.0).show(ui,|ui|{
+        egui::Frame::new().fill(ui::PANEL).stroke(Stroke::new(1.0_f32,ui::LINE)).corner_radius(12.0).inner_margin(14.0).show(ui,|ui|{
             ui.set_width(ui.available_width().min(560.0));
             heading(ui,"SEARCH FOLDERS","where file search looks");
             let mut remove=None;
@@ -484,7 +484,7 @@ impl Launcher {
                         index=pinned.len()+recent.len();
                         ui.add_space(8.0);
                         let (line,_)=ui.allocate_exact_size(vec2(width,1.0),Sense::hover());
-                        ui.painter().hline(line.x_range(),line.center().y,Stroke::new(1.0,ui::LINE));
+                        ui.painter().hline(line.x_range(),line.center().y,Stroke::new(1.0_f32,ui::LINE));
                         ui.add_space(8.0);
                     }
                     heading(ui,&self.group.map_or("ALL APPLICATIONS".to_string(),|group|group.to_uppercase()),&format!("{} · A–Z",listed.len()));
@@ -550,7 +550,7 @@ impl Launcher {
                 let width=(ui.available_width()-2.0*(40.0+8.0)).max(120.0);
                 let (field_rect,_)=ui.allocate_exact_size(vec2(width,52.0),Sense::hover());
                 ui.painter().rect_filled(field_rect,26.0,ui::PANEL);
-                ui.painter().rect_stroke(field_rect,26.0,Stroke::new(1.0,theme.main),StrokeKind::Inside);
+                ui.painter().rect_stroke(field_rect,26.0,Stroke::new(1.0_f32,theme.main),StrokeKind::Inside);
                 ui::paint_icon(ui.painter(),Rect::from_center_size(field_rect.left_center()+vec2(26.0,0.0),vec2(18.0,18.0)),ui::Icon::Search,ui::SECONDARY,false);
                 let hint=if self.query.is_empty() && width>=520.0 {"↵ open · arrows move · Esc close"}else{""};
                 let hint=ui.painter().layout_no_wrap(hint.into(),ui::mono(11.0),ui::LABEL);

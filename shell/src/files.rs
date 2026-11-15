@@ -588,11 +588,11 @@ impl Browser {
             let rect = egui::Rect::from_min_size(body.min, egui::vec2(sidebar, body.height()));
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
             self.sidebar(&mut child, theme, &mut target);
-            ui.painter().vline(rect.right() + gap / 2.0, rect.y_range(), egui::Stroke::new(1.0, ui::LINE));
+            ui.painter().vline(rect.right() + gap / 2.0, rect.y_range(), egui::Stroke::new(1.0_f32, ui::LINE));
         }
         if preview > 0.0 {
             let rect = egui::Rect::from_min_max(egui::pos2(body.right() - preview, body.top()), body.max);
-            ui.painter().vline(rect.left() - gap / 2.0, rect.y_range(), egui::Stroke::new(1.0, ui::LINE));
+            ui.painter().vline(rect.left() - gap / 2.0, rect.y_range(), egui::Stroke::new(1.0_f32, ui::LINE));
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
             self.preview_pane(&mut child, theme, &mut act);
         }
@@ -679,7 +679,7 @@ impl Browser {
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Type a folder path"));
         let painter = ui.painter_at(bar);
         painter.rect_filled(bar, ui::CONTROL_RADIUS, ui::GROUND);
-        painter.rect_stroke(bar, ui::CONTROL_RADIUS, egui::Stroke::new(1.0, if response.hovered() { ui::LINE_STRONG } else { ui::LINE }), egui::StrokeKind::Inside);
+        painter.rect_stroke(bar, ui::CONTROL_RADIUS, egui::Stroke::new(1.0_f32, if response.hovered() { ui::LINE_STRONG } else { ui::LINE }), egui::StrokeKind::Inside);
         // Home and the folders under it, or the file system from its root.
         let home = home();
         let mut crumbs: Vec<(String, PathBuf)> = Vec::new();
@@ -795,7 +795,7 @@ impl Browser {
         let height = (ui.available_height() * 0.42).clamp(120.0, 260.0);
         let (frame, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
         ui.painter().rect_filled(frame, ui::SURFACE_RADIUS, ui::PANEL);
-        ui.painter().rect_stroke(frame, ui::SURFACE_RADIUS, egui::Stroke::new(1.0, ui::LINE), egui::StrokeKind::Inside);
+        ui.painter().rect_stroke(frame, ui::SURFACE_RADIUS, egui::Stroke::new(1.0_f32, ui::LINE), egui::StrokeKind::Inside);
         let mut inside = ui.new_child(egui::UiBuilder::new().max_rect(frame.shrink(10.0)).layout(egui::Layout::top_down(egui::Align::Center)));
         inside.set_clip_rect(frame.shrink(2.0));
         self.look.show_inline(&mut inside, theme);
@@ -908,7 +908,7 @@ impl Browser {
         let mut event = None;
         let rect = ui.max_rect();
         ui.painter().rect_filled(rect, ui::SURFACE_RADIUS, ui::PANEL);
-        ui.painter().rect_stroke(rect, ui::SURFACE_RADIUS, egui::Stroke::new(1.0, ui::LINE), egui::StrokeKind::Inside);
+        ui.painter().rect_stroke(rect, ui::SURFACE_RADIUS, egui::Stroke::new(1.0_f32, ui::LINE), egui::StrokeKind::Inside);
         let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(egui::vec2(14.0, 10.0))).layout(egui::Layout::top_down(egui::Align::Min)));
         let ui = &mut inner;
         ui.spacing_mut().item_spacing = egui::vec2(8.0, 6.0);
@@ -1033,7 +1033,7 @@ impl Browser {
             response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Sort by {label}")));
             if response.clicked() { if on { self.descending = !self.descending; } else { self.sort = key; self.descending = key == SortKey::Modified; } }
         }
-        ui.painter().hline(head.x_range(), head.bottom(), egui::Stroke::new(1.0, ui::LINE));
+        ui.painter().hline(head.x_range(), head.bottom(), egui::Stroke::new(1.0_f32, ui::LINE));
         ui.add_space(4.0);
 
         let shown: Vec<PathBuf> = self.visible().into_iter().map(|i| self.items()[i].path.clone()).collect();
@@ -1119,7 +1119,7 @@ impl Browser {
         }
         // Status: what is here and selected, the clipboard, work going on.
         let (status, _) = ui.allocate_exact_size(egui::vec2(width, status_height), egui::Sense::hover());
-        ui.painter().hline(status.x_range(), status.top(), egui::Stroke::new(1.0, ui::LINE));
+        ui.painter().hline(status.x_range(), status.top(), egui::Stroke::new(1.0_f32, ui::LINE));
         let mut line = ui.new_child(egui::UiBuilder::new().max_rect(status.shrink2(egui::vec2(2.0, 4.0))).layout(egui::Layout::right_to_left(egui::Align::Center)));
         line.spacing_mut().item_spacing.x = 10.0;
         if self.mode == Mode::ImagePicker {
@@ -1198,7 +1198,7 @@ fn entry_row(ui: &mut egui::Ui, theme: &Theme, entry: &Entry, name: &str, locati
     let painter = ui.painter();
     if marked { painter.rect_filled(rect, ui::CONTROL_RADIUS, theme.main.gamma_multiply(0.16)); }
     else if response.hovered() { painter.rect_filled(rect, ui::CONTROL_RADIUS, ui::TRACK); }
-    if focused || response.has_focus() { painter.rect_stroke(rect, ui::CONTROL_RADIUS, egui::Stroke::new(1.0, theme.main), egui::StrokeKind::Inside); }
+    if focused || response.has_focus() { painter.rect_stroke(rect, ui::CONTROL_RADIUS, egui::Stroke::new(1.0_f32, theme.main), egui::StrokeKind::Inside); }
     let (name_rect, kind, modified, size) = columns.split(rect);
     let icon = egui::Rect::from_center_size(egui::pos2(name_rect.left() + 9.0, rect.center().y), egui::vec2(18.0, 18.0));
     paint_entry_icon(painter, icon, entry);
@@ -1242,7 +1242,7 @@ fn grid_tile(ui: &mut egui::Ui, theme: &Theme, entry: &Entry, name: &str, width:
     let painter = ui.painter();
     if marked { painter.rect_filled(rect, ui::SURFACE_RADIUS, theme.main.gamma_multiply(0.16)); }
     else if response.hovered() { painter.rect_filled(rect, ui::SURFACE_RADIUS, ui::TRACK); }
-    if focused || response.has_focus() { painter.rect_stroke(rect, ui::SURFACE_RADIUS, egui::Stroke::new(1.0, theme.main), egui::StrokeKind::Inside); }
+    if focused || response.has_focus() { painter.rect_stroke(rect, ui::SURFACE_RADIUS, egui::Stroke::new(1.0_f32, theme.main), egui::StrokeKind::Inside); }
     let picture = egui::Rect::from_min_size(rect.min + egui::vec2(8.0, 8.0), egui::vec2(width - 16.0, TILE_H - 50.0));
     match thumb {
         Some(texture) => {
@@ -1250,7 +1250,7 @@ fn grid_tile(ui: &mut egui::Ui, theme: &Theme, entry: &Entry, name: &str, width:
             let scale = (picture.width() / size.x).min(picture.height() / size.y).min(1.0);
             let shown = egui::Rect::from_center_size(picture.center(), size * scale);
             painter.image(texture.id(), shown, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
-            painter.rect_stroke(shown, 2.0, egui::Stroke::new(1.0, ui::LINE), egui::StrokeKind::Outside);
+            painter.rect_stroke(shown, 2.0, egui::Stroke::new(1.0_f32, ui::LINE), egui::StrokeKind::Outside);
         }
         None => {
             let icon = egui::Rect::from_center_size(picture.center(), egui::vec2(18.0, 18.0));
@@ -1271,7 +1271,7 @@ fn grid_tile(ui: &mut egui::Ui, theme: &Theme, entry: &Entry, name: &str, width:
 
 /// A folder, a picture, or a sheet with a turned corner, drawn in lines.
 fn paint_entry_icon(painter: &egui::Painter, rect: egui::Rect, entry: &Entry) {
-    let stroke = |color| egui::Stroke::new(1.3, color);
+    let stroke = |color| egui::Stroke::new(1.3_f32, color);
     if entry.directory {
         let body = egui::Rect::from_min_max(rect.left_top() + egui::vec2(1.0, 5.0), rect.right_bottom() - egui::vec2(1.0, 2.0));
         painter.rect_stroke(body, 2.0, stroke(ui::TEXT), egui::StrokeKind::Inside);
@@ -1299,10 +1299,10 @@ fn nav_button(ui: &mut egui::Ui, theme: &Theme, kind: Nav, enabled: bool) -> egu
     let painter = ui.painter();
     let lit = enabled && (response.hovered() || response.has_focus());
     if lit { painter.rect_filled(rect, ui::CONTROL_RADIUS, ui::TRACK); }
-    painter.rect_stroke(rect, ui::CONTROL_RADIUS, egui::Stroke::new(1.0, if enabled { ui::LINE_STRONG } else { ui::LINE }), egui::StrokeKind::Inside);
-    if response.has_focus() { painter.rect_stroke(rect, ui::CONTROL_RADIUS, egui::Stroke::new(1.0, theme.main), egui::StrokeKind::Inside); }
+    painter.rect_stroke(rect, ui::CONTROL_RADIUS, egui::Stroke::new(1.0_f32, if enabled { ui::LINE_STRONG } else { ui::LINE }), egui::StrokeKind::Inside);
+    if response.has_focus() { painter.rect_stroke(rect, ui::CONTROL_RADIUS, egui::Stroke::new(1.0_f32, theme.main), egui::StrokeKind::Inside); }
     let color = if !enabled { ui::LINE_STRONG } else if lit { ui::TEXT } else { ui::SECONDARY };
-    let stroke = egui::Stroke::new(1.6, color);
+    let stroke = egui::Stroke::new(1.6_f32, color);
     let c = rect.center();
     let line = |points: Vec<egui::Pos2>| painter.add(egui::Shape::line(points, stroke));
     match kind {
@@ -1325,7 +1325,7 @@ fn place_item(ui: &mut egui::Ui, theme: &Theme, width: f32, title: &str, hint: &
     let lit = response.hovered() || response.has_focus();
     let fill = if current { theme.main.gamma_multiply(0.16) } else if lit { ui::TRACK } else { egui::Color32::TRANSPARENT };
     ui.painter().rect_filled(rect, ui::CONTROL_RADIUS, fill);
-    if response.has_focus() { ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, egui::Stroke::new(1.0, theme.main), egui::StrokeKind::Inside); }
+    if response.has_focus() { ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, egui::Stroke::new(1.0_f32, theme.main), egui::StrokeKind::Inside); }
     let color = if current || lit { ui::TEXT } else { ui::SECONDARY };
     let mut job = egui::text::LayoutJob::simple_singleline(title.to_owned(), ui::display(13.0), color);
     job.wrap = egui::text::TextWrapping::truncate_at_width((width - 20.0).max(1.0));
@@ -1343,7 +1343,7 @@ fn drive_item(ui: &mut egui::Ui, theme: &Theme, width: f32, drive: &crate::drive
     let lit = response.hovered() || response.has_focus();
     let fill = if current { theme.main.gamma_multiply(0.16) } else if lit { ui::TRACK } else { egui::Color32::TRANSPARENT };
     ui.painter().rect_filled(rect, ui::CONTROL_RADIUS, fill);
-    if response.has_focus() { ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, egui::Stroke::new(1.0, theme.main), egui::StrokeKind::Inside); }
+    if response.has_focus() { ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, egui::Stroke::new(1.0_f32, theme.main), egui::StrokeKind::Inside); }
     let color = if current || lit { ui::TEXT } else { ui::SECONDARY };
     let mut job = egui::text::LayoutJob::simple_singleline(drive.name.clone(), ui::display(13.0), color);
     job.wrap = egui::text::TextWrapping::truncate_at_width((width - 20.0 - ui::CONTROL_HEIGHT).max(1.0));
@@ -1374,7 +1374,7 @@ fn menu_item(ui: &mut egui::Ui, label: &str, shortcut: &str, enabled: bool) -> e
 fn menu_item_caution(ui: &mut egui::Ui, label: &str, shortcut: &str) -> egui::Response { menu_item_with(ui, label, shortcut, true, ui::CAUTION) }
 fn menu_separator(ui: &mut egui::Ui) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 9.0), egui::Sense::hover());
-    ui.painter().hline(rect.x_range().shrink(4.0), rect.center().y, egui::Stroke::new(1.0, ui::LINE));
+    ui.painter().hline(rect.x_range().shrink(4.0), rect.center().y, egui::Stroke::new(1.0_f32, ui::LINE));
 }
 fn menu_heading(ui: &mut egui::Ui, text: &str) {
     ui.horizontal(|ui| { ui.add_space(10.0); ui::tracked(ui, text, ui::mono(10.0), ui::LABEL, 1.4); });
@@ -1486,8 +1486,8 @@ impl Window {
                 let mut right_ui = ui.new_child(egui::UiBuilder::new().id_salt("files-right").max_rect(right).layout(egui::Layout::top_down(egui::Align::Min)));
                 let from_right = split.show_with_keyboard(&mut right_ui, theme, active && self.right_focus);
                 let focused = if self.right_focus { right } else { left };
-                ui.painter().rect_stroke(focused.expand(5.0), ui::SURFACE_RADIUS, egui::Stroke::new(1.0, theme.main.gamma_multiply(0.7)), egui::StrokeKind::Inside);
-                ui.painter().vline(full.left() + half + gap / 2.0, full.y_range(), egui::Stroke::new(1.0, ui::LINE));
+                ui.painter().rect_stroke(focused.expand(5.0), ui::SURFACE_RADIUS, egui::Stroke::new(1.0_f32, theme.main.gamma_multiply(0.7)), egui::StrokeKind::Inside);
+                ui.painter().vline(full.left() + half + gap / 2.0, full.y_range(), egui::Stroke::new(1.0_f32, ui::LINE));
                 ui.allocate_rect(full, egui::Sense::hover());
                 from_left.or(from_right)
             },
@@ -1507,10 +1507,10 @@ fn tab_item(ui: &mut egui::Ui, theme: &Theme, width: f32, title: &str, current: 
     let painter = ui.painter();
     painter.rect_filled(rect, ui::CONTROL_RADIUS, if current { ui::PANEL } else if lit { ui::TRACK } else { egui::Color32::TRANSPARENT });
     if current {
-        painter.rect_stroke(rect, ui::CONTROL_RADIUS, egui::Stroke::new(1.0, ui::LINE), egui::StrokeKind::Inside);
-        painter.hline(rect.x_range().shrink(6.0), rect.top() + 1.0, egui::Stroke::new(2.0, theme.main));
+        painter.rect_stroke(rect, ui::CONTROL_RADIUS, egui::Stroke::new(1.0_f32, ui::LINE), egui::StrokeKind::Inside);
+        painter.hline(rect.x_range().shrink(6.0), rect.top() + 1.0, egui::Stroke::new(2.0_f32, theme.main));
     }
-    if response.has_focus() { painter.rect_stroke(rect, ui::CONTROL_RADIUS, egui::Stroke::new(1.0, theme.main), egui::StrokeKind::Inside); }
+    if response.has_focus() { painter.rect_stroke(rect, ui::CONTROL_RADIUS, egui::Stroke::new(1.0_f32, theme.main), egui::StrokeKind::Inside); }
     let color = if current || lit { ui::TEXT } else { ui::SECONDARY };
     let mut job = egui::text::LayoutJob::simple_singleline(title.to_owned(), ui::display(12.5), color);
     job.wrap = egui::text::TextWrapping::truncate_at_width((width - if closable { 40.0 } else { 20.0 }).max(8.0));
@@ -1520,8 +1520,8 @@ fn tab_item(ui: &mut egui::Ui, theme: &Theme, width: f32, title: &str, current: 
         if current || lit || close.hovered() {
             if close.hovered() { painter.rect_filled(close_rect, 4.0, ui::LINE); }
             let c = close_rect.center(); let ink = if close.hovered() { ui::TEXT } else { ui::LABEL };
-            painter.line_segment([c + egui::vec2(-4.0, -4.0), c + egui::vec2(4.0, 4.0)], egui::Stroke::new(1.3, ink));
-            painter.line_segment([c + egui::vec2(4.0, -4.0), c + egui::vec2(-4.0, 4.0)], egui::Stroke::new(1.3, ink));
+            painter.line_segment([c + egui::vec2(-4.0, -4.0), c + egui::vec2(4.0, 4.0)], egui::Stroke::new(1.3_f32, ink));
+            painter.line_segment([c + egui::vec2(4.0, -4.0), c + egui::vec2(-4.0, 4.0)], egui::Stroke::new(1.3_f32, ink));
         }
         close.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Close {title}")));
     }
@@ -1534,10 +1534,10 @@ fn new_tab_button(ui: &mut egui::Ui, theme: &Theme) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
     let lit = response.hovered() || response.has_focus();
     if lit { ui.painter().rect_filled(rect, ui::CONTROL_RADIUS, ui::TRACK); }
-    if response.has_focus() { ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, egui::Stroke::new(1.0, theme.main), egui::StrokeKind::Inside); }
+    if response.has_focus() { ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, egui::Stroke::new(1.0_f32, theme.main), egui::StrokeKind::Inside); }
     let c = rect.center(); let ink = if lit { ui::TEXT } else { ui::SECONDARY };
-    ui.painter().line_segment([c + egui::vec2(-6.0, 0.0), c + egui::vec2(6.0, 0.0)], egui::Stroke::new(1.6, ink));
-    ui.painter().line_segment([c + egui::vec2(0.0, -6.0), c + egui::vec2(0.0, 6.0)], egui::Stroke::new(1.6, ink));
+    ui.painter().line_segment([c + egui::vec2(-6.0, 0.0), c + egui::vec2(6.0, 0.0)], egui::Stroke::new(1.6_f32, ink));
+    ui.painter().line_segment([c + egui::vec2(0.0, -6.0), c + egui::vec2(0.0, 6.0)], egui::Stroke::new(1.6_f32, ink));
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "New tab"));
     response
 }

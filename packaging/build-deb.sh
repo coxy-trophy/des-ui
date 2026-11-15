@@ -24,7 +24,9 @@ case $version in
     *[!A-Za-z0-9.+~-]*) echo "build-deb.sh: not a package version: $version" >&2; exit 2 ;;
 esac
 arch=$(dpkg --print-architecture)
-maintainer="${DEB_MAINTAINER:-$(git config user.name) <$(git config user.email)>}"
+# Who built it, for the control file. A machine with no git identity (a fresh
+# DesOS install) still builds: an unset name stopped this script with no message.
+maintainer="${DEB_MAINTAINER:-$(git config user.name || echo "DEs-UI developers") <$(git config user.email || echo "des-ui@users.noreply.github.com")>}"
 out=target/deb
 rm -rf "$out"
 mkdir -p "$out"
@@ -37,9 +39,15 @@ linked() {
     for program; do set -- "$@" "-e$PWD/$program"; shift; done
     # A pipeline through sed would hide dpkg-shlibdeps failures, including failures
     # after partial output. Never package a program with incomplete dependencies.
-    if dependencies=$(cd "$work" && dpkg-shlibdeps -O "$@"); then
+    # Two warnings are expected and harmless, so they are not shown: the programs
+    # are read from target/release rather than the package tree, and Ubuntu's
+    # merged /usr diverts the loader. Anything else dpkg-shlibdeps says is shown.
+    if dependencies=$(cd "$work" && dpkg-shlibdeps -O "$@" 2>"$work/said"); then
+        grep -v -e 'binaries to analyze should already be installed' -e 'diversions involved' \
+            -e '^ diversion by libc6 ' "$work/said" >&2 || true
         printf '%s\n' "$dependencies" | sed 's/^shlibs:Depends=//'
     else
+        cat "$work/said" >&2
         rm -rf "$work"
         return 1
     fi

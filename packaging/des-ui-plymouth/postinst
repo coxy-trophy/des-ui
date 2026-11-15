@@ -3,8 +3,10 @@ set -e
 theme=/usr/share/plymouth/themes/des-ui/des-ui.plymouth
 if [ "$1" = configure ]; then
     update-alternatives --install /usr/share/plymouth/themes/default.plymouth default.plymouth "$theme" 200
-    # The splash is shown from the boot image, which has to be made again to hold it.
+    # The splash is shown from the boot image, which has to be made again to hold it:
+    # for every kernel. Plain -u rebuilds only the highest-numbered one, which on
+    # DesOS is Ubuntu's fallback kernel, not the DesOS kernel that boots.
     if command -v update-initramfs >/dev/null; then
-        update-initramfs -u || true
+        update-initramfs -u -k all || true
     fi
 fi

@@ -1255,11 +1255,11 @@ fn tab(ui: &mut Ui, theme: &Theme, tab: Tab, animate: bool) -> Response {
     let lit = if animate { ui.ctx().animate_bool_with_time(response.id, tab.selected, 0.14) } else if tab.selected { 1.0 } else { 0.0 };
     if lit > 0.0 {
         painter.rect_filled(surface, 9.0, theme.main.gamma_multiply(0.14 * lit));
-        painter.rect_stroke(surface, 9.0, Stroke::new(1.0, theme.main.gamma_multiply(0.6 * lit)), StrokeKind::Inside);
+        painter.rect_stroke(surface, 9.0, Stroke::new(1.0_f32, theme.main.gamma_multiply(0.6 * lit)), StrokeKind::Inside);
     } else if response.hovered() {
         painter.rect_filled(surface, 9.0, ui::TRACK);
     }
-    if response.has_focus() { painter.rect_stroke(surface.expand(1.0), 10.0, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
+    if response.has_focus() { painter.rect_stroke(surface.expand(1.0), 10.0, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside); }
     let badge = Rect::from_center_size(pos2(surface.left() + 6.0 + badge_side / 2.0, surface.center().y), vec2(badge_side, badge_side));
     painter.rect_filled(badge, 6.0, if tab.selected { theme.main } else { ui::TRACK });
     painter.galley(badge.center() - number.size() / 2.0, number, number_ink);
@@ -1333,8 +1333,8 @@ impl App {
             response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, available, "New terminal tab"));
             let fill = if !available { ui::TRACK } else if response.hovered() { theme.main.gamma_multiply(0.85) } else { theme.main };
             ui.painter().circle_filled(plus.center(), 16.0, fill);
-            if response.has_focus() { ui.painter().circle_stroke(plus.center(), 18.0, Stroke::new(1.0, theme.main)); }
-            let ink = Stroke::new(2.2, if available { ui::GROUND } else { ui::LABEL });
+            if response.has_focus() { ui.painter().circle_stroke(plus.center(), 18.0, Stroke::new(1.0_f32, theme.main)); }
+            let ink = Stroke::new(2.2_f32, if available { ui::GROUND } else { ui::LABEL });
             ui.painter().line_segment([plus.center() - vec2(6.0, 0.0), plus.center() + vec2(6.0, 0.0)], ink);
             ui.painter().line_segment([plus.center() - vec2(0.0, 6.0), plus.center() + vec2(0.0, 6.0)], ink);
             if response.on_hover_text(hint).clicked() {
@@ -1348,7 +1348,7 @@ impl App {
             }
             if let Some(state) = state {
                 let (line, _) = ui.allocate_exact_size(vec2(9.0, 18.0), Sense::hover());
-                ui.painter().line_segment([line.center_top(), line.center_bottom()], Stroke::new(1.0, ui::LINE));
+                ui.painter().line_segment([line.center_top(), line.center_bottom()], Stroke::new(1.0_f32, ui::LINE));
                 if state.apps.iter().any(|app| app.workspace == state.workspace)
                     && ui::icon_button(ui, theme, Icon::Fullscreen, 28.0, false)
                         .on_hover_text(shortcuts::hint(ui.ctx(), "Let the application cover the whole display", "desktop.fullscreen"))
@@ -1384,7 +1384,7 @@ impl App {
                         } else if response.hovered() {
                             painter.rect_filled(rect, 7.0, ui::TRACK);
                         }
-                        if response.has_focus() { painter.rect_stroke(rect, 7.0, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
+                        if response.has_focus() { painter.rect_stroke(rect, 7.0, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside); }
                         let ink = if here { ui::GROUND } else if count > 0 { ui::TEXT } else { ui::LABEL };
                         painter.text(rect.center() - vec2(0.0, 1.0), egui::Align2::CENTER_CENTER, (workspace + 1).to_string(), ui::display_bold(11.5), ink);
                         // A mark on those that hold something.
@@ -1573,7 +1573,7 @@ fn apply_style(ctx: &egui::Context, theme: &Theme) {
     visuals.window_fill = ui::PANEL;
     visuals.extreme_bg_color = ui::GROUND;
     visuals.selection.bg_fill = theme.selection();
-    visuals.selection.stroke = Stroke::new(1.0, theme.main);
+    visuals.selection.stroke = Stroke::new(1.0_f32, theme.main);
     visuals.hyperlink_color = theme.main;
     visuals.faint_bg_color = ui::TRACK;
     visuals.window_corner_radius = egui::CornerRadius::same(ui::SURFACE_RADIUS as u8);
@@ -1581,18 +1581,18 @@ fn apply_style(ctx: &egui::Context, theme: &Theme) {
     for widget in [&mut visuals.widgets.noninteractive, &mut visuals.widgets.inactive,
         &mut visuals.widgets.hovered, &mut visuals.widgets.active, &mut visuals.widgets.open] {
         widget.corner_radius = egui::CornerRadius::same(ui::CONTROL_RADIUS as u8);
-        widget.fg_stroke = Stroke::new(1.0, ui::TEXT);
-        widget.bg_stroke = Stroke::new(1.0, ui::LINE);
+        widget.fg_stroke = Stroke::new(1.0_f32, ui::TEXT);
+        widget.bg_stroke = Stroke::new(1.0_f32, ui::LINE);
         widget.bg_fill = ui::TRACK;
         widget.weak_bg_fill = ui::PANEL;
         widget.expansion = 0.0;
     }
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, ui::LINE_STRONG);
-    visuals.widgets.active.bg_stroke = Stroke::new(1.0, theme.main);
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, ui::LINE_STRONG);
+    visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, theme.main);
     visuals.widgets.active.bg_fill = theme.tint();
     visuals.widgets.hovered.weak_bg_fill = ui::TRACK;
     visuals.widgets.active.weak_bg_fill = theme.tint();
-    visuals.window_stroke = Stroke::new(1.0, ui::LINE_STRONG);
+    visuals.window_stroke = Stroke::new(1.0_f32, ui::LINE_STRONG);
     style.visuals = visuals;
     ctx.set_style(style);
 }

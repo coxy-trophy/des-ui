@@ -952,7 +952,7 @@ impl TermTab {
                 } else {painter.rect_filled(shape,0.0,theme.cursor);}
             } else if !focused {
                 // Without the keyboard, the cursor is an outline.
-                painter.rect_stroke(cell, 0.0, Stroke::new(1.0, theme.cursor), egui::StrokeKind::Inside);
+                painter.rect_stroke(cell, 0.0, Stroke::new(1.0_f32, theme.cursor), egui::StrokeKind::Inside);
             }
         }
 
@@ -1065,7 +1065,7 @@ impl CellStyle {
             background: self.bg,
             italics: self.italic,
             underline: if self.underline {
-                Stroke::new(1.0, self.fg)
+                Stroke::new(1.0_f32, self.fg)
             } else {
                 Stroke::NONE
             },

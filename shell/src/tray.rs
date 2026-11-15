@@ -675,7 +675,7 @@ pub fn show(ui: &mut Ui, theme: &Theme, tray: &Tray) {
             None => tray.icons.borrow_mut().paint(ui, icon_rect, item.icon.as_deref()),
         }
         if attention(&item.status) {
-            ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(2.0, theme.main));
+            ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(2.0_f32, theme.main));
         }
 
         let at = response.interact_pointer_pos().unwrap_or(rect.center());

@@ -65,7 +65,7 @@ pub fn truncate(s: &str, max: usize) -> String {
 pub(crate) fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
     let inner = eframe::egui::Frame::new()
         .fill(ui::PANEL)
-        .stroke(Stroke::new(1.0, ui::LINE))
+        .stroke(Stroke::new(1.0_f32, ui::LINE))
         .corner_radius(ui::SURFACE_RADIUS)
         .inner_margin(eframe::egui::Margin::same(CARD_PAD as i8))
         .show(ui, |ui| {
@@ -101,7 +101,7 @@ pub(crate) fn pill(ui: &mut Ui, text: &str, color: eframe::egui::Color32) -> efr
     let galley = ui::galley(ui, text, ui::mono(10.0), color, 0.6);
     let size = galley.size() + vec2(14.0, 6.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
-    ui.painter().rect_stroke(rect, size.y / 2.0, Stroke::new(1.0, color.gamma_multiply(0.7)), StrokeKind::Inside);
+    ui.painter().rect_stroke(rect, size.y / 2.0, Stroke::new(1.0_f32, color.gamma_multiply(0.7)), StrokeKind::Inside);
     ui.painter().galley(rect.center() - galley.size() / 2.0, galley, color);
     response
 }
@@ -150,8 +150,8 @@ fn next_event(ui: &mut Ui, next: &(String, chrono::NaiveDateTime)) {
     let painter = ui.painter();
     painter.rect_filled(rect, ui::CONTROL_RADIUS + 2.0, if response.hovered() { ui::LINE } else { ui::TRACK });
     let icon = Rect::from_center_size(rect.left_center() + vec2(18.0, 0.0), vec2(14.0, 14.0));
-    painter.rect_stroke(icon, 2.0, Stroke::new(1.3, ui::SECONDARY), StrokeKind::Inside);
-    painter.hline(icon.x_range(), icon.top() + 4.0, Stroke::new(1.3, ui::SECONDARY));
+    painter.rect_stroke(icon, 2.0, Stroke::new(1.3_f32, ui::SECONDARY), StrokeKind::Inside);
+    painter.hline(icon.x_range(), icon.top() + 4.0, Stroke::new(1.3_f32, ui::SECONDARY));
     let time = ui::galley(ui, &next.1.format("%H:%M").to_string(), ui::mono(11.0), ui::SECONDARY, 0.0);
     let room = rect.width() - 34.0 - time.size().x - 18.0;
     let mut job = eframe::egui::text::LayoutJob::simple_singleline(format!("Next: {}", next.0), ui::display(12.5), ui::TEXT);
@@ -184,7 +184,7 @@ fn area_chart(ui: &mut Ui, values: &[f32], max: f32, size: eframe::egui::Vec2, c
         mesh.add_triangle(base, base + 2, base + 3);
     }
     ui.painter().add(eframe::egui::Shape::mesh(mesh));
-    ui.painter().line(points, Stroke::new(1.5, color));
+    ui.painter().line(points, Stroke::new(1.5_f32, color));
 }
 
 /// The machine whose readings these are: its name, whether it is this one or one
@@ -414,7 +414,7 @@ fn display_tiles(ui: &mut Ui, theme: &Theme, desktop: &DesktopState) {
         let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 54.0), Sense::hover());
         crate::material::paint(ui.ctx(), ui.painter(), rect, ui::CONTROL_RADIUS, crate::material::Role::Panel);
         let painter = ui.painter_at(rect);
-        painter.rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, if active { theme.main } else { ui::LINE }), StrokeKind::Inside);
+        painter.rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0_f32, if active { theme.main } else { ui::LINE }), StrokeKind::Inside);
         let label = if screen == 0 { "1 · MAIN".to_string() } else { format!("{}", screen + 1) };
         painter.text(rect.min + vec2(12.0, 10.0), Align2::LEFT_TOP, label, ui::display(10.0), if active { theme.main } else { ui::LABEL });
         let full = describe(screen);
@@ -454,9 +454,9 @@ pub fn tabs(ui: &mut Ui, theme: &Theme, labels: &[&str], chosen: usize) -> Optio
         let response = ui.interact(rect, ui.id().with(("panel-tab", labels[index])), Sense::click());
         response.widget_info(|| eframe::egui::WidgetInfo::selected(eframe::egui::WidgetType::SelectableLabel, true, index == chosen, labels[index]));
         let on = index == chosen;
-        if on { ui.painter().rect_filled(rect, ui::SURFACE_RADIUS - 2.0, theme.main.gamma_multiply(0.22)); ui.painter().rect_stroke(rect, ui::SURFACE_RADIUS - 2.0, Stroke::new(1.0, theme.main.gamma_multiply(0.6)), StrokeKind::Inside); }
+        if on { ui.painter().rect_filled(rect, ui::SURFACE_RADIUS - 2.0, theme.main.gamma_multiply(0.22)); ui.painter().rect_stroke(rect, ui::SURFACE_RADIUS - 2.0, Stroke::new(1.0_f32, theme.main.gamma_multiply(0.6)), StrokeKind::Inside); }
         else if response.hovered() { ui.painter().rect_filled(rect, ui::SURFACE_RADIUS - 2.0, ui::LINE); }
-        if response.has_focus() { ui.painter().rect_stroke(rect, ui::SURFACE_RADIUS - 2.0, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
+        if response.has_focus() { ui.painter().rect_stroke(rect, ui::SURFACE_RADIUS - 2.0, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside); }
         ui.painter().galley(rect.center() - galley.size() / 2.0, galley, if on || response.hovered() { ui::TEXT } else { ui::SECONDARY });
         if response.clicked() { clicked = Some(index); }
         x += width + 4.0;
@@ -748,7 +748,7 @@ fn strip_pill(ui: &mut Ui, pieces: &[Piece], edge: eframe::egui::Color32, fill: 
     response.widget_info(|| eframe::egui::WidgetInfo::labeled(eframe::egui::WidgetType::Button, true, label));
     let painter = ui.painter();
     painter.rect_filled(rect, 13.0, if response.hovered() { ui::TRACK } else { fill });
-    painter.rect_stroke(rect, 13.0, Stroke::new(1.0, edge), StrokeKind::Inside);
+    painter.rect_stroke(rect, 13.0, Stroke::new(1.0_f32, edge), StrokeKind::Inside);
     paint_pieces(painter, pieces, galleys, rect.left() + 10.0, rect.center().y, gap);
     response
 }
@@ -971,7 +971,7 @@ fn island(ui: &mut Ui, area: Rect, layout: Layout, padding: f32, add: impl FnOnc
     let radius = rect.height() / 2.0;
     let mut shapes = vec![eframe::egui::Shadow { offset: [0, 6], blur: 18, spread: 0, color: eframe::egui::Color32::from_black_alpha(110) }.as_shape(rect, radius).into()];
     shapes.extend(crate::material::shapes(ui.ctx(), rect, radius, crate::material::Role::Panel));
-    shapes.push(eframe::egui::Shape::rect_stroke(rect, radius, Stroke::new(1.0, ui::LINE), StrokeKind::Inside));
+    shapes.push(eframe::egui::Shape::rect_stroke(rect, radius, Stroke::new(1.0_f32, ui::LINE), StrokeKind::Inside));
     ui.painter().set(background, eframe::egui::Shape::Vec(shapes));
     rect
 }
@@ -999,7 +999,7 @@ fn readings(ui: &mut Ui, theme: &Theme, pieces: &[Piece], lit: bool, label: &str
         painter.rect_filled(rect, TOGGLE / 2.0, if lit { theme.tint() } else { ui::TRACK });
     }
     if response.has_focus() {
-        painter.rect_stroke(rect, TOGGLE / 2.0, Stroke::new(1.0, theme.main), StrokeKind::Inside);
+        painter.rect_stroke(rect, TOGGLE / 2.0, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside);
     }
     paint_pieces(painter, pieces, galleys, rect.left() + 12.0, rect.center().y, gap);
     response
@@ -1027,7 +1027,7 @@ fn paint_pieces(painter: &eframe::egui::Painter, pieces: &[Piece], galleys: Vec<
 /// A short upright rule between groups in the strip.
 fn separator(ui: &mut Ui) {
     let (rect, _) = ui.allocate_exact_size(vec2(1.0, 18.0), Sense::hover());
-    ui.painter().vline(rect.center().x, rect.y_range(), Stroke::new(1.0, ui::LINE));
+    ui.painter().vline(rect.center().x, rect.y_range(), Stroke::new(1.0_f32, ui::LINE));
 }
 
 /// What was clicked in the status strip this frame, and where its islands were drawn.
@@ -1056,7 +1056,7 @@ impl Default for StatusClicks {
 pub fn backdrop(ui: &mut Ui, theme: &Theme, mon: &SysMon, number: usize) {
     let rect = ui.max_rect();
     crate::material::paint(ui.ctx(), ui.painter(), rect, 0.0, crate::material::Role::Background);
-    ui::corners(ui.painter(), rect.shrink(24.0), 28.0, Stroke::new(2.0, ui::LINE_STRONG));
+    ui::corners(ui.painter(), rect.shrink(24.0), 28.0, Stroke::new(2.0_f32, ui::LINE_STRONG));
 
     let inner = rect.shrink2(vec2(72.0, 48.0));
     let painter = ui.painter().clone();
@@ -1093,7 +1093,7 @@ pub fn backdrop(ui: &mut Ui, theme: &Theme, mon: &SysMon, number: usize) {
     painter.hline(
         (rect.center().x - 260.0)..=(rect.center().x + 260.0),
         hint_y - 20.0,
-        Stroke::new(1.0, ui::LINE),
+        Stroke::new(1.0_f32, ui::LINE),
     );
     // One line where the display is wide enough for it, two where it is not.
     let hints = ["SUPER O  sends the current application here", "SUPER SPACE  opens the launcher"];
@@ -1130,7 +1130,7 @@ pub fn backdrop(ui: &mut Ui, theme: &Theme, mon: &SysMon, number: usize) {
             vec2(width, 58.0),
         );
         crate::material::paint(ui.ctx(), &painter, tile, ui::CONTROL_RADIUS, crate::material::Role::Panel);
-        painter.rect_stroke(tile, ui::CONTROL_RADIUS, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
+        painter.rect_stroke(tile, ui::CONTROL_RADIUS, Stroke::new(1.0_f32, ui::LINE), StrokeKind::Inside);
         let name = ui::galley(ui, label, ui::display_bold(12.0), ui::SECONDARY, 0.8);
         painter.galley(tile.left_top() + vec2(16.0, 13.0), name, ui::SECONDARY);
         if width >= 200.0 {
@@ -1422,14 +1422,14 @@ impl FsView {
                         (ui::PANEL, ui::PANEL)
                     };
                     painter.rect_filled(rect, ui::CONTROL_RADIUS + 3.0, fill);
-                    painter.rect_stroke(rect, ui::CONTROL_RADIUS + 3.0, Stroke::new(1.0, edge), StrokeKind::Inside);
+                    painter.rect_stroke(rect, ui::CONTROL_RADIUS + 3.0, Stroke::new(1.0_f32, edge), StrokeKind::Inside);
                     let badge = Rect::from_center_size(pos2(rect.left() + 20.0, rect.center().y), vec2(22.0, 20.0));
                     let mut right = rect.right() - 10.0;
                     if command.is_some() {
                         painter.rect_filled(badge, 5.0, ui::TRACK);
                         let c = badge.center();
-                        painter.line(vec![c + vec2(-4.0, 1.5), c + vec2(0.0, -3.0), c + vec2(4.0, 1.5)], Stroke::new(1.5, ui::SECONDARY));
-                        painter.line_segment([c + vec2(0.0, -3.0), c + vec2(0.0, 5.0)], Stroke::new(1.5, ui::SECONDARY));
+                        painter.line(vec![c + vec2(-4.0, 1.5), c + vec2(0.0, -3.0), c + vec2(4.0, 1.5)], Stroke::new(1.5_f32, ui::SECONDARY));
+                        painter.line_segment([c + vec2(0.0, -3.0), c + vec2(0.0, 5.0)], Stroke::new(1.5_f32, ui::SECONDARY));
                     } else if *is_dir {
                         painter.rect_filled(badge, 5.0, theme.main.gamma_multiply(0.16));
                         folder_icon(&painter, badge.center() + vec2(0.5, 0.0), theme.main);
@@ -1508,7 +1508,7 @@ fn folder_icon(painter: &eframe::egui::Painter, center: eframe::egui::Pos2, colo
     let (x, y) = (center.x - 8.0, center.y - 6.0);
     let points = [(0.0, 1.0), (5.0, 1.0), (6.5, 3.0), (15.0, 3.0), (15.0, 12.0), (0.0, 12.0), (0.0, 1.0)];
     let points: Vec<_> = points.iter().map(|(dx, dy)| pos2(x + dx, y + dy)).collect();
-    painter.line(points, Stroke::new(1.2, color));
+    painter.line(points, Stroke::new(1.2_f32, color));
 }
 
 #[cfg(test)]
@@ -1637,7 +1637,7 @@ pub fn collapsed_rail(ui: &mut Ui, theme: &Theme, panel: Panel) -> bool {
     // Small inward chevron makes the collapsed state visible without another label.
     let d = if panel == Panel::Left { 1.0 } else { -1.0 };
     let c = pos2(rect.center().x, rect.top() + 48.0);
-    ui.painter().line(vec![c + vec2(-2.0*d,-3.0), c + vec2(2.0*d,0.0), c + vec2(-2.0*d,3.0)], Stroke::new(1.2, ui::LABEL));
+    ui.painter().line(vec![c + vec2(-2.0*d,-3.0), c + vec2(2.0*d,0.0), c + vec2(-2.0*d,3.0)], Stroke::new(1.2_f32, ui::LABEL));
     if panel == Panel::Left && rect.height() >= 146.0 {
         collapsed_clock(ui, theme, Rect::from_min_max(pos2(rect.left(),rect.top()+72.0),pos2(rect.right(),rect.bottom()-8.0)));
     }

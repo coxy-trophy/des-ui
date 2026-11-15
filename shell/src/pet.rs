@@ -310,7 +310,7 @@ impl Pet {
         self.walker.step(dt, room, kind.pace, kind.lie.is_some());
         self.since = if self.walker.doing == was { self.since + dt } else { 0.0 };
 
-        ui.painter().hline(strip.x_range(), strip.bottom() - 0.5, Stroke::new(1.0, ui::TRACK));
+        ui.painter().hline(strip.x_range(), strip.bottom() - 0.5, Stroke::new(1.0_f32, ui::TRACK));
         let Some(animation) = self.animations.iter().find(|animation| animation.doing == self.walker.doing && !animation.frames.is_empty()) else {
             return;
         };

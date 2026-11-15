@@ -369,8 +369,8 @@ impl Capture {
                 ] {
                     painter.rect_filled(shade, 0.0, dim);
                 }
-                painter.rect_stroke(piece, 0.0, Stroke::new(1.0, accent), StrokeKind::Outside);
-                ui::corners(&painter, piece, 10.0, Stroke::new(2.0, accent));
+                painter.rect_stroke(piece, 0.0, Stroke::new(1.0_f32, accent), StrokeKind::Outside);
+                ui::corners(&painter, piece, 10.0, Stroke::new(2.0_f32, accent));
             };
             let picking = marking.colour;
             let colour_at = |at: Pos2| {
@@ -383,11 +383,11 @@ impl Capture {
                 let galley = ui::galley(ui, hint, ui::display_bold(13.0), ui::TEXT, 2.0);
                 let plate = Rect::from_center_size(rect.center_top() + vec2(0.0, 60.0), galley.size() + vec2(36.0, 22.0));
                 painter.rect_filled(plate, 0.0, ui::PANEL);
-                painter.rect_stroke(plate, 0.0, Stroke::new(1.0, accent), StrokeKind::Inside);
+                painter.rect_stroke(plate, 0.0, Stroke::new(1.0_f32, accent), StrokeKind::Inside);
                 painter.galley(plate.center() - galley.size() / 2.0, galley, ui::TEXT);
                 if let Some(at) = pointer {
                     let [r, g, b] = colour_at(at);
-                    let stroke = Stroke::new(1.0, accent);
+                    let stroke = Stroke::new(1.0_f32, accent);
                     painter.hline((at.x - 14.0)..=(at.x - 4.0), at.y, stroke);
                     painter.hline((at.x + 4.0)..=(at.x + 14.0), at.y, stroke);
                     painter.vline(at.x, (at.y - 14.0)..=(at.y - 4.0), stroke);
@@ -454,7 +454,7 @@ impl Capture {
                         }
                     }
                     painter.rect_filled(plate, 0.0, ui::PANEL);
-                    painter.rect_stroke(plate, 0.0, Stroke::new(1.0, accent), StrokeKind::Inside);
+                    painter.rect_stroke(plate, 0.0, Stroke::new(1.0_f32, accent), StrokeKind::Inside);
                     for (button, name, key, offered, over) in buttons {
                         let (ink, edge) = match (offered, over) {
                             (false, _) => (ui::LINE_STRONG, ui::LINE),
@@ -464,7 +464,7 @@ impl Capture {
                         if offered && over {
                             painter.rect_filled(button, 0.0, accent.gamma_multiply(0.12));
                         }
-                        painter.rect_stroke(button, 0.0, Stroke::new(1.0, edge), StrokeKind::Inside);
+                        painter.rect_stroke(button, 0.0, Stroke::new(1.0_f32, edge), StrokeKind::Inside);
                         painter.text(button.center() + vec2(0.0, -8.0), Align2::CENTER_CENTER, name, ui::display_bold(12.0), ink);
                         painter.text(button.center() + vec2(0.0, 14.0), Align2::CENTER_CENTER, key, ui::mono(10.0), if offered { ui::LABEL } else { ui::LINE_STRONG });
                     }
@@ -488,11 +488,11 @@ impl Capture {
                     let galley = ui::galley(ui, hint, ui::display_bold(13.0), ui::TEXT, 2.0);
                     let plate = Rect::from_center_size(rect.center_top() + vec2(0.0, 60.0), galley.size() + vec2(36.0, 22.0));
                     painter.rect_filled(plate, 0.0, ui::PANEL);
-                    painter.rect_stroke(plate, 0.0, Stroke::new(1.0, accent), StrokeKind::Inside);
+                    painter.rect_stroke(plate, 0.0, Stroke::new(1.0_f32, accent), StrokeKind::Inside);
                     painter.galley(plate.center() - galley.size() / 2.0, galley, ui::TEXT);
                     if let Some(at) = pointer {
-                        painter.hline(rect.x_range(), at.y, Stroke::new(1.0, accent.gamma_multiply(0.5)));
-                        painter.vline(at.x, rect.y_range(), Stroke::new(1.0, accent.gamma_multiply(0.5)));
+                        painter.hline(rect.x_range(), at.y, Stroke::new(1.0_f32, accent.gamma_multiply(0.5)));
+                        painter.vline(at.x, rect.y_range(), Stroke::new(1.0_f32, accent.gamma_multiply(0.5)));
                     }
                 }
             }

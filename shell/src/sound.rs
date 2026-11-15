@@ -428,12 +428,12 @@ fn row(ui: &mut Ui, theme: &Theme, name: &str, state: &str, live: bool) -> bool 
     let painter = ui.painter_at(rect);
     if live {
         painter.rect_filled(rect, 0.0, theme.tint());
-        painter.rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside);
+        painter.rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside);
     } else {
         if response.hovered() {
             painter.rect_filled(rect, ui::CONTROL_RADIUS, ui::PANEL);
         }
-        painter.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, ui::TRACK));
+        painter.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0_f32, ui::TRACK));
     }
     let mark = egui::Rect::from_center_size(rect.left_center() + vec2(14.0, 0.0), vec2(6.0, 6.0));
     painter.rect_filled(mark, 0.0, if live { theme.main } else { ui::LINE_STRONG });

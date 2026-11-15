@@ -362,7 +362,7 @@ impl Lock {
                 let size = galley.size() + vec2(40.0, 14.0);
                 let chip = Rect::from_center_size(pos2(cx, y + 6.0 + size.y / 2.0), size);
                 if glassy { panes.push(crate::glass::Shape::Pill(chip)); }
-                if !liquid { glass(&painter, chip, soft.as_ref(), Stroke::new(1.0, Color32::from_white_alpha(36))); }
+                if !liquid { glass(&painter, chip, soft.as_ref(), Stroke::new(1.0_f32, Color32::from_white_alpha(36))); }
                 ui::paint_icon(&painter, Rect::from_center_size(pos2(chip.left() + 17.0, chip.center().y), vec2(13.0, 13.0)), ui::Icon::Notifications, GLASS_TEXT, false);
                 painter.galley(pos2(chip.left() + 28.0, chip.center().y - galley.size().y / 2.0), galley, GLASS_TEXT);
             }
@@ -382,9 +382,9 @@ impl Lock {
             if glassy { panes.push(crate::glass::Shape::Pill(field)); }
             if liquid {
                 // Only a change of state is outlined on the glass: typing or denied.
-                if denied || !self.password.is_empty() { painter.rect_stroke(field, field.height() / 2.0, Stroke::new(1.0, field_edge), StrokeKind::Inside); }
+                if denied || !self.password.is_empty() { painter.rect_stroke(field, field.height() / 2.0, Stroke::new(1.0_f32, field_edge), StrokeKind::Inside); }
             } else {
-                glass(&painter, field, soft.as_ref(), Stroke::new(1.0, field_edge));
+                glass(&painter, field, soft.as_ref(), Stroke::new(1.0_f32, field_edge));
             }
             let go = Rect::from_center_size(pos2(field.right() - 20.0, field.center().y), vec2(28.0, 28.0));
             let room = Rect::from_min_max(pos2(field.left() + 16.0, field.top()), pos2(go.left() - 8.0, field.bottom()));
@@ -417,7 +417,7 @@ impl Lock {
             let fill = if ready { if response.hovered() { theme.main.gamma_multiply(0.85) } else { theme.main } } else { Color32::from_white_alpha(28) };
             painter.circle_filled(go.center(), 14.0, fill);
             let c = go.center();
-            let stroke = Stroke::new(1.8, if ready { ui::GROUND } else { Color32::from_white_alpha(170) });
+            let stroke = Stroke::new(1.8_f32, if ready { ui::GROUND } else { Color32::from_white_alpha(170) });
             painter.line_segment([c - vec2(5.0, 0.0), c + vec2(5.0, 0.0)], stroke);
             painter.line(vec![c + vec2(0.5, -4.5), c + vec2(5.0, 0.0), c + vec2(0.5, 4.5)], stroke);
             if response.clicked() { submit = true; }
@@ -471,13 +471,13 @@ pub(crate) fn bird(painter: &egui::Painter, panes: &mut Vec<crate::glass::Shape>
 pub(crate) fn paint_face(ui: &Ui, painter: &egui::Painter, theme: &Theme, face: Rect, ring: Color32, busy: bool, picture: Option<&TextureHandle>, user: &str) {
     let radius = face.width() / 2.0;
     if busy {
-        painter.circle_stroke(face.center(), radius - 1.0, Stroke::new(2.0, Color32::from_white_alpha(40)));
+        painter.circle_stroke(face.center(), radius - 1.0, Stroke::new(2.0_f32, Color32::from_white_alpha(40)));
         let turn = (ui.input(|i| i.time) as f32 * 4.0) % std::f32::consts::TAU;
         let arc: Vec<egui::Pos2> = (0..=16).map(|k| { let a = turn + k as f32 * std::f32::consts::FRAC_PI_2 / 16.0; face.center() + vec2(a.cos(), a.sin()) * (radius - 1.0) }).collect();
-        painter.line(arc, Stroke::new(2.0, GLASS_TEXT));
+        painter.line(arc, Stroke::new(2.0_f32, GLASS_TEXT));
         ui.ctx().request_repaint();
     } else {
-        painter.circle_stroke(face.center(), radius - 1.0, Stroke::new(2.0, ring));
+        painter.circle_stroke(face.center(), radius - 1.0, Stroke::new(2.0_f32, ring));
     }
     let inner = face.shrink(5.0);
     match picture {

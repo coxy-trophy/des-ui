@@ -504,7 +504,7 @@ impl Scene {
             self.painter.add(Shape::line(
                 line,
                 Stroke::new(
-                    if bright { 1.2 } else { 0.65 },
+                    if bright { 1.2 } else { 0.65_f32 },
                     color(if bright { highlight } else { ink }, a),
                 ),
             ));
@@ -775,7 +775,7 @@ impl Scene {
             } else if lane > 0.0 {
                 (1.6, [49, 87, 109])
             } else {
-                (1.1, [75, 54, 74])
+                (1.1_f32, [75, 54, 74])
             };
             self.painter
                 .add(Shape::line(points, Stroke::new(w, color(fill, 1.0))));

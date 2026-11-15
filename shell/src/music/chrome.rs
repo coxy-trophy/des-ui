@@ -19,14 +19,14 @@ pub(super) fn glyph_button(ui: &mut Ui, theme: &Theme, glyph: Glyph, size: f32, 
     let response = response.on_hover_text(label);
     let hot = response.hovered() || response.has_focus();
     if hot { ui.painter().circle_filled(rect.center(), size / 2.0, ui::TRACK); }
-    if response.has_focus() { ui.painter().circle_stroke(rect.center(), size / 2.0, Stroke::new(1.0, theme.main)); }
+    if response.has_focus() { ui.painter().circle_stroke(rect.center(), size / 2.0, Stroke::new(1.0_f32, theme.main)); }
     let ink = if lit { theme.main } else if hot { ui::TEXT } else { ui::SECONDARY };
     paint_glyph(ui.painter(), rect.shrink(size * 0.24), glyph, ink, lit);
     response
 }
 
 pub(super) fn paint_glyph(painter: &egui::Painter, r: Rect, glyph: Glyph, ink: Color32, filled: bool) {
-    let s = Stroke::new(1.6, ink);
+    let s = Stroke::new(1.6_f32, ink);
     let p = |x: f32, y: f32| pos2(r.left() + r.width() * x, r.top() + r.height() * y);
     let line = |points: Vec<Pos2>| { painter.add(Shape::line(points, s)); };
     match glyph {
@@ -83,7 +83,7 @@ fn nav_row(ui: &mut Ui, theme: &Theme, name: &str, chosen: bool, cover: Option<O
     let painter = ui.painter_at(rect);
     let hot = response.hovered() || response.has_focus();
     if chosen { painter.rect_filled(rect, ui::CONTROL_RADIUS, theme.main.gamma_multiply(0.16)); } else if hot { painter.rect_filled(rect, ui::CONTROL_RADIUS, ui::TRACK); }
-    if response.has_focus() { painter.rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
+    if response.has_focus() { painter.rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside); }
     let mut x = rect.left() + 10.0;
     if let Some(cover) = cover {
         let art = Rect::from_min_size(pos2(rect.left() + 6.0, rect.center().y - 14.0), vec2(28.0, 28.0));
@@ -118,7 +118,7 @@ impl Music {
         ui.spacing_mut().item_spacing.y = 2.0;
         let (field, _) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::hover());
         ui.painter().rect_filled(field, ui::CONTROL_RADIUS, ui::PANEL);
-        ui.painter().rect_stroke(field, ui::CONTROL_RADIUS, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
+        ui.painter().rect_stroke(field, ui::CONTROL_RADIUS, Stroke::new(1.0_f32, ui::LINE), StrokeKind::Inside);
         let edit = ui.put(
             Rect::from_min_max(field.min + vec2(10.0, 6.0), field.max - vec2(10.0, 6.0)),
             TextEdit::singleline(&mut self.query).vertical_align(Align::Center).frame(false).font(ui::display(13.0)).text_color(ui::TEXT)
@@ -193,7 +193,7 @@ impl Music {
                         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name.as_str()));
                         let painter = ui.painter_at(rect);
                         painter.rect_filled(rect, 8.0, if response.hovered() || response.has_focus() { ui::TRACK } else { ui::PANEL });
-                        if response.has_focus() { painter.rect_stroke(rect, 8.0, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
+                        if response.has_focus() { painter.rect_stroke(rect, 8.0, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside); }
                         let art = Rect::from_min_size(rect.min, vec2(56.0, 56.0));
                         match self.covers.get(ui.ctx(), cover.as_deref()) {
                             Some(texture) => { painter.image(texture.id(), art, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE); }
@@ -303,7 +303,7 @@ impl Music {
                     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{} — {}", item.name, item.by)));
                     let painter = ui.painter_at(rect);
                     if response.hovered() || response.has_focus() { painter.rect_filled(rect, 8.0, ui::PANEL); }
-                    if response.has_focus() { painter.rect_stroke(rect, 8.0, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
+                    if response.has_focus() { painter.rect_stroke(rect, 8.0, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside); }
                     let art = Rect::from_min_size(rect.min + vec2(6.0, 6.0), vec2(tile - 12.0, tile - 12.0));
                     let cover = if ui.is_rect_visible(rect) { self.covers.get(ui.ctx(), item.cover.as_deref()) } else { None };
                     match cover {
@@ -399,7 +399,7 @@ impl Music {
     pub(super) fn player_bar(&mut self, ui: &mut Ui, theme: &Theme, now: &Now, height: f32, wide_column: bool) {
         let (strip, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
         ui.painter().rect_filled(strip, ui::SURFACE_RADIUS, ui::PANEL);
-        ui.painter().rect_stroke(strip, ui::SURFACE_RADIUS, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
+        ui.painter().rect_stroke(strip, ui::SURFACE_RADIUS, Stroke::new(1.0_f32, ui::LINE), StrokeKind::Inside);
         let inner = strip.shrink2(vec2(14.0, 10.0));
         let Some(track) = now.track.clone() else {
             let mut ui = ui.new_child(UiBuilder::new().max_rect(inner).layout(Layout::top_down(Align::Min)));
@@ -478,7 +478,7 @@ pub(super) fn play_button(ui: &mut Ui, theme: &Theme, playing: bool, size: f32) 
     let response = response.on_hover_text(label);
     let painter = ui.painter();
     painter.circle_filled(rect.center(), size / 2.0, if response.hovered() { Color32::WHITE } else { ui::TEXT });
-    if response.has_focus() { painter.circle_stroke(rect.center(), size / 2.0 + 2.0, Stroke::new(1.5, theme.main)); }
+    if response.has_focus() { painter.circle_stroke(rect.center(), size / 2.0 + 2.0, Stroke::new(1.5_f32, theme.main)); }
     let c = rect.center();
     if playing {
         painter.rect_filled(Rect::from_center_size(c - vec2(4.5, 0.0) * k, vec2(4.0, 15.0) * k), 1.0, ui::GROUND);

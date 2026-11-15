@@ -234,7 +234,7 @@ impl Calculator {
         let radius = 18.0;
         let mut shapes = vec![egui::Shadow { offset: [0, 10], blur: 30, spread: 0, color: Color32::from_black_alpha(120) }.as_shape(card, radius).into()];
         shapes.extend(crate::material::shapes(ui.ctx(), card, radius, crate::material::Role::Panel));
-        shapes.push(egui::Shape::rect_stroke(card, radius, Stroke::new(1.0, ui::LINE), StrokeKind::Inside));
+        shapes.push(egui::Shape::rect_stroke(card, radius, Stroke::new(1.0_f32, ui::LINE), StrokeKind::Inside));
         ui.painter().extend(shapes);
         let inner = card.shrink2(vec2(22.0, 18.0));
         let mut ui = ui.new_child(UiBuilder::new().max_rect(inner).layout(Layout::top_down(Align::Min)));
@@ -252,7 +252,7 @@ impl Calculator {
         // The display: what is typed, and its answer or why there is none.
         let (screen, _) = ui.allocate_exact_size(vec2(inner.width(), 104.0), Sense::hover());
         ui.painter().rect_filled(screen, 12.0, ui::GROUND.gamma_multiply(0.7));
-        ui.painter().rect_stroke(screen, 12.0, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
+        ui.painter().rect_stroke(screen, 12.0, Stroke::new(1.0_f32, ui::LINE), StrokeKind::Inside);
         let line = match (&self.error, self.preview(), self.answered) {
             (Some(why), _, _) => (why.to_string(), ui::CAUTION),
             (None, Some(preview), _) => (format!("= {preview}"), ui::SECONDARY),
@@ -301,7 +301,7 @@ impl Calculator {
                 let ink = if equals { ui::GROUND } else if operator { theme.main } else if function { ui::SECONDARY } else { ui::TEXT };
                 let painter = ui.painter();
                 painter.rect_filled(place, 12.0, fill);
-                if response.has_focus() { painter.rect_stroke(place, 12.0, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
+                if response.has_focus() { painter.rect_stroke(place, 12.0, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside); }
                 let font = if function && !matches!(press, Press::Open | Press::Close) { ui::display(16.0) } else { ui::display_bold(20.0) };
                 painter.text(place.center(), Align2::CENTER_CENTER, *label, font, ink);
                 if response.clicked() { pressed = Some(*press); }

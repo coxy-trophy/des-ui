@@ -1269,9 +1269,9 @@ fn quick_head(ui: &mut Ui, theme: &Theme, name: &str, working: Option<&str>, pow
         let (back, response) = ui.allocate_exact_size(vec2(30.0, 30.0), Sense::click());
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Back to quick settings"));
         ui.painter().rect_filled(back, 8.0, if response.hovered() { ui::LINE } else { ui::TRACK });
-        if response.has_focus() { ui.painter().rect_stroke(back, 8.0, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
+        if response.has_focus() { ui.painter().rect_stroke(back, 8.0, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside); }
         let c = back.center();
-        ui.painter().line(vec![c + vec2(2.5, -5.0), c + vec2(-2.5, 0.0), c + vec2(2.5, 5.0)], Stroke::new(1.8, ui::TEXT));
+        ui.painter().line(vec![c + vec2(2.5, -5.0), c + vec2(-2.5, 0.0), c + vec2(2.5, 5.0)], Stroke::new(1.8_f32, ui::TEXT));
         if response.on_hover_text("Back · Esc closes").clicked() { *exit = QuickExit::Back; }
         ui::text(ui, name, ui::display_bold(14.0), ui::TEXT);
         if let Some(doing) = working { ui::text(ui, &format!("{doing}…").replace("……", "…"), ui::mono(10.0), theme.main); }
@@ -1292,7 +1292,7 @@ fn quick_note(ui: &mut Ui, text: &str, color: egui::Color32) {
 /// A row and, when it is open, its controls, together in one bordered box.
 fn quick_group(ui: &mut Ui, open: bool, add: impl FnOnce(&mut Ui)) {
     if !open { add(ui); return; }
-    egui::Frame::new().fill(ui::PANEL).stroke(Stroke::new(1.0, ui::LINE)).corner_radius(12).inner_margin(egui::Margin { left: 4, right: 4, top: 4, bottom: 10 }).show(ui, |ui| {
+    egui::Frame::new().fill(ui::PANEL).stroke(Stroke::new(1.0_f32, ui::LINE)).corner_radius(12).inner_margin(egui::Margin { left: 4, right: 4, top: 4, bottom: 10 }).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 8.0;
         add(ui);
     });
@@ -1305,7 +1305,7 @@ fn quick_row(ui: &mut Ui, theme: &Theme, lead: Lead, name: &str, locked: bool, s
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{name}, {}", state.to_lowercase())));
     let painter = ui.painter_at(rect);
     if live { painter.rect_filled(rect, 10.0, theme.main.gamma_multiply(0.14)); } else if response.hovered() { painter.rect_filled(rect, 10.0, ui::TRACK); }
-    if response.has_focus() { painter.rect_stroke(rect, 10.0, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
+    if response.has_focus() { painter.rect_stroke(rect, 10.0, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside); }
     let lead_at = rect.left_center() + vec2(18.0, 0.0);
     match lead {
         Lead::Signal(signal) => {
@@ -1343,7 +1343,7 @@ fn quick_secret(ui: &mut Ui, theme: &Theme, text: &mut String, reveal: &mut bool
         ui.add_space(8.0);
         let (rect, _) = ui.allocate_exact_size(vec2(width, 36.0), Sense::hover());
         ui.painter().rect_filled(rect, 9.0, ui::GROUND);
-        ui.painter().rect_stroke(rect, 9.0, Stroke::new(1.0, theme.main), StrokeKind::Inside);
+        ui.painter().rect_stroke(rect, 9.0, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside);
         let eye = Rect::from_center_size(rect.right_center() - vec2(18.0, 0.0), vec2(28.0, 28.0));
         let edit = ui.put(
             Rect::from_min_max(rect.min + vec2(12.0, 4.0), pos2(eye.left() - 4.0, rect.bottom() - 4.0)),
@@ -1357,7 +1357,7 @@ fn quick_secret(ui: &mut Ui, theme: &Theme, text: &mut String, reveal: &mut bool
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
         let c = eye.center();
         let tone = if *reveal { theme.main } else if response.hovered() { ui::TEXT } else { ui::SECONDARY };
-        let stroke = Stroke::new(1.4, tone);
+        let stroke = Stroke::new(1.4_f32, tone);
         let lid = |sign: f32| (0..=12).map(|i| { let t = i as f32 / 12.0 * std::f32::consts::PI; c + vec2(-7.0 * t.cos(), sign * 4.5 * t.sin()) }).collect::<Vec<_>>();
         ui.painter().line(lid(-1.0), stroke);
         ui.painter().line(lid(1.0), stroke);
@@ -1372,7 +1372,7 @@ fn quick_secret(ui: &mut Ui, theme: &Theme, text: &mut String, reveal: &mut bool
 /// with true when scan was clicked.
 fn quick_foot(ui: &mut Ui, theme: &Theme, can_scan: bool, scan: &str, exit: &mut QuickExit) -> Option<bool> {
     let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
-    ui.painter().hline(line.x_range(), line.center().y, Stroke::new(1.0, ui::LINE));
+    ui.painter().hline(line.x_range(), line.center().y, Stroke::new(1.0_f32, ui::LINE));
     let mut scanned = None;
     ui.horizontal(|ui| {
         if can_scan && quick_link(ui, theme, scan).clicked() { scanned = Some(true); }
@@ -1396,7 +1396,7 @@ fn quick_link(ui: &mut Ui, theme: &Theme, text: &str) -> egui::Response {
 fn field(ui: &mut Ui, theme: &Theme, text: &mut String, hint: &str, secret: bool, width: f32) -> bool {
     let (rect, _) = ui.allocate_exact_size(vec2(width.min(ui.available_width()), 28.0), Sense::hover());
     ui.painter().rect_filled(rect, ui::CONTROL_RADIUS, ui::PANEL);
-    ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside);
+    ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside);
     let edit = ui.put(
         rect.shrink2(vec2(8.0, 4.0)),
         TextEdit::singleline(text).vertical_align(eframe::egui::Align::Center).password(secret).frame(false).font(ui::mono(13.0)).text_color(ui::TEXT).hint_text(crate::ui::hint(hint)),
@@ -1424,12 +1424,12 @@ fn row(ui: &mut Ui, theme: &Theme, name: &str, reading: &str, state: &str, live:
     let painter = ui.painter_at(rect);
     if open {
         painter.rect_filled(rect, 0.0, theme.tint());
-        painter.rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside);
+        painter.rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside);
     } else {
         if response.hovered() {
             painter.rect_filled(rect, ui::CONTROL_RADIUS, ui::PANEL);
         }
-        painter.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, ui::TRACK));
+        painter.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0_f32, ui::TRACK));
     }
     let mark = egui::Rect::from_center_size(rect.left_center() + vec2(14.0, 0.0), vec2(6.0, 6.0));
     painter.rect_filled(mark, 0.0, if live { theme.main } else { ui::LINE_STRONG });

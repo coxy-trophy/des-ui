@@ -1060,7 +1060,7 @@ fn action_tile(ui: &mut egui::Ui, theme: &Theme, size: egui::Vec2, icon: ui::Ico
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
     let painter = ui.painter();
     painter.rect_filled(rect, ui::SURFACE_RADIUS, if response.hovered() && enabled { ui::LINE } else { ui::TRACK });
-    painter.rect_stroke(rect, ui::SURFACE_RADIUS, egui::Stroke::new(1.0, if response.has_focus() { theme.main } else { ui::LINE }), egui::StrokeKind::Inside);
+    painter.rect_stroke(rect, ui::SURFACE_RADIUS, egui::Stroke::new(1.0_f32, if response.has_focus() { theme.main } else { ui::LINE }), egui::StrokeKind::Inside);
     let ink = if enabled { theme.main } else { ui::LABEL };
     ui::paint_icon(painter, egui::Rect::from_center_size(rect.center() - egui::vec2(0.0, 9.0), egui::vec2(16.0, 16.0)), icon, ink, false);
     painter.text(rect.center() + egui::vec2(0.0, 12.0), egui::Align2::CENTER_CENTER, label, ui::display(12.0), if enabled { ui::TEXT } else { ui::LABEL });
@@ -1073,7 +1073,7 @@ fn device_row(ui: &mut egui::Ui, theme: &Theme, name: &str, state: &str, chosen:
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, ui.is_enabled(), chosen, format!("{name} · {state}")));
     let painter = ui.painter();
     painter.rect_filled(rect, ui::CONTROL_RADIUS + 2.0, if response.hovered() { ui::LINE } else { ui::TRACK });
-    painter.rect_stroke(rect, ui::CONTROL_RADIUS + 2.0, egui::Stroke::new(1.0, if chosen || response.has_focus() { theme.main } else { ui::LINE }), egui::StrokeKind::Inside);
+    painter.rect_stroke(rect, ui::CONTROL_RADIUS + 2.0, egui::Stroke::new(1.0_f32, if chosen || response.has_focus() { theme.main } else { ui::LINE }), egui::StrokeKind::Inside);
     let tag = painter.layout_no_wrap(state.to_string(), ui::mono(9.5), if chosen { theme.main } else { ui::LABEL });
     let mut job = egui::text::LayoutJob::simple_singleline(name.to_string(), ui::display(13.0), ui::TEXT);
     job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - tag.size().x - 32.0).max(20.0));

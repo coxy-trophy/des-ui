@@ -236,7 +236,7 @@ fn close_card(ui: &Ui, cards: &mut Cards) -> Option<f32> {
         })
     });
     let rect = Rect::from_min_max(pos2(cards.left, top), pos2(cards.right, content + cards.pad));
-    cards.painter.set(idx, egui::epaint::RectShape::new(rect, SURFACE_RADIUS, PANEL, Stroke::new(1.0, LINE), StrokeKind::Inside));
+    cards.painter.set(idx, egui::epaint::RectShape::new(rect, SURFACE_RADIUS, PANEL, Stroke::new(1.0_f32, LINE), StrokeKind::Inside));
     Some(rect.bottom())
 }
 
@@ -275,7 +275,7 @@ pub fn section(ui: &mut Ui, title: &str, meta: impl FnOnce(&mut Ui)) {
             meta(ui);
             let rest = ui.available_rect_before_wrap();
             if rest.width() > 4.0 {
-                ui.painter().hline(rest.x_range(), rest.center().y, Stroke::new(1.0, LINE));
+                ui.painter().hline(rest.x_range(), rest.center().y, Stroke::new(1.0_f32, LINE));
             }
         });
     });
@@ -329,7 +329,7 @@ pub fn bar(ui: &mut Ui, theme: &Theme, height: f32, frac: f32, second: f32) {
 pub fn tile<R>(ui: &mut Ui, theme: &Theme, active: bool, add: impl FnOnce(&mut Ui) -> R) -> R {
     crate::material::surface(ui, egui::Frame::new()
         .corner_radius(CONTROL_RADIUS)
-        .stroke(Stroke::new(1.0, if active { theme.main } else { LINE }))
+        .stroke(Stroke::new(1.0_f32, if active { theme.main } else { LINE }))
         .inner_margin(egui::Margin::symmetric(12, 10)), crate::material::Role::Panel, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 4.0;
@@ -342,7 +342,7 @@ pub fn keycap(ui: &mut Ui, key: &str) -> Response {
     let galley = galley(ui, key, mono(11.0), TEXT, 0.0);
     let (rect, response) = ui.allocate_exact_size(galley.size() + vec2(16.0, 8.0), Sense::hover());
     ui.painter()
-        .rect_stroke(rect, CONTROL_RADIUS, Stroke::new(1.0, LINE_STRONG), StrokeKind::Inside);
+        .rect_stroke(rect, CONTROL_RADIUS, Stroke::new(1.0_f32, LINE_STRONG), StrokeKind::Inside);
     ui.painter().galley(rect.min + vec2(8.0, 4.0), galley, TEXT);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, key));
     response
@@ -363,7 +363,7 @@ fn control_painter(ui: &Ui) -> egui::Painter {
 }
 fn focus_outline(painter: &egui::Painter, response: &Response, theme: &Theme) {
     if response.has_focus() {
-        painter.rect_stroke(response.rect.shrink(1.0), CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside);
+        painter.rect_stroke(response.rect.shrink(1.0), CONTROL_RADIUS, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside);
     }
 }
 
@@ -383,11 +383,11 @@ pub fn button(ui: &mut Ui, theme: &Theme, label: &str, hint: Option<&str>, engag
     let painter = control_painter(ui);
     if engaged {
         painter.rect_filled(rect, CONTROL_RADIUS, theme.tint());
-        painter.rect_stroke(rect, CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside);
+        painter.rect_stroke(rect, CONTROL_RADIUS, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside);
     } else {
         if response.hovered() { painter.rect_filled(rect, CONTROL_RADIUS, TRACK); }
         let line = if response.hovered() { SECONDARY } else { LINE_STRONG };
-        painter.rect_stroke(rect, CONTROL_RADIUS, Stroke::new(1.0, line), StrokeKind::Inside);
+        painter.rect_stroke(rect, CONTROL_RADIUS, Stroke::new(1.0_f32, line), StrokeKind::Inside);
     }
     let mut x = rect.left() + 12.0;
     let label_width = label.size().x;
@@ -408,7 +408,7 @@ pub fn toggle(ui: &mut Ui, theme: &Theme, on: bool) -> Response {
     let painter = control_painter(ui);
     let line = if on { theme.main } else if response.hovered() { SECONDARY } else { LINE_STRONG };
     painter.rect_filled(rect, 10.0, if on { theme.tint() } else { GROUND });
-    painter.rect_stroke(rect, 10.0, Stroke::new(1.0, line), StrokeKind::Inside);
+    painter.rect_stroke(rect, 10.0, Stroke::new(1.0_f32, line), StrokeKind::Inside);
     let knob = Rect::from_min_size(
         pos2(if on { rect.right() - 18.0 } else { rect.left() + 4.0 }, rect.top() + 4.0),
         vec2(14.0, 12.0),
@@ -462,7 +462,7 @@ pub fn slider_sized(ui: &mut Ui, theme: &Theme, width: f32, value: f32, name: &s
     let knob = Rect::from_center_size(pos2(filled.right(), rect.center().y), knob_size);
     let ink = if response.hovered() || response.dragged() { TEXT } else { theme.main };
     painter.rect_filled(knob, 4.0, GROUND);
-    painter.rect_stroke(knob, 4.0, Stroke::new(1.5, ink), StrokeKind::Inside);
+    painter.rect_stroke(knob, 4.0, Stroke::new(1.5_f32, ink), StrokeKind::Inside);
     focus_outline(&painter, &response, theme);
     response.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), value as f64, name));
     picked
@@ -480,16 +480,16 @@ pub fn chip(ui: &mut Ui, theme: &Theme, label: &str, swatch: Option<Color32>, ch
     let painter = control_painter(ui);
     if chosen {
         painter.rect_filled(rect, CONTROL_RADIUS, theme.tint());
-        painter.rect_stroke(rect, CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside);
+        painter.rect_stroke(rect, CONTROL_RADIUS, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside);
     } else {
         if response.hovered() { painter.rect_filled(rect, CONTROL_RADIUS, TRACK); }
         let line = if response.hovered() { SECONDARY } else { LINE_STRONG };
-        painter.rect_stroke(rect, CONTROL_RADIUS, Stroke::new(1.0, line), StrokeKind::Inside);
+        painter.rect_stroke(rect, CONTROL_RADIUS, Stroke::new(1.0_f32, line), StrokeKind::Inside);
     }
     if let Some(color) = swatch {
         let square = Rect::from_center_size(pos2(rect.left() + 18.0, rect.center().y), vec2(12.0, 12.0));
         painter.rect_filled(square, 0.0, color);
-        painter.rect_stroke(square, 0.0, Stroke::new(1.0, GROUND), StrokeKind::Inside);
+        painter.rect_stroke(square, 0.0, Stroke::new(1.0_f32, GROUND), StrokeKind::Inside);
     }
     painter.galley(pos2(rect.left() + 12.0 + lead, rect.center().y - label.size().y / 2.0), label, ink);
     focus_outline(&painter, &response, theme);
@@ -606,7 +606,7 @@ pub fn round_icon_button(ui: &mut Ui, theme: &Theme, icon: Icon, size: f32, lit:
         painter.circle_filled(rect.center(), size / 2.0 - 1.0, if lit { theme.tint() } else { TRACK });
     }
     if response.has_focus() {
-        painter.circle_stroke(rect.center(), size / 2.0 - 1.0, Stroke::new(1.0, theme.main));
+        painter.circle_stroke(rect.center(), size / 2.0 - 1.0, Stroke::new(1.0_f32, theme.main));
     }
     paint_icon(&painter, rect, icon, color, lit);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), icon.label()));
@@ -665,7 +665,7 @@ pub fn paint_wifi(painter: &egui::Painter, c: egui::Pos2, color: Color32, lit: u
 
 /// A wired connection, shown in place of Wi-Fi.
 pub fn paint_wired(painter: &egui::Painter, c: egui::Pos2, color: Color32) {
-    let stroke = Stroke::new(1.4, color);
+    let stroke = Stroke::new(1.4_f32, color);
     painter.rect_stroke(Rect::from_center_size(c + vec2(0.0, -4.0), vec2(9.0, 6.0)), 1.5, stroke, StrokeKind::Inside);
     painter.line_segment([c + vec2(0.0, -1.0), c + vec2(0.0, 2.5)], stroke);
     painter.line_segment([c + vec2(-6.0, 2.5), c + vec2(6.0, 2.5)], stroke);
@@ -678,14 +678,14 @@ pub fn paint_volume(painter: &egui::Painter, c: egui::Pos2, color: Color32, wave
     let body = [(-9.0, -2.5), (-5.5, -2.5), (-1.5, -6.0), (-1.5, 6.0), (-5.5, 2.5), (-9.0, 2.5)];
     painter.add(egui::Shape::convex_polygon(body.iter().map(|&(x, y)| c + vec2(x, y)).collect(), color, Stroke::NONE));
     if muted {
-        let stroke = Stroke::new(1.6, color);
+        let stroke = Stroke::new(1.6_f32, color);
         painter.line_segment([c + vec2(3.0, -3.0), c + vec2(9.0, 3.0)], stroke);
         painter.line_segment([c + vec2(3.0, 3.0), c + vec2(9.0, -3.0)], stroke);
         return;
     }
     for (index, radius) in [3.5_f32, 7.0, 10.5].into_iter().enumerate() {
         let ink = if waves as usize > index { color } else { color.gamma_multiply(UNLIT) };
-        painter.line(arc(c + vec2(-1.5, 0.0), radius, -PI * 0.24, PI * 0.24), Stroke::new(1.6, ink));
+        painter.line(arc(c + vec2(-1.5, 0.0), radius, -PI * 0.24, PI * 0.24), Stroke::new(1.6_f32, ink));
     }
 }
 
@@ -761,7 +761,7 @@ pub fn pill_slider(ui: &mut Ui, theme: &Theme, width: f32, value: f32, name: &st
     let centre = pos2(pill.left() + radius + 3.0, pill.center().y);
     icon(&painter, centre, if shown > 0.0 { GROUND } else { SECONDARY });
     if response.has_focus() {
-        painter.rect_stroke(pill.expand(2.0), radius + 2.0, Stroke::new(1.0, TEXT), StrokeKind::Inside);
+        painter.rect_stroke(pill.expand(2.0), radius + 2.0, Stroke::new(1.0_f32, TEXT), StrokeKind::Inside);
     }
     response.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), shown as f64, name));
     (picked, pressed_icon)
@@ -797,7 +797,7 @@ pub fn icon(ui: &mut Ui, icon: Icon, size: f32, color: Color32) -> Response {
 }
 
 pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32, lit: bool) {
-    let stroke = Stroke::new(1.4, color);
+    let stroke = Stroke::new(1.4_f32, color);
     let c = rect.center();
     let line = |a: (f32, f32), b: (f32, f32)| { painter.line_segment([c + vec2(a.0, a.1), c + vec2(b.0, b.1)], stroke); };
     let path = |points: &[(f32, f32)]| { painter.line(points.iter().map(|&(x,y)| c + vec2(x,y)).collect(), stroke); };
@@ -958,13 +958,13 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color3
         }
         Icon::SplitPane => {
             let frame = Rect::from_center_size(c, vec2(14.0, 10.0));
-            painter.rect_stroke(frame, 0.0, Stroke::new(1.0, color), StrokeKind::Inside);
-            painter.vline(c.x, frame.y_range(), Stroke::new(1.0, color));
+            painter.rect_stroke(frame, 0.0, Stroke::new(1.0_f32, color), StrokeKind::Inside);
+            painter.vline(c.x, frame.y_range(), Stroke::new(1.0_f32, color));
         }
         Icon::PanelLeft | Icon::PanelBottom | Icon::PanelRight => {
             // A screen outline with the panel's region filled when it is open.
             let frame = Rect::from_center_size(c, vec2(14.0, 10.0));
-            painter.rect_stroke(frame, 0.0, Stroke::new(1.0, color), StrokeKind::Inside);
+            painter.rect_stroke(frame, 0.0, Stroke::new(1.0_f32, color), StrokeKind::Inside);
             let region = match icon {
                 Icon::PanelLeft => Rect::from_min_size(frame.min, vec2(4.0, 10.0)),
                 Icon::PanelRight => Rect::from_min_size(frame.right_top() - vec2(4.0, 0.0), vec2(4.0, 10.0)),
@@ -973,7 +973,7 @@ pub fn paint_icon(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color3
             if lit {
                 painter.rect_filled(region, 0.0, color);
             } else {
-                painter.rect_stroke(region, 0.0, Stroke::new(1.0, color), StrokeKind::Inside);
+                painter.rect_stroke(region, 0.0, Stroke::new(1.0_f32, color), StrokeKind::Inside);
             }
         }
     }
@@ -985,8 +985,8 @@ pub fn sparkline(ui: &mut Ui, values: &VecDeque<f32>, max: f32, size: egui::Vec2
     let painter = ui.painter();
     if boxed {
         painter.rect_filled(rect, 0.0, GROUND);
-        painter.rect_stroke(rect, 0.0, Stroke::new(1.0, LINE), StrokeKind::Inside);
-        painter.hline(rect.x_range(), rect.center().y, Stroke::new(1.0, LINE));
+        painter.rect_stroke(rect, 0.0, Stroke::new(1.0_f32, LINE), StrokeKind::Inside);
+        painter.hline(rect.x_range(), rect.center().y, Stroke::new(1.0_f32, LINE));
     }
     if values.len() < 2 || max <= 0.0 {
         return;
@@ -1003,7 +1003,7 @@ pub fn sparkline(ui: &mut Ui, values: &VecDeque<f32>, max: f32, size: egui::Vec2
             )
         })
         .collect();
-    painter.line(points, Stroke::new(1.5, color));
+    painter.line(points, Stroke::new(1.5_f32, color));
 }
 
 /// Corner marks around `rect`, as on a viewfinder.
@@ -1072,9 +1072,9 @@ pub fn waterfall(ui: &mut Ui, above: &VecDeque<f32>, below: &VecDeque<f32>, max:
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     let painter = ui.painter();
     painter.rect_filled(rect, 0.0, GROUND);
-    painter.rect_stroke(rect, 0.0, Stroke::new(1.0, LINE), StrokeKind::Inside);
+    painter.rect_stroke(rect, 0.0, Stroke::new(1.0_f32, LINE), StrokeKind::Inside);
     let axis = rect.center().y;
-    painter.hline(rect.x_range(), axis, Stroke::new(1.0, LINE_STRONG));
+    painter.hline(rect.x_range(), axis, Stroke::new(1.0_f32, LINE_STRONG));
     if max <= 0.0 {
         return;
     }
@@ -1095,9 +1095,9 @@ pub fn waterfall(ui: &mut Ui, above: &VecDeque<f32>, below: &VecDeque<f32>, max:
         // The area under the line, as fine strokes: the instrument's texture.
         let fill = color.gamma_multiply(0.35);
         for point in &points {
-            painter.line_segment([pos2(point.x, axis), *point], Stroke::new(1.0, fill));
+            painter.line_segment([pos2(point.x, axis), *point], Stroke::new(1.0_f32, fill));
         }
-        painter.line(points, Stroke::new(1.5, color));
+        painter.line(points, Stroke::new(1.5_f32, color));
     };
     draw(above, 1.0, above_color);
     draw(below, -1.0, below_color);

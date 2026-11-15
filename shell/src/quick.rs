@@ -123,7 +123,7 @@ impl Quick {
                 ui.set_min_size(rect.size());
                 ui.set_max_size(rect.size());
                 crate::material::paint(ui.ctx(), ui.painter(), rect, ui::SURFACE_RADIUS, crate::material::Role::Floating);
-                ui.painter().rect_stroke(rect, ui::SURFACE_RADIUS, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
+                ui.painter().rect_stroke(rect, ui::SURFACE_RADIUS, Stroke::new(1.0_f32, ui::LINE_STRONG), StrokeKind::Inside);
                 let inner = rect.shrink(PADDING);
                 let mut content = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(Layout::top_down(Align::Min)));
                 let scroll = egui::ScrollArea::vertical().auto_shrink([false, false]).max_height(inner.height()).show(&mut content, |ui| {
@@ -263,7 +263,7 @@ impl Quick {
 
         // The foot: lock and the settings, and the power menu set apart.
         let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
-        ui.painter().hline(line.x_range(), line.center().y, Stroke::new(1.0, ui::LINE));
+        ui.painter().hline(line.x_range(), line.center().y, Stroke::new(1.0_f32, ui::LINE));
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             if round(ui, theme, ui::Icon::Lock, "Lock", false).clicked() { actions.push(Action::Lock); }
@@ -301,7 +301,7 @@ fn round(ui: &mut Ui, theme: &Theme, icon: ui::Icon, name: &str, warm: bool) -> 
     let tone = if warm { ui::CAUTION } else { ui::SECONDARY };
     let hovered = response.hovered() || response.has_focus();
     if hovered { painter.circle_filled(rect.center(), 20.0, if warm { ui::CAUTION.gamma_multiply(0.12) } else { ui::TRACK }); }
-    painter.circle_stroke(rect.center(), 19.5, Stroke::new(1.0, if response.has_focus() { theme.main } else if warm { ui::CAUTION.gamma_multiply(0.6) } else { ui::LINE_STRONG }));
+    painter.circle_stroke(rect.center(), 19.5, Stroke::new(1.0_f32, if response.has_focus() { theme.main } else if warm { ui::CAUTION.gamma_multiply(0.6) } else { ui::LINE_STRONG }));
     ui::paint_icon(painter, Rect::from_center_size(rect.center(), vec2(16.0, 16.0)), icon, if hovered && !warm { ui::TEXT } else { tone }, false);
     response.on_hover_text(name)
 }
@@ -393,7 +393,7 @@ fn group(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     let rect = response.rect;
     ui.painter().set(background, egui::Shape::Vec(vec![
         egui::Shape::rect_filled(rect, 11.0, WELL),
-        egui::Shape::rect_stroke(rect, 11.0, Stroke::new(1.0, ui::LINE), StrokeKind::Inside),
+        egui::Shape::rect_stroke(rect, 11.0, Stroke::new(1.0_f32, ui::LINE), StrokeKind::Inside),
     ]));
 }
 
@@ -459,8 +459,8 @@ fn round_tile(ui: &mut Ui, theme: &Theme, size: egui::Vec2, icon: ui::Icon, name
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, on.is_some(), lit, said.clone()));
     let painter = ui.painter();
     painter.rect_filled(rect, 11.0, if response.hovered() { ui::TRACK } else { WELL });
-    painter.rect_stroke(rect, 11.0, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
-    if response.has_focus() { painter.rect_stroke(rect.shrink(1.0), 10.0, Stroke::new(1.0, ui::TEXT), StrokeKind::Inside); }
+    painter.rect_stroke(rect, 11.0, Stroke::new(1.0_f32, ui::LINE), StrokeKind::Inside);
+    if response.has_focus() { painter.rect_stroke(rect.shrink(1.0), 10.0, Stroke::new(1.0_f32, ui::TEXT), StrokeKind::Inside); }
     let ink = if lit { ui::GROUND } else { ui::SECONDARY };
     let job = |text: &str, font: egui::FontId, color: egui::Color32, width: f32| {
         let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), font, color);
@@ -514,8 +514,8 @@ fn switch_row(ui: &mut Ui, theme: &Theme, icon: RowIcon, name: &str, detail: &st
     let on_arrow = arrow_response.as_ref().is_some_and(|r| r.hovered());
     let painter = ui.painter();
     if response.hovered() && !on_arrow { painter.rect_filled(rect.shrink(2.0), 9.0, ui::TRACK); }
-    if response.has_focus() { painter.rect_stroke(rect.shrink(1.0), 10.0, Stroke::new(1.0, ui::TEXT), StrokeKind::Inside); }
-    if rule { painter.hline(rect.x_range().shrink(10.0), rect.bottom(), Stroke::new(1.0, ui::LINE)); }
+    if response.has_focus() { painter.rect_stroke(rect.shrink(1.0), 10.0, Stroke::new(1.0_f32, ui::TEXT), StrokeKind::Inside); }
+    if rule { painter.hline(rect.x_range().shrink(10.0), rect.bottom(), Stroke::new(1.0_f32, ui::LINE)); }
     let disc = pos2(rect.left() + 23.0, rect.center().y);
     painter.circle_filled(disc, 13.0, if lit { theme.main } else { ui::LINE });
     let ink = if lit { ui::GROUND } else if on.is_none() { ui::LABEL } else { ui::SECONDARY };
@@ -535,7 +535,7 @@ fn switch_row(ui: &mut Ui, theme: &Theme, icon: RowIcon, name: &str, detail: &st
         if arrow_response.hovered() { painter.rect_filled(chevron.shrink(4.0), 8.0, ui::TRACK); }
         let c = chevron.center();
         let tone = if arrow_response.hovered() { ui::TEXT } else { ui::SECONDARY };
-        painter.line(vec![c + vec2(-2.0, -4.5), c + vec2(2.5, 0.0), c + vec2(-2.0, 4.5)], Stroke::new(1.6, tone));
+        painter.line(vec![c + vec2(-2.0, -4.5), c + vec2(2.5, 0.0), c + vec2(-2.0, 4.5)], Stroke::new(1.6_f32, tone));
     }
     if arrow_response.is_some_and(|r| r.on_hover_text(format!("{name}: show the list")).clicked()) { return Hit::Arrow; }
     if response.on_hover_text(format!("{name}: {detail}")).clicked() && on.is_some() { Hit::Switch } else { Hit::None }
@@ -579,7 +579,7 @@ fn battery_row(ui: &mut Ui, theme: &Theme, power: crate::sysmon::Battery, health
         let size = tag.size() + vec2(14.0, 6.0);
         let chip = Rect::from_min_size(pos2(rect.right() - 4.0 - size.x, rect.center().y - size.y / 2.0), size);
         if left_end + 10.0 <= chip.left() {
-            painter.rect_stroke(chip, size.y / 2.0, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
+            painter.rect_stroke(chip, size.y / 2.0, Stroke::new(1.0_f32, ui::LINE), StrokeKind::Inside);
             painter.galley(chip.center() - tag.size() / 2.0, tag, ui::SECONDARY);
         }
     }

@@ -316,7 +316,7 @@ impl QuickLook {
             ui.set_max_size(rect.size());
             let painter = ui.painter();
             crate::material::paint(ctx, painter, rect, ui::SURFACE_RADIUS, crate::material::Role::Floating);
-            painter.rect_stroke(rect, ui::SURFACE_RADIUS, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
+            painter.rect_stroke(rect, ui::SURFACE_RADIUS, Stroke::new(1.0_f32, ui::LINE_STRONG), StrokeKind::Inside);
             let header = Rect::from_min_size(rect.min, vec2(rect.width(), 40.0));
             painter.text(header.left_center() + vec2(16.0, 0.0), Align2::LEFT_CENTER, &name, ui::display(15.0), ui::TEXT);
             let (n, of) = self.place;
@@ -325,7 +325,7 @@ impl QuickLook {
                 right = format!("{}{width} × {height}   {right}", note.map(|note| format!("{note} · ")).unwrap_or_default());
             }
             painter.text(header.right_center() - vec2(16.0, 0.0), Align2::RIGHT_CENTER, right, ui::mono(11.0), ui::LABEL);
-            painter.hline(rect.x_range(), header.bottom(), Stroke::new(1.0, ui::LINE));
+            painter.hline(rect.x_range(), header.bottom(), Stroke::new(1.0_f32, ui::LINE));
             let body = Rect::from_min_max(header.left_bottom() + vec2(16.0, 12.0), rect.max - vec2(16.0, 12.0));
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body));
             body_view(&mut child, self.preview.as_ref(), self.texture.as_ref(), slow, theme);

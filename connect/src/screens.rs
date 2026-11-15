@@ -564,7 +564,7 @@ mod tests {
             called.set(called.get()+1);
             if allowed.exists() { Ok(()) } else { Err("desktop locked or peer disconnected".into()) }
         }).unwrap_err();
-        assert!(error.contains("desktop locked or peer disconnected"));
+        assert!(error.contains("desktop locked or peer disconnected"), "{error}");
         assert_eq!(called.get(), 1);
         assert!(!launched.exists());
         assert!(!bridge.status().running);

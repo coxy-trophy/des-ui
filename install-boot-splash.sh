@@ -33,7 +33,7 @@ sudo install -m 644 "$pictures"/*.png "$here/session/boot/des-ui.plymouth" "$her
 sudo update-alternatives --install /usr/share/plymouth/themes/default.plymouth default.plymouth "$theme/des-ui.plymouth" 200
 sudo update-alternatives --set default.plymouth "$theme/des-ui.plymouth"
 echo "Rebuilding the boot image; this takes a minute."
-sudo update-initramfs -u
+sudo update-initramfs -u -k all
 
 echo "Done. The DEs-UI splash shows from the next boot."
 echo "To go back:  ./uninstall-boot-splash.sh"

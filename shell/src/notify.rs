@@ -676,7 +676,7 @@ impl Center {
                     let (rect, response) = ui.allocate_exact_size(galley.size() + vec2(28.0, 14.0), Sense::click());
                     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
                     ui.painter().rect_filled(rect, rect.height() / 2.0, if response.hovered() { ui::LINE } else { ui::PANEL });
-                    ui.painter().rect_stroke(rect, rect.height() / 2.0, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
+                    ui.painter().rect_stroke(rect, rect.height() / 2.0, Stroke::new(1.0_f32, ui::LINE_STRONG), StrokeKind::Inside);
                     ui.painter().galley(rect.center() - galley.size() / 2.0, galley, ui::TEXT);
                     response.clicked()
                 }).inner
@@ -694,7 +694,7 @@ impl Center {
         let mut deed = Deed::Nothing;
         let background = ui.painter().add(egui::Shape::Noop);
         let edge = if notice.urgent { ui::CAUTION } else { ui::LINE_STRONG };
-        let frame = egui::Frame::new().corner_radius(14.0).fill(egui::Color32::TRANSPARENT).stroke(Stroke::new(1.0, edge)).inner_margin(egui::Margin { left: 14, right: 12, top: 14, bottom: 16 });
+        let frame = egui::Frame::new().corner_radius(14.0).fill(egui::Color32::TRANSPARENT).stroke(Stroke::new(1.0_f32, edge)).inner_margin(egui::Margin { left: 14, right: 12, top: 14, bottom: 16 });
         let shown = frame.show(ui, |ui| {
             ui.set_width(TOAST_WIDTH - 26.0);
             ui.horizontal_top(|ui| {
@@ -879,7 +879,7 @@ impl Center {
                 let folded = collapsed.contains(app);
                 let urgent = members.iter().any(|&index| notices[index].urgent);
                 let frame = egui::Frame::new().fill(ui::PANEL).corner_radius(12.0)
-                    .stroke(Stroke::new(1.0, if urgent { ui::CAUTION.gamma_multiply(0.45) } else { ui::LINE }));
+                    .stroke(Stroke::new(1.0_f32, if urgent { ui::CAUTION.gamma_multiply(0.45) } else { ui::LINE }));
                 frame.show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.spacing_mut().item_spacing.y = 0.0;
@@ -1086,7 +1086,7 @@ fn group_header(ui: &mut Ui, theme: &Theme, app: &str, icon: Option<&Icon>, coun
     });
     if !folded {
         let rect = shown.response.rect;
-        ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, ui::TRACK));
+        ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0_f32, ui::TRACK));
     }
     clicked
 }
@@ -1098,7 +1098,7 @@ fn filter_row(ui: &mut Ui, theme: &Theme, name: &str, count: usize, urgent: bool
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, chosen, format!("{name}, {count}")));
     let painter = ui.painter();
     if chosen { painter.rect_filled(rect, 8.0, theme.tint()); } else if response.hovered() { painter.rect_filled(rect, 8.0, ui::TRACK); }
-    if response.has_focus() { painter.rect_stroke(rect, 8.0, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
+    if response.has_focus() { painter.rect_stroke(rect, 8.0, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside); }
     let mut x = rect.left() + 12.0;
     if urgent { painter.circle_filled(pos2(x + 3.0, rect.center().y), 3.0, ui::CAUTION); x += 14.0; }
     let mut job = egui::text::LayoutJob::simple_singleline(name.to_string(), ui::display(13.0), if chosen { ui::TEXT } else { ui::SECONDARY });
@@ -1122,7 +1122,7 @@ fn caught_up(ui: &mut Ui) {
 
 /// A warning in an amber box.
 fn caution_box(ui: &mut Ui, text: &str) {
-    egui::Frame::new().fill(ui::CAUTION.gamma_multiply(0.07)).stroke(Stroke::new(1.0, ui::CAUTION.gamma_multiply(0.45))).corner_radius(10.0).inner_margin(12.0).show(ui, |ui| {
+    egui::Frame::new().fill(ui::CAUTION.gamma_multiply(0.07)).stroke(Stroke::new(1.0_f32, ui::CAUTION.gamma_multiply(0.45))).corner_radius(10.0).inner_margin(12.0).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.add(egui::Label::new(egui::RichText::new(text).font(ui::display(12.5)).color(ui::CAUTION)).wrap());
     });
@@ -1134,8 +1134,8 @@ fn close_mark(ui: &mut Ui) -> egui::Response {
     let ink = if response.hovered() { ui::TEXT } else { ui::LABEL };
     let arm = 3.5;
     let c = rect.center();
-    ui.painter().line_segment([c - vec2(arm, arm), c + vec2(arm, arm)], Stroke::new(1.5, ink));
-    ui.painter().line_segment([c + vec2(-arm, arm), c + vec2(arm, -arm)], Stroke::new(1.5, ink));
+    ui.painter().line_segment([c - vec2(arm, arm), c + vec2(arm, arm)], Stroke::new(1.5_f32, ink));
+    ui.painter().line_segment([c + vec2(-arm, arm), c + vec2(arm, -arm)], Stroke::new(1.5_f32, ink));
     response
 }
 
@@ -1214,11 +1214,11 @@ fn row(ui: &mut Ui, theme: &Theme, notice: &Notice, typing: Option<&mut String>,
         });
     });
     let rect = inner.response.rect;
-    if rule { ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, ui::TRACK)); }
+    if rule { ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0_f32, ui::TRACK)); }
     if deed == Deed::Nothing {
         if let Some(key) = notice.default_action() {
             let whole = ui.interact(rect, ui.id().with(("notice", notice.id)), Sense::click());
-            if whole.hovered() { ui.painter().rect_stroke(rect.shrink(1.0), 4.0, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside); }
+            if whole.hovered() { ui.painter().rect_stroke(rect.shrink(1.0), 4.0, Stroke::new(1.0_f32, ui::LINE_STRONG), StrokeKind::Inside); }
             if whole.clicked() {
                 deed = Deed::Act(key.to_string());
             }

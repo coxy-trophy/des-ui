@@ -322,7 +322,7 @@ impl Companion {
                 ui.set_opacity(alpha);
                 let surface=crate::material::surface(ui,
                     egui::Frame::NONE.inner_margin(16).corner_radius(ui::SURFACE_RADIUS)
-                        .stroke(egui::Stroke::new(1.0,ui::LINE_STRONG)),
+                        .stroke(egui::Stroke::new(1.0_f32,ui::LINE_STRONG)),
                     crate::material::Role::Floating,|ui|{
                         ui.set_width(width);
                         ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
@@ -340,11 +340,11 @@ impl Companion {
                         });
                     });
                 let rect=surface.response.rect;
-                ui.painter().rect_stroke(rect,ui::SURFACE_RADIUS,egui::Stroke::new(1.0,theme.main.gamma_multiply(0.18)),egui::StrokeKind::Inside);
+                ui.painter().rect_stroke(rect,ui::SURFACE_RADIUS,egui::Stroke::new(1.0_f32,theme.main.gamma_multiply(0.18)),egui::StrokeKind::Inside);
                 for (distance,radius) in [(7.0,4.0),(16.0,2.5)] {
                     let center=egui::pos2(rect.left()-distance,rect.top()+12.0-distance*0.5+rise);
                     ui.painter().circle_filled(center,radius,ui::PANEL);
-                    ui.painter().circle_stroke(center,radius,egui::Stroke::new(0.8,theme.main.gamma_multiply(0.25)));
+                    ui.painter().circle_stroke(center,radius,egui::Stroke::new(0.8_f32,theme.main.gamma_multiply(0.25)));
                 }
             });
         if animate { ctx.request_repaint_after(std::time::Duration::from_millis(if age<0.28 || age>14.6 {16}else{100})); }
@@ -400,7 +400,7 @@ impl Companion {
                         let (badge,_)=ui.allocate_exact_size(egui::vec2(40.0,40.0),egui::Sense::hover());
                         ui.painter().rect_filled(badge,11.0,theme.main.gamma_multiply(0.16));
                         let c=badge.center();
-                        ui.painter().line(vec![c+egui::vec2(-8.0,-7.0),c+egui::vec2(8.0,-7.0),c+egui::vec2(8.0,4.0),c+egui::vec2(-3.0,4.0),c+egui::vec2(-8.0,8.0),c+egui::vec2(-8.0,-7.0)],egui::Stroke::new(1.6,theme.main));
+                        ui.painter().line(vec![c+egui::vec2(-8.0,-7.0),c+egui::vec2(8.0,-7.0),c+egui::vec2(8.0,4.0),c+egui::vec2(-3.0,4.0),c+egui::vec2(-8.0,8.0),c+egui::vec2(-8.0,-7.0)],egui::Stroke::new(1.6_f32,theme.main));
                         ui.vertical(|ui|{
                             ui.spacing_mut().item_spacing.y=3.0;
                             ui.label(RichText::new("Ask about what is on your screen").font(ui::display_bold(14.5)).color(ui::TEXT));
@@ -430,7 +430,7 @@ impl Companion {
                         ui.vertical(|ui|{
                             ui.spacing_mut().item_spacing.y=4.0;
                             ui.label(RichText::new("COMPANION").font(ui::mono(10.0)).color(theme.main));
-                            egui::Frame::new().fill(ui::PANEL).stroke(egui::Stroke::new(1.0,ui::LINE)).corner_radius(egui::CornerRadius{nw:12,ne:12,sw:4,se:12}).inner_margin(egui::Margin::symmetric(12,8)).show(ui,|ui|{
+                            egui::Frame::new().fill(ui::PANEL).stroke(egui::Stroke::new(1.0_f32,ui::LINE)).corner_radius(egui::CornerRadius{nw:12,ne:12,sw:4,se:12}).inner_margin(egui::Margin::symmetric(12,8)).show(ui,|ui|{
                                 ui.set_max_width(bubble);
                                 ui.add(egui::Label::new(RichText::new(text).font(ui::display(13.0)).color(ui::TEXT)).wrap());
                             });
@@ -449,7 +449,7 @@ impl Companion {
                             let (bubble,_)=ui.allocate_exact_size(egui::vec2(60.0,34.0),egui::Sense::hover());
                             let painter=ui.painter();
                             painter.rect_filled(bubble,egui::CornerRadius{nw:12,ne:12,sw:4,se:12},ui::PANEL);
-                            painter.rect_stroke(bubble,egui::CornerRadius{nw:12,ne:12,sw:4,se:12},egui::Stroke::new(1.0,ui::LINE),egui::StrokeKind::Inside);
+                            painter.rect_stroke(bubble,egui::CornerRadius{nw:12,ne:12,sw:4,se:12},egui::Stroke::new(1.0_f32,ui::LINE),egui::StrokeKind::Inside);
                             let time=ui.input(|i|i.time) as f32;
                             for dot in 0..3 {
                                 let (lift,strength)=if self.animate {
@@ -478,7 +478,7 @@ impl Companion {
                 ui.spacing_mut().item_spacing.x=8.0;
                 if self.capture_pending.is_some() { ui.label(RichText::new("Capturing the screen…").font(ui::mono(11.5)).color(ui::SECONDARY)); }
                 if let Some(attachment) = &self.attachment {
-                    egui::Frame::new().stroke(egui::Stroke::new(1.0,ui::LINE_STRONG)).corner_radius(12).inner_margin(egui::Margin::symmetric(8,3)).show(ui,|ui|{
+                    egui::Frame::new().stroke(egui::Stroke::new(1.0_f32,ui::LINE_STRONG)).corner_radius(12).inner_margin(egui::Margin::symmetric(8,3)).show(ui,|ui|{
                         ui.spacing_mut().item_spacing.x=8.0;
                         ui.add(egui::Image::new(&attachment.texture).max_size(egui::vec2(36.0,20.0)).corner_radius(3))
                             .on_hover_ui(|ui| { ui.label("Will send to OpenAI with your message"); ui.add(egui::Image::new(&attachment.texture).max_size(egui::vec2(320.0, 180.0))); });
@@ -507,7 +507,7 @@ impl Companion {
         let focused=ui.memory(|memory|memory.has_focus(input_id));
         let usable=enabled && configured;
         ui.painter().rect_filled(field,composer/2.0,ui::PANEL);
-        ui.painter().rect_stroke(field,composer/2.0,egui::Stroke::new(1.0,if focused{theme.main}else if usable{ui::LINE_STRONG}else{ui::LINE}),egui::StrokeKind::Inside);
+        ui.painter().rect_stroke(field,composer/2.0,egui::Stroke::new(1.0_f32,if focused{theme.main}else if usable{ui::LINE_STRONG}else{ui::LINE}),egui::StrokeKind::Inside);
         let mut row=ui.new_child(egui::UiBuilder::new().max_rect(field.shrink2(egui::vec2(6.0,5.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
         row.spacing_mut().item_spacing.x=6.0;
         let can_attach=self.attachment.is_none() && self.capture_pending.is_none() && !self.voice_screen_pending;
@@ -525,7 +525,7 @@ impl Companion {
         send.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,can_send,"Send"));
         row.painter().circle_filled(send_rect.center(),18.0,if can_send{theme.main}else{ui::TRACK});
         let c=send_rect.center();
-        let ink=egui::Stroke::new(2.0,if can_send{ui::GROUND}else{ui::LABEL});
+        let ink=egui::Stroke::new(2.0_f32,if can_send{ui::GROUND}else{ui::LABEL});
         row.painter().line_segment([c-egui::vec2(6.0,0.0),c+egui::vec2(6.0,0.0)],ink);
         row.painter().line(vec![c+egui::vec2(1.0,-5.0),c+egui::vec2(6.0,0.0),c+egui::vec2(1.0,5.0)],ink);
         let send_clicked=send.on_hover_text("Send · Enter").clicked();
@@ -577,7 +577,7 @@ impl Companion {
         let response=egui::Area::new(egui::Id::new("companion-voice-thought"))
             .order(egui::Order::Tooltip).fixed_pos(pos).interactable(false).show(ctx,|ui|{
                 crate::material::surface(ui,egui::Frame::NONE.inner_margin(16).corner_radius(ui::SURFACE_RADIUS)
-                    .stroke(egui::Stroke::new(1.0,ui::LINE_STRONG)),crate::material::Role::Floating,|ui|{
+                    .stroke(egui::Stroke::new(1.0_f32,ui::LINE_STRONG)),crate::material::Role::Floating,|ui|{
                     ui.set_width(width);ui.style_mut().wrap_mode=Some(egui::TextWrapMode::Wrap);
                     ui.horizontal(|ui|{
                         let (rect,_)=ui.allocate_exact_size(egui::vec2(12.0,12.0),egui::Sense::hover());

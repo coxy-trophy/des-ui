@@ -164,7 +164,7 @@ impl Scratchpad {
                 ui.set_clip_rect(visible);
                 let painter = ui.painter();
                 crate::material::paint(ctx, painter, full, 0.0, crate::material::Role::Terminal);
-                painter.rect_stroke(full, 0.0, Stroke::new(1.0, theme.main), StrokeKind::Inside);
+                painter.rect_stroke(full, 0.0, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside);
                 let inner = full.shrink(PADDING);
                 let response = ui.interact(inner, ui.id().with("scratchpad-grid"), Sense::click_and_drag());
                 if self.open && !tab.searching() {

@@ -73,7 +73,7 @@ impl Osd {
             ui.set_opacity(alpha);
             let painter = ui.painter();
             crate::material::paint(ctx, painter, rect, ui::SURFACE_RADIUS, crate::material::Role::Floating);
-            painter.rect_stroke(rect, ui::SURFACE_RADIUS, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
+            painter.rect_stroke(rect, ui::SURFACE_RADIUS, Stroke::new(1.0_f32, ui::LINE_STRONG), StrokeKind::Inside);
             let icon = match kind {
                 Kind::Volume if level == 0 => Icon::Muted,
                 Kind::Volume => Icon::Volume,

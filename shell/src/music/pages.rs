@@ -120,7 +120,7 @@ impl Music {
         painter.text(pos2(head.left() + 40.0, head.center().y), Align2::LEFT_CENTER, "TITLE", ui::mono(10.5), ui::LABEL);
         if head.width() > 620.0 { painter.text(pos2(head.left() + head.width() * 0.58, head.center().y), Align2::LEFT_CENTER, "ALBUM", ui::mono(10.5), ui::LABEL); }
         painter.text(pos2(head.right() - 10.0, head.center().y), Align2::RIGHT_CENTER, "TIME", ui::mono(10.5), ui::LABEL);
-        painter.hline(head.x_range(), head.bottom(), Stroke::new(1.0, ui::LINE));
+        painter.hline(head.x_range(), head.bottom(), Stroke::new(1.0_f32, ui::LINE));
         ui.add_space(4.0);
     }
 
@@ -156,7 +156,7 @@ impl Music {
                     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{} — {}", best.name, described(&best))));
                     let painter = ui.painter_at(rect);
                     painter.rect_filled(rect, 12.0, if response.hovered() || response.has_focus() { ui::TRACK } else { ui::PANEL });
-                    if response.has_focus() { painter.rect_stroke(rect, 12.0, Stroke::new(1.0, theme.main), StrokeKind::Inside); }
+                    if response.has_focus() { painter.rect_stroke(rect, 12.0, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside); }
                     let art = Rect::from_min_size(rect.min + vec2(20.0, 20.0), vec2(96.0, 96.0));
                     match this.covers.get(ui.ctx(), best.cover.as_deref()) {
                         Some(texture) => { painter.image(texture.id(), art, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE); }
@@ -249,7 +249,7 @@ fn big_play(ui: &mut Ui, theme: &Theme, label: &str) -> Response {
     let response = response.on_hover_text(label);
     let painter = ui.painter();
     painter.circle_filled(rect.center(), size / 2.0, if response.hovered() { theme.main.gamma_multiply(0.85) } else { theme.main });
-    if response.has_focus() { painter.circle_stroke(rect.center(), size / 2.0 + 3.0, Stroke::new(1.5, ui::TEXT)); }
+    if response.has_focus() { painter.circle_stroke(rect.center(), size / 2.0 + 3.0, Stroke::new(1.5_f32, ui::TEXT)); }
     let c = rect.center();
     painter.add(Shape::convex_polygon(vec![c + vec2(-6.0, -10.0), c + vec2(11.0, 0.0), c + vec2(-6.0, 10.0)], ui::GROUND, Stroke::NONE));
     response

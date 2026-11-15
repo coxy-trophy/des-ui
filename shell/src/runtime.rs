@@ -755,7 +755,7 @@ impl eframe::App for App {
                         let (first, second) = if self.stacked {
                             let height = ((inner.height() - gap) / 2.0).floor().max(1.0);
                             let rule = inner.top() + height + gap / 2.0;
-                            ui.painter().hline(inner.x_range(), rule, Stroke::new(1.0, ui::LINE));
+                            ui.painter().hline(inner.x_range(), rule, Stroke::new(1.0_f32, ui::LINE));
                             (
                                 Rect::from_min_size(inner.min, vec2(inner.width(), height)),
                                 Rect::from_min_max(pos2(inner.left(), inner.top() + height + gap), inner.max),
@@ -763,7 +763,7 @@ impl eframe::App for App {
                         } else {
                             let width = ((inner.width() - gap) / 2.0).floor().max(1.0);
                             let rule = inner.left() + width + gap / 2.0;
-                            ui.painter().vline(rule, inner.y_range(), Stroke::new(1.0, ui::LINE));
+                            ui.painter().vline(rule, inner.y_range(), Stroke::new(1.0_f32, ui::LINE));
                             (
                                 Rect::from_min_size(inner.min, vec2(width, inner.height())),
                                 Rect::from_min_max(pos2(inner.left() + width + gap, inner.top()), inner.max),
@@ -861,7 +861,7 @@ impl eframe::App for App {
 
         // Subtle rounded outlines belong to the same shared panel rectangles.
         let lines = ctx.layer_painter(frame_lines_layer());
-        let line = Stroke::new(1.0, ui::LINE);
+        let line = Stroke::new(1.0_f32, ui::LINE);
         powerup::frame_lines(&lines, screen, workspace, status_top, osk_height, open,
             self.config.side_panel_behavior == des_common::PanelBehavior::Collapse, line, &stage);
 

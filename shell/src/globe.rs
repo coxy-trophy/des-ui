@@ -100,10 +100,10 @@ fn draw(ui: &mut Ui, theme: &Theme, size: f32, rotation: f32, pitch: f32, zoom: 
     let at = |(x, y): (f32, f32)| pos2(center.x + radius * x, center.y - radius * y);
 
     painter.circle_filled(center, radius, ui::GROUND);
-    painter.circle_stroke(center, radius, Stroke::new(1.0, ui::LINE_STRONG));
+    painter.circle_stroke(center, radius, Stroke::new(1.0_f32, ui::LINE_STRONG));
 
     // The wire sphere: lines are broken where they pass behind the globe.
-    let grid = Stroke::new(1.0, ui::LINE);
+    let grid = Stroke::new(1.0_f32, ui::LINE);
     let wire = |points: Vec<Option<Pos2>>| {
         for pair in points.windows(2) {
             if let [Some(a), Some(b)] = pair {
@@ -131,9 +131,9 @@ fn draw(ui: &mut Ui, theme: &Theme, size: f32, rotation: f32, pitch: f32, zoom: 
     }
 
     // Links first, so that this machine's mark sits on top of where they meet.
-    let link = Stroke::new(1.2, theme.main);
+    let link = Stroke::new(1.2_f32, theme.main);
     for place in &geo.links {
-        let link = if selected == Some(place) { Stroke::new(2.0, ui::TEXT) } else { link };
+        let link = if selected == Some(place) { Stroke::new(2.0_f32, ui::TEXT) } else { link };
         if let Some(home) = &geo.home {
             let points: Vec<Option<Pos2>> = arc(home, place).into_iter().map(|p| view(p, rotation, pitch).map(at)).collect();
             for pair in points.windows(2) {
@@ -144,12 +144,12 @@ fn draw(ui: &mut Ui, theme: &Theme, size: f32, rotation: f32, pitch: f32, zoom: 
         }
         if let Some(point) = project_view(place.lon, place.lat, rotation, pitch) {
             painter.circle_filled(at(point), 2.6, theme.main);
-            if selected == Some(place) { painter.circle_stroke(at(point), 7.0, Stroke::new(1.5, ui::TEXT)); }
+            if selected == Some(place) { painter.circle_stroke(at(point), 7.0, Stroke::new(1.5_f32, ui::TEXT)); }
         }
     }
     if let Some(point) = geo.home.as_ref().and_then(|home| project_view(home.lon, home.lat, rotation, pitch)) {
         painter.circle_filled(at(point), 3.4, ui::TEXT);
-        painter.circle_stroke(at(point), 6.5, Stroke::new(1.0, ui::TEXT));
+        painter.circle_stroke(at(point), 6.5, Stroke::new(1.0_f32, ui::TEXT));
     }
     response
 }

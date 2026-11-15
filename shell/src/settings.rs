@@ -1096,7 +1096,7 @@ impl Settings {
                     ui::text(ui, label, ui::mono(12.0), ui::SECONDARY);
                     let (rect, _) = ui.allocate_exact_size(vec2(104.0, 96.0), Sense::hover());
                     ui.painter().rect_filled(rect, ui::CONTROL_RADIUS, background);
-                    ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
+                    ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0_f32, ui::LINE_STRONG), StrokeKind::Inside);
                     // Exact compositor arrow: (16,16), (29,30), (20,38), relative to its tip.
                     let scale = input.cursor_size as f32 / CURSOR_BASE_SIZE as f32;
                     let tip = rect.center() - vec2(6.5, 11.0) * scale;
@@ -1296,7 +1296,7 @@ impl Settings {
                 let painter = ui.painter_at(rect);
                 painter.rect_filled(rect, 0.0, if chosen { theme.tint() } else { ui::PANEL });
                 let line = if chosen || response.has_focus() { theme.main } else if response.hovered() { ui::SECONDARY } else { ui::LINE_STRONG };
-                painter.rect_stroke(rect, 0.0, Stroke::new(1.0, line), StrokeKind::Inside);
+                painter.rect_stroke(rect, 0.0, Stroke::new(1.0_f32, line), StrokeKind::Inside);
                 let lit = choice.setup.usage != Usage::Off;
                 painter.text(rect.left_top() + vec2(10.0, 8.0), Align2::LEFT_TOP, &choice.name, ui::mono(12.0), if lit { ui::TEXT } else { ui::LABEL });
                 let detail = format!("{} × {}", choice.mode.width, choice.mode.height);
@@ -1474,7 +1474,7 @@ impl Settings {
                     .hint_text(crate::ui::hint("latitude, longitude, name")),
             );
             if self.location_error {
-                ui.painter().rect_stroke(edit.rect, ui::CONTROL_RADIUS, Stroke::new(1.0, ui::CAUTION), StrokeKind::Inside);
+                ui.painter().rect_stroke(edit.rect, ui::CONTROL_RADIUS, Stroke::new(1.0_f32, ui::CAUTION), StrokeKind::Inside);
             }
             let entered = edit.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
             if ui::button(ui, theme, "SET", None, false).clicked() || entered {
@@ -1588,7 +1588,7 @@ impl Settings {
             ui.spacing_mut().item_spacing.x = 16.0;
             let (frame, _) = ui.allocate_exact_size(vec2(84.0, 84.0), Sense::hover());
             crate::material::paint(ui.ctx(), ui.painter(), frame, ui::CONTROL_RADIUS, crate::material::Role::Panel);
-            ui.painter().rect_stroke(frame, ui::CONTROL_RADIUS, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
+            ui.painter().rect_stroke(frame, ui::CONTROL_RADIUS, Stroke::new(1.0_f32, ui::LINE_STRONG), StrokeKind::Inside);
             match &current {
                 Some(texture) => {
                     ui.painter().image(texture.id(), frame.shrink(6.0), whole, egui::Color32::WHITE);
@@ -1618,7 +1618,7 @@ impl Settings {
                 let (tile, response) = ui.allocate_exact_size(vec2(64.0, 64.0), Sense::click());
                 ui.painter().image(texture.id(), tile, whole, egui::Color32::WHITE);
                 let line = if response.hovered() || response.has_focus() { theme.main } else { ui::LINE_STRONG };
-                ui.painter().rect_stroke(tile, ui::CONTROL_RADIUS, Stroke::new(1.0, line), StrokeKind::Inside);
+                ui.painter().rect_stroke(tile, ui::CONTROL_RADIUS, Stroke::new(1.0_f32, line), StrokeKind::Inside);
                 let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
                 if response.on_hover_text(name).clicked() {
                     changes.push(Change::Avatar(Some(path.clone())));
@@ -1917,7 +1917,7 @@ fn swatches(ui: &mut Ui, theme: &Theme) {
             for color in colors {
                 let (rect, _) = ui.allocate_exact_size(vec2(SIDE, SIDE), Sense::hover());
                 ui.painter().rect_filled(rect, 0.0, *color);
-                ui.painter().rect_stroke(rect, 0.0, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
+                ui.painter().rect_stroke(rect, 0.0, Stroke::new(1.0_f32, ui::LINE), StrokeKind::Inside);
             }
             ui.add_space(8.0);
             ui::text(ui, caption, ui::mono(10.0), ui::LABEL);
@@ -1960,7 +1960,7 @@ fn nav_item(ui: &mut Ui, theme: &Theme, width: f32, title: &str, hint: &str, cur
     let fill = if current { theme.main.gamma_multiply(0.16) } else if lit { ui::TRACK } else { Color32::TRANSPARENT };
     ui.painter().rect_filled(rect, ui::CONTROL_RADIUS, fill);
     if response.has_focus() {
-        ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside);
+        ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside);
     }
     let color = if current || lit { ui::TEXT } else if dim { ui::LABEL } else { ui::SECONDARY };
     let hint_width = if hint.is_empty() { 0.0 } else {
@@ -1994,7 +1994,7 @@ fn entry_row(ui: &mut Ui, theme: &Theme, crumb: Option<&str>, title: &str, about
         ui.painter().rect_filled(rect, ui::CONTROL_RADIUS, ui::TRACK);
     }
     if response.has_focus() {
-        ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside);
+        ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside);
     }
     let mut top = rect.left_top() + vec2(PAD, 8.0);
     if let Some(crumb) = crumb {
@@ -2021,7 +2021,7 @@ pub(crate) fn segmented<T: PartialEq + Copy>(ui: &mut Ui, theme: &Theme, current
     let width = galleys.iter().map(|galley| galley.size().x + 2.0 * PAD).sum::<f32>() + 2.0 * INSET;
     let (outer, _) = ui.allocate_exact_size(vec2(width.min(ui.available_width()), height), Sense::hover());
     ui.painter().rect_filled(outer, ui::CONTROL_RADIUS + INSET, ui::GROUND);
-    ui.painter().rect_stroke(outer, ui::CONTROL_RADIUS + INSET, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
+    ui.painter().rect_stroke(outer, ui::CONTROL_RADIUS + INSET, Stroke::new(1.0_f32, ui::LINE), StrokeKind::Inside);
     let mut changed = false;
     let mut left = outer.left() + INSET;
     for ((value, label), galley) in options.iter().zip(galleys) {
@@ -2031,12 +2031,12 @@ pub(crate) fn segmented<T: PartialEq + Copy>(ui: &mut Ui, theme: &Theme, current
         let chosen = *current == *value;
         if chosen {
             ui.painter().rect_filled(rect, ui::CONTROL_RADIUS, ui::TRACK);
-            ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, ui::LINE_STRONG), StrokeKind::Inside);
+            ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0_f32, ui::LINE_STRONG), StrokeKind::Inside);
         } else if response.hovered() {
             ui.painter().rect_filled(rect, ui::CONTROL_RADIUS, ui::PANEL);
         }
         if response.has_focus() {
-            ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside);
+            ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside);
         }
         let color = if chosen || response.hovered() { ui::TEXT } else { ui::SECONDARY };
         ui.painter().galley_with_override_text_color(rect.center() - galley.size() / 2.0, galley, color);
@@ -2065,7 +2065,7 @@ pub(crate) fn switch_row(ui: &mut Ui, theme: &Theme, name: &str, what: &str, on:
     let response = ui::toggle(&mut inner, theme, on);
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), on, name.job.text.as_str()));
     // A line above each row, so the last one never doubles the card's edge.
-    ui.painter().hline(row.x_range(), row.top(), Stroke::new(1.0, ui::TRACK));
+    ui.painter().hline(row.x_range(), row.top(), Stroke::new(1.0_f32, ui::TRACK));
     response.clicked()
 }
 

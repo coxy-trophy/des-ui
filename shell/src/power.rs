@@ -281,7 +281,7 @@ impl Menu {
         if places.len() == 5 && places[1].center().y == places[2].center().y {
             let x = (places[1].right() + places[2].left()) / 2.0;
             let y = places[1].top() + 38.0;
-            ui.painter().vline(x, egui::Rangef::new(y - 44.0, y + 44.0), Stroke::new(1.0, ui::LINE));
+            ui.painter().vline(x, egui::Rangef::new(y - 44.0, y + 44.0), Stroke::new(1.0_f32, ui::LINE));
         }
         let waiting = self.armed.map(|(act, _)| act);
         for ((name, what, act, twice), place) in CHOICES.iter().zip(&places) {
@@ -303,8 +303,8 @@ impl Menu {
             };
             if armed { painter.circle_filled(centre, 44.0, ui::CAUTION.gamma_multiply(0.06)); }
             painter.circle_filled(centre, 38.0, fade(fill));
-            painter.circle_stroke(centre, 37.5, Stroke::new(1.0, fade(ring)));
-            if response.has_focus() { painter.circle_stroke(centre, 41.0, Stroke::new(1.0, theme.main)); }
+            painter.circle_stroke(centre, 37.5, Stroke::new(1.0_f32, fade(ring)));
+            if response.has_focus() { painter.circle_stroke(centre, 41.0, Stroke::new(1.0_f32, theme.main)); }
             paint_choice(painter, centre, *act, fade(ink));
             let (title, under) = if let Some((_, at)) = self.armed.filter(|_| armed) {
                 // A ring around it runs down the time left for the second click.
@@ -315,7 +315,7 @@ impl Menu {
                     let a = start + share * std::f32::consts::TAU * i as f32 / 48.0;
                     centre + vec2(a.cos(), a.sin()) * 43.0
                 }).collect::<Vec<_>>();
-                painter.line(points, Stroke::new(2.5, ui::CAUTION));
+                painter.line(points, Stroke::new(2.5_f32, ui::CAUTION));
                 ui.ctx().request_repaint();
                 ("CLICK AGAIN".to_string(), format!("to {} · {} s", name.to_lowercase(), left.ceil() as u32))
             } else {
@@ -403,7 +403,7 @@ fn crescent(c: egui::Pos2, outer: f32, shift: egui::Vec2, inner: f32) -> Vec<egu
 
 /// The picture inside a choice's ring, drawn larger than the shell's icons.
 fn paint_choice(painter: &egui::Painter, c: egui::Pos2, act: Act, color: egui::Color32) {
-    let stroke = Stroke::new(1.8, color);
+    let stroke = Stroke::new(1.8_f32, color);
     let pi = std::f32::consts::PI;
     let arc = |radius: f32, from: f32, to: f32| (0..=40).map(|i| { let a = from + (to - from) * i as f32 / 40.0; c + vec2(a.cos(), a.sin()) * radius }).collect::<Vec<_>>();
     match act {
@@ -414,7 +414,7 @@ fn paint_choice(painter: &egui::Painter, c: egui::Pos2, act: Act, color: egui::C
             shackle.push(c + vec2(6.0, -3.5));
             painter.line(shackle, stroke);
             painter.circle_filled(c + vec2(0.0, 3.0), 1.6, color);
-            painter.line_segment([c + vec2(0.0, 3.0), c + vec2(0.0, 6.5)], Stroke::new(1.6, color));
+            painter.line_segment([c + vec2(0.0, 3.0), c + vec2(0.0, 6.5)], Stroke::new(1.6_f32, color));
         }
         Act::Suspend => { painter.line(crescent(c, 10.5, vec2(-5.5, -4.5), 9.0), stroke); }
         Act::Restart => {

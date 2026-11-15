@@ -437,7 +437,7 @@ fn peer_worker(shared:Arc<Shared>,tcp:TcpStream,claim:Option<Packet>){
  })();if let Err(e)=result{eprintln!("DES Connect session: {e}");}shared.active.fetch_sub(1,Ordering::Release);
 }
 fn start_peer(shared:&Arc<Shared>,tcp:TcpStream,claim:Option<Packet>){
- if shared.active.fetch_update(Ordering::AcqRel,Ordering::Relaxed,|n|(n<8).then_some(n+1)).is_ok(){let shared=shared.clone();thread::spawn(move||peer_worker(shared,tcp,claim));}
+ if take_slot(&shared.active,8){let shared=shared.clone();thread::spawn(move||peer_worker(shared,tcp,claim));}
 }
 fn handle_ipc(shared:&Arc<Shared>,request:Request,udp:&UdpSocket,client:&UnixStream)->Value {
  if request.op=="usb_devices" {
@@ -531,11 +531,11 @@ pub fn run_options(socket:&Path,state:&Path,name:&str,loopback:bool)->Result<()>
    if rate.get(&addr.ip()).is_some_and(|t|t.elapsed()<Duration::from_secs(3)){continue;}rate.retain(|_,t|t.elapsed()<Duration::from_secs(30));if rate.len()>=64{continue;}
    let Ok(claim)=decode(&data[..n])else{continue};let Ok(id)=Identity::from_packet(&claim)else{continue};if id.device_id==shared.id||shared.routes.lock().unwrap().contains_key(&id.device_id){continue;}
    let Some(port)=id.tcp_port.filter(|p|(1716..=1764).contains(p))else{continue};rate.insert(addr.ip(),Instant::now());
-   if shared.active.fetch_update(Ordering::AcqRel,Ordering::Relaxed,|n|(n<8).then_some(n+1)).is_ok() {let shared=shared.clone();let remote=SocketAddr::new(addr.ip(),port);thread::spawn(move||{match TcpStream::connect_timeout(&remote,Duration::from_secs(3)){Ok(tcp)=>peer_worker(shared,tcp,Some(claim)),Err(_)=>{shared.active.fetch_sub(1,Ordering::Release);}}});}
+   if take_slot(&shared.active,8) {let shared=shared.clone();let remote=SocketAddr::new(addr.ip(),port);thread::spawn(move||{match TcpStream::connect_timeout(&remote,Duration::from_secs(3)){Ok(tcp)=>peer_worker(shared,tcp,Some(claim)),Err(_)=>{shared.active.fetch_sub(1,Ordering::Release);}}});}
   }
   for _ in 0..8 {let Ok((mut stream,_))=ipc.accept()else{break};
    let peer=rustix::net::sockopt::socket_peercred(&stream)?;if peer.uid!=rustix::process::getuid(){continue;}
-   if shared.ipc_active.fetch_update(Ordering::AcqRel,Ordering::Relaxed,|n|(n<8).then_some(n+1)).is_err(){continue;}
+   if !take_slot(&shared.ipc_active,8){continue;}
    let shared=shared.clone();let udp=udp.try_clone()?;thread::spawn(move||{
     let _=stream.set_read_timeout(Some(Duration::from_secs(2)));let _=stream.set_write_timeout(Some(Duration::from_secs(2)));
     if let Ok(line)=read_line(&mut stream,4096){
@@ -658,7 +658,12 @@ impl HandshakeDeadline {
 }
 impl Drop for HandshakeDeadline {fn drop(&mut self){let _=self.0.try_send(());}}
 struct UnpairedPermit(Arc<Shared>);
-impl UnpairedPermit {fn new(shared:Arc<Shared>)->Result<Self>{shared.unpaired.fetch_update(Ordering::AcqRel,Ordering::Relaxed,|n|(n<6).then_some(n+1)).map_err(|_|"unpaired device limit reached; paired capacity reserved")?;Ok(Self(shared))}}
+/// Takes one of `limit` slots in `counter`, if one is free. (`fetch_update` is
+/// `try_update` from Rust 1.95; DesOS images build with 1.93, which has only this.)
+#[allow(deprecated)]
+fn take_slot(counter:&AtomicUsize,limit:usize)->bool {counter.fetch_update(Ordering::AcqRel,Ordering::Relaxed,|n|(n<limit).then_some(n+1)).is_ok()}
+
+impl UnpairedPermit {fn new(shared:Arc<Shared>)->Result<Self>{if !take_slot(&shared.unpaired,6){return Err("unpaired device limit reached; paired capacity reserved".into());}Ok(Self(shared))}}
 impl Drop for UnpairedPermit {fn drop(&mut self){self.0.unpaired.fetch_sub(1,Ordering::Release);}}
 
 struct AddressPermit {shared:Arc<Shared>,ip:IpAddr}

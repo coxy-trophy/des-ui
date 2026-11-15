@@ -171,7 +171,7 @@ impl Dock {
             response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,true,"Expand system panel"));
             result.expand|=response.on_hover_text("Click to expand the system panel").clicked();
             let y=body.top()+header-8.0;
-            ui.painter().line_segment([egui::pos2(body.left()+12.0,y),egui::pos2(body.right()-12.0,y)],egui::Stroke::new(1.0,ui::LINE));
+            ui.painter().line_segment([egui::pos2(body.left()+12.0,y),egui::pos2(body.right()-12.0,y)],egui::Stroke::new(1.0_f32,ui::LINE));
         }
         for (n,item) in all.iter().take(capacity).enumerate() {
             let rect=tile(body.top()+header+n as f32*slot,(slot-4.0).min(40.0));
@@ -186,7 +186,7 @@ impl Dock {
                 let width=if item.windows.len()>9 {22.0}else{16.0};
                 let badge=Rect::from_min_size(egui::pos2(rect.right()-width,rect.top()),vec2(width,16.0));
                 ui.painter().rect_filled(badge,8.0,ui::PANEL);
-                ui.painter().rect_stroke(badge,8.0,egui::Stroke::new(1.0,ui::LINE_STRONG),egui::StrokeKind::Inside);
+                ui.painter().rect_stroke(badge,8.0,egui::Stroke::new(1.0_f32,ui::LINE_STRONG),egui::StrokeKind::Inside);
                 ui.painter().text(badge.center(),Align2::CENTER_CENTER,count,ui::mono(10.0),ui::TEXT);
             }
             // Attention occupies the opposite corner so it never obscures the count.
@@ -220,7 +220,7 @@ impl Dock {
             let rect=tile(body.bottom()-footer,vitals_height-10.0);
             result.expand|=vitals_corner(ui,theme,rect,vitals);
             let y=rect.bottom()+4.0;
-            ui.painter().line_segment([egui::pos2(body.left()+12.0,y),egui::pos2(body.right()-12.0,y)],egui::Stroke::new(1.0,ui::LINE));
+            ui.painter().line_segment([egui::pos2(body.left()+12.0,y),egui::pos2(body.right()-12.0,y)],egui::Stroke::new(1.0_f32,ui::LINE));
         }
         if all.len()>capacity {
             let rect=tile(body.bottom()-base_footer,footer_control);
@@ -330,7 +330,7 @@ impl Dock {
                 let active=state.focus.is_some_and(|focus|item.windows.contains(&focus));
                 let selected=self.motion.keyboard && self.selection==n;
                 if response.hovered() || response.has_focus() || selected {ui.painter().rect_filled(rect,4.0,theme.tint());}
-                if response.has_focus() || selected {ui.painter().rect_stroke(rect,ui::CONTROL_RADIUS,egui::Stroke::new(1.0,theme.main),egui::StrokeKind::Inside);}
+                if response.has_focus() || selected {ui.painter().rect_stroke(rect,ui::CONTROL_RADIUS,egui::Stroke::new(1.0_f32,theme.main),egui::StrokeKind::Inside);}
                 if active {ui.painter().rect_filled(Rect::from_min_size(rect.left_top(),vec2(2.5,rect.height())),1.0,theme.main);}
                 let icon=Rect::from_min_size(rect.min+vec2(10.0,10.0),vec2(32.0,32.0));
                 self.icons.paint(ui,icon,item.entry.and_then(|i|self.entries[i].icon.as_deref()));
@@ -373,7 +373,7 @@ impl Dock {
                             let available=(ui.available_width()-ui::CONTROL_HEIGHT-ui.spacing().item_spacing.x).max(10.0);
                             let response=ui::list_button(ui,theme,&format!("{} · W{}{}",app.title,app.workspace+1,if app.screen!=display{format!(" · D{}",app.screen+1)}else{String::new()}),available);
                             if self.motion.keyboard && self.selection==n && self.selected_window==Some(window_n) {
-                                ui.painter().rect_stroke(response.rect,3.0,egui::Stroke::new(1.0,theme.main),egui::StrokeKind::Inside);
+                                ui.painter().rect_stroke(response.rect,3.0,egui::Stroke::new(1.0_f32,theme.main),egui::StrokeKind::Inside);
 
                             }
                             if response.clicked(){output.action=Some(Action::Command(Command::Activate(index)));}

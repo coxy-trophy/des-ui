@@ -368,17 +368,17 @@ impl Greeter {
                 let rect = Rect::from_center_size(face.center() + vec2(dx * (side / 2.0 + 34.0), 0.0), vec2(34.0, 34.0));
                 let response = ui.interact(rect, ui.id().with(("account", label)), Sense::click());
                 response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
-                pane(&mut panes, rect, Stroke::new(1.0, Color32::from_white_alpha(36)));
+                pane(&mut panes, rect, Stroke::new(1.0_f32, Color32::from_white_alpha(36)));
                 if response.hovered() { painter.circle_filled(rect.center(), 17.0, Color32::from_white_alpha(22)); }
                 let c = rect.center();
-                painter.line(vec![c + vec2(2.5 * dx, -5.0), c + vec2(-2.5 * dx, 0.0), c + vec2(2.5 * dx, 5.0)], Stroke::new(1.8, text));
+                painter.line(vec![c + vec2(2.5 * dx, -5.0), c + vec2(-2.5 * dx, 0.0), c + vec2(2.5 * dx, 5.0)], Stroke::new(1.8_f32, text));
                 if response.on_hover_text(label).clicked() { if dx < 0.0 { self.previous_user(); } else { self.next_user(); } }
             }
         }
 
         let field_edge = if denied { ui::CAUTION } else if self.password.is_empty() { Color32::from_white_alpha(56) } else { edge };
-        pane(&mut panes, field, Stroke::new(1.0, field_edge));
-        if liquid && (denied || !self.password.is_empty()) { painter.rect_stroke(field, field.height() / 2.0, Stroke::new(1.0, field_edge), StrokeKind::Inside); }
+        pane(&mut panes, field, Stroke::new(1.0_f32, field_edge));
+        if liquid && (denied || !self.password.is_empty()) { painter.rect_stroke(field, field.height() / 2.0, Stroke::new(1.0_f32, field_edge), StrokeKind::Inside); }
         let go = Rect::from_center_size(pos2(field.right() - 20.0, field.center().y), vec2(28.0, 28.0));
         let room = Rect::from_min_max(pos2(field.left() + 16.0, field.top()), pos2(go.left() - 8.0, field.bottom()));
         let mut x = room.left();
@@ -410,7 +410,7 @@ impl Greeter {
         let fill = if ready { if response.hovered() { theme.main.gamma_multiply(0.85) } else { theme.main } } else { Color32::from_white_alpha(28) };
         painter.circle_filled(go.center(), 14.0, fill);
         let c = go.center();
-        let stroke = Stroke::new(1.8, if ready { ui::GROUND } else { Color32::from_white_alpha(170) });
+        let stroke = Stroke::new(1.8_f32, if ready { ui::GROUND } else { Color32::from_white_alpha(170) });
         painter.line_segment([c - vec2(5.0, 0.0), c + vec2(5.0, 0.0)], stroke);
         painter.line(vec![c + vec2(0.5, -4.5), c + vec2(5.0, 0.0), c + vec2(0.5, 4.5)], stroke);
         if response.clicked() { self.submit(&ctx); }
@@ -432,13 +432,13 @@ impl Greeter {
         let pill = Rect::from_min_size(pos2(inner.left(), inner.bottom() - 36.0), vec2(chosen.size().x + if several { 52.0 } else { 36.0 }, 36.0));
         let response = ui.interact(pill, ui.id().with("session"), if several { Sense::click() } else { Sense::hover() });
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, several, format!("Session: {session_name}")));
-        pane(&mut panes, pill, Stroke::new(1.0, Color32::from_white_alpha(36)));
+        pane(&mut panes, pill, Stroke::new(1.0_f32, Color32::from_white_alpha(36)));
         if response.hovered() && several { painter.rect_filled(pill, 18.0, Color32::from_white_alpha(22)); }
         let chosen_width = chosen.size().x;
         painter.galley(pos2(pill.left() + 18.0, pill.center().y - chosen.size().y / 2.0), chosen, text);
         if several {
             let c = pos2(pill.left() + 30.0 + chosen_width, pill.center().y);
-            painter.line(vec![c + vec2(-4.0, -2.0), c + vec2(0.0, 2.0), c + vec2(4.0, -2.0)], Stroke::new(1.6, text));
+            painter.line(vec![c + vec2(-4.0, -2.0), c + vec2(0.0, 2.0), c + vec2(4.0, -2.0)], Stroke::new(1.6_f32, text));
             if response.on_hover_text("Another session (F1)").clicked() {
                 self.session = (self.session + 1) % self.sessions.len();
             }
@@ -455,10 +455,10 @@ impl Greeter {
             let label = if armed { format!("Click again to {}", name.to_lowercase()) } else { name.to_string() };
             response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
             let ink = if armed { ui::CAUTION } else { text };
-            pane(&mut panes, circle, Stroke::new(1.0, if armed { ui::CAUTION } else { Color32::from_white_alpha(36) }));
+            pane(&mut panes, circle, Stroke::new(1.0_f32, if armed { ui::CAUTION } else { Color32::from_white_alpha(36) }));
             if response.hovered() { painter.circle_filled(circle.center(), 20.0, Color32::from_white_alpha(22)); }
-            if armed && liquid { painter.circle_stroke(circle.center(), 19.5, Stroke::new(1.0, ui::CAUTION)); }
-            power_icon(&painter, circle.center(), index, Stroke::new(1.5, ink));
+            if armed && liquid { painter.circle_stroke(circle.center(), 19.5, Stroke::new(1.0_f32, ui::CAUTION)); }
+            power_icon(&painter, circle.center(), index, Stroke::new(1.5_f32, ink));
             let caption = if armed { format!("Again to {}", name.to_lowercase()) } else { name.to_string() };
             painter.text(pos2(column.center().x, column.bottom() - 6.0), Align2::CENTER_CENTER, caption, ui::mono(10.5), ink);
             if response.clicked() {

@@ -174,7 +174,7 @@ impl Osk {
         }
         let painter = ui.painter_at(rect);
         crate::material::paint(ui.ctx(), &painter, rect, des_common::frame::RADIUS, crate::material::Role::Panel);
-        painter.hline(rect.x_range(), rect.top(), Stroke::new(1.0, ui::LINE));
+        painter.hline(rect.x_range(), rect.top(), Stroke::new(1.0_f32, ui::LINE));
         let rows = if self.layer == Layer::Letters { LETTERS } else { SYMBOLS };
         let mut pressed = None;
         for (r,k,cap,key_rect) in key_layout(rect, rows) {
@@ -197,7 +197,7 @@ impl Osk {
             };
             painter.rect_filled(key_rect, ui::CONTROL_RADIUS, fill);
             let edge = if response.hovered() { ui::SECONDARY } else { ui::LINE_STRONG };
-            painter.rect_stroke(key_rect, ui::CONTROL_RADIUS, Stroke::new(1.0, edge), StrokeKind::Inside);
+            painter.rect_stroke(key_rect, ui::CONTROL_RADIUS, Stroke::new(1.0_f32, edge), StrokeKind::Inside);
             let label = self.label(cap);
             let mut font = if label.chars().count() > 1 { ui::display(12.0_f32.min(key_height * 0.45)) } else { ui::mono(17.0_f32.min(key_height * 0.45)) };
             let mut galley = painter.layout_no_wrap(label.clone(), font.clone(), ink);

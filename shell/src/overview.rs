@@ -83,7 +83,7 @@ pub fn show_on(ctx:&egui::Context,theme:&Theme,layout:&OverviewLayout,state:Opti
             for workspace in &layout.workspaces {
                 let cell = rect(workspace.area);
                 let line = if workspace.current { accent } else { ui::LINE };
-                painter.rect_stroke(cell, CornerRadius::ZERO, Stroke::new(1.0, line), StrokeKind::Inside);
+                painter.rect_stroke(cell, CornerRadius::ZERO, Stroke::new(1.0_f32, line), StrokeKind::Inside);
                 let count = layout.thumbs.iter().filter(|thumb| cell.contains(rect(thumb.area).center())).count();
                 let name = format!("{}{}", workspace.workspace + 1, if workspace.current { " · IN VIEW" } else { "" });
                 painter.text(cell.left_top() + vec2(14.0, 20.0), Align2::LEFT_CENTER, name, ui::display(14.0), if workspace.current { accent } else { ui::TEXT });
@@ -93,13 +93,13 @@ pub fn show_on(ctx:&egui::Context,theme:&Theme,layout:&OverviewLayout,state:Opti
                     n => format!("{n} WINDOWS"),
                 };
                 painter.text(cell.right_top() + vec2(-14.0, 20.0), Align2::RIGHT_CENTER, windows, ui::mono(11.0), ui::LABEL);
-                painter.hline(cell.x_range(), cell.top() + 40.0, Stroke::new(1.0, ui::LINE));
+                painter.hline(cell.x_range(), cell.top() + 40.0, Stroke::new(1.0_f32, ui::LINE));
             }
         }
         OverviewKind::Switcher | OverviewKind::Windows => {
             if let Some(strip) = layout.strip.map(rect) {
                 crate::material::paint(ctx,&painter,strip,ui::SURFACE_RADIUS,crate::material::Role::Floating);
-                painter.rect_stroke(strip, ui::SURFACE_RADIUS, Stroke::new(1.0, ui::LINE), StrokeKind::Inside);
+                painter.rect_stroke(strip, ui::SURFACE_RADIUS, Stroke::new(1.0_f32, ui::LINE), StrokeKind::Inside);
                 if layout.kind==OverviewKind::Windows {
                     let hint=heading(layout);
                     painter.text(strip.left_top()+vec2(16.0,16.0),Align2::LEFT_CENTER,
@@ -114,9 +114,9 @@ pub fn show_on(ctx:&egui::Context,theme:&Theme,layout:&OverviewLayout,state:Opti
         // Beneath the picture, for a window that has not drawn itself yet.
         painter.rect_filled(area, CornerRadius::ZERO, ui::TRACK);
         if selected {
-            painter.rect_stroke(area.expand(4.0), CornerRadius::same(3), Stroke::new(2.0, accent), StrokeKind::Outside);
+            painter.rect_stroke(area.expand(4.0), CornerRadius::same(3), Stroke::new(2.0_f32, accent), StrokeKind::Outside);
         } else {
-            painter.rect_stroke(area, CornerRadius::ZERO, Stroke::new(1.0, ui::LINE), StrokeKind::Outside);
+            painter.rect_stroke(area, CornerRadius::ZERO, Stroke::new(1.0_f32, ui::LINE), StrokeKind::Outside);
         }
         let font = ui::mono(11.0);
         let width = area.width().max(40.0);
@@ -127,7 +127,7 @@ pub fn show_on(ctx:&egui::Context,theme:&Theme,layout:&OverviewLayout,state:Opti
         let name = fitted(&painter, &title, &font, width);
         if selected && layout.kind==OverviewKind::Drag {
             let progress=layout.filter.parse::<f32>().unwrap_or(0.0).clamp(0.0,100.0)/100.0;
-            painter.hline(area.left()..=(area.left()+area.width()*progress),area.bottom()+3.0,Stroke::new(3.0,accent));
+            painter.hline(area.left()..=(area.left()+area.width()*progress),area.bottom()+3.0,Stroke::new(3.0_f32,accent));
         }
         let at: Pos2 = pos2(area.center().x, area.bottom() + 14.0);
         painter.text(at, Align2::CENTER_CENTER, name, font, if selected { ui::TEXT } else { ui::SECONDARY });

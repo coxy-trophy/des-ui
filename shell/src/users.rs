@@ -461,7 +461,7 @@ impl Users {
 pub(crate) fn field(ui: &mut Ui, theme: &Theme, text: &mut String, hint: &str, secret: bool, width: f32) -> bool {
     let (rect, _) = ui.allocate_exact_size(vec2(width.min(ui.available_width()), 28.0), Sense::hover());
     ui.painter().rect_filled(rect, ui::CONTROL_RADIUS, ui::PANEL);
-    ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside);
+    ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside);
     let edit = ui.put(
         rect.shrink2(vec2(8.0, 4.0)),
         TextEdit::singleline(text).vertical_align(eframe::egui::Align::Center).password(secret).frame(false).font(ui::mono(13.0)).text_color(ui::TEXT).hint_text(crate::ui::hint(hint)),
@@ -478,12 +478,12 @@ fn row(ui: &mut Ui, theme: &Theme, name: &str, state: &str, live: bool, open: bo
     let painter = ui.painter_at(rect);
     if open {
         painter.rect_filled(rect, 0.0, theme.tint());
-        painter.rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside);
+        painter.rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside);
     } else {
         if response.hovered() {
             painter.rect_filled(rect, ui::CONTROL_RADIUS, ui::PANEL);
         }
-        painter.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, ui::TRACK));
+        painter.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0_f32, ui::TRACK));
     }
     let mark = egui::Rect::from_center_size(rect.left_center() + vec2(14.0, 0.0), vec2(6.0, 6.0));
     painter.rect_filled(mark, 0.0, if live { theme.main } else { ui::LINE_STRONG });
