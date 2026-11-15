@@ -519,6 +519,41 @@ impl DesComp {
         }
     }
 
+    /// The point on the first output that an absolute device (tablet,
+    /// touchscreen) reports, in the compositor's coordinates.
+    fn first_output_position<I: InputBackend, E: AbsolutePositionEvent<I>>(&self, event: &E) -> Option<smithay::utils::Point<f64, smithay::utils::Logical>> {
+        let output = self.space.outputs().next()?;
+        let output_geo = self.space.output_geometry(output)?;
+        Some(event.position_transformed(output_geo.size) + output_geo.loc.to_f64())
+    }
+
+    /// Moves the pointer to an absolute position, as a tablet or touch does.
+    fn pointer_to(&mut self, pos: smithay::utils::Point<f64, smithay::utils::Logical>, time: u32) {
+        if self.drag_view_open() { self.drag_motion(pos, time); return; }
+        if self.resize.is_some() {
+            self.drag_resize(pos.x);
+        }
+        self.resize_hover = self.resize.is_some() || self.divider_under(pos).is_some();
+
+        let serial = SERIAL_COUNTER.next_serial();
+
+        let pointer = self.seat.get_pointer().unwrap();
+
+        let under = if self.overview_open().is_some() { None } else { self.surface_under(pos) };
+        self.overview_pointer(pos);
+
+        pointer.motion(
+            self,
+            under,
+            &MotionEvent {
+                location: pos,
+                serial,
+                time,
+            },
+        );
+        pointer.frame(self);
+    }
+
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
         let waking_saver = self.saver.active();
         if self.filter_saver_input(&event) {
@@ -770,34 +805,38 @@ impl DesComp {
                 self.pointer_moved(event.delta(), event.delta_unaccel(), event.time(), event.time_msec());
             }
             InputEvent::PointerMotionAbsolute { event, .. } => {
-                let output = self.space.outputs().next().unwrap();
-
-                let output_geo = self.space.output_geometry(output).unwrap();
-
-                let pos = event.position_transformed(output_geo.size) + output_geo.loc.to_f64();
-                if self.drag_view_open() {self.drag_motion(pos,event.time_msec());return;}
-                if self.resize.is_some() {
-                    self.drag_resize(pos.x);
+                let Some(pos) = self.first_output_position(&event) else { return };
+                self.pointer_to(pos, event.time_msec());
+            }
+            // A touchscreen drives the pointer with its first finger: touching
+            // moves the pointer there and presses, sliding drags, lifting
+            // releases. Every surface (the shell, apps, the compositor's own
+            // overview and dividers) then works by touch without a separate path.
+            InputEvent::TouchDown { event, .. } => {
+                let slot = i32::from(event.slot());
+                if touch_pointer(&mut self.touch_pointer, slot, TouchPhase::Down).is_some()
+                    && let Some(pos) = self.first_output_position(&event)
+                {
+                    self.pointer_to(pos, event.time_msec());
+                    self.pointer_button(BTN_LEFT, ButtonState::Pressed, event.time_msec());
                 }
-                self.resize_hover = self.resize.is_some() || self.divider_under(pos).is_some();
-
-                let serial = SERIAL_COUNTER.next_serial();
-
-                let pointer = self.seat.get_pointer().unwrap();
-
-                let under = if self.overview_open().is_some() { None } else { self.surface_under(pos) };
-                self.overview_pointer(pos);
-
-                pointer.motion(
-                    self,
-                    under,
-                    &MotionEvent {
-                        location: pos,
-                        serial,
-                        time: event.time_msec(),
-                    },
-                );
-                pointer.frame(self);
+            }
+            InputEvent::TouchMotion { event, .. } => {
+                if touch_pointer(&mut self.touch_pointer, i32::from(event.slot()), TouchPhase::Motion).is_some()
+                    && let Some(pos) = self.first_output_position(&event)
+                {
+                    self.pointer_to(pos, event.time_msec());
+                }
+            }
+            InputEvent::TouchUp { event, .. } => {
+                if touch_pointer(&mut self.touch_pointer, i32::from(event.slot()), TouchPhase::Up).is_some() {
+                    self.pointer_button(BTN_LEFT, ButtonState::Released, event.time_msec());
+                }
+            }
+            InputEvent::TouchCancel { event, .. } => {
+                if touch_pointer(&mut self.touch_pointer, i32::from(event.slot()), TouchPhase::Cancel).is_some() {
+                    self.pointer_button(BTN_LEFT, ButtonState::Released, event.time_msec());
+                }
             }
             InputEvent::PointerButton { event, .. } => {
                 self.pointer_button(event.button_code(), event.state(), event.time_msec());
@@ -917,9 +956,45 @@ impl DesComp {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TouchPhase { Down, Motion, Up, Cancel }
+
+/// Which touch drives the pointer. The first finger down owns it until it
+/// lifts; other fingers are ignored. Returns the slot when this event belongs
+/// to the pointer-driving finger, and updates the owner.
+fn touch_pointer(owner: &mut Option<i32>, slot: i32, phase: TouchPhase) -> Option<i32> {
+    match (phase, *owner) {
+        (TouchPhase::Down, None) => { *owner = Some(slot); Some(slot) }
+        (TouchPhase::Motion, Some(held)) if held == slot => Some(slot),
+        (TouchPhase::Up, Some(held)) if held == slot => { *owner = None; Some(slot) }
+        // A cancel ends the whole sequence; some devices send slot -1 for it.
+        (TouchPhase::Cancel, Some(held)) => { *owner = None; Some(held) }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_first_finger_drives_the_pointer_until_it_lifts() {
+        let mut owner = None;
+        assert_eq!(touch_pointer(&mut owner, 3, TouchPhase::Down), Some(3));
+        // A second finger neither moves nor presses.
+        assert_eq!(touch_pointer(&mut owner, 4, TouchPhase::Down), None);
+        assert_eq!(touch_pointer(&mut owner, 4, TouchPhase::Motion), None);
+        assert_eq!(touch_pointer(&mut owner, 4, TouchPhase::Up), None);
+        assert_eq!(touch_pointer(&mut owner, 3, TouchPhase::Motion), Some(3));
+        assert_eq!(touch_pointer(&mut owner, 3, TouchPhase::Up), Some(3));
+        assert_eq!(owner, None);
+        // Motion with nothing held does nothing; a new touch takes over.
+        assert_eq!(touch_pointer(&mut owner, 3, TouchPhase::Motion), None);
+        assert_eq!(touch_pointer(&mut owner, 5, TouchPhase::Down), Some(5));
+        // Cancel releases whatever is held, even with slot -1.
+        assert_eq!(touch_pointer(&mut owner, -1, TouchPhase::Cancel), Some(5));
+        assert_eq!(touch_pointer(&mut owner, -1, TouchPhase::Cancel), None);
+    }
 
     #[test]
     fn alt_with_super_moves_the_divider_and_super_alone_the_keyboard() {

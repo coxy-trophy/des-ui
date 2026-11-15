@@ -40,8 +40,9 @@ render_elements! {
 
 /// The name, drawn at twice the size it is shown at: two bytes a pixel, how much of
 /// it is letter and how much is the hyphen, which takes the accent colour.
-const WORDMARK: &[u8] = include_bytes!("../assets/wordmark.la");
-const WORDMARK_SIZE: (usize, usize) = (848, 198);
+// The loading screen shows the bird alone, no name (branding/bird.py --mark).
+const WORDMARK: &[u8] = include_bytes!("../assets/bird.la");
+const WORDMARK_SIZE: (usize, usize) = (234, 270);
 /// The name is cut into this many strips, which a glitch pushes apart.
 const STRIPS: usize = 9;
 

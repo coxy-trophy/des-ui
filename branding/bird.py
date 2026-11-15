@@ -5,13 +5,17 @@
 filled even-odd) is read here and drawn with cairo, so no SVG renderer is needed.
 Run this after changing the drawing; it rewrites what the desktop embeds:
 
-    compositor/assets/wordmark.la   the bird beside "DEs-UI", for the boot splash,
-                                    the compositor's splash and the screensaver
+    compositor/assets/wordmark.la   the bird beside "DEs-UI", for the screensaver
+    compositor/assets/bird.la       the bird alone, for the boot splash and the
+                                    compositor's splash (the loading screens)
     branding/icons/des-ui-<n>.png   the bird as an icon, at the usual sizes
 """
 import re, sys
 from pathlib import Path
-import cairo
+try:
+    import cairo
+except ImportError:  # the bird alone can still be made without it (`--mark`)
+    cairo = None
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -56,6 +60,64 @@ def coverage(width, height, x, y, size):
     return [data[r * stride:r * stride + width] for r in range(height)]
 
 
+def flat_coverage(width, height, x, y, size, samples=8):
+    """`coverage` without cairo: the path flattened to polygons and filled even-odd,
+    `samples` x `samples` points a pixel. Matches cairo to within a level or two."""
+    k = size / VIEW
+    rings, ring, at = [], [], (0.0, 0.0)
+    for op, v in commands():
+        p = [(x + v[i] * k, y + v[i + 1] * k) for i in range(0, len(v), 2)]
+        if op == "M":
+            if ring: rings.append(ring)
+            ring, at = [p[0]], p[0]
+        elif op == "L":
+            ring.append(p[0]); at = p[0]
+        elif op == "C":
+            (x0, y0), (x1, y1), (x2, y2), (x3, y3) = at, p[0], p[1], p[2]
+            for n in range(1, 33):
+                t = n / 32; u = 1 - t
+                ring.append((u*u*u*x0 + 3*u*u*t*x1 + 3*u*t*t*x2 + t*t*t*x3,
+                             u*u*u*y0 + 3*u*u*t*y1 + 3*u*t*t*y2 + t*t*t*y3))
+            at = p[2]
+        else:
+            if ring: rings.append(ring)
+            ring = []
+    if ring: rings.append(ring)
+    edges = [(a, b) for r in rings for a, b in zip(r, r[1:] + r[:1]) if a[1] != b[1]]
+    rows = []
+    for row in range(height):
+        hits = [0] * width
+        for sy in range(samples):
+            yy = row + (sy + 0.5) / samples
+            xs = sorted(ax + (yy - ay) * (bx - ax) / (by - ay)
+                        for (ax, ay), (bx, by) in edges if (ay <= yy) != (by <= yy))
+            for left, right in zip(xs[0::2], xs[1::2]):
+                for sx in range(samples):
+                    # sample columns: px + (sx + 0.5) / samples inside [left, right)
+                    off = (sx + 0.5) / samples
+                    first = max(0, int(-(-(left - off) // 1)))
+                    last = min(width - 1, int((right - off) // 1) if (right - off) % 1 else int(right - off) - 1)
+                    for px in range(first, last + 1):
+                        hits[px] += 1
+        total = samples * samples
+        rows.append(bytes(min(255, round(h * 255 / total)) for h in hits))
+    return rows
+
+
+MARK_HEIGHT = 270  # nine strips of 30 rows; shown at half size, 135 px tall
+
+
+def mark(out, height=MARK_HEIGHT, fill=None):
+    """The bird alone, in the wordmark's format (the accent byte is always 0), its
+    ink filling the picture: what the loading screens show."""
+    width = round((INK[2] - INK[0]) / VIEW * height)
+    width += width % 2  # even, since it is shown at half size
+    fill = fill or (coverage if cairo else flat_coverage)
+    bird = fill(width, height, -INK[0] / VIEW * height, 0, height)
+    out.write_bytes(bytes(b for row in bird for v in row for b in (v, 0)))
+    return width, height
+
+
 def icon(size, out):
     surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, size, size)
     pad = size * 0.04
@@ -95,6 +157,9 @@ def lockup(out):
 
 
 if __name__ == "__main__":
+    print("bird.la %dx%d" % mark(ROOT / "compositor/assets/bird.la"))
+    if "--mark" in sys.argv:
+        sys.exit(0)
     size = lockup(ROOT / "compositor/assets/wordmark.la")
     (HERE / "icons").mkdir(exist_ok=True)
     for n in (16, 24, 32, 48, 64, 128, 256, 512):

@@ -173,6 +173,8 @@ pub struct DesComp {
     pub resize: Option<crate::layout::Drag>,
     /// Whether the pointer is over a divider it could drag, or dragging one.
     pub resize_hover: bool,
+    /// The touch slot currently acting as the pointer (see input.rs).
+    pub touch_pointer: Option<i32>,
     /// Which of the frame's panels are open.
     pub panels: Panels,
     /// The display in use: its application has the keyboard, and shortcuts act on it.
@@ -365,6 +367,7 @@ impl DesComp {
             use_clock: 0,
             resize: None,
             resize_hover: false,
+            touch_pointer: None,
             panels: Panels::default(),
             focus_screen: 0,
             cursor_status: CursorImageStatus::default_named(),

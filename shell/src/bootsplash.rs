@@ -9,8 +9,9 @@ use std::path::Path;
 /// The bird and the name, at twice the size they are shown at (made by
 /// `branding/bird.py`): two bytes a pixel, how much of it is white and how much
 /// takes the accent ("-UI"). The compositor's splash is drawn from the same.
-const WORDMARK: &[u8] = include_bytes!("../../compositor/assets/wordmark.la");
-const WORDMARK_SIZE: (u32, u32) = (848, 198);
+// The bird alone, no name: the same picture the compositor's splash shows.
+const WORDMARK: &[u8] = include_bytes!("../../compositor/assets/bird.la");
+const WORDMARK_SIZE: (u32, u32) = (234, 270);
 pub const STRIPS: u32 = 9;
 const TEXT: [u8; 3] = [0xDC, 0xE7, 0xEC];
 const COOL: [u8; 3] = [0x4F, 0xD8, 0xCE];
@@ -67,8 +68,13 @@ mod tests {
         let theme = Theme::load(crate::theme::DEFAULT_NAME);
         assert_eq!(write(&dir, &theme), Ok(29));
         let strip = image::open(dir.join("strip-0-4.png")).unwrap().to_rgba8();
-        assert_eq!((strip.width(), strip.height()), (424, 11));
-        // The middle strip crosses the letters: some of it is drawn, some is not.
+        assert_eq!((strip.width(), strip.height()), (WORDMARK_SIZE.0 / 2, WORDMARK_SIZE.1 / STRIPS / 2));
+        // Plymouth places the strips by the sizes its script states: they must agree.
+        let script = include_str!("../../session/boot/des-ui.script");
+        for (name, value) in [("NAME_WIDTH", strip.width()), ("STRIP_HEIGHT", strip.height()), ("NAME_HEIGHT", WORDMARK_SIZE.1 / 2)] {
+            assert!(script.contains(&format!("{name} = {value};")), "{name} in des-ui.script is not {value}");
+        }
+        // The middle strip crosses the bird: some of it is drawn, some is not.
         assert!(strip.pixels().any(|pixel| pixel[3] > 200) && strip.pixels().any(|pixel| pixel[3] == 0));
         let block = image::open(dir.join("block-on.png")).unwrap().to_rgba8();
         assert_eq!(block.get_pixel(0, 0).0, [theme.main.r(), theme.main.g(), theme.main.b(), 255]);
