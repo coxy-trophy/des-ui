@@ -90,7 +90,7 @@ impl DesComp {
     }
     pub fn shell_overlay_contains(&self,pos:Point<f64,Logical>)->bool{
         let screen=self.screen_at(pos);
-        [self.toast_area().filter(|_|screen==0),self.overlay_area().filter(|_|screen==0),self.dock_area_on(screen)].into_iter().flatten().any(|area|area.to_f64().contains(pos))
+        [self.toast_area().filter(|_|screen==0),self.island_area().filter(|_|screen==0),self.overlay_area().filter(|_|screen==0),self.dock_area_on(screen)].into_iter().flatten().any(|area|area.to_f64().contains(pos))
     }
 
     /// A visual caption only. Deliberately excluded from shell_overlay_contains.
@@ -108,6 +108,15 @@ impl DesComp {
     pub fn overlay_area(&self) -> Option<Rectangle<i32, Logical>> {
         let main = *self.screens.first()?;
         let mut area = self.overlay.filter(|_| !self.locked && !self.picking && self.shell.is_some())?;
+        area.loc += main.loc;
+        area.intersection(main)
+    }
+
+    /// Where on the desktop the status island reaches out of the strip, if it does.
+    /// Not behind the lock, nor while a screenshot is being chosen.
+    pub fn island_area(&self) -> Option<Rectangle<i32, Logical>> {
+        let main = *self.screens.first()?;
+        let mut area = self.island.filter(|_| !self.locked && !self.picking && self.shell.is_some())?;
         area.loc += main.loc;
         area.intersection(main)
     }

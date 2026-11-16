@@ -714,6 +714,7 @@ impl DesComp {
             tracing::info!("shell window closed");
             self.dismiss_saver();
             self.toast = None;
+            self.island = None;
             self.overlay = None;
             self.dock = None;
             self.docks.clear();
@@ -1657,6 +1658,11 @@ impl DesComp {
                             self.refresh_pointer_focus(false);
                         }
                     }
+                }
+                // Drawn above the applications and taking the pointer there, never
+                // the keyboard: nothing else changes.
+                Command::Island(area) => {
+                    self.island = area.map(|(x, y, w, h)| Rectangle::new((x, y).into(), (w, h).into()));
                 }
                 Command::Toast(area) => {
                     self.toast = area.map(|(x, y, w, h)| Rectangle::new((x, y).into(), (w.max(0), h.max(0)).into()));

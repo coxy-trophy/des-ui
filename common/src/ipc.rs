@@ -1086,6 +1086,10 @@ pub enum Command {
     /// The shell is showing notifications in this part of its window (x, y, width,
     /// height), which is to be seen above any application; or is showing none.
     Toast(Option<(i32, i32, i32, i32)>),
+    /// The status island reaches out of the status strip into this part of the
+    /// shell's window, to be seen above applications and to take the pointer there;
+    /// the keyboard stays where it is. Or it is back inside the strip.
+    Island(Option<(i32, i32, i32, i32)>),
     Dock(Option<(i32, i32, i32, i32)>),
     DockOn(usize, Option<(i32, i32, i32, i32)>),
     DockKeyboard { screen: usize, active: bool },
@@ -1176,6 +1180,8 @@ impl Command {
             Command::Dock(None) => "dock none\n".to_string(),
             Command::Dock(Some((x, y, w, h))) => format!("dock {x} {y} {w} {h}\n"),
             Command::Toast(None) => "toast none\n".to_string(),
+            Command::Island(None) => "island none\n".to_string(),
+            Command::Island(Some((x, y, w, h))) => format!("island {x} {y} {w} {h}\n"),
             Command::CompanionBubble(None) => "companion-bubble none\n".to_string(),
             Command::CompanionBubble(Some((x,y,w,h))) => format!("companion-bubble {x} {y} {w} {h}\n"),
             Command::CompanionChat(true) => "companion-chat on\n".to_string(),
@@ -1303,6 +1309,13 @@ impl Command {
             let [x, y, w, h] = numbers[..] else { return None };
             if w <= 0 || h <= 0 || x.checked_add(w).is_none() || y.checked_add(h).is_none() { return None; }
             return Some(Command::Overlay(Some((x, y, w, h))));
+        }
+        if let Some(area) = line.trim_end().strip_prefix("island ") {
+            if area == "none" { return Some(Command::Island(None)); }
+            let numbers: Vec<i32> = area.split(' ').map(str::parse).collect::<Result<_, _>>().ok()?;
+            let [x, y, w, h] = numbers[..] else { return None };
+            if w <= 0 || h <= 0 || x.checked_add(w).is_none() || y.checked_add(h).is_none() { return None; }
+            return Some(Command::Island(Some((x, y, w, h))));
         }
         if let Some(area) = line.trim_end().strip_prefix("toast ") {
             if area == "none" {
@@ -1742,6 +1755,8 @@ mod tests {
             Command::Record("/home/ada/Videos/a film.mp4".into()),
             Command::RecordStop,
             Command::Toast(Some((1500, 52, 380, 240))),
+            Command::Island(None),
+            Command::Island(Some((700, 860, 400, 176))),
             Command::ApplyDisplays(vec![
                 DisplayChoice { name: "eDP-1".into(), mode: mode(1920, 1080, 60052), main: false, setup: Setup::default() },
                 DisplayChoice { name: "HDMI-A-1".into(), mode: mode(3840, 2160, 30000), main: true, setup: Setup { scale: 200, turn: 270, usage: Usage::Off } },

@@ -787,6 +787,11 @@ impl Music {
         self.shared.lock().unwrap().now.clone()
     }
 
+    /// The cover of what plays, once fetched (the status island shows it).
+    pub fn cover(&mut self, ctx: &egui::Context, url: Option<&str>) -> Option<TextureHandle> {
+        self.covers.get(ctx, url)
+    }
+
     /// Starts on the words of what is playing.
     pub fn show_lyrics(&mut self) {
         self.source = Source::Lyrics;

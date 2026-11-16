@@ -442,8 +442,9 @@ impl eframe::App for App {
                 let clicks = {
                     let mut band = ui.new_child(egui::UiBuilder::new().max_rect(status).layout(Layout::left_to_right(Align::Center)));
                     band.set_clip_rect(status);
-                    panels::status(&mut band, &theme, &self.mon, state.as_ref(), open, if self.dock.captures_keyboard() { Some("APPS") } else { overlay }, self.notices.count(), self.capture.recording.map(|since| since.elapsed()), self.desktop.as_ref().map_or(des_common::ipc::Hands::Off, |desktop| desktop.hands), Some(&self.tray), self.osk.open, self.quick.open, playing.as_ref().map(|(track, artists)| (track.as_str(), artists.as_str())), clock)
+                    panels::status(&mut band, &theme, &self.mon, state.as_ref(), open, if self.dock.captures_keyboard() { Some("APPS") } else { overlay }, self.notices.count(), self.capture.recording.map(|since| since.elapsed()), self.desktop.as_ref().map_or(des_common::ipc::Hands::Off, |desktop| desktop.hands), Some(&self.tray), self.osk.open, self.quick.open, playing.as_ref().map(|(track, artists)| (track.as_str(), artists.as_str())), clock, self.config.status_island)
                 };
+                self.island_room = clicks.centre_room;
                 let (toggled, settings_clicked, music_clicked, notices_clicked, power_clicked, stop_clicked) =
                     (clicks.toggled, clicks.settings, clicks.music, clicks.notices, clicks.power, clicks.stop);
                 if clicks.keyboard {
@@ -891,12 +892,16 @@ impl eframe::App for App {
         // told where, so that it shows them above whatever application is open.
         // The volume or brightness meter hangs first; the toasts follow below it.
         let corner = workspace.right_top() + vec2(-16.0, 12.0);
-        let meter = self.osd.show(ctx, &theme, corner, animate);
-        let toasts_at = meter.map_or(corner, |meter| corner + vec2(0.0, meter.height() + 8.0));
-        let (mut covered, chosen) = self.notices.toasts(ctx, &theme, toasts_at);
-        if let Some(meter) = meter {
-            covered = Some(covered.map_or(meter, |toasts| toasts.union(meter)));
-        }
+        // With the status island on, it shows what the meter and the toasts would.
+        let (mut covered, chosen) = if self.config.status_island && self.island_room != egui::Rect::NOTHING {
+            (None, self.show_island(ctx, &theme, status_top, overlay, state.as_ref(), animate))
+        } else {
+            self.lift_island(None);
+            let meter = self.osd.show(ctx, &theme, corner, animate);
+            let toasts_at = meter.map_or(corner, |meter| corner + vec2(0.0, meter.height() + 8.0));
+            let (covered, chosen) = self.notices.toasts(ctx, &theme, toasts_at);
+            (meter.map_or(covered, |meter| Some(covered.map_or(meter, |toasts| toasts.union(meter)))), chosen)
+        };
         // The calendar opened from the clock; lifted with the toasts, so it shows over applications.
         if let Some(anchor) = agenda::take_request(ctx) {
             self.agenda.toggle(ctx, anchor);
@@ -1121,6 +1126,73 @@ impl App {
 }
 
 impl App {
+    /// Draws the status island (island.rs) in the room the strip left for it, with
+    /// what is going on; lifts it above the applications while it reaches out of
+    /// the strip; and does what was asked of it. Returns a notification's sender to
+    /// bring forward, as the toasts did.
+    fn show_island(&mut self, ctx: &egui::Context, theme: &Theme, strip_top: f32, overlay: Option<&str>,
+                   state: Option<&des_common::ipc::DesktopState>, animate: bool) -> Option<notify::Chosen> {
+        let now = self.music.now();
+        let cover = now.track.as_ref().and_then(|track| track.cover.clone());
+        let cover = self.music.cover(ctx, cover.as_deref());
+        let song = now.track.as_ref().map(|track| island::Song {
+            title: track.name.clone(),
+            artists: track.artists.clone(),
+            cover,
+            position_ms: now.position_ms(),
+            duration_ms: track.duration_ms,
+            playing: now.playing,
+        });
+        let (arriving, waiting, newest) = self.notices.island(island::ARRIVING_FOR);
+        let level = self.osd.visible(std::time::Instant::now(), animate).map(|(kind, level, _)| (kind, level));
+        let holder = panels::holder(if self.dock.captures_keyboard() { Some("APPS") } else { overlay }, state);
+        let feed = island::Feed {
+            holder,
+            apps: state.map(|state| state.apps.len()),
+            song,
+            recording: self.capture.recording.map(|since| since.elapsed()),
+            level,
+            arriving,
+            waiting,
+            newest,
+        };
+        let (rect, deed) = self.island.show(ctx, theme, self.island_room, &feed, animate);
+        // Above the strip it is over the applications: the compositor lifts it there.
+        let reach = (rect.top() < strip_top - 0.5).then(|| {
+            (rect.left().floor() as i32 - 2, rect.top().floor() as i32 - 2, rect.width().ceil() as i32 + 4, rect.height().ceil() as i32 + 4)
+        });
+        self.lift_island(reach);
+        match deed {
+            island::Deed::Nothing => None,
+            island::Deed::Music(word) => { self.music.command(word); None }
+            island::Deed::OpenMusic => { self.island.close(); if !self.music.open { self.toggle_music(); } None }
+            island::Deed::StopRecording => { self.toggle_recording(); None }
+            island::Deed::OpenNotes => { self.island.close(); if !self.notices.open { self.toggle_notices(); } None }
+            island::Deed::Holding(id) => {
+                let frame = std::time::Duration::from_secs_f32(ctx.input(|input| input.unstable_dt).clamp(0.0, 0.25));
+                self.notices.island_hold(id, frame);
+                None
+            }
+            island::Deed::Note(id, island::NoteDeed::Read) => { self.notices.island_read(id); self.island.close(); None }
+            island::Deed::Note(id, island::NoteDeed::Reply) => {
+                self.island.close();
+                self.notices.island_reply(id);
+                if !self.notices.open { self.toggle_notices(); }
+                None
+            }
+            island::Deed::Note(id, island::NoteDeed::Act(key)) => { self.island.close(); self.notices.island_act(id, &key) }
+        }
+    }
+
+    /// Tells the compositor where the island reaches above the strip, or that it
+    /// does not, when that changes.
+    fn lift_island(&mut self, reach: Option<(i32, i32, i32, i32)>) {
+        if self.island_lifted != Some(reach) {
+            self.island_lifted = Some(reach);
+            self.send(Command::Island(reach));
+        }
+    }
+
     /// Does what the quick settings asked.
     fn quick_action(&mut self, ctx: &egui::Context, action: quick::Action) {
         match action {

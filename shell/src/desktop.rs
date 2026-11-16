@@ -18,6 +18,8 @@ type Area=(i32,i32,i32,i32);
 struct Presentation {
     toast:Option<Option<Area>>,
     overlay:Option<Option<Area>>,
+    /// The status island's reach above the strip; latest wins, as it moves every frame.
+    island:Option<Option<Area>>,
 }
 
 pub struct Desktop {
@@ -209,6 +211,10 @@ impl Desktop {
                 self.presentation.lock().unwrap_or_else(|error|error.into_inner()).overlay=Some(area);
                 Ok(())
             }
+            Command::Island(area) => {
+                self.presentation.lock().unwrap_or_else(|error|error.into_inner()).island=Some(area);
+                Ok(())
+            }
             Command::Lock | Command::Unlock => {
                 // A separate slot gives security requests priority over window actions.
                 self.security_generation = self.security_generation.wrapping_add(1);
@@ -371,6 +377,10 @@ impl Link {
             self.outgoing.enqueue(Command::Overlay(area).encode().as_bytes())?;
             self.presentation.overlay=Some(area);
         }
+        if let Some(area)=desired.island.filter(|_|desired.island!=self.presentation.island) {
+            self.outgoing.enqueue(Command::Island(area).encode().as_bytes())?;
+            self.presentation.island=Some(area);
+        }
         Ok(())
     }
     fn ready(&self) -> bool { self.seen_state && self.known_lock.is_some() }
@@ -408,7 +418,7 @@ mod tests {
         desktop.send(Command::Toast(Some((40,50,360,80)))).unwrap();
         assert!(desktop.send(Command::Toast(None)).is_ok(),"clearing a lifted region must survive queue backpressure");
         assert!(desktop.send(Command::Overlay(None)).is_ok());
-        assert_eq!(*desktop.presentation.lock().unwrap(),Presentation{toast:Some(None),overlay:Some(None)});
+        assert_eq!(*desktop.presentation.lock().unwrap(),Presentation{toast:Some(None),overlay:Some(None),island:None});
         desktop.heard=false;
         desktop.send(Command::Overlay(Some((1,2,300,200)))).unwrap();
         desktop.send(Command::Overlay(None)).unwrap();
@@ -426,11 +436,11 @@ mod tests {
     #[test]
     fn presentation_retries_backpressure_and_reconnect_with_latest_clear() {
         let mut link=Link::new();greet(&mut link,false);
-        let shown=Presentation{toast:Some(Some((10,20,360,80))),overlay:Some(Some((30,40,500,300)))};
+        let shown=Presentation{toast:Some(Some((10,20,360,80))),overlay:Some(Some((30,40,500,300))),island:None};
         link.queue_presentation(shown).unwrap();
         let mut bytes=Vec::new();link.outgoing.flush(&mut bytes).unwrap();
         assert!(String::from_utf8(bytes).unwrap().contains("toast 10 20 360 80"));
-        let clear=Presentation{toast:Some(None),overlay:Some(None)};
+        let clear=Presentation{toast:Some(None),overlay:Some(None),island:None};
         link.outgoing.enqueue(&vec![b'x';64*1024]).unwrap();
         assert!(link.queue_presentation(clear).is_err());
         assert_eq!(link.presentation,shown,"failed enqueue must leave the clear pending");
@@ -450,7 +460,7 @@ mod tests {
     #[test]
     fn presentation_waits_for_handshake_and_unlock() {
         let mut link=Link::new();
-        let desired=Presentation{toast:Some(None),overlay:Some(None)};
+        let desired=Presentation{toast:Some(None),overlay:Some(None),island:None};
         link.queue_presentation(desired).unwrap();
         assert_eq!(link.presentation,Presentation::default());
         greet(&mut link,true);

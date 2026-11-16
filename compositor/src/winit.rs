@@ -159,6 +159,7 @@ pub fn init_winit(
                 let secondary_savers = state.visible_secondary_savers();
                 let output_rect = state.space.output_geometry(&output);
                 let toast_area = state.toast_area();
+                let island_area = state.island_area();
                 let companion_bubble_area = state.companion_bubble_area();
                 let overlay_area = state.overlay_area();
                 let docks = state.dock_layers();
@@ -210,6 +211,8 @@ pub fn init_winit(
                     if !covered {
                     toasts.extend(crate::toast::elements(renderer, state.shell.as_ref(), companion_bubble_area, primary,
                         &state.companion_bubble_id, (0,0).into(), scale).into_iter().map(crate::splash::TopElements::Toast));
+                    toasts.extend(crate::toast::elements(renderer, state.shell.as_ref(), island_area, primary, &state.island_id, (0, 0).into(), scale)
+                        .into_iter().map(crate::splash::TopElements::Toast));
                     toasts.extend(
                         crate::toast::elements(renderer, state.shell.as_ref(), toast_area, primary, &state.toast_id, (0, 0).into(), scale)
                             .into_iter()

@@ -617,7 +617,7 @@ mod status_island_tests {
                     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(band).layout(Layout::left_to_right(Align::Center)));
                     let panels = Panels { left: true, right: true, bottom: true };
                     let clicks = status(&mut child, &theme, &mon, Some(&desktop), panels, None, 3, None, des_common::ipc::Hands::Off, None, false, false,
-                        playing.then_some(("Midnight City", "M83")), clock);
+                        playing.then_some(("Midnight City", "M83")), clock, false);
                     found = clicks.islands;
                 });
             });
@@ -774,6 +774,7 @@ pub fn status(
     quick_open: bool,
     playing: Option<(&str, &str)>,
     clock: bool,
+    status_island: bool,
 ) -> StatusClicks {
     let stage = powerup::stage(ui.ctx());
     if stage.alpha(Part::Status) < 1.0 {
@@ -908,13 +909,19 @@ pub fn status(
     let width = if short { compact } else { full };
     let x = (row.center().x - width / 2.0).clamp(lo, (hi - width).max(lo));
     let room = Rect::from_min_max(pos2(x, row.top()), pos2(hi.max(x + 1.0), row.bottom()));
+    // The status island (island.rs) draws the centre itself, in all the room there is.
+    if status_island {
+        clicks.centre_room = Rect::from_min_max(pos2(lo, row.top()), pos2(hi, row.bottom()));
+        clicks.islands = [left, Rect::NOTHING, right];
+        if clock {
+            use chrono::Timelike;
+            ui.ctx().request_repaint_after(Duration::from_secs((60 - chrono::Local::now().second()) as u64));
+        }
+        return clicks;
+    }
     let centre = if short && !fits(compact) { Rect::NOTHING } else { island(ui, room, Layout::left_to_right(Align::Center), 20.0, |ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-        let holder = match (overlay, desktop.and_then(|d| d.focus.and_then(|index| d.apps.get(index)))) {
-            (Some(overlay), _) => overlay.to_string(),
-            (None, Some(app)) => truncate(&app.title, 28).to_uppercase(),
-            (None, None) => "TERMINAL".to_string(),
-        };
+        let holder = holder(overlay, desktop);
         ui::icon(ui, Icon::Keyboard, 16.0, ui::SECONDARY).on_hover_text(format!("{} has the keyboard", holder.to_lowercase()));
         ui::text(ui, &holder, ui::display_bold(12.0), ui::TEXT);
         if short { return; }
@@ -944,6 +951,15 @@ pub fn status(
         ui.ctx().request_repaint_after(Duration::from_secs((60 - chrono::Local::now().second()) as u64));
     }
     clicks
+}
+
+/// Who has the keyboard, as the centre of the strip names it.
+pub fn holder(overlay: Option<&str>, desktop: Option<&DesktopState>) -> String {
+    match (overlay, desktop.and_then(|d| d.focus.and_then(|index| d.apps.get(index)))) {
+        (Some(overlay), _) => overlay.to_string(),
+        (None, Some(app)) => truncate(&app.title, 28).to_uppercase(),
+        (None, None) => "TERMINAL".to_string(),
+    }
 }
 
 /// Height of each status island, inside `des_common::STATUS_HEIGHT`.
@@ -1044,11 +1060,13 @@ pub struct StatusClicks {
     pub quick: bool,
     /// Left, centre and right.
     pub islands: [Rect; 3],
+    /// Between the left and right islands, for the status island to fill.
+    pub centre_room: Rect,
 }
 
 impl Default for StatusClicks {
     fn default() -> Self {
-        Self { toggled: None, settings: false, music: false, notices: false, power: false, stop: false, hands: false, keyboard: false, quick: false, islands: [Rect::NOTHING; 3] }
+        Self { toggled: None, settings: false, music: false, notices: false, power: false, stop: false, hands: false, keyboard: false, quick: false, islands: [Rect::NOTHING; 3], centre_room: Rect::NOTHING }
     }
 }
 

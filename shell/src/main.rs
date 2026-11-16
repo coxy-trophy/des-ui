@@ -37,6 +37,7 @@ mod music;
 mod notify;
 mod oklch;
 mod osk;
+mod island;
 mod osd;
 mod quick;
 mod panels;
@@ -262,6 +263,11 @@ struct App {
     quick: quick::Quick,
     /// The meter shown when the volume or brightness changes from outside.
     osd: osd::Osd,
+    /// The centre of the status strip (island.rs), and the room it had this frame.
+    island: island::Island,
+    island_room: egui::Rect,
+    /// What was last asked of the compositor for the island's reach above the strip.
+    island_lifted: Option<Option<(i32, i32, i32, i32)>>,
     /// Applications' status icons, for the status strip.
     tray: tray::Tray,
 }
@@ -458,6 +464,9 @@ impl App {
             agenda,
             quick: quick::Quick::default(),
             osd: osd::Osd::default(),
+            island: island::Island::default(),
+            island_room: egui::Rect::NOTHING,
+            island_lifted: None,
             tray,
             scratchpad,
             overlay_area: None,

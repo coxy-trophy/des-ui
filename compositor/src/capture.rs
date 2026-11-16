@@ -125,6 +125,7 @@ impl DesComp {
     fn grab_unlocked(&mut self, screen: usize, pointer: bool) -> Result<Frame, String> {
         let (output, rect) = self.output_of(screen).ok_or("there is no such display")?;
         let toast_area = self.toast_area();
+        let island_area = self.island_area();
         let docks = self.dock_layers();
         let primary = self.screens.first().map(|screen| screen.loc);
         let at = self.seat.get_pointer().map(|pointer| pointer.current_location());
@@ -172,6 +173,8 @@ impl DesComp {
                     renderer, overview, &self.space, shell, &output, now));
             }
             if !self.overview_covers(rect) {
+                elements.extend(crate::toast::elements(renderer, self.shell.as_ref(), island_area, primary, &self.island_id, rect.loc, scale)
+                    .into_iter().map(OutputElements::Toast));
                 elements.extend(
                     crate::toast::elements(renderer, self.shell.as_ref(), toast_area, primary, &self.toast_id, rect.loc, scale)
                         .into_iter()

@@ -130,6 +130,10 @@ pub struct DesComp {
     pub idle_inhibitors: Vec<WlSurface>,
     /// Where in the shell's window its toasts are, to be shown above everything.
     pub toast: Option<Rectangle<i32, Logical>>,
+    /// The part of the shell's window the status island reaches into, above the
+    /// applications (`Command::Island`).
+    pub island: Option<Rectangle<i32, Logical>>,
+    pub island_id: smithay::backend::renderer::element::Id,
     pub companion_bubble: Option<(Rectangle<i32, Logical>, Instant)>,
     pub companion_bubble_id: smithay::backend::renderer::element::Id,
     /// The shell-local dock and its pointer corridor, independent of notifications.
@@ -338,6 +342,8 @@ impl DesComp {
             idle_held: false,
             idle_inhibitors: Vec::new(),
             toast: None,
+            island: None,
+            island_id: smithay::backend::renderer::element::Id::new(),
             companion_bubble: None,
             companion_bubble_id: smithay::backend::renderer::element::Id::new(),
             dock: None,

@@ -218,6 +218,13 @@ pub struct Notice {
 }
 
 impl Notice {
+    /// A plain notification for tests elsewhere in the shell.
+    #[cfg(test)]
+    pub fn sample(app: &str, title: &str, body: &str) -> Notice {
+        Notice { id: 1, app: app.into(), title: title.into(), body: body.into(), actions: Vec::new(), urgent: false, icon: None,
+            sound: None, clock: "12:00".into(), stay: Some(STAY), shown: None, fresh: true, foreign: false }
+    }
+
     /// What clicking the notification itself does, if its sender offered that.
     fn default_action(&self) -> Option<&str> {
         self.actions.iter().find(|(key, _)| key == "default").map(|(key, _)| key.as_str())
@@ -600,6 +607,57 @@ impl Center {
 
     pub fn toggle(&mut self) {
         self.open = !self.open;
+    }
+
+    /// For the status island, in place of the toasts: the notification coming in
+    /// (the first waiting, as a toast would be) and how far through its time it is,
+    /// how many are waiting, and the newest. One shows at a time, for
+    /// `island::ARRIVING_FOR` or its own shorter time; an urgent one until it is
+    /// dealt with. Then it settles into the count and stays in the list.
+    pub fn island(&mut self, arriving_for: Duration) -> (Option<(Notice, f32)>, usize, Option<Notice>) {
+        let stay = |notice: &Notice| notice.stay.map(|stay| stay.min(arriving_for));
+        for notice in &mut self.notices {
+            if let (Some(shown), Some(stay)) = (notice.shown, stay(notice)) {
+                if shown.elapsed() >= stay {
+                    notice.fresh = false;
+                    notice.shown = None;
+                }
+            }
+        }
+        let arriving = waiting_order(&self.notices).first().copied().map(|index| {
+            let notice = &mut self.notices[index];
+            let shown = *notice.shown.get_or_insert_with(Instant::now);
+            let through = stay(notice).map_or(0.0, |stay| shown.elapsed().as_secs_f32() / stay.as_secs_f32().max(0.001));
+            (notice.clone(), through)
+        });
+        (arriving, self.notices.len(), self.notices.last().cloned())
+    }
+
+    /// The pointer rests on the notification in the island: its time stands still.
+    pub fn island_hold(&mut self, id: u32, frame: Duration) {
+        if let Some(shown) = self.notices.iter_mut().find(|n| n.id == id).and_then(|n| n.shown.as_mut()) {
+            *shown += frame;
+        }
+    }
+
+    /// Looked at in the island: it leaves the island and stays in the list.
+    pub fn island_read(&mut self, id: u32) {
+        if let Some(notice) = self.notices.iter_mut().find(|n| n.id == id) {
+            notice.fresh = false;
+            notice.shown = None;
+        }
+    }
+
+    /// Answer it: in the list, where there is room to type.
+    pub fn island_reply(&mut self, id: u32) {
+        self.island_read(id);
+        self.replying = Some((id, String::new()));
+        self.open = true;
+    }
+
+    /// One of its own actions, chosen in the island.
+    pub fn island_act(&mut self, id: u32, key: &str) -> Option<Chosen> {
+        self.act(id, key)
     }
 
     /// Draws the toasts, hanging from `corner` (their top right). Returns the part of
@@ -988,9 +1046,9 @@ impl Watch {
                 Some(since) if since.elapsed() > Duration::from_secs(4) => {
                     self.online = Some(online);
                     self.since = None;
-                    if online {
-                        center.post("Back online", "", false);
-                    } else {
+                    // Losing the connection is worth a word; getting it back is not
+                    // (it came up on every resume and every Wi-Fi hop).
+                    if !online {
                         center.post("Offline", "The network connection was lost.", false);
                     }
                 }

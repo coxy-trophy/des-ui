@@ -1536,6 +1536,9 @@ impl Settings {
 
     fn notifications(&mut self, ui: &mut Ui, theme: &Theme, config: &Config, changes: &mut Vec<Change>) {
         heading(ui, "ALERTS", "");
+        if switch_row(ui, theme, "In the status island", "Notifications, music, recordings and volume show in the middle of the status strip instead of in corner pop-ups", config.status_island) {
+            changes.push(Change::Set("status_island", config.status_island.then(|| "off".to_string())));
+        }
         if switch_row(ui, theme, "Notification sounds", "A notification that shows also makes a sound, unless it asks not to", config.notification_sounds) {
             changes.push(Change::Set("notification_sounds", config.notification_sounds.then(|| "off".to_string())));
         }

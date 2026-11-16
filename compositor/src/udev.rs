@@ -1051,6 +1051,7 @@ impl DesComp {
         }
         let secondary_savers = self.visible_secondary_savers();
         let toast_area = self.toast_area();
+        let island_area = self.island_area();
         let companion_bubble_area = self.companion_bubble_area();
         let overlay_area = self.overlay_area();
         let docks = self.dock_layers();
@@ -1123,6 +1124,8 @@ impl DesComp {
             if !overview.is_some_and(|overview| matches!(overview.kind, des_common::ipc::OverviewKind::Workspaces | des_common::ipc::OverviewKind::Drag)) {
             elements.extend(crate::toast::elements(renderer, self.shell.as_ref(), companion_bubble_area, primary,
                 &self.companion_bubble_id, geometry.loc, scale).into_iter().map(OutputElements::Toast));
+            elements.extend(crate::toast::elements(renderer, self.shell.as_ref(), island_area, primary, &self.island_id, geometry.loc, scale)
+                .into_iter().map(OutputElements::Toast));
             elements.extend(
                 crate::toast::elements(renderer, self.shell.as_ref(), toast_area, primary, &self.toast_id, geometry.loc, scale)
                     .into_iter()
