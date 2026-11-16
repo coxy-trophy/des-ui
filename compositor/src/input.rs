@@ -408,6 +408,7 @@ impl DesComp {
         if button_state == ButtonState::Pressed {
             self.blur_companion_chat_on_press(pointer.is_grabbed(), on_overlay);
             self.dismiss_dock_keyboard_on_press(pointer.is_grabbed(), on_overlay);
+            self.dismiss_island_on_press(pointer.current_location());
         }
         // The left button on a divider between windows drags it; neither the
         // press nor its release reaches the windows either side.

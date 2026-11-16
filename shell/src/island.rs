@@ -9,11 +9,13 @@
 //! grows over the left or right island.
 //!
 //! What it shows is decided by `mode`, its size by `size_of`; both are plain and
-//! tested. Moving between sizes is a critically damped spring.
+//! tested. Growing is a spring with a little overshoot, shrinking settles without
+//! one (`spring`). The outline takes the colour of what it shows (`outline`), and
+//! music paused for a minute leaves the island (`music_shows`).
 
 use crate::{notify, osd, theme::Theme, ui};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, Id, Order, Pos2, Rect, Sense, Stroke, StrokeKind, TextureHandle, Ui, Vec2};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Height of the island in the strip, as the other islands.
 pub const REST_HEIGHT: f32 = crate::panels::ISLAND_HEIGHT;
@@ -27,6 +29,13 @@ const ARRIVING_HEIGHT: f32 = 52.0;
 const CARD_RADIUS: f32 = 28.0;
 /// The spring's natural frequency: settles in about a third of a second.
 const STIFFNESS: f32 = 16.0;
+/// Damping while growing: under 1, so it overshoots a little (about 2% at 60 fps) and
+/// comes back, the way Apple's island opens. Shrinking is critically damped (1).
+const GROW_DAMPING: f32 = 0.7;
+/// An open island left alone this long (the pointer not on it) closes by itself.
+pub const COLLAPSE_AFTER: Duration = Duration::from_secs(5);
+/// Music paused this long leaves the island, as an activity that has ended.
+pub const PAUSED_FOR: Duration = Duration::from_secs(60);
 const RED: Color32 = Color32::from_rgb(0xFF, 0x5D, 0x5D);
 
 /// What the island is showing.
@@ -100,11 +109,36 @@ pub fn radius_of(size: Vec2) -> f32 {
     (size.y / 2.0).min(CARD_RADIUS)
 }
 
-/// One step of a critically damped spring towards `target`.
+/// One step of the spring towards `target`: a little bouncy when growing,
+/// critically damped when shrinking (so it never dips below where it settles).
 fn spring(position: f32, velocity: f32, target: f32, dt: f32) -> (f32, f32) {
-    let acceleration = STIFFNESS * STIFFNESS * (target - position) - 2.0 * STIFFNESS * velocity;
+    // Growing lasts until it turns back from the overshoot, not until it first
+    // passes the target (that would damp the overshoot away).
+    let growing = target > position || velocity > 0.0;
+    let damping = if growing { GROW_DAMPING } else { 1.0 };
+    let acceleration = STIFFNESS * STIFFNESS * (target - position) - 2.0 * damping * STIFFNESS * velocity;
     let velocity = velocity + acceleration * dt;
     (position + velocity * dt, velocity)
+}
+
+/// Whether music still shows: playing, or paused for less than `PAUSED_FOR`.
+pub fn music_shows(playing: bool, paused_for: Option<Duration>) -> bool {
+    playing || paused_for.is_none_or(|paused| paused < PAUSED_FOR)
+}
+
+/// Whether an open island left alone for `idle` closes.
+pub fn collapse_due(idle: Duration) -> bool {
+    idle >= COLLAPSE_AFTER
+}
+
+/// The outline's colour: the colour of what the island shows, faint, or the
+/// usual line when it shows nothing of its own.
+pub fn outline(mode: Mode, accent: Color32) -> Color32 {
+    match mode {
+        Mode::Recording => RED.gamma_multiply(0.55),
+        Mode::Music | Mode::MusicOpen | Mode::Arriving | Mode::NoteOpen => accent.gamma_multiply(0.45),
+        Mode::Resting | Mode::Waiting | Mode::Level => ui::LINE,
+    }
 }
 
 /// The playing song.
@@ -181,12 +215,17 @@ pub struct Island {
     size: Option<Vec2>,
     velocity: Vec2,
     mode: Option<Mode>,
+    /// When the song showing was paused, while it is.
+    paused_since: Option<Instant>,
+    /// While open: when the pointer was last on it (or when it opened).
+    touched: Option<Instant>,
 }
 
 impl Island {
     /// Shuts the card, if it is open.
     pub fn close(&mut self) {
         self.open = false;
+        self.touched = None;
     }
 
     /// Draws the island centred on `room` (the part of the strip between the left
@@ -194,7 +233,21 @@ impl Island {
     /// where it is (for the compositor to lift, when it reaches above the strip)
     /// and what was done.
     pub fn show(&mut self, ctx: &egui::Context, theme: &Theme, room: Rect, feed: &Feed, animate: bool) -> (Rect, Deed) {
-        let facts = feed.facts();
+        let mut facts = feed.facts();
+        // Paused music stays a minute, then leaves the island.
+        match &feed.song {
+            // Not while its card is open: that is someone looking at it.
+            Some(song) if !song.playing && !self.open => {
+                let since = *self.paused_since.get_or_insert_with(Instant::now);
+                let paused_for = since.elapsed();
+                if !music_shows(false, Some(paused_for)) {
+                    facts.music = false;
+                } else {
+                    ctx.request_repaint_after(PAUSED_FOR - paused_for);
+                }
+            }
+            _ => self.paused_since = None,
+        }
         // Nothing left to open: the card closes by itself.
         if self.open && !(facts.music || facts.arriving || facts.waiting) {
             self.open = false;
@@ -208,7 +261,8 @@ impl Island {
                 let (w, vw) = spring(size.x, self.velocity.x, target.x, dt);
                 let (h, vh) = spring(size.y, self.velocity.y, target.y, dt);
                 self.velocity = vec2(vw, vh);
-                let size = vec2(w, h);
+                // An overshoot never reaches over the left or right island.
+                let size = vec2(w.min(room.width()), h);
                 if (size - target).length() < 0.5 && self.velocity.length() < 1.0 {
                     self.velocity = Vec2::ZERO;
                     target
@@ -237,7 +291,7 @@ impl Island {
                 ui.set_clip_rect(rect.expand(24.0));
                 let response = ui.allocate_rect(rect, Sense::click());
                 let radius = radius_of(rect.size());
-                ui.painter().rect(rect, radius, Color32::from_rgba_unmultiplied(10, 14, 18, 247), Stroke::new(1.0_f32, ui::LINE), StrokeKind::Inside);
+                ui.painter().rect(rect, radius, Color32::from_rgba_unmultiplied(10, 14, 18, 247), Stroke::new(1.0_f32, outline(mode, theme.main)), StrokeKind::Inside);
                 let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rect));
                 inner.set_clip_rect(rect);
                 inner.set_opacity(settled);
@@ -257,7 +311,25 @@ impl Island {
                 }
                 response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label(mode, feed)));
             });
-        // Away from it, or Escape, shuts the card.
+        // Left alone, it closes by itself; the pointer on it keeps it open.
+        if self.open {
+            let on_it = ctx.input(|input| input.pointer.hover_pos()).is_some_and(|at| rect.contains(at));
+            let now = Instant::now();
+            let touched = *self.touched.get_or_insert(now);
+            if on_it {
+                self.touched = Some(now);
+                ctx.request_repaint_after(COLLAPSE_AFTER);
+            } else if collapse_due(now - touched) {
+                self.close();
+                ctx.request_repaint();
+            } else {
+                ctx.request_repaint_after(COLLAPSE_AFTER - (now - touched));
+            }
+        } else {
+            self.touched = None;
+        }
+        // Away from it, or Escape, shuts the card. A click in an application never
+        // reaches the shell: the compositor sends `island-away` for that (close()).
         if self.open {
             let pressed_away = ctx.input(|input| input.pointer.any_pressed()
                 && input.pointer.interact_pos().is_some_and(|at| !rect.contains(at)));
@@ -271,7 +343,7 @@ impl Island {
             if at.x + REST_HEIGHT <= room.right() {
                 let dot = Rect::from_min_size(at, Vec2::splat(REST_HEIGHT));
                 let painter = ctx.layer_painter(egui::LayerId::new(Order::Foreground, Id::new("status-island-bubble")));
-                painter.rect(dot, REST_HEIGHT / 2.0, Color32::from_rgba_unmultiplied(10, 14, 18, 247), Stroke::new(1.0_f32, ui::LINE), StrokeKind::Inside);
+                painter.rect(dot, REST_HEIGHT / 2.0, Color32::from_rgba_unmultiplied(10, 14, 18, 247), Stroke::new(1.0_f32, outline(Mode::Recording, theme.main)), StrokeKind::Inside);
                 painter.circle_filled(dot.center(), 4.0, RED);
             }
         }
@@ -600,7 +672,7 @@ mod tests {
     }
 
     #[test]
-    fn the_spring_arrives_without_overshooting() {
+    fn growing_overshoots_a_little_and_settles() {
         let (mut x, mut v) = (214.0_f32, 0.0_f32);
         let mut peak = x;
         for _ in 0..120 {
@@ -608,7 +680,53 @@ mod tests {
             peak = peak.max(x);
         }
         assert!((x - 400.0).abs() < 0.5, "{x}");
-        assert!(peak <= 400.5, "overshot to {peak}");
+        assert!(peak > 400.5, "no overshoot: peak {peak}");
+        assert!(peak < 400.0 + 186.0 * 0.05, "overshot too far, to {peak}");
+    }
+
+    #[test]
+    fn shrinking_never_dips_below_where_it_settles() {
+        let (mut x, mut v) = (400.0_f32, 0.0_f32);
+        let mut low = x;
+        for _ in 0..120 {
+            (x, v) = spring(x, v, 214.0, 1.0 / 60.0);
+            low = low.min(x);
+        }
+        assert!((x - 214.0).abs() < 0.5, "{x}");
+        assert!(low >= 213.5, "dipped to {low}");
+    }
+
+    #[test]
+    fn an_open_island_left_alone_closes() {
+        assert!(!collapse_due(Duration::ZERO));
+        assert!(!collapse_due(COLLAPSE_AFTER - Duration::from_millis(1)));
+        assert!(collapse_due(COLLAPSE_AFTER));
+    }
+
+    #[test]
+    fn closing_forgets_when_it_was_touched() {
+        let mut island = Island { open: true, touched: Some(Instant::now()), ..Default::default() };
+        island.close();
+        assert!(!island.open);
+        assert!(island.touched.is_none());
+    }
+
+    #[test]
+    fn paused_music_leaves_after_a_minute() {
+        assert!(music_shows(true, None));
+        assert!(music_shows(false, None));
+        assert!(music_shows(false, Some(Duration::from_secs(59))));
+        assert!(!music_shows(false, Some(PAUSED_FOR)));
+        // Playing again brings it straight back.
+        assert!(music_shows(true, Some(Duration::from_secs(600))));
+    }
+
+    #[test]
+    fn the_outline_takes_the_colour_of_what_it_shows() {
+        let accent = Color32::from_rgb(0x4F, 0xB3, 0xFF);
+        assert_eq!(outline(Mode::Resting, accent), ui::LINE);
+        assert_eq!(outline(Mode::Recording, accent), RED.gamma_multiply(0.55));
+        assert_eq!(outline(Mode::Music, accent), accent.gamma_multiply(0.45));
     }
 
     #[test]

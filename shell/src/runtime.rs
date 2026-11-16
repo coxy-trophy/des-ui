@@ -65,6 +65,7 @@ impl eframe::App for App {
         let mut apps_requested = None;
         if let Some(desktop) = &mut self.desktop {
             if std::mem::take(&mut desktop.companion_blur_requested) {self.companion.blur_text();}
+            if std::mem::take(&mut desktop.island_away) {self.island.close(); ctx.request_repaint();}
             for screen in std::mem::take(&mut desktop.dock_dismissed) {
                 if screen==0 {self.dock.dismiss_keyboard(ctx);}
                 else if let Some(dock)=self.secondary_docks.get_mut(&screen){dock.dismiss_keyboard(ctx);}

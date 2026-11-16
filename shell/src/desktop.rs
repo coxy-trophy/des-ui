@@ -42,6 +42,8 @@ pub struct Desktop {
     pub companion_requested: bool,
     pub companion_voice_requested: bool,
     pub companion_blur_requested: bool,
+    /// A click landed outside the status island, somewhere the shell cannot see.
+    pub island_away: bool,
     pub companion_pointer: Option<(i32, i32, usize)>,
     /// Pending fixed companion controls, drained by the runtime each frame.
     pub companion_controls: Vec<des_common::ipc::CompanionAction>,
@@ -110,6 +112,7 @@ impl Desktop {
             companion_requested: false,
             companion_voice_requested: false,
             companion_blur_requested: false,
+            island_away: false,
             companion_pointer: None,
             companion_controls: Vec::new(),
             music_requested: false,
@@ -169,6 +172,7 @@ impl Desktop {
                 Event::Companion => self.companion_requested = true,
                 Event::VoiceCompanion => self.companion_voice_requested = true,
                 Event::CompanionBlur => self.companion_blur_requested = true,
+                Event::IslandAway => self.island_away = true,
                 Event::CompanionPointer { x, y, screen } => self.companion_pointer = Some((x, y, screen)),
                 Event::CompanionControl(action) => {
                     if self.companion_controls.len() < 16 { self.companion_controls.push(action); }

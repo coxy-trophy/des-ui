@@ -1463,6 +1463,15 @@ impl DesComp {
         }
     }
 
+    /// A press (click or tap; touch arrives as the pointer) outside the status island
+    /// while it reaches above the strip: an application never shows the shell that
+    /// click, so the compositor tells it.
+    pub(crate) fn dismiss_island_on_press(&mut self, pos: Point<f64, Logical>) {
+        if self.island_area().is_some_and(|area| !area.to_f64().contains(pos)) {
+            self.tell(Event::ISLAND_AWAY.into());
+        }
+    }
+
     /// A click landed at `pos`: that display, and that half of it, are now in use.
     pub fn focus_at(&mut self, pos: Point<f64, Logical>) {
         self.dismiss_dock_keyboard_on_press(false, self.shell_overlay_contains(pos));

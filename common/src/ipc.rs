@@ -863,6 +863,9 @@ pub enum Event {
     VoiceCompanion,
     CompanionControl(CompanionAction),
     CompanionBlur,
+    /// A click or tap landed outside the status island while it reached above the
+    /// strip (open, or showing a notification): an open island closes.
+    IslandAway,
     /// Pointer position relative to the primary shell surface, only during voice UI.
     CompanionPointer { x: i32, y: i32, screen: usize },
     /// The music shortcut was pressed.
@@ -912,6 +915,7 @@ impl Event {
     /// ```
     pub const VOICE_COMPANION: &str = "voice-companion\n";
     pub const COMPANION_BLUR: &str = "companion-blur\n";
+    pub const ISLAND_AWAY: &str = "island-away\n";
     pub const COMPANION: &str = "companion\n";
     pub const SHORTCUTS: &str = "shortcuts\n";
     pub const MUSIC: &str = "music\n";
@@ -973,6 +977,7 @@ impl Event {
             "shortcuts" => return Some(Event::Shortcuts),
             "companion" => return Some(Event::Companion),
             "companion-blur" => return Some(Event::CompanionBlur),
+            "island-away" => return Some(Event::IslandAway),
             "voice-companion" => return Some(Event::VoiceCompanion),
             "companion-keep" => return Some(Event::CompanionControl(CompanionAction::Keep)),
             "companion-mute" => return Some(Event::CompanionControl(CompanionAction::Mute)),
@@ -1941,6 +1946,8 @@ mod companion_chat_focus_tests {
         }
         assert_eq!(Event::decode(Event::COMPANION_BLUR), Some(Event::CompanionBlur));
         assert_eq!(Event::decode("companion-blur extra"), None);
+        assert_eq!(Event::decode(Event::ISLAND_AWAY), Some(Event::IslandAway));
+        assert_eq!(Event::decode("island-away extra"), None);
         assert_eq!(Command::decode("companion-chat on extra"), None);
     }
 }
