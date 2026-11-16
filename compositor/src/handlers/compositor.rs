@@ -40,6 +40,11 @@ impl CompositorHandler for DesComp {
             }
             if let Some(window) = self.window_for(&root) {
                 window.on_commit();
+                // It now has the size it was asked for (or the one it insists on):
+                // put it where that size belongs.
+                if self.size_changed(&window) {
+                    self.arrange();
+                }
             }
         };
 

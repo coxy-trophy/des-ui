@@ -49,6 +49,10 @@ pub struct App {
     pub urgent: bool,
     /// When it last had the keyboard, by `DesComp::use_clock`: higher is more recent.
     pub used: u64,
+    /// Its size when it was last placed. A commit at another size places it again
+    /// (see `size_changed`), so a window moved aside while it caught up with a
+    /// smaller slot goes back into the slot once it has shrunk.
+    pub placed: smithay::utils::Size<i32, Logical>,
 }
 
 /// How far the pinned application keeps from the edges of its workspace.
@@ -549,7 +553,8 @@ impl DesComp {
             } else {
                 // An application that will not shrink to its slot is kept whole on its display.
                 let display = self.screens.get(screen).copied().unwrap_or(whole);
-                let at = layout::fit_oversized(area, window.geometry().size, display);
+                let at = layout::fit_oversized(area, settled_size(&window), display);
+                self.apps[i].placed = window.geometry().size;
                 let shown = Rectangle::new(at, area.size);
                 self.motions.show(window.clone(), shown, now, animate);
                 // Mapping also raises, which puts the application above what is behind it.
@@ -688,6 +693,7 @@ impl DesComp {
                 ruled: false,
                 urgent: false,
                 used: 0,
+                placed: Default::default(),
             });
             self.place(self.apps.len() - 1, place);
             self.focus_screen = screen;
@@ -1769,6 +1775,43 @@ pub(crate) fn window_title(window: &Window) -> String {
 
 /// Tells a window its place, whether it has a display to itself, and whether it has
 /// the keyboard.
+/// The size to judge a window by when deciding whether it fits its slot. A Wayland
+/// window that has not yet answered the last size it was asked for is judged by the
+/// smallest size it says it can take: its present size is the old one, and taking
+/// that for "cannot shrink" moved applications over the panels whenever a panel
+/// opened (they then shrank, but stayed where they had been moved).
+fn settled_size(window: &Window) -> smithay::utils::Size<i32, Logical> {
+    let now = window.geometry().size;
+    // X11 windows say nothing of pending sizes; a commit at the new size places them again.
+    if window.x11_surface().is_some() {
+        return now;
+    }
+    let Some(toplevel) = window.toplevel() else { return now };
+    let asked = toplevel.with_pending_state(|state| state.size);
+    let answered = toplevel.current_state().size;
+    let smallest = with_states(toplevel.wl_surface(), |states| {
+        states.cached_state.get::<smithay::wayland::shell::xdg::SurfaceCachedState>().current().min_size
+    });
+    judged_size(now, asked, answered, smallest)
+}
+
+/// `settled_size` without the window: its size now, the size it was last asked for,
+/// the last size it answered, and the smallest it says it can take (0 for none).
+fn judged_size(now: smithay::utils::Size<i32, Logical>, asked: Option<smithay::utils::Size<i32, Logical>>,
+               answered: Option<smithay::utils::Size<i32, Logical>>, smallest: smithay::utils::Size<i32, Logical>) -> smithay::utils::Size<i32, Logical> {
+    if asked.is_none() || asked == answered { now } else { smallest }
+}
+
+impl DesComp {
+    /// A window committed a size other than the one it was placed at: place it
+    /// again (`App::placed`).
+    pub fn size_changed(&self, window: &Window) -> bool {
+        self.apps.iter().find(|app| &app.window == window)
+            // The pinned one is placed by its own corner, not by its slot.
+            .is_some_and(|app| !app.pinned && app.place != Place::Hidden && app.placed != window.geometry().size)
+    }
+}
+
 fn configure(window: &Window, area: Rectangle<i32, Logical>, fullscreen: bool, activated: bool) {
     if let Some(x11) = window.x11_surface() {
         if x11.is_fullscreen() != fullscreen {
@@ -1815,6 +1858,25 @@ fn configure(window: &Window, area: Rectangle<i32, Logical>, fullscreen: bool, a
 #[cfg(test)]
 mod pin_and_overlay_tests {
     use super::*;
+
+    #[test]
+    fn a_window_catching_up_with_a_smaller_slot_is_not_taken_for_one_that_cannot_shrink() {
+        let size = |w, h| smithay::utils::Size::<i32, Logical>::from((w, h));
+        // A panel opened: asked for 1200 wide, still 1500 wide, can go down to 800.
+        assert_eq!(judged_size(size(1500, 900), Some(size(1200, 900)), Some(size(1500, 900)), size(800, 600)), size(800, 600));
+        // It answered: its own size counts again, even if bigger than asked.
+        assert_eq!(judged_size(size(1500, 900), Some(size(1200, 900)), Some(size(1200, 900)), size(1500, 600)), size(1500, 900));
+        // Never asked for a size: its own size.
+        assert_eq!(judged_size(size(640, 480), None, None, size(0, 0)), size(640, 480));
+        let slot = Rectangle::new((330, 60).into(), (1200, 900).into());
+        let display = Rectangle::new((0, 0).into(), (1920, 1080).into());
+        // One that can shrink stays in its slot while it does.
+        let judged = judged_size(size(1500, 900), Some(size(1200, 900)), Some(size(1500, 900)), size(800, 600));
+        assert_eq!(layout::fit_oversized(slot, judged, display), slot.loc);
+        // One that cannot go below 1500 is still kept whole, judged by that minimum.
+        let judged = judged_size(size(1500, 900), Some(size(1200, 900)), Some(size(1500, 900)), size(1500, 600));
+        assert_eq!(layout::fit_oversized(slot, judged, display).x, 180);
+    }
 
     #[test]
     fn fullscreen_client_state_requires_the_whole_output() {
