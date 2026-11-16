@@ -715,6 +715,7 @@ impl DesComp {
             self.dismiss_saver();
             self.toast = None;
             self.island = None;
+            self.rounded.clear();
             self.overlay = None;
             self.dock = None;
             self.docks.clear();
@@ -1661,8 +1662,11 @@ impl DesComp {
                 }
                 // Drawn above the applications and taking the pointer there, never
                 // the keyboard: nothing else changes.
+                Command::Rounded(shapes) => {
+                    self.rounded = shapes.into_iter().map(|(x, y, w, h, r)| (Rectangle::new((x, y).into(), (w, h).into()), r)).collect();
+                }
                 Command::Island(area) => {
-                    self.island = area.map(|(x, y, w, h)| Rectangle::new((x, y).into(), (w, h).into()));
+                    self.island = area.map(|(x, y, w, h, r)| (Rectangle::new((x, y).into(), (w, h).into()), r));
                 }
                 Command::Toast(area) => {
                     self.toast = area.map(|(x, y, w, h)| Rectangle::new((x, y).into(), (w.max(0), h.max(0)).into()));

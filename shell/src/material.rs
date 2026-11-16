@@ -45,7 +45,54 @@ fn readable_opacity(settings: &AppearanceSettings, role: Role, peak: [u8; 3]) ->
     (high * 255.0).ceil() / 255.0
 }
 
+/// The rounded shapes floating surfaces were painted with this frame, so that the
+/// compositor can show applications past their corners where they are lifted above
+/// them (`Command::Rounded`).
+fn rounded_key() -> egui::Id { egui::Id::new("material-rounded-shapes") }
+
+/// Notes a rounded surface painted this frame.
+pub fn record(ctx: &egui::Context, rect: Rect, radius: f32) {
+    if radius > 0.0 && rect.is_positive() {
+        ctx.data_mut(|data| data.get_temp_mut_or_default::<Vec<(Rect, f32)>>(rounded_key()).push((rect, radius)));
+    }
+}
+
+/// The rounded surfaces painted since this was last called.
+pub fn take_recorded(ctx: &egui::Context) -> Vec<(Rect, f32)> {
+    ctx.data_mut(|data| std::mem::take(data.get_temp_mut_or_default::<Vec<(Rect, f32)>>(rounded_key())))
+}
+
+/// What to tell the compositor of rounded surfaces in the areas lifted above the
+/// applications. An area counts only when the rounded surfaces inside it reach its
+/// edges (within `SLACK`, the margin areas are padded with): then nothing else is
+/// in it and it can be drawn as those surfaces alone. Any other area, a full-screen
+/// modal, say, or one with something unrounded beside the surfaces, is left out and
+/// drawn whole. In whole pixels, rounded outward.
+pub fn rounded_shapes(areas: &[Rect], recorded: &[(Rect, f32)]) -> Vec<(i32, i32, i32, i32, i32)> {
+    const SLACK: f32 = 12.0;
+    let mut out = Vec::new();
+    for area in areas {
+        let inside: Vec<&(Rect, f32)> = recorded.iter().filter(|(rect, _)| area.expand(0.5).contains_rect(*rect)).collect();
+        let Some(reach) = inside.iter().map(|(rect, _)| *rect).reduce(|all, rect| all.union(rect)) else { continue };
+        if !reach.expand(SLACK).contains_rect(*area) {
+            continue;
+        }
+        for (rect, radius) in inside {
+            let (left, top) = (rect.left().floor() as i32, rect.top().floor() as i32);
+            let shape = (left, top, rect.right().ceil() as i32 - left, rect.bottom().ceil() as i32 - top, radius.round() as i32);
+            if !out.contains(&shape) {
+                out.push(shape);
+            }
+        }
+    }
+    out.truncate(des_common::ipc::MAX_ROUNDED);
+    out
+}
+
 pub fn shapes(ctx: &egui::Context, rect: Rect, radius: f32, role: Role) -> Vec<Shape> {
+    if matches!(role, Role::Floating | Role::Notification) {
+        record(ctx, rect, radius);
+    }
     let state = ctx.data(|data| data.get_temp::<State>(key()));
     let Some(state) = state else { return vec![Shape::rect_filled(rect, radius, match role { Role::Terminal | Role::Background => ui::GROUND, _ => ui::PANEL })]; };
     shapes_for(ctx.screen_rect(), rect, radius, role, &state)
@@ -132,5 +179,44 @@ mod tests {
         let ctx = egui::Context::default();
         publish(&ctx, AppearanceSettings::default(), None);
         assert_eq!(shapes(&ctx, Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(20.0, 20.0)), 0.0, Role::Panel).len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod rounded_tests {
+    use super::*;
+    use eframe::egui::{pos2, vec2};
+
+    fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect { Rect::from_min_size(pos2(x, y), vec2(w, h)) }
+
+    #[test]
+    fn a_lifted_area_made_of_rounded_surfaces_is_sent_as_them() {
+        // Two toasts, the area around them padded by a pixel or so.
+        let toasts = [(rect(1500.0, 52.0, 360.0, 96.0), 14.0), (rect(1500.0, 156.0, 360.0, 80.0), 14.0)];
+        let area = rect(1499.0, 51.0, 362.0, 186.0);
+        assert_eq!(rounded_shapes(&[area], &toasts), vec![(1500, 52, 360, 96, 14), (1500, 156, 360, 80, 14)]);
+        // The quick settings pop-up, fractional, rounded outward.
+        let quick = [(rect(1100.4, 600.6, 300.2, 380.0), 10.0)];
+        assert_eq!(rounded_shapes(&[rect(1100.0, 600.0, 302.0, 382.0)], &quick), vec![(1100, 600, 301, 381, 10)]);
+    }
+
+    #[test]
+    fn an_area_with_more_than_its_rounded_surfaces_is_left_whole() {
+        // A full-screen modal with a card in it: the card does not reach the edges.
+        let card = [(rect(700.0, 300.0, 500.0, 400.0), 10.0)];
+        assert!(rounded_shapes(&[rect(0.0, 0.0, 1920.0, 1080.0)], &card).is_empty());
+        // Toasts with the "+2 more" pill below them: the pill is not a recorded surface.
+        let toasts = [(rect(1500.0, 52.0, 360.0, 96.0), 14.0)];
+        assert!(rounded_shapes(&[rect(1499.0, 51.0, 362.0, 150.0)], &toasts).is_empty());
+        // Nothing rounded at all, or a surface outside every lifted area.
+        assert!(rounded_shapes(&[rect(0.0, 0.0, 100.0, 100.0)], &[]).is_empty());
+        assert!(rounded_shapes(&[rect(0.0, 0.0, 100.0, 100.0)], &[(rect(400.0, 400.0, 50.0, 50.0), 10.0)]).is_empty());
+    }
+
+    #[test]
+    fn the_dock_margin_is_within_the_slack() {
+        let popup = [(rect(80.0, 500.0, 292.0, 200.0), 6.0)];
+        let area = rect(70.0, 490.0, 313.0, 221.0); // the popup's content expanded by 10
+        assert_eq!(rounded_shapes(&[area], &popup).len(), 1);
     }
 }

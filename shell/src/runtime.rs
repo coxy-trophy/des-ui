@@ -12,6 +12,9 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Rounded surfaces are noted as they are painted, and read at the end of a
+        // frame; one that ended early leaves nothing behind for the next.
+        let _ = crate::material::take_recorded(ctx);
         // Before anything reads input: what the on-screen keys pressed last frame.
         self.osk.inject(ctx);
         let connect_visible=self.right_connect && self.desktop.as_ref().map_or(self.local_panels.right, |d| d.state.panels.right)
@@ -509,7 +512,8 @@ impl eframe::App for App {
                             }
                             return false;
                         }
-                        let music_height = self.music.preferred_panel_height();
+                        // The status island shows what plays: the panel's player only when it is off.
+                        let music_height = if self.config.status_island { 0.0 } else { self.music.preferred_panel_height() };
                         let music = &mut self.music;
                         let world_was_open = self.world.expanded;
                         let mut wanted = false;
@@ -968,7 +972,10 @@ impl eframe::App for App {
         let voice_allowed=!self.lock.locked && !self.polkit.active() && !self.capture.marking();
         if let Some(pointer)=self.desktop.as_mut().and_then(|d|d.companion_pointer.take()) {self.companion.set_voice_pointer(pointer);}
         let voice_caption=if voice_allowed {self.companion.voice_bubble(ctx,&theme,animate)}else{None};
-        for command in self.companion.cursor_commands(voice_caption,voice_allowed,Instant::now()) {self.send(command);}
+        for command in self.companion.cursor_commands(voice_caption,voice_allowed,Instant::now()) {
+            if let Command::CompanionBubble(area) = &command { self.bubble_area = *area; }
+            self.send(command);
+        }
         if std::mem::take(&mut self.companion.settings_requested) {
             self.settings.open_at(&self.config, "companion");
             self.send(Command::Terminal);
@@ -987,6 +994,17 @@ impl eframe::App for App {
         if scratchpad::changed(&mut self.overlay_area, overlay_area) {
             self.send(Command::CompanionChat(self.companion.open && chat_area.is_some() && quick_area.is_none()));
             self.send(Command::Overlay(overlay_area));
+        }
+        // The rounded surfaces among what is lifted above the applications: the
+        // compositor shows applications past their corners (material::rounded_shapes).
+        let lifted: Vec<egui::Rect> = [self.toast_area.flatten(), self.overlay_area.flatten(), self.dock_area.flatten(), self.bubble_area]
+            .into_iter().flatten()
+            .map(|(x, y, w, h)| egui::Rect::from_min_size(egui::pos2(x as f32, y as f32), egui::vec2(w as f32, h as f32)))
+            .collect();
+        let rounded = crate::material::rounded_shapes(&lifted, &crate::material::take_recorded(ctx));
+        if self.rounded_sent.as_ref() != Some(&rounded) {
+            self.rounded_sent = Some(rounded.clone());
+            self.send(Command::Rounded(rounded));
         }
         // Last, so that it is above everything else.
         self.polkit.show(ctx, &theme, false);
@@ -1158,8 +1176,11 @@ impl App {
         };
         let (rect, deed) = self.island.show(ctx, theme, self.island_room, &feed, animate);
         // Above the strip it is over the applications: the compositor lifts it there.
+        // Its exact shape: the compositor lets the applications show outside the
+        // rounded corners.
         let reach = (rect.top() < strip_top - 0.5).then(|| {
-            (rect.left().floor() as i32 - 2, rect.top().floor() as i32 - 2, rect.width().ceil() as i32 + 4, rect.height().ceil() as i32 + 4)
+            let (left, top) = (rect.left().round() as i32, rect.top().round() as i32);
+            (left, top, rect.right().round() as i32 - left, rect.bottom().round() as i32 - top, island::radius_of(rect.size()).round() as i32)
         });
         self.lift_island(reach);
         match deed {
@@ -1186,7 +1207,7 @@ impl App {
 
     /// Tells the compositor where the island reaches above the strip, or that it
     /// does not, when that changes.
-    fn lift_island(&mut self, reach: Option<(i32, i32, i32, i32)>) {
+    fn lift_island(&mut self, reach: Option<(i32, i32, i32, i32, i32)>) {
         if self.island_lifted != Some(reach) {
             self.island_lifted = Some(reach);
             self.send(Command::Island(reach));

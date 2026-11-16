@@ -439,7 +439,7 @@ where
         OverviewKind::Switcher | OverviewKind::Windows => {
             if let Some(strip) = overview.layout.strip {
                 let primary = Some(output_geo.loc);
-                let lifted = crate::toast::elements(renderer, shell, Some(strip), primary, &overview.strip_id, output_geo.loc, scale);
+                let lifted = crate::toast::elements(renderer, &mut crate::toast::IslandShader::default(), &[], shell, Some(strip), primary, &overview.strip_id, output_geo.loc, scale);
                 if lifted.is_empty() {
                     elements.push(C::from(SolidColorRenderElement::new(
                         overview.strip_id.clone(),

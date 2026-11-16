@@ -94,6 +94,12 @@ pub fn size_of(mode: Mode, compact: f32) -> Vec2 {
     }
 }
 
+/// The corner radius of the island at a size: a stadium in the strip, a rounded
+/// card when open. The compositor clips to the same shape (`Command::Island`).
+pub fn radius_of(size: Vec2) -> f32 {
+    (size.y / 2.0).min(CARD_RADIUS)
+}
+
 /// One step of a critically damped spring towards `target`.
 fn spring(position: f32, velocity: f32, target: f32, dt: f32) -> (f32, f32) {
     let acceleration = STIFFNESS * STIFFNESS * (target - position) - 2.0 * STIFFNESS * velocity;
@@ -230,8 +236,7 @@ impl Island {
             .show(ctx, |ui| {
                 ui.set_clip_rect(rect.expand(24.0));
                 let response = ui.allocate_rect(rect, Sense::click());
-                let radius = (rect.height() / 2.0).min(CARD_RADIUS);
-                ui.painter().rect_filled(rect.translate(vec2(0.0, 6.0)).expand(2.0), radius, Color32::from_black_alpha(70));
+                let radius = radius_of(rect.size());
                 ui.painter().rect(rect, radius, Color32::from_rgba_unmultiplied(10, 14, 18, 247), Stroke::new(1.0_f32, ui::LINE), StrokeKind::Inside);
                 let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rect));
                 inner.set_clip_rect(rect);

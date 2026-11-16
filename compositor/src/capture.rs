@@ -125,7 +125,7 @@ impl DesComp {
     fn grab_unlocked(&mut self, screen: usize, pointer: bool) -> Result<Frame, String> {
         let (output, rect) = self.output_of(screen).ok_or("there is no such display")?;
         let toast_area = self.toast_area();
-        let island_area = self.island_area();
+        let island_shape = self.island_shape();
         let docks = self.dock_layers();
         let primary = self.screens.first().map(|screen| screen.loc);
         let at = self.seat.get_pointer().map(|pointer| pointer.current_location());
@@ -173,15 +173,18 @@ impl DesComp {
                     renderer, overview, &self.space, shell, &output, now));
             }
             if !self.overview_covers(rect) {
-                elements.extend(crate::toast::elements(renderer, self.shell.as_ref(), island_area, primary, &self.island_id, rect.loc, scale)
-                    .into_iter().map(OutputElements::Toast));
+                match crate::toast::island_element(renderer, &mut self.island_shader, self.shell.as_ref(), island_shape, primary, rect.loc, scale) {
+                    Some(island) => elements.push(OutputElements::Phosphor(island)),
+                    None => elements.extend(crate::toast::elements(renderer, &mut self.island_shader, &[], self.shell.as_ref(), island_shape.map(|(area, _)| area), primary, &self.island_id, rect.loc, scale)
+                        .into_iter().map(OutputElements::Toast)),
+                }
                 elements.extend(
-                    crate::toast::elements(renderer, self.shell.as_ref(), toast_area, primary, &self.toast_id, rect.loc, scale)
+                    crate::toast::elements(renderer, &mut self.island_shader, &self.rounded, self.shell.as_ref(), toast_area, primary, &self.toast_id, rect.loc, scale)
                         .into_iter()
                         .map(OutputElements::Toast),
                 );
                 for (shell,area,origin,id) in &docks {
-                    elements.extend(crate::toast::elements(renderer,Some(shell),Some(*area),Some(*origin),id,rect.loc,scale).into_iter().map(OutputElements::Toast));
+                    elements.extend(crate::toast::elements(renderer, &mut self.island_shader, if Some(shell) == self.shell.as_ref() { &self.rounded } else { &[] }, Some(shell),Some(*area),Some(*origin),id,rect.loc,scale).into_iter().map(OutputElements::Toast));
                 }
                 let space = space_render_elements(renderer, [&self.space], &output, 1.0).map_err(|e| format!("{e:?}"))?;
                 elements.extend(space.into_iter().map(OutputElements::Space));

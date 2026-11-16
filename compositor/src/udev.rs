@@ -1051,7 +1051,7 @@ impl DesComp {
         }
         let secondary_savers = self.visible_secondary_savers();
         let toast_area = self.toast_area();
-        let island_area = self.island_area();
+        let island_shape = self.island_shape();
         let companion_bubble_area = self.companion_bubble_area();
         let overlay_area = self.overlay_area();
         let docks = self.dock_layers();
@@ -1112,7 +1112,7 @@ impl DesComp {
                 elements.extend(crate::dnd::icon_elements::<OutputElements>(renderer,self.drag_icon.as_ref(),position,scale));
             }
             for (window, rect, id) in &secondary_savers {
-                elements.extend(crate::toast::elements(renderer, Some(window), rect.intersection(geometry),
+                elements.extend(crate::toast::elements(renderer, &mut self.island_shader, &[], Some(window), rect.intersection(geometry),
                     Some(rect.loc), id, geometry.loc, scale).into_iter().map(OutputElements::Toast));
             }
             // The overview, or the switcher's strip, above all but the pointer. The
@@ -1122,21 +1122,24 @@ impl DesComp {
                 elements.extend(crate::overview::elements::<OutputElements>(renderer, overview, &self.space, if overview.screen==0 {self.shell.as_ref()}else{self.backdrops.get(overview.screen-1)}, &monitor.output, now));
             }
             if !overview.is_some_and(|overview| matches!(overview.kind, des_common::ipc::OverviewKind::Workspaces | des_common::ipc::OverviewKind::Drag)) {
-            elements.extend(crate::toast::elements(renderer, self.shell.as_ref(), companion_bubble_area, primary,
+            elements.extend(crate::toast::elements(renderer, &mut self.island_shader, &self.rounded, self.shell.as_ref(), companion_bubble_area, primary,
                 &self.companion_bubble_id, geometry.loc, scale).into_iter().map(OutputElements::Toast));
-            elements.extend(crate::toast::elements(renderer, self.shell.as_ref(), island_area, primary, &self.island_id, geometry.loc, scale)
-                .into_iter().map(OutputElements::Toast));
+            match crate::toast::island_element(renderer, &mut self.island_shader, self.shell.as_ref(), island_shape, primary, geometry.loc, scale) {
+                Some(island) => elements.push(OutputElements::Phosphor(island)),
+                None => elements.extend(crate::toast::elements(renderer, &mut self.island_shader, &[], self.shell.as_ref(), island_shape.map(|(area, _)| area), primary, &self.island_id, geometry.loc, scale)
+                    .into_iter().map(OutputElements::Toast)),
+            }
             elements.extend(
-                crate::toast::elements(renderer, self.shell.as_ref(), toast_area, primary, &self.toast_id, geometry.loc, scale)
+                crate::toast::elements(renderer, &mut self.island_shader, &self.rounded, self.shell.as_ref(), toast_area, primary, &self.toast_id, geometry.loc, scale)
                     .into_iter()
                     .map(OutputElements::Toast),
             );
             for (shell,area,origin,id) in &docks {
-                elements.extend(crate::toast::elements(renderer,Some(shell),Some(*area),Some(*origin),id,geometry.loc,scale).into_iter().map(OutputElements::Toast));
+                elements.extend(crate::toast::elements(renderer, &mut self.island_shader, if Some(shell) == self.shell.as_ref() { &self.rounded } else { &[] }, Some(shell),Some(*area),Some(*origin),id,geometry.loc,scale).into_iter().map(OutputElements::Toast));
             }
             // The overlay is beneath the toasts and the dock, above every window.
             elements.extend(
-                crate::toast::elements(renderer, self.shell.as_ref(), overlay_area, primary, &self.overlay_id, geometry.loc, scale)
+                crate::toast::elements(renderer, &mut self.island_shader, &self.rounded, self.shell.as_ref(), overlay_area, primary, &self.overlay_id, geometry.loc, scale)
                     .into_iter()
                     .map(OutputElements::Toast),
             );

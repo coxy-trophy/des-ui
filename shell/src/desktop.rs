@@ -14,12 +14,15 @@ type Area=(i32,i32,i32,i32);
 
 /// Latest lifted rectangles are state, not one-shot window actions. In particular,
 /// a clear must never disappear because an action queue is full or reconnecting.
-#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+#[derive(Clone,Debug,Default,PartialEq,Eq)]
 struct Presentation {
     toast:Option<Option<Area>>,
     overlay:Option<Option<Area>>,
     /// The status island's reach above the strip; latest wins, as it moves every frame.
-    island:Option<Option<Area>>,
+    island:Option<Option<(i32,i32,i32,i32,i32)>>,
+    /// The rounded surfaces among what is lifted; latest wins, as they move while
+    /// pop-ups open and close.
+    rounded:Option<Vec<(i32,i32,i32,i32,i32)>>,
 }
 
 pub struct Desktop {
@@ -215,6 +218,10 @@ impl Desktop {
                 self.presentation.lock().unwrap_or_else(|error|error.into_inner()).island=Some(area);
                 Ok(())
             }
+            Command::Rounded(shapes) => {
+                self.presentation.lock().unwrap_or_else(|error|error.into_inner()).rounded=Some(shapes);
+                Ok(())
+            }
             Command::Lock | Command::Unlock => {
                 // A separate slot gives security requests priority over window actions.
                 self.security_generation = self.security_generation.wrapping_add(1);
@@ -259,8 +266,8 @@ fn serve(path: PathBuf, requests: Receiver<Command>, security: Arc<Mutex<Option<
         }
         // A full wire buffer leaves the latest presentation pending for the next
         // flush. State survives reconnect; stale window indices still do not.
-        let desired=*presentation.lock().unwrap_or_else(|error|error.into_inner());
-        let _=link.queue_presentation(desired);
+        let desired=presentation.lock().unwrap_or_else(|error|error.into_inner()).clone();
+        let _=link.queue_presentation(&desired);
         // These commands describe the current window list. Drop them while offline.
         for _ in 0..32 {
             match requests.try_recv() {
@@ -366,7 +373,7 @@ impl Link {
         }
         self.queue_security()
     }
-    fn queue_presentation(&mut self, desired:Presentation)->std::io::Result<()> {
+    fn queue_presentation(&mut self, desired:&Presentation)->std::io::Result<()> {
         // Geometry commands are ignored while locked; retain them until unlocked.
         if !self.ready() || self.known_lock!=Some(false) || self.queued_lock.is_some(){return Ok(());}
         if let Some(area)=desired.toast.filter(|_|desired.toast!=self.presentation.toast) {
@@ -380,6 +387,10 @@ impl Link {
         if let Some(area)=desired.island.filter(|_|desired.island!=self.presentation.island) {
             self.outgoing.enqueue(Command::Island(area).encode().as_bytes())?;
             self.presentation.island=Some(area);
+        }
+        if let Some(shapes)=desired.rounded.clone().filter(|_|desired.rounded!=self.presentation.rounded) {
+            self.outgoing.enqueue(Command::Rounded(shapes.clone()).encode().as_bytes())?;
+            self.presentation.rounded=Some(shapes);
         }
         Ok(())
     }
@@ -418,7 +429,7 @@ mod tests {
         desktop.send(Command::Toast(Some((40,50,360,80)))).unwrap();
         assert!(desktop.send(Command::Toast(None)).is_ok(),"clearing a lifted region must survive queue backpressure");
         assert!(desktop.send(Command::Overlay(None)).is_ok());
-        assert_eq!(*desktop.presentation.lock().unwrap(),Presentation{toast:Some(None),overlay:Some(None),island:None});
+        assert_eq!(*desktop.presentation.lock().unwrap(),Presentation{toast:Some(None),overlay:Some(None),island:None,rounded:None});
         desktop.heard=false;
         desktop.send(Command::Overlay(Some((1,2,300,200)))).unwrap();
         desktop.send(Command::Overlay(None)).unwrap();
@@ -436,23 +447,23 @@ mod tests {
     #[test]
     fn presentation_retries_backpressure_and_reconnect_with_latest_clear() {
         let mut link=Link::new();greet(&mut link,false);
-        let shown=Presentation{toast:Some(Some((10,20,360,80))),overlay:Some(Some((30,40,500,300))),island:None};
-        link.queue_presentation(shown).unwrap();
+        let shown=Presentation{toast:Some(Some((10,20,360,80))),overlay:Some(Some((30,40,500,300))),island:None,rounded:None};
+        link.queue_presentation(&shown).unwrap();
         let mut bytes=Vec::new();link.outgoing.flush(&mut bytes).unwrap();
         assert!(String::from_utf8(bytes).unwrap().contains("toast 10 20 360 80"));
-        let clear=Presentation{toast:Some(None),overlay:Some(None),island:None};
+        let clear=Presentation{toast:Some(None),overlay:Some(None),island:None,rounded:None};
         link.outgoing.enqueue(&vec![b'x';64*1024]).unwrap();
-        assert!(link.queue_presentation(clear).is_err());
+        assert!(link.queue_presentation(&clear).is_err());
         assert_eq!(link.presentation,shown,"failed enqueue must leave the clear pending");
         link.outgoing.flush(&mut Vec::new()).unwrap();
-        link.queue_presentation(clear).unwrap();
+        link.queue_presentation(&clear).unwrap();
         let mut bytes=Vec::new();link.outgoing.flush(&mut bytes).unwrap();
         assert_eq!(bytes,b"toast none\noverlay none\n");
         link.reset();greet(&mut link,false);
-        link.queue_presentation(clear).unwrap();
+        link.queue_presentation(&clear).unwrap();
         let mut bytes=Vec::new();link.outgoing.flush(&mut bytes).unwrap();
         assert_eq!(bytes,b"toast none\noverlay none\n","reconnect must restore current cleared state");
-        link.queue_presentation(clear).unwrap();
+        link.queue_presentation(&clear).unwrap();
         let mut duplicate=Vec::new();link.outgoing.flush(&mut duplicate).unwrap();
         assert!(duplicate.is_empty());
     }
@@ -460,17 +471,17 @@ mod tests {
     #[test]
     fn presentation_waits_for_handshake_and_unlock() {
         let mut link=Link::new();
-        let desired=Presentation{toast:Some(None),overlay:Some(None),island:None};
-        link.queue_presentation(desired).unwrap();
+        let desired=Presentation{toast:Some(None),overlay:Some(None),island:None,rounded:None};
+        link.queue_presentation(&desired).unwrap();
         assert_eq!(link.presentation,Presentation::default());
         greet(&mut link,true);
-        link.queue_presentation(desired).unwrap();
+        link.queue_presentation(&desired).unwrap();
         assert_eq!(link.presentation,Presentation::default());
         link.request_lock(false).unwrap();
-        link.queue_presentation(desired).unwrap();
+        link.queue_presentation(&desired).unwrap();
         assert_eq!(link.presentation,Presentation::default(),"wait for the unlock acknowledgement");
         link.receive(&Event::Locked(false)).unwrap();
-        link.queue_presentation(desired).unwrap();
+        link.queue_presentation(&desired).unwrap();
         assert_eq!(link.presentation,desired);
     }
 

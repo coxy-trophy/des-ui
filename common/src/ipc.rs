@@ -675,6 +675,8 @@ pub enum OverviewKind {
 
 /// A rectangle in a display's own logical coordinates: left, top, width, height.
 pub type Area = (i32, i32, i32, i32);
+/// The most rounded shapes one `Command::Rounded` carries.
+pub const MAX_ROUNDED: usize = 32;
 
 /// One workspace as the overview shows it.
 #[derive(Debug, Clone, PartialEq)]
@@ -1089,7 +1091,14 @@ pub enum Command {
     /// The status island reaches out of the status strip into this part of the
     /// shell's window, to be seen above applications and to take the pointer there;
     /// the keyboard stays where it is. Or it is back inside the strip.
-    Island(Option<(i32, i32, i32, i32)>),
+    /// The rounded surfaces among what the shell lifts above applications (toasts,
+    /// the overlay, the dock, the companion's bubble): (x, y, width, height, corner
+    /// radius) in its window. A lifted area made up of these is drawn as them, so
+    /// applications show past their corners; any other is drawn whole.
+    Rounded(Vec<(i32, i32, i32, i32, i32)>),
+    /// (x, y, width, height, corner radius): outside the rounded corners the
+    /// applications show through.
+    Island(Option<(i32, i32, i32, i32, i32)>),
     Dock(Option<(i32, i32, i32, i32)>),
     DockOn(usize, Option<(i32, i32, i32, i32)>),
     DockKeyboard { screen: usize, active: bool },
@@ -1181,7 +1190,13 @@ impl Command {
             Command::Dock(Some((x, y, w, h))) => format!("dock {x} {y} {w} {h}\n"),
             Command::Toast(None) => "toast none\n".to_string(),
             Command::Island(None) => "island none\n".to_string(),
-            Command::Island(Some((x, y, w, h))) => format!("island {x} {y} {w} {h}\n"),
+            Command::Rounded(shapes) => {
+                let mut line = "rounded".to_string();
+                for (x, y, w, h, r) in shapes.iter().take(MAX_ROUNDED) { line.push_str(&format!(" {x} {y} {w} {h} {r}")); }
+                line.push('\n');
+                line
+            }
+            Command::Island(Some((x, y, w, h, r))) => format!("island {x} {y} {w} {h} {r}\n"),
             Command::CompanionBubble(None) => "companion-bubble none\n".to_string(),
             Command::CompanionBubble(Some((x,y,w,h))) => format!("companion-bubble {x} {y} {w} {h}\n"),
             Command::CompanionChat(true) => "companion-chat on\n".to_string(),
@@ -1310,12 +1325,28 @@ impl Command {
             if w <= 0 || h <= 0 || x.checked_add(w).is_none() || y.checked_add(h).is_none() { return None; }
             return Some(Command::Overlay(Some((x, y, w, h))));
         }
+        if line.trim_end() == "rounded" { return Some(Command::Rounded(Vec::new())); }
+        if let Some(list) = line.trim_end().strip_prefix("rounded ") {
+            let numbers: Vec<i32> = list.split(' ').map(str::parse).collect::<Result<_, _>>().ok()?;
+            if numbers.len() % 5 != 0 || numbers.len() / 5 > MAX_ROUNDED { return None; }
+            let mut shapes = Vec::new();
+            for shape in numbers.chunks_exact(5) {
+                let [x, y, w, h, r] = shape[..] else { return None };
+                if w <= 0 || h <= 0 || r < 0 || x.checked_add(w).is_none() || y.checked_add(h).is_none() { return None; }
+                shapes.push((x, y, w, h, r.min(w.min(h) / 2)));
+            }
+            return Some(Command::Rounded(shapes));
+        }
         if let Some(area) = line.trim_end().strip_prefix("island ") {
             if area == "none" { return Some(Command::Island(None)); }
             let numbers: Vec<i32> = area.split(' ').map(str::parse).collect::<Result<_, _>>().ok()?;
-            let [x, y, w, h] = numbers[..] else { return None };
-            if w <= 0 || h <= 0 || x.checked_add(w).is_none() || y.checked_add(h).is_none() { return None; }
-            return Some(Command::Island(Some((x, y, w, h))));
+            let (x, y, w, h, r) = match numbers[..] {
+                [x, y, w, h] => (x, y, w, h, 0),
+                [x, y, w, h, r] => (x, y, w, h, r),
+                _ => return None,
+            };
+            if w <= 0 || h <= 0 || r < 0 || x.checked_add(w).is_none() || y.checked_add(h).is_none() { return None; }
+            return Some(Command::Island(Some((x, y, w, h, r.min(w.min(h) / 2)))));
         }
         if let Some(area) = line.trim_end().strip_prefix("toast ") {
             if area == "none" {
@@ -1756,7 +1787,9 @@ mod tests {
             Command::RecordStop,
             Command::Toast(Some((1500, 52, 380, 240))),
             Command::Island(None),
-            Command::Island(Some((700, 860, 400, 176))),
+            Command::Island(Some((700, 860, 400, 176, 28))),
+            Command::Rounded(Vec::new()),
+            Command::Rounded(vec![(1500, 52, 380, 120, 14), (1500, 180, 380, 90, 14)]),
             Command::ApplyDisplays(vec![
                 DisplayChoice { name: "eDP-1".into(), mode: mode(1920, 1080, 60052), main: false, setup: Setup::default() },
                 DisplayChoice { name: "HDMI-A-1".into(), mode: mode(3840, 2160, 30000), main: true, setup: Setup { scale: 200, turn: 270, usage: Usage::Off } },

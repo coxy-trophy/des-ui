@@ -207,11 +207,11 @@ impl Dock {
                 });
                 if let Some(entry)=item.entry {if ui::button(ui,theme,"Open new window",None,false).clicked(){result.output.action=Some(Action::Launch(self.entries[entry].clone()));ui.close_menu();}}
                 ui.min_rect()
-            }) {owns_popup=true;result.output.overlay=Some(area.expand(10.0));}
+            }) {owns_popup=true;popup_shape(ui.ctx(),area);result.output.overlay=Some(area.expand(10.0));}
             if !self.motion.keyboard {
                 response.on_hover_ui(|ui|{
                     ui.set_max_width(280.0);ui.label(&window_label);ui.label(group_detail(item,state,0));
-                    if !owns_popup {result.output.overlay=Some(ui.min_rect().expand(10.0));}
+                    if !owns_popup {popup_shape(ui.ctx(),ui.min_rect());result.output.overlay=Some(ui.min_rect().expand(10.0));}
                 });
             }
         }
@@ -232,7 +232,7 @@ impl Dock {
                 egui::ScrollArea::vertical().max_height(360.0).show(ui,|ui|{for item in all.iter().skip(capacity){for &index in &item.windows {
                     let app=&state.apps[index];if ui::button(ui,theme,&format!("{} · {}",item.label,crate::panels::truncate(&app.title,30)),None,false).clicked(){result.output.action=Some(Action::Command(Command::Activate(index)));ui.close_menu();}
                 }}});ui.min_rect()
-            }) {owns_popup=true;result.output.overlay=Some(area.expand(10.0));}
+            }) {owns_popup=true;popup_shape(ui.ctx(),area);result.output.overlay=Some(area.expand(10.0));}
         }
         let launcher=tile(body.bottom()-footer_control-2.0,footer_control);
         let response=ui.interact(launcher,ui.id().with("left-dock-launcher"),Sense::click());
@@ -782,4 +782,13 @@ fn vitals_corner(ui:&mut egui::Ui,theme:&Theme,rect:egui::Rect,vitals:&Vitals)->
         }
         assert!(hover.iter().all(|expanded| !expanded),"hover must never open the system panel");
     }
+}
+
+/// An egui pop-up or tooltip around `content`: its frame is the content and the menu
+/// margin, rounded like menus. Noted for the compositor (material::record), which
+/// then shows applications past its corners.
+fn popup_shape(ctx:&egui::Context,content:egui::Rect){
+    let margin=ctx.style().spacing.menu_margin;
+    let frame=egui::Rect::from_min_max(content.min-egui::vec2(margin.left as f32,margin.top as f32),content.max+egui::vec2(margin.right as f32,margin.bottom as f32));
+    crate::material::record(ctx,frame,ui::CONTROL_RADIUS);
 }

@@ -132,8 +132,12 @@ pub struct DesComp {
     pub toast: Option<Rectangle<i32, Logical>>,
     /// The part of the shell's window the status island reaches into, above the
     /// applications (`Command::Island`).
-    pub island: Option<Rectangle<i32, Logical>>,
+    pub island: Option<(Rectangle<i32, Logical>, i32)>,
     pub island_id: smithay::backend::renderer::element::Id,
+    /// Draws the island clipped to its rounded shape (toast.rs).
+    pub island_shader: crate::toast::IslandShader,
+    /// The rounded surfaces among what the shell lifts (`Command::Rounded`), in its window.
+    pub rounded: Vec<(Rectangle<i32, Logical>, i32)>,
     pub companion_bubble: Option<(Rectangle<i32, Logical>, Instant)>,
     pub companion_bubble_id: smithay::backend::renderer::element::Id,
     /// The shell-local dock and its pointer corridor, independent of notifications.
@@ -344,6 +348,8 @@ impl DesComp {
             toast: None,
             island: None,
             island_id: smithay::backend::renderer::element::Id::new(),
+            island_shader: Default::default(),
+            rounded: Vec::new(),
             companion_bubble: None,
             companion_bubble_id: smithay::backend::renderer::element::Id::new(),
             dock: None,

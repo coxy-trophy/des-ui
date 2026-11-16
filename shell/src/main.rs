@@ -267,7 +267,11 @@ struct App {
     island: island::Island,
     island_room: egui::Rect,
     /// What was last asked of the compositor for the island's reach above the strip.
-    island_lifted: Option<Option<(i32, i32, i32, i32)>>,
+    island_lifted: Option<Option<(i32, i32, i32, i32, i32)>>,
+    /// The rounded surfaces last told to the compositor (material::rounded_shapes).
+    rounded_sent: Option<Vec<(i32, i32, i32, i32, i32)>>,
+    /// Where the companion's speech bubble was last said to be lifted.
+    bubble_area: Option<(i32, i32, i32, i32)>,
     /// Applications' status icons, for the status strip.
     tray: tray::Tray,
 }
@@ -467,6 +471,8 @@ impl App {
             island: island::Island::default(),
             island_room: egui::Rect::NOTHING,
             island_lifted: None,
+            rounded_sent: None,
+            bubble_area: None,
             tray,
             scratchpad,
             overlay_area: None,

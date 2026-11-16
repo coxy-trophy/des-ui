@@ -23,8 +23,20 @@ use crate::state::DesComp;
 /// The cropped copy of the shell. It goes by a name of its own, so that what tracks
 /// changes on screen does not take it for the shell's window beneath.
 pub struct ToastElement {
-    inner: CropRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>,
+    inner: Inner,
     id: Id,
+}
+
+/// The whole rectangle, or one rounded surface in it through the clipping shader.
+enum Inner {
+    Crop(CropRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>),
+    Rounded(smithay::backend::renderer::gles::element::TextureShaderElement),
+}
+
+macro_rules! each {
+    ($inner:expr, $e:ident => $body:expr) => {
+        match $inner { Inner::Crop($e) => $body, Inner::Rounded($e) => $body }
+    };
 }
 
 impl Element for ToastElement {
@@ -32,28 +44,28 @@ impl Element for ToastElement {
         &self.id
     }
     fn current_commit(&self) -> CommitCounter {
-        self.inner.current_commit()
+        each!(&self.inner, e => e.current_commit())
     }
     fn src(&self) -> Rectangle<f64, Buffer> {
-        self.inner.src()
+        each!(&self.inner, e => e.src())
     }
     fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
-        self.inner.geometry(scale)
+        each!(&self.inner, e => e.geometry(scale))
     }
     fn transform(&self) -> Transform {
-        self.inner.transform()
+        each!(&self.inner, e => e.transform())
     }
     fn damage_since(&self, scale: Scale<f64>, commit: Option<CommitCounter>) -> DamageSet<i32, Physical> {
-        self.inner.damage_since(scale, commit)
+        each!(&self.inner, e => e.damage_since(scale, commit))
     }
     fn opaque_regions(&self, scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
-        self.inner.opaque_regions(scale)
+        each!(&self.inner, e => e.opaque_regions(scale))
     }
     fn alpha(&self) -> f32 {
-        self.inner.alpha()
+        each!(&self.inner, e => e.alpha())
     }
     fn kind(&self) -> Kind {
-        self.inner.kind()
+        each!(&self.inner, e => e.kind())
     }
 }
 
@@ -66,11 +78,11 @@ impl RenderElement<GlesRenderer> for ToastElement {
         damage: &[Rectangle<i32, Physical>],
         opaque_regions: &[Rectangle<i32, Physical>],
     ) -> Result<(), <GlesRenderer as smithay::backend::renderer::RendererSuper>::Error> {
-        RenderElement::<GlesRenderer>::draw(&self.inner, frame, src, dst, damage, opaque_regions)
+        each!(&self.inner, e => RenderElement::<GlesRenderer>::draw(e, frame, src, dst, damage, opaque_regions))
     }
 
     fn underlying_storage(&self, renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
-        self.inner.underlying_storage(renderer)
+        each!(&self.inner, e => e.underlying_storage(renderer))
     }
 }
 
@@ -115,10 +127,15 @@ impl DesComp {
     /// Where on the desktop the status island reaches out of the strip, if it does.
     /// Not behind the lock, nor while a screenshot is being chosen.
     pub fn island_area(&self) -> Option<Rectangle<i32, Logical>> {
+        self.island_shape().map(|(area, _)| area)
+    }
+
+    /// The island's area on the desktop and its corner radius.
+    pub fn island_shape(&self) -> Option<(Rectangle<i32, Logical>, i32)> {
         let main = *self.screens.first()?;
-        let mut area = self.island.filter(|_| !self.locked && !self.picking && self.shell.is_some())?;
+        let (mut area, radius) = self.island.filter(|_| !self.locked && !self.picking && self.shell.is_some())?;
         area.loc += main.loc;
-        area.intersection(main)
+        Some((area.intersection(main)?, radius))
     }
 
     /// Where on the desktop the shell's toasts are, if it is showing any. Locked, the
@@ -135,6 +152,8 @@ impl DesComp {
 /// from the same state while frames are drawn.
 pub fn elements(
     renderer: &mut GlesRenderer,
+    shader: &mut IslandShader,
+    rounded: &[(Rectangle<i32, Logical>, i32)],
     shell: Option<&Window>,
     area: Option<Rectangle<i32, Logical>>,
     primary: Option<Point<i32, Logical>>,
@@ -145,6 +164,21 @@ pub fn elements(
     let (Some(area), Some(shell), Some(primary)) = (area, shell, primary) else {
         return Vec::new();
     };
+    // Made of rounded surfaces (Command::Rounded, in the shell's window): drawn as
+    // them, so that applications show past their corners. All of them or none.
+    let inside: Vec<(Rectangle<i32, Logical>, i32)> = rounded.iter()
+        .map(|(rect, radius)| (Rectangle::new(rect.loc + primary, rect.size), *radius))
+        .filter(|(rect, _)| area.contains_rect(*rect))
+        .collect();
+    if !inside.is_empty() {
+        let shaped: Vec<ToastElement> = inside.iter()
+            .filter_map(|shape| island_element(renderer, shader, Some(shell), Some(*shape), Some(primary), origin, scale))
+            .map(|element| ToastElement { inner: Inner::Rounded(element), id: Id::new() })
+            .collect();
+        if shaped.len() == inside.len() {
+            return shaped;
+        }
+    }
     let Some(surface) = shell.toplevel().map(|toplevel| toplevel.wl_surface().clone()) else {
         return Vec::new();
     };
@@ -162,7 +196,134 @@ pub fn elements(
         .into_iter()
         .next_back()
         .and_then(|element| CropRenderElement::from_element(element, scale, crop))
-        .map(|inner| ToastElement { inner, id: id.clone() })
+        .map(|inner| ToastElement { inner: Inner::Crop(inner), id: id.clone() })
         .into_iter()
         .collect()
+}
+
+
+/// The status island, drawn from the shell's window but only inside its rounded
+/// shape, so that the applications show past its corners (a plain crop showed the
+/// shell's own background there in square patches).
+const ISLAND_SHADER: &str = r#"#version 100
+
+//_DEFINES_
+
+#if defined(EXTERNAL)
+#extension GL_OES_EGL_image_external : require
+#endif
+
+precision mediump float;
+#if defined(EXTERNAL)
+uniform samplerExternalOES tex;
+#else
+uniform sampler2D tex;
+#endif
+
+uniform float alpha;
+varying vec2 v_coords;
+
+#if defined(DEBUG_FLAGS)
+uniform float tint;
+#endif
+
+// In the shell's buffer, in pixels: the whole buffer, the island, its corner radius.
+uniform vec2 size;
+uniform vec4 card;
+uniform float radius;
+
+void main() {
+    vec4 color = texture2D(tex, v_coords);
+#if defined(NO_ALPHA)
+    color = vec4(color.rgb, 1.0);
+#endif
+    // Distance outside a rounded rectangle; one pixel of soft edge.
+    vec2 p = v_coords * size - (card.xy + card.zw * 0.5);
+    vec2 q = abs(p) - card.zw * 0.5 + vec2(radius);
+    float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
+    color = color * clamp(0.5 - d, 0.0, 1.0) * alpha;
+
+#if defined(DEBUG_FLAGS)
+    if (tint == 1.0)
+        color = vec4(0.0, 0.2, 0.0, 0.2) + color * 0.8;
+#endif
+
+    gl_FragColor = color;
+}
+"#;
+
+/// The island's shader, compiled the first time it is needed.
+#[derive(Default)]
+pub struct IslandShader {
+    program: Option<smithay::backend::renderer::gles::GlesTexProgram>,
+    broken: bool,
+}
+
+/// The island on the display whose top left corner is at `origin`: the shell's
+/// window inside the rounded `area`. `None` when there is nothing to draw, or the
+/// shader is not available (the caller then draws a plain crop).
+pub fn island_element(
+    renderer: &mut GlesRenderer,
+    shader: &mut IslandShader,
+    shell: Option<&Window>,
+    shape: Option<(Rectangle<i32, Logical>, i32)>,
+    primary: Option<Point<i32, Logical>>,
+    origin: Point<i32, Logical>,
+    scale: f64,
+) -> Option<smithay::backend::renderer::gles::element::TextureShaderElement> {
+    use smithay::backend::renderer::{
+        element::texture::TextureRenderElement,
+        gles::{GlesTexture, Uniform, UniformName, UniformType, element::TextureShaderElement},
+        utils::{RendererSurfaceStateUserData, import_surface_tree},
+        Renderer, Texture,
+    };
+    let ((area, radius), shell, primary) = (shape?, shell?, primary?);
+    if shader.broken {
+        return None;
+    }
+    if shader.program.is_none() {
+        let uniforms = [
+            UniformName::new("size", UniformType::_2f),
+            UniformName::new("card", UniformType::_4f),
+            UniformName::new("radius", UniformType::_1f),
+        ];
+        match renderer.compile_custom_texture_shader(ISLAND_SHADER, &uniforms) {
+            Ok(program) => shader.program = Some(program),
+            Err(e) => {
+                tracing::error!("cannot compile the island shader, drawing it square: {e:?}");
+                shader.broken = true;
+                return None;
+            }
+        }
+    }
+    let surface = shell.toplevel()?.wl_surface().clone();
+    import_surface_tree(renderer, &surface).ok()?;
+    let context = renderer.context_id();
+    let (texture, buffer_scale, transform) = smithay::wayland::compositor::with_states(&surface, |states| {
+        let data = states.data_map.get::<RendererSurfaceStateUserData>()?.lock().ok()?;
+        Some((data.texture::<GlesTexture>(context.clone())?.clone(), data.buffer_scale(), data.buffer_transform()))
+    })?;
+    // Where the island is in the shell's window, which starts at `primary`.
+    let within = Rectangle::new(area.loc - primary, area.size);
+    let element = TextureRenderElement::from_static_texture(
+        smithay::backend::renderer::element::Id::new(),
+        context,
+        (area.loc - origin).to_f64().to_physical(scale),
+        texture.clone(),
+        buffer_scale,
+        transform,
+        None,
+        Some(within.to_f64()),
+        Some(area.size),
+        None,
+        Kind::Unspecified,
+    );
+    let pixels = texture.size();
+    let at = within.to_f64().upscale(buffer_scale as f64);
+    let uniforms = vec![
+        Uniform::new("size", (pixels.w as f32, pixels.h as f32)),
+        Uniform::new("card", [at.loc.x as f32, at.loc.y as f32, at.size.w as f32, at.size.h as f32]),
+        Uniform::new("radius", radius as f32 * buffer_scale as f32),
+    ];
+    Some(TextureShaderElement::new(element, shader.program.clone()?, uniforms))
 }

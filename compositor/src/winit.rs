@@ -159,7 +159,7 @@ pub fn init_winit(
                 let secondary_savers = state.visible_secondary_savers();
                 let output_rect = state.space.output_geometry(&output);
                 let toast_area = state.toast_area();
-                let island_area = state.island_area();
+                let island_shape = state.island_shape();
                 let companion_bubble_area = state.companion_bubble_area();
                 let overlay_area = state.overlay_area();
                 let docks = state.dock_layers();
@@ -182,7 +182,7 @@ pub fn init_winit(
                     }
                     if let Some(output_rect) = output_rect {
                         for (window, rect, id) in &secondary_savers {
-                            toasts.extend(crate::toast::elements(renderer, Some(window), rect.intersection(output_rect),
+                            toasts.extend(crate::toast::elements(renderer, &mut state.island_shader, &[], Some(window), rect.intersection(output_rect),
                                 Some(rect.loc), id, output_rect.loc, scale).into_iter().map(crate::splash::TopElements::Toast));
                         }
                     }
@@ -209,21 +209,24 @@ pub fn init_winit(
                         matches!(overview.kind, des_common::ipc::OverviewKind::Workspaces | des_common::ipc::OverviewKind::Drag) && state.space.output_geometry(&output).is_some_and(|geometry| geometry.contains_rect(overview.layout.display))
                     });
                     if !covered {
-                    toasts.extend(crate::toast::elements(renderer, state.shell.as_ref(), companion_bubble_area, primary,
+                    toasts.extend(crate::toast::elements(renderer, &mut state.island_shader, &state.rounded, state.shell.as_ref(), companion_bubble_area, primary,
                         &state.companion_bubble_id, (0,0).into(), scale).into_iter().map(crate::splash::TopElements::Toast));
-                    toasts.extend(crate::toast::elements(renderer, state.shell.as_ref(), island_area, primary, &state.island_id, (0, 0).into(), scale)
-                        .into_iter().map(crate::splash::TopElements::Toast));
+                    match crate::toast::island_element(renderer, &mut state.island_shader, state.shell.as_ref(), island_shape, primary, (0, 0).into(), scale) {
+                        Some(island) => toasts.push(crate::splash::TopElements::Phosphor(island)),
+                        None => toasts.extend(crate::toast::elements(renderer, &mut state.island_shader, &[], state.shell.as_ref(), island_shape.map(|(area, _)| area), primary, &state.island_id, (0, 0).into(), scale)
+                            .into_iter().map(crate::splash::TopElements::Toast)),
+                    }
                     toasts.extend(
-                        crate::toast::elements(renderer, state.shell.as_ref(), toast_area, primary, &state.toast_id, (0, 0).into(), scale)
+                        crate::toast::elements(renderer, &mut state.island_shader, &state.rounded, state.shell.as_ref(), toast_area, primary, &state.toast_id, (0, 0).into(), scale)
                             .into_iter()
                             .map(crate::splash::TopElements::Toast),
                     );
                     for (shell,area,origin,id) in &docks {
-                        toasts.extend(crate::toast::elements(renderer,Some(shell),Some(*area),Some(*origin),id,(0,0).into(),scale).into_iter().map(crate::splash::TopElements::Toast));
+                        toasts.extend(crate::toast::elements(renderer, &mut state.island_shader, if Some(shell) == state.shell.as_ref() { &state.rounded } else { &[] }, Some(shell),Some(*area),Some(*origin),id,(0,0).into(),scale).into_iter().map(crate::splash::TopElements::Toast));
                     }
                     // The overlay is beneath the toasts and the dock, above every window.
                     toasts.extend(
-                        crate::toast::elements(renderer, state.shell.as_ref(), overlay_area, primary, &state.overlay_id, (0, 0).into(), scale)
+                        crate::toast::elements(renderer, &mut state.island_shader, &state.rounded, state.shell.as_ref(), overlay_area, primary, &state.overlay_id, (0, 0).into(), scale)
                             .into_iter()
                             .map(crate::splash::TopElements::Toast),
                     );
