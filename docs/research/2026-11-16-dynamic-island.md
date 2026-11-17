@@ -53,16 +53,16 @@ Research done 16 Nov 2026. Nothing below is built yet; it is the plan for later.
 
 | Behaviour | Ours (island.rs) | Plan |
 |---|---|---|
-| Tap vs hold | A click toggles the card | Hover expands, click opens the app (Spotify, or the app that sent the notice), and long-press on touch expands |
-| Click while recording | Stops the recording at once | Click shows the card instead; the Stop button lives in the card |
+| Tap vs hold | **Done 17 Nov:** hover (0.3 s) or press-and-hold (0.45 s) opens the card; a click opens the music player or the notification's app | — |
+| Click while recording | **Done 17 Nov:** a click opens a recording card; only its Stop button stops | — |
 | Hover holds a notice | Done | Keep |
 | Opens by itself only for alerts | Every notice takes over for 4 s | Add an urgent flag. Only urgent notices expand; the others pulse quietly in compact |
 | Several activities | Music plus a recording bubble | Two narrower compact views side by side, and a third as a bubble |
 | Swipe to hide | None | Touch: swipe inward to hide and outward to restore. Mouse: the scroll wheel does the same |
-| Removed when it ends | Music stays while paused | Hide music after about a minute paused |
+| Removed when it ends | **Done 16 Nov:** music leaves after a minute paused | — |
 | Stale state | None | Dim the content and show a "not updating" mark when data stops arriving |
-| Outline colour | Always the grey line colour | Album colour for music, red for recording |
-| Spring | Critically damped both ways | Expand with damping about 0.8, collapse critically damped |
+| Outline colour | **Done 16 Nov:** red for recording, the accent colour for music and notices | — |
+| Spring | **Done 16 Nov:** expand damping 0.7 (about 2% overshoot), collapse critically damped | — |
 | Sensitive content | Shows the notice body | Optional sender-only mode, and hide the body automatically while the screen is shared |
 | System events | Volume and brightness levels | Bluetooth device and battery (BlueZ Battery1), charging %, Do Not Disturb, camera/mic dot (PipeWire) |
 | App progress | None | Read the Unity LauncherEntry progress (Chrome, Firefox, file copies) and KDE JobView |
@@ -75,6 +75,8 @@ Research done 16 Nov 2026. Nothing below is built yet; it is the plan for later.
 - Hold as the only way to expand.
 - Ignoring the animations apps ask for.
 - The 8-hour cap.
+
+Also done (16 Nov): an open island closes after 5 s without the pointer on it, and on any click outside it, including inside applications (the compositor sends `island-away`).
 
 ## Order
 

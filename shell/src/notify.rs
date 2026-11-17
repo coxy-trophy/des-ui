@@ -655,6 +655,20 @@ impl Center {
         self.open = true;
     }
 
+    /// Clicked in the island: what the notification itself does when its sender
+    /// offered that (its default action), or else just the app it came from.
+    pub fn island_open(&mut self, id: u32) -> Option<Chosen> {
+        let notice = self.notices.iter().find(|notice| notice.id == id)?;
+        match notice.default_action().map(str::to_string) {
+            Some(key) => self.act(id, &key),
+            None => {
+                let app = notice.app.clone();
+                self.island_read(id);
+                Some(Chosen { app })
+            }
+        }
+    }
+
     /// One of its own actions, chosen in the island.
     pub fn island_act(&mut self, id: u32, key: &str) -> Option<Chosen> {
         self.act(id, key)
@@ -1479,6 +1493,20 @@ mod tests {
         let long = "é".repeat(REPLY_LIMIT);
         assert!(clean_reply(&long).len() <= REPLY_LIMIT);
         assert_eq!(clean_reply("two\nlines"), "two\nlines");
+    }
+
+    #[test]
+    fn clicked_in_the_island_it_opens_its_app() {
+        let mut center = center();
+        center.add(from(8, "Mail", &[("default", "Open")]), 0);
+        center.add(from(9, "Chat", &[]), 0);
+        // With a default action: that action, and it is dealt with.
+        assert_eq!(center.island_open(8).map(|chosen| chosen.app), Some("Mail".to_string()));
+        assert!(center.notices.iter().all(|notice| notice.id != 8));
+        // Without one: just its app; it stays in the list, read.
+        assert_eq!(center.island_open(9).map(|chosen| chosen.app), Some("Chat".to_string()));
+        assert!(center.notices.iter().any(|notice| notice.id == 9 && !notice.fresh));
+        assert!(center.island_open(99).is_none());
     }
 
     #[test]

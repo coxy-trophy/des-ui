@@ -3,8 +3,10 @@
 //!
 //! At rest it is what the centre always was: who has the keyboard and how many
 //! applications are open. Something live widens it (music, a recording), a
-//! notification or a volume change grows it for a moment, and a click opens it
-//! upward into a card. It never takes the keyboard (the compositor lifts it above
+//! notification or a volume change grows it for a moment. Resting the pointer on
+//! it (or pressing and holding, by touch) opens it upward into a card; a click
+//! opens what it shows: the music player, the app a notification came from
+//! (`click`). It never takes the keyboard (the compositor lifts it above
 //! the applications with `Command::Island`, which leaves focus alone), and it never
 //! grows over the left or right island.
 //!
@@ -24,6 +26,13 @@ pub const ARRIVING_FOR: Duration = Duration::from_secs(4);
 const CARD_WIDTH: f32 = 400.0;
 const MUSIC_CARD: Vec2 = vec2(CARD_WIDTH, 156.0);
 const NOTE_CARD: Vec2 = vec2(CARD_WIDTH, 164.0);
+const RECORDING_CARD: Vec2 = vec2(320.0, 116.0);
+/// How long the pointer rests on the island before it opens.
+const HOVER_OPEN: Duration = Duration::from_millis(300);
+/// How long a press is held before it opens the island instead of clicking.
+const HOLD_OPEN: Duration = Duration::from_millis(450);
+/// An island the pointer opened closes this long after the pointer leaves it.
+const LEAVE_CLOSE: Duration = Duration::from_millis(600);
 const ARRIVING_HEIGHT: f32 = 52.0;
 /// The largest corner: cards are rounded, not stadiums.
 const CARD_RADIUS: f32 = 28.0;
@@ -51,6 +60,8 @@ pub enum Mode {
     /// A notification, whole, with its actions.
     NoteOpen,
     Recording,
+    /// The recording, with its time and the button that stops it.
+    RecordingOpen,
     /// Volume or brightness, for a moment.
     Level,
 }
@@ -67,8 +78,8 @@ pub struct Facts {
 
 /// The mode, most important first: a notification coming in, then a level being
 /// changed, then music, then a recording (which, with music, shows as a bubble
-/// beside it instead), then notifications waiting. Opening only means something
-/// for music and notifications.
+/// beside it instead), then notifications waiting. Opening means something for
+/// music, notifications and a recording.
 pub fn mode(facts: Facts, open: bool) -> Mode {
     if facts.arriving {
         return if open { Mode::NoteOpen } else { Mode::Arriving };
@@ -80,7 +91,7 @@ pub fn mode(facts: Facts, open: bool) -> Mode {
         return if open { Mode::MusicOpen } else { Mode::Music };
     }
     if facts.recording {
-        return Mode::Recording;
+        return if open { Mode::RecordingOpen } else { Mode::Recording };
     }
     if facts.waiting {
         return if open { Mode::NoteOpen } else { Mode::Waiting };
@@ -98,6 +109,7 @@ pub fn size_of(mode: Mode, compact: f32) -> Vec2 {
     match mode {
         Mode::MusicOpen => MUSIC_CARD,
         Mode::NoteOpen => NOTE_CARD,
+        Mode::RecordingOpen => RECORDING_CARD,
         Mode::Arriving => vec2(compact, ARRIVING_HEIGHT),
         _ => vec2(compact, REST_HEIGHT),
     }
@@ -135,7 +147,7 @@ pub fn collapse_due(idle: Duration) -> bool {
 /// usual line when it shows nothing of its own.
 pub fn outline(mode: Mode, accent: Color32) -> Color32 {
     match mode {
-        Mode::Recording => RED.gamma_multiply(0.55),
+        Mode::Recording | Mode::RecordingOpen => RED.gamma_multiply(0.55),
         Mode::Music | Mode::MusicOpen | Mode::Arriving | Mode::NoteOpen => accent.gamma_multiply(0.45),
         Mode::Resting | Mode::Waiting | Mode::Level => ui::LINE,
     }
@@ -207,6 +219,36 @@ pub enum NoteDeed {
     Reply,
     /// One of its own actions, by key.
     Act(String),
+    /// Clicked: what the notification itself does (its default action), or else
+    /// the app it came from.
+    Open,
+}
+
+/// Whether a mode has a card to open into.
+pub fn opens(mode: Mode) -> bool {
+    matches!(mode, Mode::Music | Mode::Arriving | Mode::Waiting | Mode::Recording)
+}
+
+/// What a click on the island does.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Click {
+    Nothing,
+    Open,
+    Close,
+    Do(Deed),
+}
+
+/// A click opens what the island shows: the music player, the app a notification
+/// came from. A recording has no app: a click opens its card, and only the card's
+/// button stops it, so a stray click never ends one.
+pub fn click(mode: Mode, note: Option<u32>) -> Click {
+    match mode {
+        Mode::Music | Mode::MusicOpen => Click::Do(Deed::OpenMusic),
+        Mode::Arriving | Mode::Waiting | Mode::NoteOpen => note.map_or(Click::Do(Deed::OpenNotes), |id| Click::Do(Deed::Note(id, NoteDeed::Open))),
+        Mode::Recording => Click::Open,
+        Mode::RecordingOpen => Click::Close,
+        Mode::Resting | Mode::Level => Click::Nothing,
+    }
 }
 
 #[derive(Default)]
@@ -219,6 +261,15 @@ pub struct Island {
     paused_since: Option<Instant>,
     /// While open: when the pointer was last on it (or when it opened).
     touched: Option<Instant>,
+    /// Opened by the pointer resting on it: it closes soon after the pointer leaves.
+    by_hover: bool,
+    /// Since when the pointer rests on it (closed) or has been off it (opened by hover).
+    hover_since: Option<Instant>,
+    away_since: Option<Instant>,
+    /// After a click, the pointer still on it does not open it, until it leaves.
+    hover_blocked: bool,
+    /// A held press opened it: the click its release makes is not a click.
+    held: bool,
 }
 
 impl Island {
@@ -226,6 +277,15 @@ impl Island {
     pub fn close(&mut self) {
         self.open = false;
         self.touched = None;
+        self.by_hover = false;
+        self.away_since = None;
+    }
+
+    fn open_now(&mut self, by_hover: bool) {
+        self.open = true;
+        self.by_hover = by_hover;
+        self.touched = None;
+        self.away_since = None;
     }
 
     /// Draws the island centred on `room` (the part of the strip between the left
@@ -249,8 +309,8 @@ impl Island {
             _ => self.paused_since = None,
         }
         // Nothing left to open: the card closes by itself.
-        if self.open && !(facts.music || facts.arriving || facts.waiting) {
-            self.open = false;
+        if self.open && !(facts.music || facts.arriving || facts.waiting || facts.recording) {
+            self.close();
         }
         let mode = mode(facts, self.open);
         let compact = self.compact_width(ctx, mode, feed).min(room.width()).max(REST_HEIGHT);
@@ -296,25 +356,74 @@ impl Island {
                 inner.set_clip_rect(rect);
                 inner.set_opacity(settled);
                 let done = draw(&mut inner, theme, mode, rect, feed);
+                // Pressed and held: it opens, and the release is not a click.
+                let held_for = ui.input(|input| input.pointer.press_start_time().map(|start| input.time - start)).unwrap_or(0.0);
+                if !self.open && opens(mode) && response.is_pointer_button_down_on() && held_for >= HOLD_OPEN.as_secs_f64() {
+                    self.open_now(false);
+                    self.held = true;
+                    ctx.request_repaint();
+                } else if response.is_pointer_button_down_on() && !self.open && opens(mode) {
+                    ctx.request_repaint_after(HOLD_OPEN);
+                }
                 if done != Deed::Nothing {
                     deed = done;
                 } else if response.clicked() {
-                    match mode {
-                        Mode::Music | Mode::Arriving | Mode::Waiting | Mode::MusicOpen | Mode::NoteOpen => self.open = !self.open,
-                        Mode::Recording => deed = Deed::StopRecording,
-                        Mode::Resting | Mode::Level => {}
+                    if std::mem::take(&mut self.held) {
+                        // The release of the press that opened it.
+                    } else {
+                        self.hover_blocked = true;
+                        match click(mode, feed.note().map(|notice| notice.id)) {
+                            Click::Nothing => {}
+                            Click::Open => self.open_now(false),
+                            Click::Close => self.close(),
+                            Click::Do(done) => deed = done,
+                        }
                     }
-                } else if mode == Mode::Arriving && response.hovered() {
+                } else if !ui.input(|input| input.pointer.any_down()) {
+                    // A long hold makes no click on release: nothing left to swallow.
+                    self.held = false;
+                }
+                if deed == Deed::Nothing && response.hovered() {
+                    // A notification's time stands still while the pointer is on it.
                     if let Some((notice, _)) = &feed.arriving {
                         deed = Deed::Holding(notice.id);
                     }
                 }
                 response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label(mode, feed)));
             });
+        let on_it = ctx.input(|input| input.pointer.hover_pos()).is_some_and(|at| rect.contains(at));
+        let now = Instant::now();
+        // Resting the pointer on it opens it; opened that way, it closes soon after
+        // the pointer leaves.
+        if !on_it {
+            self.hover_blocked = false;
+            self.hover_since = None;
+        }
+        if !self.open && on_it && opens(mode) && !self.hover_blocked {
+            let since = *self.hover_since.get_or_insert(now);
+            if now - since >= HOVER_OPEN {
+                self.open_now(true);
+                ctx.request_repaint();
+            } else {
+                ctx.request_repaint_after(HOVER_OPEN - (now - since));
+            }
+        }
+        if self.open && self.by_hover {
+            if on_it {
+                self.away_since = None;
+            } else {
+                let away = *self.away_since.get_or_insert(now);
+                if now - away >= LEAVE_CLOSE {
+                    self.close();
+                    self.hover_since = None;
+                    ctx.request_repaint();
+                } else {
+                    ctx.request_repaint_after(LEAVE_CLOSE - (now - away));
+                }
+            }
+        }
         // Left alone, it closes by itself; the pointer on it keeps it open.
         if self.open {
-            let on_it = ctx.input(|input| input.pointer.hover_pos()).is_some_and(|at| rect.contains(at));
-            let now = Instant::now();
             let touched = *self.touched.get_or_insert(now);
             if on_it {
                 self.touched = Some(now);
@@ -334,7 +443,7 @@ impl Island {
             let pressed_away = ctx.input(|input| input.pointer.any_pressed()
                 && input.pointer.interact_pos().is_some_and(|at| !rect.contains(at)));
             if pressed_away || ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
-                self.open = false;
+                self.close();
                 ctx.request_repaint();
             }
         }
@@ -366,10 +475,11 @@ impl Island {
                 7.0 + 30.0 + 10.0 + width(&truncate(&song.title, 28), ui::display_bold(13.0)) + 6.0
                     + width(&format!("· {}", truncate(&song.artists, 22)), ui::display(13.0)) + 12.0 + 22.0 + 16.0
             }),
-            Mode::Recording => 18.0 + 8.0 + 10.0 + width("REC", ui::mono(12.0)) + 8.0 + width("00:00", ui::mono(13.0)) + 10.0 + 30.0 + 7.0,
+            Mode::Recording => 18.0 + 8.0 + 10.0 + width("REC", ui::mono(12.0)) + 8.0 + width("00:00", ui::mono(13.0)) + 20.0,
             Mode::Level => 18.0 + 20.0 + 12.0 + 180.0 + 12.0 + 34.0 + 18.0,
             Mode::Arriving => 360.0,
             Mode::MusicOpen | Mode::NoteOpen => CARD_WIDTH,
+            Mode::RecordingOpen => RECORDING_CARD.x,
         }
     }
 }
@@ -397,7 +507,8 @@ fn label(mode: Mode, feed: &Feed) -> String {
         Mode::Waiting => format!("{} notifications waiting. Open them", feed.waiting),
         Mode::Music | Mode::MusicOpen => feed.song.as_ref().map_or_else(String::new, |song| format!("{}, {}. Open the player", song.title, song.artists)),
         Mode::Arriving | Mode::NoteOpen => feed.note().map_or_else(String::new, |notice| format!("Notification from {}: {}", notice.app, notice.title)),
-        Mode::Recording => "Recording the screen. Stop".into(),
+        Mode::Recording => "Recording the screen. Open".into(),
+        Mode::RecordingOpen => "Recording the screen".into(),
         Mode::Level => "Level".into(),
     }
 }
@@ -608,10 +719,25 @@ fn draw(ui: &mut Ui, theme: &Theme, mode: Mode, rect: Rect, feed: &Feed) -> Deed
             x += put(ui, pos2(x, middle), "REC", ui::mono(12.0), ui::TEXT) + 8.0;
             let seconds = length.as_secs();
             put(ui, pos2(x, middle), &format!("{:02}:{:02}", seconds / 60, seconds % 60), ui::mono(13.0), ui::TEXT);
-            let stop = pos2(rect.right() - 22.0, middle);
-            let (clicked, r) = round_button(ui, stop, 30.0, Color32::from_rgb(0x2A, 0x14, 0x14), "Stop recording");
-            ui.painter().rect_filled(Rect::from_center_size(r.center(), Vec2::splat(10.0)), 2.0, RED);
-            if clicked { deed = Deed::StopRecording; }
+        }
+        Mode::RecordingOpen => {
+            let Some(length) = feed.recording else { return deed };
+            let dot = pos2(rect.left() + 26.0, rect.top() + 30.0);
+            ui.painter().circle_filled(dot, 8.0, RED.gamma_multiply(0.18));
+            ui.painter().circle_filled(dot, 4.5, RED);
+            put(ui, pos2(dot.x + 16.0, dot.y), "Recording the screen", ui::display_bold(14.0), ui::TEXT);
+            let seconds = length.as_secs();
+            let time = format!("{:02}:{:02}:{:02}", seconds / 3600, seconds / 60 % 60, seconds % 60);
+            let galley = ui::galley(ui, &time, ui::mono(13.0), ui::SECONDARY, 0.0);
+            ui.painter().galley(pos2(rect.right() - 20.0 - galley.size().x, dot.y - galley.size().y / 2.0), galley, ui::SECONDARY);
+            let button = Rect::from_min_max(pos2(rect.left() + 18.0, rect.bottom() - 50.0), pos2(rect.right() - 18.0, rect.bottom() - 16.0));
+            let response = ui.interact(button, ui.id().with("island-stop-recording"), Sense::click());
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Stop recording"));
+            ui.painter().rect_filled(button, 17.0, if response.hovered() { RED.gamma_multiply(0.85) } else { RED });
+            let square = Rect::from_center_size(pos2(button.center().x - 52.0, button.center().y), Vec2::splat(10.0));
+            ui.painter().rect_filled(square, 2.0, ui::GROUND);
+            ui.painter().text(pos2(square.right() + 10.0, button.center().y), Align2::LEFT_CENTER, "Stop recording", ui::display_bold(13.0), ui::GROUND);
+            if response.clicked() { deed = Deed::StopRecording; }
         }
         Mode::Level => {
             let Some((kind, level)) = feed.level else { return deed };
@@ -651,7 +777,7 @@ mod tests {
         assert_eq!(mode(facts(false, false, false, true, false), true), Mode::MusicOpen);
         assert_eq!(mode(facts(true, false, false, true, false), true), Mode::NoteOpen);
         assert_eq!(mode(facts(false, false, false, false, true), true), Mode::NoteOpen);
-        assert_eq!(mode(facts(false, false, true, false, false), true), Mode::Recording);
+        assert_eq!(mode(facts(false, false, true, false, false), true), Mode::RecordingOpen);
         assert_eq!(mode(facts(false, false, false, false, false), true), Mode::Resting);
     }
 
@@ -694,6 +820,23 @@ mod tests {
         }
         assert!((x - 214.0).abs() < 0.5, "{x}");
         assert!(low >= 213.5, "dipped to {low}");
+    }
+
+    #[test]
+    fn a_click_opens_what_the_island_shows() {
+        assert_eq!(click(Mode::Music, None), Click::Do(Deed::OpenMusic));
+        assert_eq!(click(Mode::MusicOpen, None), Click::Do(Deed::OpenMusic));
+        assert_eq!(click(Mode::Arriving, Some(7)), Click::Do(Deed::Note(7, NoteDeed::Open)));
+        assert_eq!(click(Mode::Waiting, None), Click::Do(Deed::OpenNotes));
+        assert_eq!(click(Mode::Resting, None), Click::Nothing);
+    }
+
+    #[test]
+    fn a_stray_click_never_stops_a_recording() {
+        assert_eq!(click(Mode::Recording, None), Click::Open);
+        assert_eq!(click(Mode::RecordingOpen, None), Click::Close);
+        assert!(opens(Mode::Recording));
+        assert!(!opens(Mode::Resting) && !opens(Mode::Level));
     }
 
     #[test]

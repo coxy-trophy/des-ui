@@ -1203,6 +1203,7 @@ impl App {
                 None
             }
             island::Deed::Note(id, island::NoteDeed::Act(key)) => { self.island.close(); self.notices.island_act(id, &key) }
+            island::Deed::Note(id, island::NoteDeed::Open) => { self.island.close(); self.notices.island_open(id) }
         }
     }
 
