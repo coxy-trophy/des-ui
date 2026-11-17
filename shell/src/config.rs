@@ -24,6 +24,15 @@ pub enum Palette {
     Derived,
 }
 
+/// Whether applications draw themselves light or dark. The desktop itself is
+/// not affected.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum AppTheme {
+    #[default]
+    Light,
+    Dark,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Saver {
     #[default]
@@ -126,6 +135,8 @@ pub struct Config {
     /// Whether the terminal's colours, the caution colour and the glow are the
     /// preset's own or drawn from the accent.
     pub palette: Palette,
+    /// Light or dark for applications' windows.
+    pub app_theme: AppTheme,
     /// Size of the terminal's text.
     pub font_size: f32,
     /// A font file to draw the terminal with, instead of the bundled one.
@@ -199,6 +210,7 @@ impl Default for Config {
             keep_terminal_sessions: true,
             accent: None,
             palette: Palette::Preset,
+            app_theme: AppTheme::Light,
             font_size: DEFAULT_FONT_SIZE,
             terminal_font: None,
             line_height: 1.0,
@@ -262,6 +274,7 @@ impl Config {
                     config.accent = value.split(',').map(|part| part.trim().parse::<u8>())
                         .collect::<Result<Vec<_>, _>>().ok().and_then(|rgb| rgb.try_into().ok());
                 }
+                "app_theme" => config.app_theme = if value == "dark" { AppTheme::Dark } else { AppTheme::Light },
                 "palette" => config.palette = if value == "derived" { Palette::Derived } else { Palette::Preset },
                 "glow" => {
                     if let Ok(glow) = value.parse::<f32>() {

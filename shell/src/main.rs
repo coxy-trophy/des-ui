@@ -2,6 +2,7 @@
 
 mod agenda;
 mod happenings;
+mod app_theme;
 mod apps;
 mod connect;
 mod autostart;
@@ -288,6 +289,9 @@ impl App {
         screenshot: Option<PathBuf>,
         serve_notifications: bool,
     ) -> anyhow::Result<App> {
+        if screenshot.is_none() && serve_notifications {
+            app_theme::apply(config.app_theme);
+        }
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
@@ -947,6 +951,9 @@ impl App {
                 if matches!(key, "animate" | "glow" | "scanlines" | "night_light") {
                     // The compositor re-reads the setting where it reads the input ones.
                     self.send(Command::ReloadInput);
+                }
+                if key == "app_theme" {
+                    app_theme::apply(self.config.app_theme);
                 }
                 if key == "palette" {
                     self.theme = self.config.resolved_theme();

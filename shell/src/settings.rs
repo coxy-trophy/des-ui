@@ -2,7 +2,7 @@
 //! the user asked for; applying and saving a change is the caller's job.
 
 use eframe::egui;
-use crate::config::{Config, LINE_HEIGHT_RANGE, MAX_FONT_SIZE, MIN_FONT_SIZE, Palette, SCROLLBACK_CHOICES, Saver};
+use crate::config::{AppTheme, Config, LINE_HEIGHT_RANGE, MAX_FONT_SIZE, MIN_FONT_SIZE, Palette, SCROLLBACK_CHOICES, Saver};
 use crate::radio::Radio;
 use crate::term::CursorShape;
 use des_common::input::{InputSettings, CURSOR_ARROW_POINTS, CURSOR_BASE_SIZE, CURSOR_SIZE_RANGE, DEFAULT_CURSOR_COLOR, REPEAT_DELAY_RANGE, REPEAT_RATE_RANGE};
@@ -152,7 +152,7 @@ struct SectionInfo {
     keywords: &'static str,
 }
 const SETTINGS_CATALOG: [SectionInfo; 19] = [
-    SectionInfo { section: Section::Appearance, group: SettingsGroup::Desktop, title: "Appearance", summary: "Wallpaper, theme, accent and visual effects", keywords: "background color colour transparency frosted blur glow scanlines night light reduce motion" },
+    SectionInfo { section: Section::Appearance, group: SettingsGroup::Desktop, title: "Appearance", summary: "Wallpaper, theme, accent and visual effects", keywords: "background color colour transparency frosted blur glow scanlines night light reduce motion dark mode light mode applications apps" },
     SectionInfo { section: Section::Frame, group: SettingsGroup::Desktop, title: "Desktop & panels", summary: "Panel visibility, application shelf and pet", keywords: "frame dock sidebar sidebars taskbar apps minimized collapsed animal companion pet" },
     SectionInfo { section: Section::Terminal, group: SettingsGroup::Desktop, title: "Terminal", summary: "Font, text size, cursor and scrollback", keywords: "console shell typeface line height copy select clipboard blink" },
     SectionInfo { section: Section::Screensaver, group: SettingsGroup::Desktop, title: "Screensaver", summary: "The scene shown after the desktop locks itself", keywords: "screensaver screen saver idle scene preview animation" },
@@ -217,6 +217,7 @@ const SETTING_INDEX: &[SettingEntry] = &[
     look(AppearanceTab::Theme, "Theme", "The accent colour and the terminal's colours"),
     look(AppearanceTab::Theme, "Accent colour", "A custom colour for what is live or selected"),
     look(AppearanceTab::Theme, "Derive the palette from the accent", "Terminal colours that agree with the accent"),
+    look(AppearanceTab::Theme, "Applications light or dark", "Light mode or dark mode for applications' windows"),
     look(AppearanceTab::Effects, "Glow", "A glow on bright text and the accent"),
     look(AppearanceTab::Effects, "Scanlines", "Faint lines across every display"),
     look(AppearanceTab::Effects, "Night light", "Warmer colours in the evening"),
@@ -863,6 +864,18 @@ impl Settings {
         }
         ui.add_space(10.0);
         swatches(ui, theme);
+        ui.add_space(20.0);
+        heading(ui, "APPLICATIONS", "Whether applications draw their windows light or dark. The desktop itself stays as it is.");
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
+            for (label, choice, value) in [("LIGHT", AppTheme::Light, "light"), ("DARK", AppTheme::Dark, "dark")] {
+                let chosen = config.app_theme == choice;
+                if ui::chip(ui, theme, label, None, chosen).clicked() && !chosen {
+                    changes.push(Change::Set("app_theme", Some(value.to_string())));
+                }
+            }
+        });
+        note(ui, "Most applications switch at once. Some older ones change the next time they open.");
     }
 
     fn effects_appearance(&mut self, ui: &mut Ui, theme: &Theme, config: &Config, changes: &mut Vec<Change>) {
