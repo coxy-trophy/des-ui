@@ -56,6 +56,12 @@ pub struct Now {
 }
 
 impl Now {
+    /// How long since the music service last told us anything (it answers the
+    /// shell's heartbeat every 20 s while it is running).
+    pub fn age(&self) -> Option<std::time::Duration> {
+        self.at.map(|at| at.elapsed())
+    }
+
     /// Where in the track playback is at this moment.
     pub fn position_ms(&self) -> u32 {
         let length = self.track.as_ref().map_or(0, |track| track.duration_ms);

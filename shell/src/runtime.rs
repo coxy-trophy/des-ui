@@ -29,7 +29,7 @@ impl eframe::App for App {
         self.osd.observe(osd::Kind::Volume, self.mon.volume(), quiet, now);
         self.osd.observe(osd::Kind::Brightness, self.mon.brightness, quiet, now);
         self.widgets.pump();
-        for message in self.settings.poll_devices(ctx) {
+        for message in self.settings.poll_devices(ctx, self.config.status_island) {
             self.notices.post("Devices", &message, false);
         }
         // While the terminal in use is in an ssh session, the panels show that machine.
@@ -1161,9 +1161,15 @@ impl App {
             position_ms: now.position_ms(),
             duration_ms: track.duration_ms,
             playing: now.playing,
+            stale: island::stale(now.playing, now.age()),
         });
         let (arriving, waiting, newest) = self.notices.island(island::ARRIVING_FOR);
         let level = self.osd.visible(std::time::Instant::now(), animate).map(|(kind, level, _)| (kind, level));
+        let quiet = self.notices.quiet_now();
+        let happenings = self.happenings.get_or_insert_with(|| crate::happenings::Happenings::new(ctx.clone()));
+        happenings.tick(self.mon.power, quiet);
+        let blip = happenings.blip().map(|(blip, left)| { ctx.request_repaint_after(left); blip });
+        let (task, watching) = (happenings.task(), happenings.watching());
         let holder = panels::holder(if self.dock.captures_keyboard() { Some("APPS") } else { overlay }, state);
         let feed = island::Feed {
             holder,
@@ -1174,6 +1180,12 @@ impl App {
             arriving,
             waiting,
             newest,
+            // Who it is from, not what it says: when asked, and always while
+            // the screen is being recorded.
+            private: self.config.island_private || self.capture.recording.is_some(),
+            blip,
+            task,
+            watching,
         };
         let (rect, deed) = self.island.show(ctx, theme, self.island_room, &feed, animate);
         // Above the strip it is over the applications: the compositor lifts it there.

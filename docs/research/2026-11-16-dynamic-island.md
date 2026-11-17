@@ -60,12 +60,12 @@ Research done 16 Nov 2026. Nothing below is built yet; it is the plan for later.
 | Several activities | Music plus a recording bubble | Two narrower compact views side by side, and a third as a bubble |
 | Swipe to hide | None | Touch: swipe inward to hide and outward to restore. Mouse: the scroll wheel does the same |
 | Removed when it ends | **Done 16 Nov:** music leaves after a minute paused | — |
-| Stale state | None | Dim the content and show a "not updating" mark when data stops arriving |
+| Stale state | **Done 17 Nov:** playing music unheard of for 45 s dims, stops its bars and says NOT UPDATING | — |
 | Outline colour | **Done 16 Nov:** red for recording, the accent colour for music and notices | — |
 | Spring | **Done 16 Nov:** expand damping 0.7 (about 2% overshoot), collapse critically damped | — |
-| Sensitive content | Shows the notice body | Optional sender-only mode, and hide the body automatically while the screen is shared |
-| System events | Volume and brightness levels | Bluetooth device and battery (BlueZ Battery1), charging %, Do Not Disturb, camera/mic dot (PipeWire) |
-| App progress | None | Read the Unity LauncherEntry progress (Chrome, Firefox, file copies) and KDE JobView |
+| Sensitive content | **Done 17 Nov:** setting "Hide what notifications say"; always hidden while recording (screen *sharing* is not known to the shell yet) | — |
+| System events | **Done 17 Nov (happenings.rs):** charging / on battery / low at 20% and 10%, Bluetooth connecting with battery (BlueZ Battery1), Do Not Disturb, camera (green) and microphone (orange) dots | — |
+| App progress | **Done 17 Nov:** downloads from the Unity LauncherEntry signal (Chromium/Brave, file managers). KDE JobView not yet | — |
 | Timers, calls | None | Phase 3: local timers, and calls through DES Connect |
 | App API | None | A D-Bus service where an app starts, updates and ends an activity with a relevance score and an urgent flag |
 | File shelf | None | Maybe: drop a file on the island to hold it, or send it to the phone |

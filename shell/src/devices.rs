@@ -34,7 +34,9 @@ pub struct Snapshot {
     pub ready: bool,
 }
 enum Request { Refresh, Camera(CameraSelection) }
-struct Update { snapshot: Snapshot, notices: Vec<String> }
+/// The changes as notices, and the same without Bluetooth (the status island
+/// shows Bluetooth devices connecting itself: happenings.rs).
+struct Update { snapshot: Snapshot, notices: Vec<String>, without_bluetooth: Vec<String> }
 #[derive(Clone, Copy)]
 pub enum Destination { Sound, Bluetooth, Displays, Pointer, Keyboard }
 
@@ -60,10 +62,11 @@ impl Devices {
                 }
                 let mut snapshot = inventory(previous.as_ref());
                 if let Some(error) = save_error { snapshot.warnings.push(error); }
-                let notices = previous.as_ref().map(|old| changes(old, &snapshot)).unwrap_or_default();
+                let notices = previous.as_ref().map(|old| changes(old, &snapshot, &[])).unwrap_or_default();
+                let without_bluetooth = previous.as_ref().map(|old| changes(old, &snapshot, &[Kind::Bluetooth])).unwrap_or_default();
                 let changed = previous.as_ref().is_none_or(|old| old.devices != snapshot.devices || old.warnings != snapshot.warnings || old.selected != snapshot.selected);
                 if changed {
-                    if send.send(Update { snapshot: snapshot.clone(), notices }).is_err() { break; }
+                    if send.send(Update { snapshot: snapshot.clone(), notices, without_bluetooth }).is_err() { break; }
                     ctx.request_repaint();
                 }
                 previous = Some(snapshot);
@@ -78,7 +81,8 @@ impl Devices {
     }
     /// Call every shell update, including while Settings is closed. First scan is
     /// deliberately quiet. Return strings through the existing notification owner.
-    pub fn poll(&mut self) -> Vec<String> {
+    /// With `island`, Bluetooth changes are left out: the island shows them.
+    pub fn poll(&mut self, island: bool) -> Vec<String> {
         let mut notices = Vec::new();
         for update in self.updates.try_iter() {
             self.snapshot = update.snapshot;
@@ -86,7 +90,7 @@ impl Devices {
                 || self.snapshot.warnings.iter().any(|warning| warning.starts_with("Camera choice was not saved")) {
                 self.pending_camera = None;
             }
-            notices.extend(update.notices);
+            notices.extend(if island { update.without_bluetooth } else { update.notices });
         }
         notices
     }
@@ -248,9 +252,10 @@ fn parse_bluetooth(text: &str) -> Option<Vec<Device>> {
         Some(Device { id:format!("bluetooth:{path}"), name:name.into(), kind:Kind::Bluetooth, status:if connected{"Connected"}else{"Paired · disconnected"}.into(), detail:"Managed by Bluetooth settings".into(), camera:None })
     }).collect())
 }
-fn changes(old: &Snapshot, new: &Snapshot) -> Vec<String> {
-    let before: BTreeMap<_, _> = old.devices.iter().filter(|d| d.kind != Kind::Audio).map(|d| (&d.id,d)).collect();
-    let after: BTreeMap<_, _> = new.devices.iter().filter(|d| d.kind != Kind::Audio).map(|d| (&d.id,d)).collect();
+fn changes(old: &Snapshot, new: &Snapshot, skip: &[Kind]) -> Vec<String> {
+    let counted = |d: &&Device| d.kind != Kind::Audio && !skip.contains(&d.kind);
+    let before: BTreeMap<_, _> = old.devices.iter().filter(counted).map(|d| (&d.id,d)).collect();
+    let after: BTreeMap<_, _> = new.devices.iter().filter(counted).map(|d| (&d.id,d)).collect();
     let mut added = BTreeSet::new();
     let mut removed = BTreeSet::new();
     let mut changed = BTreeSet::new();
@@ -296,9 +301,9 @@ mod tests {
     fn identical_snapshots_and_service_failures_are_quiet() {
         let device = Device { id:"bluetooth:a".into(), name:"Headphones".into(), kind:Kind::Bluetooth, status:"Connected".into(), detail:String::new(), camera:None };
         let old = Snapshot { devices:vec![device], ..Snapshot::default() };
-        assert!(changes(&old,&old).is_empty());
+        assert!(changes(&old,&old,&[]).is_empty());
         let mut stale = Snapshot::default(); retain_service(&mut stale,Some(&old),Kind::Bluetooth,"Unavailable");
-        assert!(changes(&old,&stale).is_empty());
-        assert_eq!(changes(&old,&Snapshot::default()).len(),1);
+        assert!(changes(&old,&stale,&[]).is_empty());
+        assert_eq!(changes(&old,&Snapshot::default(),&[]).len(),1);
     }
 }

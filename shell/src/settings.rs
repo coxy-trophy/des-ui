@@ -443,8 +443,8 @@ fn held(slot: &mut Option<(u8, Instant)>, reading: Option<u8>) -> Option<u8> {
 impl Settings {
     /// Start once and poll from the shell's update, even while Settings is closed.
     /// The caller delivers these messages through the shared notification center.
-    pub fn poll_devices(&mut self, ctx: &egui::Context) -> Vec<String> {
-        self.devices.get_or_insert_with(|| crate::devices::Devices::new(ctx.clone())).poll()
+    pub fn poll_devices(&mut self, ctx: &egui::Context, island: bool) -> Vec<String> {
+        self.devices.get_or_insert_with(|| crate::devices::Devices::new(ctx.clone())).poll(island)
     }
 
     pub fn set_live_terminal_counts(&mut self, managed: usize, total: usize) { self.live_terminal_counts = (managed, total); }
@@ -1538,6 +1538,9 @@ impl Settings {
         heading(ui, "ALERTS", "");
         if switch_row(ui, theme, "In the status island", "Notifications, music, recordings and volume show in the middle of the status strip, instead of in corner pop-ups and the side panel's player", config.status_island) {
             changes.push(Change::Set("status_island", config.status_island.then(|| "off".to_string())));
+        }
+        if config.status_island && switch_row(ui, theme, "Hide what notifications say", "The island shows who a notification is from, not its text, until you open it. Always hidden while the screen is being recorded", config.island_private) {
+            changes.push(Change::Set("island_private", (!config.island_private).then(|| "on".to_string())));
         }
         if switch_row(ui, theme, "Notification sounds", "A notification that shows also makes a sound, unless it asks not to", config.notification_sounds) {
             changes.push(Change::Set("notification_sounds", config.notification_sounds.then(|| "off".to_string())));

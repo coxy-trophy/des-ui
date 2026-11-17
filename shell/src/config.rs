@@ -147,6 +147,9 @@ pub struct Config {
     /// The centre of the status strip as a dynamic island (island.rs): it shows
     /// music, recordings, levels and notifications in place of toasts.
     pub status_island: bool,
+    /// The island shows who a notification is from, not what it says (always so
+    /// while the screen is being recorded).
+    pub island_private: bool,
     /// Whether addresses are looked up online to place them on the globe.
     pub lookups: bool,
     /// This machine's position, when set by hand.
@@ -209,6 +212,7 @@ impl Default for Config {
             scrollback: 5000,
             globe_rotation: true,
             status_island: true,
+            island_private: false,
             lookups: true,
             location: None,
             lock_on_sleep: true,
@@ -298,6 +302,7 @@ impl Config {
                 }
                 "globe_rotation" => config.globe_rotation = value != "off",
                 "status_island" => config.status_island = value != "off",
+                "island_private" => config.island_private = value == "on",
                 "do_not_disturb" => config.do_not_disturb = value == "on",
                 "dnd_schedule" => config.dnd_schedule = crate::notify::parse_schedule(value),
                 "lock_on_sleep" => config.lock_on_sleep = value != "off",

@@ -474,7 +474,7 @@ impl Center {
     }
 
     /// Whether only what is urgent shows now: switched on, or within quiet hours.
-    fn quiet_now(&self) -> bool {
+    pub fn quiet_now(&self) -> bool {
         use chrono::Timelike;
         let now = chrono::Local::now();
         self.quiet || self.schedule.is_some_and(|(from, to)| in_window(from, to, now.hour() * 60 + now.minute()))

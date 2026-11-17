@@ -1,6 +1,7 @@
 //! des-ui: a Rust rewrite of the eDEX-UI sci-fi terminal desktop.
 
 mod agenda;
+mod happenings;
 mod apps;
 mod connect;
 mod autostart;
@@ -168,6 +169,8 @@ struct App {
     file_job: Option<files::Task>,
     /// File operations in order, the questions they raise, and their undo.
     file_work: transfers::Transfers,
+    /// What the system is doing, for the status island (started with it).
+    happenings: Option<happenings::Happenings>,
     /// The batch of the running file operation.
     file_job_batch: u64,
     /// The compositor connection; `None` when running as an ordinary window.
@@ -409,6 +412,7 @@ impl App {
             file_clipboard: None,
             file_job: None,
             file_work: Default::default(),
+            happenings: None,
             file_job_batch: 0,
             desktop,
             launcher,

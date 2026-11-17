@@ -46,6 +46,10 @@ pub const COLLAPSE_AFTER: Duration = Duration::from_secs(5);
 /// Music paused this long leaves the island, as an activity that has ended.
 pub const PAUSED_FOR: Duration = Duration::from_secs(60);
 const RED: Color32 = Color32::from_rgb(0xFF, 0x5D, 0x5D);
+/// Charging, and a camera in use (as the dot Apple puts there).
+const GREEN: Color32 = Color32::from_rgb(0x30, 0xD1, 0x58);
+/// A microphone in use.
+const ORANGE: Color32 = Color32::from_rgb(0xFF, 0x9F, 0x0A);
 
 /// What the island is showing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +68,48 @@ pub enum Mode {
     RecordingOpen,
     /// Volume or brightness, for a moment.
     Level,
+    /// Something the system did, for a moment: charging, a Bluetooth device
+    /// connecting, Do Not Disturb (happenings.rs).
+    Blip,
+    /// Something under way with its progress: a download.
+    Task,
+}
+
+/// The picture beside an event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlipIcon {
+    Battery { charging: bool },
+    Bluetooth,
+    Moon,
+}
+
+/// Something the system did, shown for a moment.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Blip {
+    pub icon: BlipIcon,
+    pub title: String,
+    pub detail: String,
+    /// A percentage to draw as a bar (a battery).
+    pub level: Option<u8>,
+    /// Shown in red: a battery running low.
+    pub warn: bool,
+}
+
+/// Something under way.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Task {
+    pub title: String,
+    pub detail: String,
+    pub progress: Option<f32>,
+}
+
+/// "3 h 20 min", "45 min".
+pub fn duration_words(minutes: u32) -> String {
+    match (minutes / 60, minutes % 60) {
+        (0, m) => format!("{m} min"),
+        (h, 0) => format!("{h} h"),
+        (h, m) => format!("{h} h {m} min"),
+    }
 }
 
 /// What is going on, as far as choosing a mode goes.
@@ -74,11 +120,13 @@ pub struct Facts {
     pub recording: bool,
     pub music: bool,
     pub waiting: bool,
+    pub blip: bool,
+    pub task: bool,
 }
 
 /// The mode, most important first: a notification coming in, then a level being
-/// changed, then music, then a recording (which, with music, shows as a bubble
-/// beside it instead), then notifications waiting. Opening means something for
+/// changed, then something the system just did, then music, then a recording (which, with music, shows as a bubble
+/// beside it instead), then a download under way, then notifications waiting. Opening means something for
 /// music, notifications and a recording.
 pub fn mode(facts: Facts, open: bool) -> Mode {
     if facts.arriving {
@@ -87,11 +135,17 @@ pub fn mode(facts: Facts, open: bool) -> Mode {
     if facts.level {
         return Mode::Level;
     }
+    if facts.blip {
+        return Mode::Blip;
+    }
     if facts.music {
         return if open { Mode::MusicOpen } else { Mode::Music };
     }
     if facts.recording {
         return if open { Mode::RecordingOpen } else { Mode::Recording };
+    }
+    if facts.task {
+        return Mode::Task;
     }
     if facts.waiting {
         return if open { Mode::NoteOpen } else { Mode::Waiting };
@@ -133,6 +187,16 @@ fn spring(position: f32, velocity: f32, target: f32, dt: f32) -> (f32, f32) {
     (position + velocity * dt, velocity)
 }
 
+/// Playing music not heard about for this long is shown as not updating: the
+/// service answers the shell's heartbeat every 20 s, so this is two missed.
+pub const STALE_AFTER: Duration = Duration::from_secs(45);
+
+/// Whether what the island shows of the music can no longer be trusted. Paused
+/// music does not move, so it never goes stale.
+pub fn stale(playing: bool, age: Option<Duration>) -> bool {
+    playing && age.is_some_and(|age| age >= STALE_AFTER)
+}
+
 /// Whether music still shows: playing, or paused for less than `PAUSED_FOR`.
 pub fn music_shows(playing: bool, paused_for: Option<Duration>) -> bool {
     playing || paused_for.is_none_or(|paused| paused < PAUSED_FOR)
@@ -148,6 +212,7 @@ pub fn collapse_due(idle: Duration) -> bool {
 pub fn outline(mode: Mode, accent: Color32) -> Color32 {
     match mode {
         Mode::Recording | Mode::RecordingOpen => RED.gamma_multiply(0.55),
+        Mode::Blip | Mode::Task => accent.gamma_multiply(0.45),
         Mode::Music | Mode::MusicOpen | Mode::Arriving | Mode::NoteOpen => accent.gamma_multiply(0.45),
         Mode::Resting | Mode::Waiting | Mode::Level => ui::LINE,
     }
@@ -161,6 +226,8 @@ pub struct Song {
     pub position_ms: u32,
     pub duration_ms: u32,
     pub playing: bool,
+    /// Nothing heard about it for a while: its position is a guess.
+    pub stale: bool,
 }
 
 /// Everything the island can show this frame.
@@ -177,6 +244,14 @@ pub struct Feed {
     /// How many notifications are waiting, and the newest one.
     pub waiting: usize,
     pub newest: Option<notify::Notice>,
+    /// Show who a notification is from, not its text.
+    pub private: bool,
+    /// Something the system just did.
+    pub blip: Option<Blip>,
+    /// Something under way.
+    pub task: Option<Task>,
+    /// Whether an application is using the camera, and the microphone.
+    pub watching: (bool, bool),
 }
 
 impl Feed {
@@ -187,6 +262,8 @@ impl Feed {
             recording: self.recording.is_some(),
             music: self.song.is_some(),
             waiting: self.waiting > 0,
+            blip: self.blip.is_some(),
+            task: self.task.is_some(),
         }
     }
 
@@ -247,7 +324,7 @@ pub fn click(mode: Mode, note: Option<u32>) -> Click {
         Mode::Arriving | Mode::Waiting | Mode::NoteOpen => note.map_or(Click::Do(Deed::OpenNotes), |id| Click::Do(Deed::Note(id, NoteDeed::Open))),
         Mode::Recording => Click::Open,
         Mode::RecordingOpen => Click::Close,
-        Mode::Resting | Mode::Level => Click::Nothing,
+        Mode::Resting | Mode::Level | Mode::Blip | Mode::Task => Click::Nothing,
     }
 }
 
@@ -351,10 +428,16 @@ impl Island {
                 ui.set_clip_rect(rect.expand(24.0));
                 let response = ui.allocate_rect(rect, Sense::click());
                 let radius = radius_of(rect.size());
-                ui.painter().rect(rect, radius, Color32::from_rgba_unmultiplied(10, 14, 18, 247), Stroke::new(1.0_f32, outline(mode, theme.main)), StrokeKind::Inside);
+                let line = match (&mode, &feed.blip) {
+                    (Mode::Blip, Some(blip)) => blip_colour(blip, theme.main).gamma_multiply(0.55),
+                    _ => outline(mode, theme.main),
+                };
+                ui.painter().rect(rect, radius, Color32::from_rgba_unmultiplied(10, 14, 18, 247), Stroke::new(1.0_f32, line), StrokeKind::Inside);
                 let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rect));
                 inner.set_clip_rect(rect);
-                inner.set_opacity(settled);
+                // Music that is not updating shows dimmed.
+                let dim = matches!(mode, Mode::Music | Mode::MusicOpen) && feed.song.as_ref().is_some_and(|song| song.stale);
+                inner.set_opacity(settled * if dim { 0.55 } else { 1.0 });
                 let done = draw(&mut inner, theme, mode, rect, feed);
                 // Pressed and held: it opens, and the release is not a click.
                 let held_for = ui.input(|input| input.pointer.press_start_time().map(|start| input.time - start)).unwrap_or(0.0);
@@ -456,6 +539,16 @@ impl Island {
                 painter.circle_filled(dot.center(), 4.0, RED);
             }
         }
+        // A camera (green) or a microphone (orange) in use: a dot just left of the
+        // island, at the strip's height, whatever the island shows.
+        let (camera, microphone) = feed.watching;
+        if camera || microphone {
+            let at = pos2(rect.left() - 10.0, room.bottom() - REST_HEIGHT / 2.0);
+            if at.x - 4.0 >= room.left() {
+                let painter = ctx.layer_painter(egui::LayerId::new(Order::Foreground, Id::new("status-island-watching")));
+                painter.circle_filled(at, 4.0, if camera { GREEN } else { ORANGE });
+            }
+        }
         if facts.recording || facts.arriving || feed.song.as_ref().is_some_and(|song| song.playing) {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
@@ -480,6 +573,14 @@ impl Island {
             Mode::Arriving => 360.0,
             Mode::MusicOpen | Mode::NoteOpen => CARD_WIDTH,
             Mode::RecordingOpen => RECORDING_CARD.x,
+            Mode::Blip => feed.blip.as_ref().map_or(resting, |blip| {
+                18.0 + 24.0 + 10.0 + width(&truncate(&blip.title, 26), ui::display_bold(13.0)) + 8.0
+                    + width(&blip.detail, ui::mono(12.0)) + if blip.level.is_some() { 12.0 + 44.0 } else { 0.0 } + 20.0
+            }),
+            Mode::Task => feed.task.as_ref().map_or(resting, |task| {
+                18.0 + 20.0 + 10.0 + width(&task.title, ui::display_bold(13.0)) + 8.0
+                    + width(&truncate(&task.detail, 22), ui::display(13.0)) + 10.0 + width("100%", ui::mono(12.0)) + 20.0
+            }),
         }
     }
 }
@@ -510,6 +611,8 @@ fn label(mode: Mode, feed: &Feed) -> String {
         Mode::Recording => "Recording the screen. Open".into(),
         Mode::RecordingOpen => "Recording the screen".into(),
         Mode::Level => "Level".into(),
+        Mode::Blip => feed.blip.as_ref().map_or_else(String::new, |blip| format!("{}: {}", blip.title, blip.detail)),
+        Mode::Task => feed.task.as_ref().map_or_else(String::new, |task| format!("{}: {}", task.title, task.detail)),
     }
 }
 
@@ -560,6 +663,29 @@ fn cover(ui: &Ui, rect: Rect, song: &Song, accent: Color32, radius: f32) {
     }
 }
 
+/// An event's colour: red when it warns, green while charging, else the accent.
+fn blip_colour(blip: &Blip, accent: Color32) -> Color32 {
+    match blip.icon {
+        _ if blip.warn => RED,
+        BlipIcon::Battery { charging: true } => GREEN,
+        _ => accent,
+    }
+}
+
+/// A small battery, filled to `level`, with a bolt while charging.
+fn battery_shape(painter: &egui::Painter, centre: Pos2, level: u8, charging: bool, colour: Color32) {
+    let body = Rect::from_center_size(centre - vec2(1.0, 0.0), vec2(20.0, 11.0));
+    painter.rect(body, 3.0, Color32::TRANSPARENT, Stroke::new(1.2_f32, ui::SECONDARY), StrokeKind::Inside);
+    painter.rect_filled(Rect::from_center_size(pos2(body.right() + 1.5, centre.y), vec2(2.0, 4.0)), 1.0, ui::SECONDARY);
+    let inner = body.shrink(2.0);
+    painter.rect_filled(Rect::from_min_size(inner.min, vec2(inner.width() * level.min(100) as f32 / 100.0, inner.height())), 1.5, colour);
+    if charging {
+        let c = body.center();
+        painter.add(egui::Shape::convex_polygon(vec![c + vec2(1.0, -5.5), c + vec2(-3.0, 0.8), c + vec2(0.0, 0.8)], ui::TEXT, Stroke::NONE));
+        painter.add(egui::Shape::convex_polygon(vec![c + vec2(0.0, -0.8), c + vec2(3.0, -0.8), c + vec2(-1.0, 5.5)], ui::TEXT, Stroke::NONE));
+    }
+}
+
 fn clock(ms: u32) -> String {
     let seconds = ms / 1000;
     format!("{}:{:02}", seconds / 60, seconds % 60)
@@ -601,7 +727,7 @@ fn draw(ui: &mut Ui, theme: &Theme, mode: Mode, rect: Rect, feed: &Feed) -> Deed
             // The level: four bars that move while it plays.
             let time = ui.input(|input| input.time) as f32;
             for (i, phase) in [0.0_f32, 1.7, 3.1, 4.6].into_iter().enumerate() {
-                let lift = if song.playing { 0.5 + 0.5 * (time * 7.0 + phase).sin() } else { 0.25 };
+                let lift = if song.playing && !song.stale { 0.5 + 0.5 * (time * 7.0 + phase).sin() } else { 0.25 };
                 let height = 4.0 + 10.0 * lift;
                 let bar = Rect::from_min_size(pos2(rect.right() - 38.0 + i as f32 * 6.0, middle + 7.0 - height), vec2(3.0, height));
                 ui.painter().rect_filled(bar, 1.5, accent);
@@ -621,6 +747,9 @@ fn draw(ui: &mut Ui, theme: &Theme, mode: Mode, rect: Rect, feed: &Feed) -> Deed
             let right = rect.right() - 16.0;
             put(ui, pos2(left, rect.top() + 26.0), &truncate(&song.title, 26), ui::display_bold(16.0), ui::TEXT);
             put(ui, pos2(left, rect.top() + 46.0), &truncate(&song.artists, 30), ui::display(13.0), ui::SECONDARY);
+            if song.stale {
+                put(ui, pos2(left, rect.top() + 8.0), "NOT UPDATING", ui::mono(9.0), RED);
+            }
             let bar = Rect::from_min_max(pos2(left, rect.top() + 72.0), pos2(right, rect.top() + 76.0));
             ui.painter().rect_filled(bar, 2.0, ui::LINE);
             if song.duration_ms > 0 {
@@ -651,7 +780,7 @@ fn draw(ui: &mut Ui, theme: &Theme, mode: Mode, rect: Rect, feed: &Feed) -> Deed
             ui.painter().text(face.center(), Align2::CENTER_CENTER, initials(notice), ui::display_bold(13.0), accent);
             let left = face.right() + 10.0;
             let title = if notice.title.trim().is_empty() { notice.app.clone() } else { notice.title.replace('\n', " ") };
-            let body = notify::plain(&notice.body).replace('\n', " ");
+            let body = if feed.private { String::new() } else { notify::plain(&notice.body).replace('\n', " ") };
             // One line, centred, when there is nothing more to say.
             let head = if body.trim().is_empty() { middle } else { middle - 9.0 };
             let mut x = left + put(ui, pos2(left, head), &truncate(&title, 30), ui::display_bold(13.0), ui::TEXT);
@@ -679,9 +808,10 @@ fn draw(ui: &mut Ui, theme: &Theme, mode: Mode, rect: Rect, feed: &Feed) -> Deed
                 let galley = ui::galley(ui, &count, ui::mono(11.0), ui::SECONDARY, 0.0);
                 ui.painter().galley(pos2(rect.right() - 18.0 - galley.size().x, rect.top() + 25.0 - galley.size().y / 2.0), galley, ui::SECONDARY);
             }
-            let body = ui.painter().layout(notify::plain(&notice.body), ui::display(13.0), ui::TEXT, rect.width() - 36.0);
+            let (text, colour) = if feed.private { ("Hidden in the island. Open to read it.".to_string(), ui::SECONDARY) } else { (notify::plain(&notice.body), ui::TEXT) };
+            let body = ui.painter().layout(text, ui::display(13.0), colour, rect.width() - 36.0);
             let clip = Rect::from_min_max(pos2(rect.left() + 18.0, rect.top() + 58.0), pos2(rect.right() - 18.0, rect.bottom() - 48.0));
-            ui.painter().with_clip_rect(clip).galley(clip.min, body, ui::TEXT);
+            ui.painter().with_clip_rect(clip).galley(clip.min, body, colour);
             // Its own actions, then what is always possible.
             let mut actions: Vec<(String, String)> = notice.actions.iter().filter(|(key, _)| key != "default").take(2).cloned().collect();
             let has_reply = actions.iter().any(|(key, _)| key == "inline-reply");
@@ -739,6 +869,39 @@ fn draw(ui: &mut Ui, theme: &Theme, mode: Mode, rect: Rect, feed: &Feed) -> Deed
             ui.painter().text(pos2(square.right() + 10.0, button.center().y), Align2::LEFT_CENTER, "Stop recording", ui::display_bold(13.0), ui::GROUND);
             if response.clicked() { deed = Deed::StopRecording; }
         }
+        Mode::Blip => {
+            let Some(blip) = &feed.blip else { return deed };
+            let colour = blip_colour(blip, accent);
+            let icon_at = pos2(rect.left() + 30.0, middle);
+            match blip.icon {
+                BlipIcon::Battery { charging } => battery_shape(ui.painter(), icon_at, blip.level.unwrap_or(0), charging, colour),
+                BlipIcon::Bluetooth => ui::paint_icon(ui.painter(), Rect::from_center_size(icon_at, Vec2::splat(18.0)), ui::Icon::Bluetooth, colour, false),
+                BlipIcon::Moon => ui::paint_icon(ui.painter(), Rect::from_center_size(icon_at, Vec2::splat(18.0)), ui::Icon::Moon, colour, false),
+            }
+            let mut x = rect.left() + 52.0;
+            x += put(ui, pos2(x, middle), &truncate(&blip.title, 26), ui::display_bold(13.0), ui::TEXT) + 8.0;
+            put(ui, pos2(x, middle), &blip.detail, ui::mono(12.0), if blip.warn { RED } else { ui::SECONDARY });
+            if let Some(level) = blip.level {
+                let track = Rect::from_min_max(pos2(rect.right() - 20.0 - 44.0, middle - 2.5), pos2(rect.right() - 20.0, middle + 2.5));
+                ui.painter().rect_filled(track, 2.5, ui::LINE);
+                ui.painter().rect_filled(Rect::from_min_size(track.min, vec2(track.width() * level.min(100) as f32 / 100.0, track.height())), 2.5, colour);
+            }
+        }
+        Mode::Task => {
+            let Some(task) = &feed.task else { return deed };
+            ui::paint_icon(ui.painter(), Rect::from_center_size(pos2(rect.left() + 28.0, middle), Vec2::splat(16.0)), ui::Icon::Download, accent, false);
+            let mut x = rect.left() + 48.0;
+            x += put(ui, pos2(x, middle), &task.title, ui::display_bold(13.0), ui::TEXT) + 8.0;
+            put(ui, pos2(x, middle), &truncate(&task.detail, 22), ui::display(13.0), ui::SECONDARY);
+            if let Some(progress) = task.progress {
+                let words = format!("{}%", (progress * 100.0).round() as u32);
+                let galley = ui::galley(ui, &words, ui::mono(12.0), ui::TEXT, 0.0);
+                ui.painter().galley(pos2(rect.right() - 20.0 - galley.size().x, middle - galley.size().y / 2.0), galley, ui::TEXT);
+                let line = Rect::from_min_max(pos2(rect.left() + 22.0, rect.bottom() - 2.0), pos2(rect.right() - 22.0, rect.bottom() - 1.0));
+                ui.painter().rect_filled(line, 0.0, ui::LINE);
+                ui.painter().rect_filled(Rect::from_min_size(line.min, vec2(line.width() * progress.clamp(0.0, 1.0), line.height())), 0.0, accent);
+            }
+        }
         Mode::Level => {
             let Some((kind, level)) = feed.level else { return deed };
             let icon = match kind { osd::Kind::Volume if level == 0 => ui::Icon::Muted, osd::Kind::Volume => ui::Icon::Volume, osd::Kind::Brightness => ui::Icon::Brightness };
@@ -759,7 +922,27 @@ mod tests {
     use super::*;
 
     fn facts(arriving: bool, level: bool, recording: bool, music: bool, waiting: bool) -> Facts {
-        Facts { arriving, level, recording, music, waiting }
+        Facts { arriving, level, recording, music, waiting, ..Default::default() }
+    }
+
+    #[test]
+    fn an_event_comes_after_a_level_and_a_download_after_a_recording() {
+        let event = Facts { blip: true, music: true, ..Default::default() };
+        assert_eq!(mode(event, false), Mode::Blip);
+        assert_eq!(mode(Facts { level: true, ..event }, false), Mode::Level);
+        let download = Facts { task: true, waiting: true, ..Default::default() };
+        assert_eq!(mode(download, false), Mode::Task);
+        assert_eq!(mode(Facts { recording: true, ..download }, false), Mode::Recording);
+        assert_eq!(mode(Facts { music: true, ..download }, false), Mode::Music);
+        assert_eq!(click(Mode::Blip, None), Click::Nothing);
+        assert!(!opens(Mode::Task));
+    }
+
+    #[test]
+    fn durations_read_as_words() {
+        assert_eq!(duration_words(45), "45 min");
+        assert_eq!(duration_words(120), "2 h");
+        assert_eq!(duration_words(200), "3 h 20 min");
     }
 
     #[test]
@@ -852,6 +1035,14 @@ mod tests {
         island.close();
         assert!(!island.open);
         assert!(island.touched.is_none());
+    }
+
+    #[test]
+    fn playing_music_unheard_of_goes_stale_and_paused_never_does() {
+        assert!(!stale(true, None));
+        assert!(!stale(true, Some(Duration::from_secs(30))));
+        assert!(stale(true, Some(STALE_AFTER)));
+        assert!(!stale(false, Some(Duration::from_secs(600))));
     }
 
     #[test]
