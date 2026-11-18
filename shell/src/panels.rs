@@ -923,7 +923,7 @@ pub fn status(
         ui::icon(ui, Icon::Keyboard, 16.0, ui::SECONDARY).on_hover_text(format!("{} has the keyboard", holder.to_lowercase()));
         ui::text(ui, &holder, ui::display_bold(12.0), ui::TEXT);
         if short { return; }
-        if let Some(count) = desktop.map(|desktop| desktop.apps.len()) {
+        if let Some(count) = desktop.map(|desktop| desktop.app_count()) {
             ui::text(ui, &format!("· {count} {}", if count == 1 { "APP" } else { "APPS" }), ui::mono(11.0), ui::SECONDARY);
         }
         if desktop.is_some_and(|desktop| desktop.screens > 1) {

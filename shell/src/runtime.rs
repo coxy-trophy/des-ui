@@ -1173,7 +1173,7 @@ impl App {
         let holder = panels::holder(if self.dock.captures_keyboard() { Some("APPS") } else { overlay }, state);
         let feed = island::Feed {
             holder,
-            apps: state.map(|state| state.apps.len()),
+            apps: state.map(|state| state.app_count()),
             song,
             recording: self.capture.recording.map(|since| since.elapsed()),
             level,

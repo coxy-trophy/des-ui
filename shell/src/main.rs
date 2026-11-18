@@ -1850,7 +1850,7 @@ mod tests {
     #[test]
     fn the_layout_chooser_shows_what_the_compositor_says_or_a_split_seen_otherwise() {
         use des_common::ipc::{AppInfo, LayoutInfo, LayoutKind};
-        let app = |place| AppInfo { app_id: String::new(), title: String::new(), screen: 0, place, workspace: 1, pinned: false, urgent: false };
+        let app = |place| AppInfo { app_id: String::new(), title: String::new(), screen: 0, place, workspace: 1, pinned: false, urgent: false, dialog: false };
         let mut state = DesktopState { workspace: 1, ..DesktopState::default() };
         state.apps = vec![app(Place::Main)];
         assert_eq!(layout_in_view(&state, &[]), LayoutKind::Single);

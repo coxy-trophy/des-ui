@@ -472,7 +472,7 @@ mod tests {
         AppEntry { name: id.trim_end_matches(".desktop").into(), desktop_id:id.into(), icon:None, startup_wm_class:class.map(str::to_string), exec:vec![id.trim_end_matches(".desktop").into()], terminal:false, categories: Vec::new() }
     }
     fn window(id:&str, title:&str) -> AppInfo {
-        AppInfo { app_id:id.into(), title:title.into(), screen:0, place:Place::Main, workspace:0, pinned:false,urgent:false }
+        AppInfo { app_id:id.into(), title:title.into(), screen:0, place:Place::Main, workspace:0, pinned:false,urgent:false, dialog: false }
     }
     #[test]
     fn the_attention_dot_breathes_but_never_vanishes(){
@@ -484,8 +484,8 @@ mod tests {
     #[test]
     fn display_docks_keep_shared_pins_but_only_their_own_window_indices(){
         let state=DesktopState{screens:2,apps:vec![
-            des_common::ipc::AppInfo{app_id:"browser".into(),title:"Primary".into(),screen:0,place:des_common::ipc::Place::Main,workspace:0,pinned:false,urgent:false},
-            des_common::ipc::AppInfo{app_id:"browser".into(),title:"Secondary".into(),screen:1,place:des_common::ipc::Place::Main,workspace:0,pinned:false,urgent:false},
+            des_common::ipc::AppInfo{app_id:"browser".into(),title:"Primary".into(),screen:0,place:des_common::ipc::Place::Main,workspace:0,pinned:false,urgent:false, dialog: false},
+            des_common::ipc::AppInfo{app_id:"browser".into(),title:"Secondary".into(),screen:1,place:des_common::ipc::Place::Main,workspace:0,pinned:false,urgent:false, dialog: false},
         ],..Default::default()};
         let pins=vec!["browser.desktop".into()];
         let primary=items_on(&[],&pins,&state,Some(0));let secondary=items_on(&[],&pins,&state,Some(1));
@@ -538,7 +538,7 @@ mod shelf_behavior_tests {
     use des_common::ipc::{AppInfo,Place};
     #[test]
     fn clicking_a_group_opens_a_chooser_instead_of_advancing_the_focused_window() {
-        let app=|id:&str,title:&str,workspace|AppInfo{app_id:id.into(),title:title.into(),workspace,screen:0,place:Place::Main,pinned:false,urgent:false};
+        let app=|id:&str,title:&str,workspace|AppInfo{app_id:id.into(),title:title.into(),workspace,screen:0,place:Place::Main,pinned:false,urgent:false, dialog: false};
         let state=DesktopState{apps:vec![app("browser","First",0),app("browser-beta","Second",3)],focus:Some(0),..Default::default()};
         let group=Item{id:None,label:"Browser".into(),entry:None,windows:vec![0,1]};
         assert!(matches!(activation(0,&group,&[],&state),Action::Command(Command::AppWindows(0,ids)) if ids==["browser","browser-beta"]));
@@ -552,7 +552,7 @@ mod shelf_behavior_tests {
 mod right_panel_tests {
     use super::*;
     use des_common::ipc::{AppInfo,Place};
-    fn window(id:&str,title:&str)->AppInfo {AppInfo{app_id:id.into(),title:title.into(),screen:0,workspace:0,place:Place::Main,pinned:false,urgent:false}}
+    fn window(id:&str,title:&str)->AppInfo {AppInfo{app_id:id.into(),title:title.into(),screen:0,workspace:0,place:Place::Main,pinned:false,urgent:false, dialog: false}}
     #[test]
     fn pages_fit_short_panels_and_keep_footer_reachable() {
         for width in [192.0,240.0,340.0] {for height in [240.0,320.0,480.0] {
@@ -751,7 +751,7 @@ fn vitals_corner(ui:&mut egui::Ui,theme:&Theme,rect:egui::Rect,vitals:&Vitals)->
 #[cfg(test)] mod left_rail_tests {
     use super::*;
     use des_common::ipc::{AppInfo,Place};
-    fn state()->DesktopState {DesktopState{apps:(0..2).map(|i|AppInfo{app_id:"example".into(),title:format!("Window {i}"),screen:0,place:Place::Main,workspace:i,pinned:false,urgent:false}).collect(),..Default::default()}}
+    fn state()->DesktopState {DesktopState{apps:(0..2).map(|i|AppInfo{app_id:"example".into(),title:format!("Window {i}"),screen:0,place:Place::Main,workspace:i,pinned:false,urgent:false,dialog:false}).collect(),..Default::default()}}
     #[test] fn expand_button_and_clock_open_full_panel_but_app_does_not() {
         for (y,wanted) in [(22.0,true),(90.0,true),(180.0,false)] {
             let ctx=egui::Context::default();crate::ui::install_fonts(&ctx,None,None);

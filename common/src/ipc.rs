@@ -254,6 +254,8 @@ pub struct AppInfo {
     pub pinned: bool,
     /// Asked to be brought forward when it could not be: it wants attention.
     pub urgent: bool,
+    /// A dialog floating over another of the applications, not one of its own.
+    pub dialog: bool,
 }
 
 /// The displays and open applications, as the compositor reports them.
@@ -308,7 +310,7 @@ impl DesktopState {
             self.terminal_split as u8,
             self.workspace
         );
-        let saved_wanted = !self.saved_places.is_empty() || self.apps.iter().any(|app| app.pinned || app.urgent);
+        let saved_wanted = !self.saved_places.is_empty() || self.apps.iter().any(|app| app.pinned || app.urgent || app.dialog);
         for (index, app) in self.apps.iter().enumerate() {
             let place = app.place.code();
             let app_id: String = app.app_id.chars().filter(|c| !c.is_control()).collect();
@@ -317,8 +319,9 @@ impl DesktopState {
                 let value = self.saved_places.get(index).copied().unwrap_or(app.place).code();
                 format!(":{value}")
             };
-            // Marks: `p` pinned, `u` wanting attention; none at all leaves the field out.
-            let marks = format!("{}{}", if app.pinned { "p" } else { "" }, if app.urgent { "u" } else { "" });
+            // Marks: `p` pinned, `u` wanting attention, `d` a dialog; none at all
+            // leaves the field out.
+            let marks = format!("{}{}{}", if app.pinned { "p" } else { "" }, if app.urgent { "u" } else { "" }, if app.dialog { "d" } else { "" });
             let marks = if marks.is_empty() { marks } else { format!(":{marks}") };
             line.push_str(&format!("\t{} {place}:{}:{encoded_id}{saved}{marks} ", app.screen, app.workspace));
             // Titles come from applications and must not break the framing.
@@ -326,6 +329,11 @@ impl DesktopState {
         }
         line.push('\n');
         line
+    }
+
+    /// How many applications are open, leaving out the dialogs over them.
+    pub fn app_count(&self) -> usize {
+        self.apps.iter().filter(|app| !app.dialog).count()
     }
 
     pub fn decode(line: &str) -> Option<DesktopState> {
@@ -382,12 +390,16 @@ impl DesktopState {
                 }
                 None => place,
             };
-            let (pinned, urgent) = match metadata.next() {
-                Some("p") => (true, false),
-                Some("u") => (false, true),
-                Some("pu") => (true, true),
-                Some(_) => return None,
-                None => (false, false),
+            // Each mark at most once, in this order.
+            let (pinned, urgent, dialog) = match metadata.next() {
+                Some(marks) => {
+                    let mut rest = marks;
+                    let mut take = |mark: char| rest.strip_prefix(mark).map(|after| rest = after).is_some();
+                    let found = (take('p'), take('u'), take('d'));
+                    if marks.is_empty() || !rest.is_empty() { return None; }
+                    found
+                }
+                None => (false, false, false),
             };
             if metadata.next().is_some() { return None; }
             saved_places.push(saved_place);
@@ -402,6 +414,7 @@ impl DesktopState {
                 workspace: on,
                 pinned,
                 urgent,
+                dialog,
             });
         }
         if focus.is_some_and(|index| index >= apps.len()) {
@@ -1500,6 +1513,7 @@ mod tests {
             workspace: 0,
             pinned: false,
             urgent: false,
+            dialog: false,
         }
     }
 
@@ -1556,6 +1570,21 @@ mod tests {
         assert!(state.encode().contains(":pu a"), "{}", state.encode());
         assert_eq!(DesktopState::decode(&state.encode()).unwrap().apps, state.apps);
         for bad in ["state 1 7 0 - 0\t0 1:0::1:up a", "state 1 7 0 - 0\t0 1:0::1:uu a", "state 1 7 0 - 0\t0 1:0::1: a"] {
+            assert_eq!(DesktopState::decode(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn dialogs_are_marked_and_not_counted_as_applications() {
+        let mut state = DesktopState { apps: vec![app("a", 0, Place::Main), app("Save", 0, Place::Hidden)], ..Default::default() };
+        state.apps[1].dialog = true;
+        assert!(state.encode().contains(":d Save"), "{}", state.encode());
+        assert_eq!(DesktopState::decode(&state.encode()).unwrap().apps, state.apps);
+        assert_eq!(state.app_count(), 1);
+        state.apps[1].urgent = true;
+        assert!(state.encode().contains(":ud Save"), "{}", state.encode());
+        assert_eq!(DesktopState::decode(&state.encode()).unwrap().apps, state.apps);
+        for bad in ["state 1 7 0 - 0\t0 1:0::1:dp a", "state 1 7 0 - 0\t0 1:0::1:dd a"] {
             assert_eq!(DesktopState::decode(bad), None, "{bad}");
         }
     }

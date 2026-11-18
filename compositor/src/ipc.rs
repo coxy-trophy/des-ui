@@ -288,6 +288,7 @@ mod tests {
                 workspace: 0,
                 pinned: false,
                 urgent: false,
+                dialog: false,
             }],
             ..Default::default()
         };

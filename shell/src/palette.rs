@@ -158,7 +158,7 @@ mod tests {
     }
     #[test]
     fn a_window_that_wants_attention_comes_first() {
-        let app=|title:&str,urgent:bool| des_common::ipc::AppInfo{app_id:"x".into(),title:title.into(),screen:0,workspace:0,place:des_common::ipc::Place::Main,pinned:false,urgent};
+        let app=|title:&str,urgent:bool| des_common::ipc::AppInfo{app_id:"x".into(),title:title.into(),screen:0,workspace:0,place:des_common::ipc::Place::Main,pinned:false,urgent,dialog:false};
         let state=DesktopState { apps:vec![app("Quiet",false),app("Ringing",true)],..Default::default() };
         let items=results("",&[],Some(&state),&Catalog::default(),&[]);
         assert_eq!(items[0].label,"Ringing");
@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn running_application_focuses_existing_window_and_settings_are_searchable() {
         let entry=entry("Editor");
-        let state=DesktopState { apps:vec![des_common::ipc::AppInfo{app_id:"editor".into(),title:"Notes".into(),screen:0,workspace:0,place:des_common::ipc::Place::Main,pinned:false,urgent:false}],..Default::default() };
+        let state=DesktopState { apps:vec![des_common::ipc::AppInfo{app_id:"editor".into(),title:"Notes".into(),screen:0,workspace:0,place:des_common::ipc::Place::Main,pinned:false,urgent:false,dialog:false}],..Default::default() };
         let items=results("editor",&[entry],Some(&state),&Catalog::default(),&[]);
         assert!(matches!(items[0].action,Action::Command(Command::Activate(0))));
         assert!(results("health",&[],None,&Catalog::default(),&[]).iter().any(|i|matches!(i.action,Action::Settings(_))));

@@ -1925,6 +1925,7 @@ impl DesComp {
                     workspace: app.workspace,
                     pinned: app.pinned,
                     urgent: app.urgent,
+                    dialog: app.dialog_of.is_some(),
                 })
                 .collect(),
         });
