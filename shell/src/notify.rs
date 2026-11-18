@@ -648,6 +648,12 @@ impl Center {
         }
     }
 
+    /// "Mark read" in the island: it is dealt with, so it leaves the list and the
+    /// count, and its sender is told it was dismissed.
+    pub fn island_mark_read(&mut self, id: u32) {
+        self.dismiss(id);
+    }
+
     /// Answer it: in the list, where there is room to type.
     pub fn island_reply(&mut self, id: u32) {
         self.island_read(id);
@@ -1493,6 +1499,16 @@ mod tests {
         let long = "é".repeat(REPLY_LIMIT);
         assert!(clean_reply(&long).len() <= REPLY_LIMIT);
         assert_eq!(clean_reply("two\nlines"), "two\nlines");
+    }
+
+    #[test]
+    fn marked_read_in_the_island_it_is_cleared() {
+        let mut center = center();
+        center.add(from(10, "Chat", &[]), 0);
+        center.add(from(11, "Mail", &[]), 0);
+        center.island_mark_read(10);
+        assert!(center.notices.iter().all(|notice| notice.id != 10));
+        assert_eq!(center.count(), 1);
     }
 
     #[test]

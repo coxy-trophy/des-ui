@@ -1207,7 +1207,7 @@ impl App {
                 self.notices.island_hold(id, frame);
                 None
             }
-            island::Deed::Note(id, island::NoteDeed::Read) => { self.notices.island_read(id); self.island.close(); None }
+            island::Deed::Note(id, island::NoteDeed::Read) => { self.notices.island_mark_read(id); self.island.close(); None }
             island::Deed::Note(id, island::NoteDeed::Reply) => {
                 self.island.close();
                 self.notices.island_reply(id);
