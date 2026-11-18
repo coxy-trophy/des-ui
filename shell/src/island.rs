@@ -563,7 +563,7 @@ impl Island {
             + feed.apps.map_or(0.0, |count| 8.0 + width(&apps_text(count), ui::mono(11.0))) + 20.0;
         match mode {
             Mode::Resting => resting,
-            Mode::Waiting => resting + 1.0 + 16.0 + 66.0,
+            Mode::Waiting => resting + 1.0 + 16.0 + waiting_chip(feed.waiting) + 8.0,
             Mode::Music => feed.song.as_ref().map_or(resting, |song| {
                 7.0 + 30.0 + 10.0 + width(&truncate(&song.title, 28), ui::display_bold(13.0)) + 6.0
                     + width(&format!("· {}", truncate(&song.artists, 22)), ui::display(13.0)) + 12.0 + 22.0 + 16.0
@@ -594,6 +594,12 @@ fn truncate(text: &str, most: usize) -> String {
 }
 
 /// Two letters for whoever sent a notification.
+/// How wide the chip of waiting notifications is: the newest one's face, and room
+/// for "+N" when there are more.
+fn waiting_chip(waiting: usize) -> f32 {
+    if waiting > 1 { 58.0 } else { 30.0 }
+}
+
 pub fn initials(notice: &notify::Notice) -> String {
     let source = if notice.title.trim().is_empty() { &notice.app } else { &notice.title };
     let mut letters = source.split_whitespace().filter_map(|word| word.chars().find(|c| c.is_alphanumeric()));
@@ -605,6 +611,7 @@ pub fn initials(notice: &notify::Notice) -> String {
 fn label(mode: Mode, feed: &Feed) -> String {
     match mode {
         Mode::Resting => format!("{} has the keyboard", feed.holder.to_lowercase()),
+        Mode::Waiting if feed.waiting == 1 => "1 notification waiting. Open it".to_string(),
         Mode::Waiting => format!("{} notifications waiting. Open them", feed.waiting),
         Mode::Music | Mode::MusicOpen => feed.song.as_ref().map_or_else(String::new, |song| format!("{}, {}. Open the player", song.title, song.artists)),
         Mode::Arriving | Mode::NoteOpen => feed.note().map_or_else(String::new, |notice| format!("Notification from {}: {}", notice.app, notice.title)),
@@ -707,14 +714,17 @@ fn draw(ui: &mut Ui, theme: &Theme, mode: Mode, rect: Rect, feed: &Feed) -> Deed
             }
             if mode == Mode::Waiting {
                 ui.painter().line_segment([pos2(x, middle - 9.0), pos2(x, middle + 9.0)], Stroke::new(1.0_f32, ui::LINE));
-                let chip = Rect::from_min_size(pos2(x + 8.0, middle - 15.0), vec2(58.0, 30.0));
+                let chip = Rect::from_min_size(pos2(x + 8.0, middle - 15.0), vec2(waiting_chip(feed.waiting), 30.0));
                 let tint = accent.gamma_multiply(0.18);
                 ui.painter().rect_filled(chip, 15.0, tint);
                 let face = Rect::from_center_size(pos2(chip.left() + 15.0, middle), Vec2::splat(22.0));
                 ui.painter().circle_filled(face.center(), 11.0, accent);
                 let who = feed.newest.as_ref().map(initials).unwrap_or_default();
                 ui.painter().text(face.center(), Align2::CENTER_CENTER, who, ui::mono(10.0), ui::GROUND);
-                put(ui, pos2(chip.left() + 31.0, middle), &format!("+{}", feed.waiting.saturating_sub(1).max(1)), ui::mono(11.0), accent);
+                // The newest one's face, and how many more there are, if any.
+                if feed.waiting > 1 {
+                    put(ui, pos2(chip.left() + 31.0, middle), &format!("+{}", feed.waiting - 1), ui::mono(11.0), accent);
+                }
             }
         }
         Mode::Music => {
@@ -1061,6 +1071,12 @@ mod tests {
         assert_eq!(outline(Mode::Resting, accent), ui::LINE);
         assert_eq!(outline(Mode::Recording, accent), RED.gamma_multiply(0.55));
         assert_eq!(outline(Mode::Music, accent), accent.gamma_multiply(0.45));
+    }
+
+    #[test]
+    fn one_waiting_notice_shows_only_its_face() {
+        assert_eq!(waiting_chip(1), 30.0);
+        assert_eq!(waiting_chip(3), 58.0);
     }
 
     #[test]
