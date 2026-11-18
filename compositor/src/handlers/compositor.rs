@@ -51,6 +51,11 @@ impl CompositorHandler for DesComp {
         // A Wayland window usually says what it is in its first commit: the window
         // rules are looked at then, before it is first told its size.
         if let Some(window) = self.window_for(surface) {
+            // A dialog says whose it is before it is first told its size.
+            let unconfigured = window.toplevel().is_some_and(|toplevel| !toplevel.is_initial_configure_sent());
+            if unconfigured && self.float_dialog(&window) {
+                self.arrange();
+            }
             if self.apply_rules(&window) {
                 self.arrange();
             }

@@ -38,6 +38,9 @@ pub struct App {
     /// The application it opened on top of, which comes back when this one closes:
     /// a dialog gives the window that asked for it its place back.
     pub over: Option<Window>,
+    /// The window this one is a dialog of. A dialog takes no slot: it floats at its
+    /// own size, centred over that window, and shows only while that window does.
+    pub dialog_of: Option<Window>,
     /// Kept in a corner above everything on its display, on every workspace.
     pub pinned: bool,
     /// Where it goes back to when no longer pinned, and the shape it keeps meanwhile.
@@ -421,6 +424,10 @@ impl DesComp {
 
     /// Brings the application at `index` into view and gives it the keyboard.
     pub(crate) fn activate(&mut self, index: usize) {
+        if let Some(root) = self.dialog_root(index) {
+            self.dialog_focus = Some(self.apps[index].window.clone());
+            return self.activate(root);
+        }
         self.dock_keyboard = false;
         if let Some(app) = self.apps.get_mut(index) {
             app.urgent = false;
@@ -493,6 +500,8 @@ impl DesComp {
                 self.apps[i].used = self.use_clock;
             }
         }
+        // While a window is in use, its dialog in front has the keyboard instead.
+        let keyboard = self.dialog_in_front(focus_app).or(focus_app);
         // Nothing moves behind the lock or while the display stands still for a
         // screenshot: whatever was on its way arrives at once.
         let now = Instant::now();
@@ -528,8 +537,9 @@ impl DesComp {
             drag.last_configure = now;
         }
         for i in 0..self.apps.len() {
-            // The pinned application is placed after the others, above them.
-            if self.apps[i].pinned {
+            // The pinned application is placed after the others, above them, and
+            // dialogs over the windows they belong to.
+            if self.apps[i].pinned || self.apps[i].dialog_of.is_some() {
                 continue;
             }
             let (window, screen, place) = {
@@ -562,6 +572,8 @@ impl DesComp {
             }
         }
 
+        self.arrange_dialogs(keyboard, now, animate);
+
         if let Some(i) = self.pinned_app() {
             let window = self.apps[i].window.clone();
             if self.locked {
@@ -586,7 +598,7 @@ impl DesComp {
 
         // The dock and the shell's overlay take the keyboard while they are up; a
         // launcher or the like in a layer surface takes it while it asks to.
-        let focus = self.layer_keyboard().filter(|_| !self.dock_keyboard && self.overlay_area().is_none()).or_else(|| focus_app.filter(|_| !self.dock_keyboard && self.overlay_area().is_none())
+        let focus = self.layer_keyboard().filter(|_| !self.dock_keyboard && self.overlay_area().is_none()).or_else(|| keyboard.filter(|_| !self.dock_keyboard && self.overlay_area().is_none())
             .and_then(|i|focus_of(&self.apps[i].window))
             .or_else(||self.shell_on(if self.dock_keyboard{self.dock_keyboard_screen}else{0}).and_then(focus_of)));
         let keyboard = self.seat.get_keyboard().unwrap();
@@ -687,6 +699,7 @@ impl DesComp {
                 workspace: self.workspace,
                 kept: Place::Hidden,
                 over,
+                dialog_of: None,
                 pinned: false,
                 pin_return: Place::Hidden,
                 pin_aspect: 0.0,
@@ -700,6 +713,9 @@ impl DesComp {
             // An X11 window says what it is from the start; a Wayland one usually
             // does in its first commit, where the rules are looked at instead.
             let window = self.apps[self.apps.len() - 1].window.clone();
+            if window.x11_surface().is_some() {
+                self.float_dialog(&window);
+            }
             if !window_app_id(&window).is_empty() {
                 self.apply_rules(&window);
             }
@@ -751,6 +767,28 @@ impl DesComp {
         for other in self.apps.iter_mut().filter(|other| other.over.as_ref() == Some(&app.window)) {
             other.over = app.over.clone();
         }
+        if self.dialog_focus.as_ref() == Some(&app.window) {
+            self.dialog_focus = None;
+        }
+        // A dialog left behind belongs to what its window belonged to, or else
+        // takes that window's place.
+        let mut orphans = Vec::new();
+        for (i, other) in self.apps.iter_mut().enumerate().filter(|(_, other)| other.dialog_of.as_ref() == Some(&app.window)) {
+            other.dialog_of = app.dialog_of.clone();
+            if other.dialog_of.is_none() {
+                orphans.push(i);
+            }
+        }
+        if let Some(first) = orphans.first().copied() {
+            if app.place != Place::Hidden && self.in_place(app.screen, app.place).is_none() {
+                self.apps[first].place = app.place;
+            } else if app.kept != Place::Hidden {
+                self.apps[first].kept = app.kept;
+            }
+        }
+        if app.dialog_of.is_some() {
+            return;
+        }
         let Some(under) = app.over.as_ref().and_then(|over| self.apps.iter().position(|other| &other.window == over)) else {
             return;
         };
@@ -780,7 +818,7 @@ impl DesComp {
         };
         // Applications in the other slot are not candidates.
         let here: Vec<usize> = (0..self.apps.len())
-            .filter(|i| self.apps[*i].workspace == self.workspace && !self.apps[*i].pinned)
+            .filter(|i| self.apps[*i].workspace == self.workspace && self.tiled(*i))
             .filter(|i| self.apps[*i].screen == screen && [slot, Place::Hidden].contains(&self.apps[*i].place))
             .collect();
         let current = here.iter().position(|i| self.apps[*i].place == slot);
@@ -938,7 +976,7 @@ impl DesComp {
         let members: Vec<usize> = (0..self.apps.len())
             .filter(|i| {
                 let app = &self.apps[*i];
-                app.screen == screen && app.workspace == self.workspace && !app.pinned
+                app.screen == screen && app.workspace == self.workspace && !app.pinned && app.dialog_of.is_none()
             })
             .collect();
         let places: Vec<Place> = members.iter().map(|i| self.apps[*i].place).collect();
@@ -996,7 +1034,7 @@ impl DesComp {
         let Some(focused) = self.focused_on(screen) else {
             return;
         };
-        let members: Vec<usize> = (0..self.apps.len()).filter(|i| self.apps[*i].screen == screen && !self.apps[*i].pinned).collect();
+        let members: Vec<usize> = (0..self.apps.len()).filter(|i| self.apps[*i].screen == screen && self.tiled(*i)).collect();
         let mut places: Vec<Place> = members.iter().map(|i| self.apps[*i].place).collect();
         let Some(at) = members.iter().position(|i| *i == focused) else {
             return;
@@ -1170,6 +1208,149 @@ impl DesComp {
         self.arrange();
     }
 
+    /// Whether the application at `index` takes a slot: not pinned, not a dialog.
+    fn tiled(&self, index: usize) -> bool {
+        self.apps.get(index).is_some_and(|app| !app.pinned && app.dialog_of.is_none())
+    }
+
+    /// The window a dialog ultimately belongs to, through dialogs of dialogs.
+    fn dialog_root(&self, index: usize) -> Option<usize> {
+        let mut at = index;
+        for _ in 0..self.apps.len() {
+            let parent = self.apps.get(at)?.dialog_of.as_ref()?;
+            at = self.apps.iter().position(|app| &app.window == parent)?;
+            if self.apps[at].dialog_of.is_none() {
+                return Some(at);
+            }
+        }
+        None
+    }
+
+    /// The dialog in front of the application at `index` that has the keyboard: the
+    /// one chosen (`dialog_focus`) while it is still over that application, or else
+    /// the newest of its dialogs.
+    fn dialog_in_front(&self, index: Option<usize>) -> Option<usize> {
+        let index = index?;
+        let over = |i: usize| self.dialog_root(i) == Some(index);
+        if let Some(chosen) = self.dialog_focus.as_ref() {
+            if let Some(i) = self.apps.iter().position(|app| &app.window == chosen) {
+                // The window itself was clicked last: it keeps the keyboard.
+                if i == index {
+                    return None;
+                }
+                if over(i) {
+                    return Some(i);
+                }
+            }
+        }
+        (0..self.apps.len()).rev().find(|i| over(*i))
+    }
+
+    /// The application a new window says it belongs to, as a dialog: a Wayland
+    /// window's parent, or an X11 window's transient-for (an X11 dialog that names
+    /// none belongs to the window it opened over).
+    fn parent_of(&self, window: &Window) -> Option<usize> {
+        let index = self.apps.iter().position(|app| &app.window == window)?;
+        let parent = if let Some(toplevel) = window.toplevel() {
+            let parent = toplevel.parent()?;
+            self.apps.iter().position(|app| app.window.toplevel().is_some_and(|other| other.wl_surface() == &parent))
+        } else {
+            let x11 = window.x11_surface()?;
+            match x11.is_transient_for() {
+                Some(id) => self.apps.iter().position(|app| app.window.x11_surface().is_some_and(|other| other.window_id() == id)),
+                None if x11.window_type() == Some(smithay::xwayland::xwm::WmWindowType::Dialog) => {
+                    let over = self.apps[index].over.as_ref()?;
+                    self.apps.iter().position(|app| &app.window == over)
+                }
+                None => None,
+            }
+        }?;
+        (parent != index && !self.apps[parent].pinned).then_some(parent)
+    }
+
+    /// Makes a new window a dialog if it says it belongs to another: it leaves the
+    /// slot it was given to whatever was there, and takes the keyboard. Returns
+    /// whether it did.
+    pub fn float_dialog(&mut self, window: &Window) -> bool {
+        let Some(index) = self.apps.iter().position(|app| &app.window == window) else {
+            return false;
+        };
+        if self.apps[index].dialog_of.is_some() || self.apps[index].pinned {
+            return false;
+        }
+        let Some(parent) = self.parent_of(window) else {
+            return false;
+        };
+        let (screen, workspace) = (self.apps[parent].screen, self.apps[parent].workspace);
+        let parent_window = self.apps[parent].window.clone();
+        let (place, kept, over) = {
+            let app = &mut self.apps[index];
+            app.dialog_of = Some(parent_window);
+            let taken = (app.place, app.kept, app.over.clone());
+            app.place = Place::Hidden;
+            app.kept = Place::Hidden;
+            taken
+        };
+        let old_screen = self.apps[index].screen;
+        self.apps[index].screen = screen;
+        self.apps[index].workspace = workspace;
+        // Whatever it pushed out of its slot comes back.
+        if let Some(under) = over.and_then(|over| self.apps.iter().position(|app| app.window == over)) {
+            if place != Place::Hidden && self.apps[under].place == Place::Hidden && self.apps[under].screen == old_screen
+                && self.in_place(old_screen, place).is_none() {
+                self.apps[under].place = place;
+            } else if kept != Place::Hidden && self.apps[under].kept == Place::Hidden {
+                self.apps[under].kept = kept;
+            }
+        }
+        self.dialog_focus = Some(window.clone());
+        tracing::info!(index, parent, "dialog over its window");
+        true
+    }
+
+    /// Where a dialog of `size` goes over `parent`: centred on it, kept on `area`.
+    fn dialog_rect(parent: Rectangle<i32, Logical>, size: smithay::utils::Size<i32, Logical>, area: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
+        let along = |parent_at: i32, parent_len: i32, len: i32, area_at: i32, area_len: i32| {
+            let centred = parent_at + (parent_len - len) / 2;
+            centred.min(area_at + area_len - len).max(area_at)
+        };
+        let loc = (
+            along(parent.loc.x, parent.size.w, size.w, area.loc.x, area.size.w),
+            along(parent.loc.y, parent.size.h, size.h, area.loc.y, area.size.h),
+        );
+        Rectangle::new(loc.into(), size)
+    }
+
+    /// Shows each dialog over its window, at the size it chose, while that window
+    /// shows; hides it otherwise. Dialogs of dialogs come after what they are over.
+    fn arrange_dialogs(&mut self, keyboard: Option<usize>, now: Instant, animate: bool) {
+        for i in 0..self.apps.len() {
+            let Some(parent) = self.apps[i].dialog_of.clone() else { continue };
+            let window = self.apps[i].window.clone();
+            let shown = self.space.element_location(&parent).filter(|_| !self.locked)
+                .and_then(|at| self.apps.iter().position(|app| app.window == parent).map(|p| (at, p)));
+            let Some((at, p)) = shown else {
+                self.motions.hide(&window, now, animate);
+                self.space.unmap_elem(&window);
+                continue;
+            };
+            let screen = self.apps[p].screen;
+            self.apps[i].screen = screen;
+            self.apps[i].workspace = self.apps[p].workspace;
+            let parent_rect = Rectangle::new(at, parent.geometry().size);
+            let area = self.workspace_of(screen);
+            let rect = Self::dialog_rect(parent_rect, window.geometry().size, area);
+            configure_dialog(&window, rect, area.size, keyboard == Some(i));
+            // Shown once it has drawn itself at a size of its own choosing.
+            if rect.size.w <= 0 || rect.size.h <= 0 {
+                continue;
+            }
+            self.apps[i].placed = window.geometry().size;
+            self.motions.show(window.clone(), rect, now, animate);
+            self.space.map_element(window, rect.loc, false);
+        }
+    }
+
     /// The pinned application, if one is.
     pub fn pinned_app(&self) -> Option<usize> {
         self.apps.iter().position(|app| app.pinned)
@@ -1259,7 +1440,7 @@ impl DesComp {
         let Some(index) = self.apps.iter().position(|app| &app.window == window) else {
             return false;
         };
-        if std::mem::replace(&mut self.apps[index].ruled, true) {
+        if std::mem::replace(&mut self.apps[index].ruled, true) || self.apps[index].dialog_of.is_some() {
             return false;
         }
         let identity = window_app_id(window);
@@ -1492,6 +1673,33 @@ impl DesComp {
         }
         if on_pin {
             return;
+        }
+        // A click on a dialog gives it the keyboard, and a click on the window it
+        // belongs to gives that the keyboard back.
+        let under = self.space.element_under(pos).map(|(window, _)| window.clone())
+            .and_then(|window| self.apps.iter().position(|app| app.window == window));
+        if let Some(index) = under {
+            let root = self.dialog_root(index);
+            let has_dialogs = self.apps.iter().any(|app| app.dialog_of.as_ref() == Some(&self.apps[index].window));
+            if root.is_some() || has_dialogs {
+                let window = self.apps[index].window.clone();
+                let changed = self.dialog_focus.as_ref() != Some(&window);
+                self.dialog_focus = Some(window);
+                if let Some(slot) = root.and_then(|root| self.apps[root].place.slot()) {
+                    let screen = self.apps[root.unwrap_or(index)].screen;
+                    if screen != self.focus_screen || self.modes.get(screen).is_some_and(|mode| mode.focus_slot != slot) {
+                        self.focus_screen = screen;
+                        if let Some(mode) = self.modes.get_mut(screen) { mode.focus_slot = slot; }
+                        self.arrange();
+                        return;
+                    }
+                }
+                if root.is_some() {
+                    if changed { self.arrange(); }
+                    return;
+                }
+                if changed { self.arrange(); }
+            }
         }
         let areas = self.slot_areas(screen);
         let slot = if areas.len() < 2 {
@@ -1827,7 +2035,36 @@ impl DesComp {
     pub fn size_changed(&self, window: &Window) -> bool {
         self.apps.iter().find(|app| &app.window == window)
             // The pinned one is placed by its own corner, not by its slot.
-            .is_some_and(|app| !app.pinned && app.place != Place::Hidden && app.placed != window.geometry().size)
+            .is_some_and(|app| !app.pinned && (app.place != Place::Hidden || app.dialog_of.is_some()) && app.placed != window.geometry().size)
+    }
+}
+
+/// Tells a dialog it floats: neither maximised nor full screen, at the size it
+/// chooses within `bounds`. An X11 one is told where it is.
+fn configure_dialog(window: &Window, rect: Rectangle<i32, Logical>, bounds: smithay::utils::Size<i32, Logical>, activated: bool) {
+    if let Some(x11) = window.x11_surface() {
+        if x11.is_fullscreen() { let _ = x11.set_fullscreen(false); }
+        if x11.is_maximized() { let _ = x11.set_maximized(false); }
+        if x11.geometry().loc != rect.loc && rect.size.w > 0 && rect.size.h > 0 {
+            let _ = x11.configure(Rectangle::new(rect.loc, x11.geometry().size));
+        }
+        if x11.is_activated() != activated { let _ = x11.set_activated(activated); }
+        return;
+    }
+    let Some(toplevel) = window.toplevel() else { return };
+    toplevel.with_pending_state(|state| {
+        state.size = None;
+        state.bounds = Some(bounds);
+        state.states.unset(xdg_toplevel::State::Maximized);
+        state.states.unset(xdg_toplevel::State::Fullscreen);
+        if activated {
+            state.states.set(xdg_toplevel::State::Activated);
+        } else {
+            state.states.unset(xdg_toplevel::State::Activated);
+        }
+    });
+    if toplevel.is_initial_configure_sent() {
+        toplevel.send_pending_configure();
     }
 }
 
@@ -1877,6 +2114,17 @@ fn configure(window: &Window, area: Rectangle<i32, Logical>, fullscreen: bool, a
 #[cfg(test)]
 mod pin_and_overlay_tests {
     use super::*;
+
+    #[test]
+    fn a_dialog_is_centred_on_its_window_and_kept_on_the_workspace() {
+        let r = |x, y, w, h| Rectangle::<i32, Logical>::new((x, y).into(), (w, h).into());
+        let area = r(0, 40, 1920, 1000);
+        // Over a window in the right half: centred on that half, at its own size.
+        assert_eq!(DesComp::dialog_rect(r(960, 40, 960, 1000), (400, 300).into(), area), r(1240, 390, 400, 300));
+        // Larger than its window: still centred on it, but not off the workspace.
+        assert_eq!(DesComp::dialog_rect(r(1500, 40, 420, 1000), (800, 600).into(), area), r(1120, 240, 800, 600));
+        assert_eq!(DesComp::dialog_rect(r(0, 40, 300, 200), (500, 400).into(), area), r(0, 40, 500, 400));
+    }
 
     #[test]
     fn a_window_catching_up_with_a_smaller_slot_is_not_taken_for_one_that_cannot_shrink() {

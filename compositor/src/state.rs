@@ -156,6 +156,9 @@ pub struct DesComp {
     pub overlay_id: smithay::backend::renderer::element::Id,
     /// Whether the pinned application has the keyboard, having been clicked.
     pub pin_focused: bool,
+    /// The dialog that has the keyboard while the window it belongs to is in use:
+    /// the newest one, or the one last clicked. A click on that window takes it back.
+    pub dialog_focus: Option<smithay::desktop::Window>,
     /// The shell's backdrop windows: the nth covers display n + 1 behind its applications.
     pub backdrops: Vec<Window>,
     /// A new authenticated toplevel has no privileges until its app ID arrives.
@@ -364,6 +367,7 @@ impl DesComp {
             companion_chat: false,
             overlay_id: smithay::backend::renderer::element::Id::new(),
             pin_focused: false,
+            dialog_focus: None,
             backdrops: Vec::new(),
             pending_shell_windows: Vec::new(),
             secondary_savers: Vec::new(),
