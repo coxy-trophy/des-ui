@@ -214,7 +214,7 @@ fn snapshot_row(ui: &mut Ui, theme: &Theme, snapshot: &Snapshot, chosen: bool, k
         ui.painter().rect_filled(rect, ui::CONTROL_RADIUS, ui::TRACK);
     }
     if response.has_focus() {
-        ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside);
+        ui.painter().rect_stroke(rect, ui::CONTROL_RADIUS, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside);
     }
     let mut top = rect.left_top() + vec2(PAD, 8.0);
     let crumb_height = crumb.size().y;

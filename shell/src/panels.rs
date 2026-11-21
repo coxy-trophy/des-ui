@@ -223,7 +223,7 @@ fn integrity_row(ui: &mut Ui, theme: &Theme, line: &crate::desos::Line) {
     ui.painter().text(rect.left_center(), Align2::LEFT_CENTER, "INTEGRITY", ui::mono(11.5), if lit { ui::SECONDARY } else { ui::LABEL });
     ui.painter().text(rect.right_center(), Align2::RIGHT_CENTER, line.value, ui::mono(11.5), crate::desos_view::tone_color(line.tone));
     if response.has_focus() {
-        ui.painter().rect_stroke(rect.expand2(vec2(3.0, 2.0)), ui::CONTROL_RADIUS, Stroke::new(1.0, theme.main), StrokeKind::Inside);
+        ui.painter().rect_stroke(rect.expand2(vec2(3.0, 2.0)), ui::CONTROL_RADIUS, Stroke::new(1.0_f32, theme.main), StrokeKind::Inside);
     }
     response.widget_info(|| eframe::egui::WidgetInfo::labeled(eframe::egui::WidgetType::Button, true, format!("Integrity: {}", line.value.to_lowercase())));
     if response.on_hover_cursor(eframe::egui::CursorIcon::PointingHand).on_hover_text(format!("{}\n\nClick for the details in Settings.", line.detail)).clicked() {
