@@ -915,13 +915,13 @@ impl eframe::App for App {
             let (covered, chosen) = self.notices.toasts(ctx, &theme, toasts_at);
             (meter.map_or(covered, |meter| Some(covered.map_or(meter, |toasts| toasts.union(meter)))), chosen)
         };
-        // The calendar opened from the clock; lifted with the toasts, so it shows over applications.
         // The integrity line was clicked: its explanation is in Settings.
         if desos::take_details_request(ctx) {
             self.files_browser = None; self.launcher.open = false; self.music.open = false; self.notices.open = false; self.power_menu.open = false;
             self.settings.open_at(&self.config, "history");
             self.send(Command::Terminal);
         }
+        // The calendar opened from the clock; lifted with the toasts, so it shows over applications.
         if let Some(anchor) = agenda::take_request(ctx) {
             self.agenda.toggle(ctx, anchor);
         }
