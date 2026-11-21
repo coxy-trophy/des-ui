@@ -15,6 +15,8 @@ mod companion;
 mod config;
 mod control;
 mod desktop;
+mod desos;
+mod desos_view;
 mod devices;
 mod geo;
 mod health;
@@ -195,6 +197,8 @@ struct App {
     connect: connect::Connect,
     dock_keyboard: std::collections::BTreeMap<usize,bool>,
     settings: settings::Settings,
+    /// DesOS system state; inert on any other system.
+    desos: desos::Desos,
     shortcut_reference: shortcuts::Reference,
     companion: companion::Companion,
     music: music::Music,
@@ -400,6 +404,7 @@ impl App {
         for (title, body) in terminal_notes { notices.post(title, &body, false); }
         if reconnected > 0 { notices.post("Terminals reconnected", &format!("{reconnected} running terminal(s) reconnected. Commands were not restarted."), false); }
         region::set_twelve_hour(config.twelve_hour);
+        let desos = desos::Desos::start(ctx.clone());
         Ok(App {
             ctx,
             theme,
@@ -438,6 +443,7 @@ impl App {
             connect: Default::default(),
             dock_keyboard: Default::default(),
             settings: settings::Settings::default(),
+            desos,
             shortcut_reference: Default::default(),
             companion: Default::default(),
             music,
