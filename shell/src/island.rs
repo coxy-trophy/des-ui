@@ -257,7 +257,7 @@ pub struct Feed {
 impl Feed {
     fn facts(&self) -> Facts {
         Facts {
-            arriving: self.arriving.is_some(),
+            arriving: self.arriving.as_ref().is_some_and(|(notice, _)| notice.urgent),
             level: self.level.is_some(),
             recording: self.recording.is_some(),
             music: self.song.is_some(),
@@ -432,6 +432,8 @@ impl Island {
                     (Mode::Blip, Some(blip)) => blip_colour(blip, theme.main).gamma_multiply(0.55),
                     _ => outline(mode, theme.main),
                 };
+                let line = feed.arriving.as_ref().and_then(|(notice, _)| notice.pulse_strength())
+                    .map_or(line, |strength| line.lerp_to_gamma(Color32::WHITE, strength * 0.65));
                 ui.painter().rect(rect, radius, Color32::from_rgba_unmultiplied(10, 14, 18, 247), Stroke::new(1.0_f32, line), StrokeKind::Inside);
                 let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rect));
                 inner.set_clip_rect(rect);
@@ -468,8 +470,10 @@ impl Island {
                 }
                 if deed == Deed::Nothing && response.hovered() {
                     // A notification's time stands still while the pointer is on it.
-                    if let Some((notice, _)) = &feed.arriving {
-                        deed = Deed::Holding(notice.id);
+                    if facts.arriving {
+                        if let Some((notice, _)) = &feed.arriving {
+                            deed = Deed::Holding(notice.id);
+                        }
                     }
                 }
                 response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label(mode, feed)));
@@ -547,6 +551,11 @@ impl Island {
             if at.x - 4.0 >= room.left() {
                 let painter = ctx.layer_painter(egui::LayerId::new(Order::Foreground, Id::new("status-island-watching")));
                 painter.circle_filled(at, 4.0, if camera { GREEN } else { ORANGE });
+            }
+        }
+        if let Some((notice, _)) = &feed.arriving {
+            if notice.pulse_strength().is_some() {
+                ctx.request_repaint_after(Duration::from_millis(16));
             }
         }
         if facts.recording || facts.arriving || feed.song.as_ref().is_some_and(|song| song.playing) {
@@ -963,6 +972,34 @@ mod tests {
         assert_eq!(mode(facts(false, false, true, true, true), false), Mode::Music);
         assert_eq!(mode(facts(false, false, true, false, true), false), Mode::Recording);
         assert_eq!(mode(facts(false, false, false, false, true), false), Mode::Waiting);
+    }
+
+    #[test]
+    fn only_urgent_arrivals_take_over_the_island() {
+        assert_eq!(mode(facts(false, false, false, false, true), false), Mode::Waiting);
+        assert_eq!(mode(facts(false, false, false, true, true), false), Mode::Music);
+        assert_eq!(mode(facts(true, false, false, true, true), false), Mode::Arriving);
+    }
+
+    #[test]
+    fn feed_uses_urgency_to_choose_the_arriving_state() {
+        let make_feed = |urgent| {
+            let mut notice = notify::Notice::sample("Mail", "New message", "");
+            notice.urgent = urgent;
+            Feed {
+                holder: "TEST".into(), apps: None, song: None, recording: None, level: None,
+                arriving: Some((notice, 0.0)), waiting: 1, newest: None, private: false,
+                blip: None, task: None, watching: (false, false),
+            }
+        };
+        let mut quiet = make_feed(false);
+        assert_eq!(mode(quiet.facts(), false), Mode::Waiting);
+        assert!(!quiet.facts().arriving);
+        quiet.song = Some(Song { title: "Track".into(), artists: "Artist".into(), cover: None, position_ms: 0, duration_ms: 1000, playing: true, stale: false });
+        assert_eq!(mode(quiet.facts(), false), Mode::Music);
+        let urgent = make_feed(true);
+        assert_eq!(mode(urgent.facts(), false), Mode::Arriving);
+        assert!(urgent.facts().arriving);
     }
 
     #[test]

@@ -218,6 +218,17 @@ pub struct Notice {
 }
 
 impl Notice {
+    /// Strength of the brief outline pulse for a fresh, non-urgent notice.
+    /// The island starts `shown` when it first considers the notice for display;
+    /// quiet-hour notices are not fresh and therefore never pulse.
+    pub fn pulse_strength(&self) -> Option<f32> {
+        const PULSE_FOR: Duration = Duration::from_secs(1);
+        if self.urgent || !self.fresh { return None; }
+        let elapsed = self.shown?.elapsed();
+        if elapsed >= PULSE_FOR { return None; }
+        Some((std::f32::consts::PI * elapsed.as_secs_f32() / PULSE_FOR.as_secs_f32()).sin().max(0.0))
+    }
+
     /// A plain notification for tests elsewhere in the shell.
     #[cfg(test)]
     pub fn sample(app: &str, title: &str, body: &str) -> Notice {
@@ -1308,6 +1319,22 @@ fn row(ui: &mut Ui, theme: &Theme, notice: &Notice, typing: Option<&mut String>,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nonurgent_pulse_is_brief_and_fresh_only() {
+        let mut notice = Notice::sample("Mail", "New message", "");
+        notice.shown = Some(Instant::now() - Duration::from_millis(500));
+        let strength = notice.pulse_strength().expect("fresh notice pulses");
+        assert!(strength > 0.9 && strength <= 1.0, "pulse strength: {strength}");
+        notice.shown = Some(Instant::now() - Duration::from_secs(2));
+        assert_eq!(notice.pulse_strength(), None, "pulse ends after one second");
+        notice.shown = Some(Instant::now());
+        notice.fresh = false;
+        assert_eq!(notice.pulse_strength(), None, "quiet notices do not pulse");
+        notice.fresh = true;
+        notice.urgent = true;
+        assert_eq!(notice.pulse_strength(), None, "urgent notices use the arrival state");
+    }
 
     #[test]
     fn strips_markup_and_entities() {
