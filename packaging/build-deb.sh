@@ -130,7 +130,7 @@ install -d -m 1777 "$root/var/lib/des-ui/wallpapers"
 desktop_depends=$(linked target/release/des-ui target/release/des-ui-ctl target/release/des-comp target/release/des-portal target/release/des-hands target/release/des-connectd target/release/des-connect-ctl)
 pack des-ui \
     "$desktop_depends, python3, python3-gi, gir1.2-secret-1, gnome-keyring, dbus-user-session, python3-websocket, pipewire-bin, tmux (>= 3.3), libegl1, libwayland-client0, libwayland-cursor0, libwayland-egl1, fontconfig" \
-    "libgl1-mesa-dri, xwayland, cage, xdg-desktop-portal-gtk, wireplumber, pipewire-bin, network-manager, bluez, iproute2, sudo, curl, wl-clipboard, sound-theme-freedesktop, des-ui-music" \
+    "libgl1-mesa-dri, xwayland, cage, xdg-desktop-portal-gtk, wireplumber, pipewire-bin, network-manager, bluez, iproute2, sudo, curl, wl-clipboard, sound-theme-freedesktop, des-ui-music, qt6-gtk-platformtheme, qt5-gtk-platformtheme, adwaita-qt" \
     "ffmpeg, des-ui-greeter, des-ui-plymouth" \
     "sci-fi terminal desktop" <<'TEXT'
 DEs-UI is a desktop in the style of a film's computer screens: a terminal in

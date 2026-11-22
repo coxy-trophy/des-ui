@@ -127,7 +127,7 @@ fn announce_session(socket_name: &std::ffi::OsStr, x_display: Option<u32>) {
     if let Some(number) = x_display {
         variables.push(format!("DISPLAY=:{number}"));
     }
-    for name in ["XCURSOR_THEME", "XCURSOR_SIZE", "XCURSOR_PATH"] {
+    for name in ["XCURSOR_THEME", "XCURSOR_SIZE", "XCURSOR_PATH", "QT_QPA_PLATFORMTHEME"] {
         if let Ok(value) = std::env::var(name) {
             variables.push(format!("{name}={value}"));
         }

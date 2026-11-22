@@ -322,6 +322,11 @@ pub fn launch(entry: &AppEntry) -> std::io::Result<()> {
         .ok_or_else(|| std::io::Error::other("nothing to run"))?;
     let mut command = Command::new(program);
     command.args(args).stdin(Stdio::null());
+    // Qt 5 apps cannot follow the light/dark choice while running; they get the
+    // matching style when they start.
+    if let Some(style) = crate::app_theme::qt_style() {
+        command.env("QT_STYLE_OVERRIDE", style);
+    }
     // What the application prints is kept, to explain a window that never appears.
     match output_log(&entry.exec.join(" ")) {
         Some((out, err)) => command.stdout(out).stderr(err),
