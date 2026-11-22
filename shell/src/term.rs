@@ -9,7 +9,9 @@ use eframe::egui::{
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, TryRecvError, sync_channel};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
 use std::time::{Duration, Instant};
 use blocks::Block;
 
@@ -28,6 +30,69 @@ const PUMP_BYTES: usize = 32 * 1024;
 const PUMP_TIME: Duration = Duration::from_millis(4);
 /// Width of the strip at the left of the grid that carries the command marks.
 pub const GUTTER: f32 = 10.0;
+
+/// Most input bytes waiting for the child to read them.
+const INPUT_QUEUE_BYTES: usize = 1024 * 1024;
+/// Most input events waiting, so many tiny events cannot pile up either.
+const INPUT_QUEUE_EVENTS: usize = 1024;
+
+const NOTICE_STALLED: &str = "Terminal is not reading input. Wait, then try again.";
+const NOTICE_TOO_LARGE: &str = "Paste is too large for the terminal (over 1 MiB).";
+const NOTICE_CLOSED: &str = "Terminal input is closed.";
+
+/// Writes input to the PTY on its own thread, so a child that stops reading
+/// cannot freeze the interface. The queue is bounded by bytes and by events.
+/// Each event is admitted to the queue whole or refused whole; once admitted,
+/// an I/O error can still leave only part of it written, and then the writer
+/// stops and every later event is refused.
+struct InputWriter {
+    tx: SyncSender<Vec<u8>>,
+    queued: Arc<AtomicUsize>,
+    closed: Arc<AtomicBool>,
+}
+
+impl InputWriter {
+    fn new(mut writer: Box<dyn Write + Send>) -> Self {
+        let (tx, rx) = sync_channel::<Vec<u8>>(INPUT_QUEUE_EVENTS);
+        let queued = Arc::new(AtomicUsize::new(0));
+        let counter = queued.clone();
+        let closed = Arc::new(AtomicBool::new(false));
+        let stopped = closed.clone();
+        std::thread::spawn(move || {
+            while let Ok(bytes) = rx.recv() {
+                let written = writer.write_all(&bytes).and_then(|()| writer.flush());
+                counter.fetch_sub(bytes.len(), Ordering::AcqRel);
+                if written.is_err() { break; }
+            }
+            // Dropping `rx` here makes every later send fail at once.
+            stopped.store(true, Ordering::Release);
+        });
+        Self { tx, queued, closed }
+    }
+
+    fn send(&self, bytes: &[u8]) -> Result<(), &'static str> {
+        if self.closed.load(Ordering::Acquire) { return Err(NOTICE_CLOSED); }
+        if bytes.len() > INPUT_QUEUE_BYTES { return Err(NOTICE_TOO_LARGE); }
+        let admitted = self.queued.try_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
+            (queued + bytes.len() <= INPUT_QUEUE_BYTES).then_some(queued + bytes.len())
+        });
+        if admitted.is_err() { return Err(NOTICE_STALLED); }
+        match self.tx.try_send(bytes.to_vec()) {
+            Ok(()) => Ok(()),
+            Err(refused) => {
+                self.queued.fetch_sub(bytes.len(), Ordering::AcqRel);
+                Err(match refused {
+                    TrySendError::Full(_) => NOTICE_STALLED,
+                    TrySendError::Disconnected(_) => NOTICE_CLOSED,
+                })
+            }
+        }
+    }
+
+    /// Bytes admitted but not yet written (or failed).
+    #[cfg(test)]
+    fn pending(&self) -> usize { self.queued.load(Ordering::Acquire) }
+}
 
 /// The shape of the terminal's cursor.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -61,7 +126,9 @@ pub struct TermTab {
     block_selection: Option<(u64, u64)>,
     search: search::Search,
     revision: u64,
-    writer: Box<dyn Write + Send>,
+    writer: InputWriter,
+    /// Why the last input was refused; cleared by the next input that is accepted.
+    input_notice: Option<&'static str>,
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
     rx: Receiver<Vec<u8>>,
@@ -206,7 +273,8 @@ impl TermTab {
             block_selection: None,
             search: search::Search::default(),
             revision: 0,
-            writer,
+            writer: InputWriter::new(writer),
+            input_notice: None,
             master: pair.master,
             child,
             rx,
@@ -277,9 +345,21 @@ impl TermTab {
         let _ = self.child.try_wait();
     }
 
-    pub fn write(&mut self, bytes: &[u8]) {
-        let _ = self.writer.write_all(bytes);
-        let _ = self.writer.flush();
+    /// Queues `bytes` for the PTY without blocking. Returns whether they were
+    /// accepted; a refusal is shown under the grid until input is accepted again.
+    pub fn write(&mut self, bytes: &[u8]) -> bool {
+        if bytes.is_empty() { return true; }
+        match self.writer.send(bytes) {
+            Ok(()) => {
+                self.input_notice = None;
+                true
+            }
+            Err(notice) => {
+                self.input_notice = Some(notice);
+                self.ctx.request_repaint();
+                false
+            }
+        }
     }
 
     /// User input returns to the live grid; protocol replies do not.
@@ -971,6 +1051,14 @@ impl TermTab {
                 );
             }
         }
+
+        // Refused input says why, on one line over the bottom row of the grid.
+        if let Some(notice) = self.input_notice {
+            let line = Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - ch), rect.max);
+            let painter = ui.painter_at(line);
+            painter.rect_filled(line, 0.0, crate::ui::GROUND);
+            painter.text(Pos2::new(line.min.x + cw, line.min.y + inset), egui::Align2::LEFT_TOP, notice, font.clone(), theme.caution);
+        }
     }
 }
 
@@ -1164,6 +1252,122 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
 
+    /// Waits until every queued input byte has reached the PTY writer.
+    fn drained(tab: &TermTab) {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while tab.writer.pending() != 0 {
+            assert!(Instant::now() < deadline, "input queue did not drain");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// A writer that records what it is given, for tests that check PTY input.
+    struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> { self.0.lock().unwrap().extend_from_slice(bytes); Ok(bytes.len()) }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+
+    /// A writer that blocks until its gate opens, like a child that stopped reading.
+    struct Stalled {
+        gate: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+        written: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    }
+    impl Write for Stalled {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let (open, wake) = &*self.gate;
+            let mut open = open.lock().unwrap();
+            while !*open { open = wake.wait(open).unwrap(); }
+            self.written.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+
+    #[test]
+    fn stalled_child_never_blocks_input_and_refuses_whole_events() {
+        let gate = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let written = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut tab = TermTab::spawn("/bin/sh", Path::new("/tmp"), egui::Context::default(), 0).unwrap();
+        tab.writer = InputWriter::new(Box::new(Stalled { gate: gate.clone(), written: written.clone() }));
+
+        let started = Instant::now();
+        // The first event is taken by the writer thread and blocks there.
+        assert!(tab.write(b"first"));
+        let chunk = vec![b'p'; 256 * 1024];
+        let mut accepted = 0;
+        while tab.write(&chunk) {
+            accepted += 1;
+            assert!(accepted <= 8, "the byte bound never refused input");
+        }
+        assert!(accepted >= 3, "accepted only {accepted} quarter-MiB chunks");
+        assert_eq!(tab.input_notice, Some(NOTICE_STALLED));
+        assert!(tab.writer.pending() <= INPUT_QUEUE_BYTES);
+
+        // An event over the bound is refused whole, with its own notice.
+        assert!(!tab.write(&vec![b'x'; 2 * 1024 * 1024]));
+        assert_eq!(tab.input_notice, Some(NOTICE_TOO_LARGE));
+        assert!(started.elapsed() < Duration::from_millis(100), "writing blocked: {:?}", started.elapsed());
+
+        // Once the child reads again, input is accepted and the notice clears.
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+        drained(&tab);
+        assert!(tab.write(b"after"));
+        assert_eq!(tab.input_notice, None);
+        drained(&tab);
+        let written = written.lock().unwrap();
+        assert_eq!(written.len(), 5 + accepted * chunk.len() + 5);
+        assert!(written.starts_with(b"first") && written.ends_with(b"after"));
+        assert!(!written.contains(&b'x'), "a refused event was partly written");
+    }
+
+    #[test]
+    fn many_tiny_events_are_bounded_by_count() {
+        let gate = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let written = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer = InputWriter::new(Box::new(Stalled { gate: gate.clone(), written }));
+        let accepted = (0..INPUT_QUEUE_EVENTS + 10).take_while(|_| writer.send(b"k").is_ok()).count();
+        // The channel holds the bound, plus at most the one event the thread took.
+        assert!(accepted <= INPUT_QUEUE_EVENTS + 1, "accepted {accepted} one-byte events");
+        assert_eq!(writer.send(b"k"), Err(NOTICE_STALLED));
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+    }
+
+    #[test]
+    fn input_keeps_its_order() {
+        let written = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut tab = TermTab::spawn("/bin/sh", Path::new("/tmp"), egui::Context::default(), 0).unwrap();
+        tab.writer = InputWriter::new(Box::new(Capture(written.clone())));
+        let mut expected = Vec::new();
+        for n in 0..200 {
+            let event = format!("event-{n};");
+            assert!(tab.write(event.as_bytes()));
+            expected.extend_from_slice(event.as_bytes());
+        }
+        drained(&tab);
+        assert_eq!(*written.lock().unwrap(), expected);
+    }
+
+    #[test]
+    fn failed_writer_refuses_later_input_promptly() {
+        struct Broken;
+        impl Write for Broken {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> { Err(std::io::ErrorKind::BrokenPipe.into()) }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let mut tab = TermTab::spawn("/bin/sh", Path::new("/tmp"), egui::Context::default(), 0).unwrap();
+        tab.writer = InputWriter::new(Box::new(Broken));
+        assert!(tab.write(b"lost"));
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while tab.write(b"again") {
+            assert!(Instant::now() < deadline, "input still accepted after the writer failed");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(tab.input_notice, Some(NOTICE_CLOSED));
+    }
+
     fn grid_check(text: &str, size: f32, scale: f32) {
         let ctx = egui::Context::default();
         crate::ui::install_fonts(&ctx, None, None);
@@ -1350,18 +1554,14 @@ mod tests {
     #[test]
     fn hovered_application_receives_wheel_with_actual_grid_coordinates() {
         use std::sync::{Arc, Mutex};
-        struct Capture(Arc<Mutex<Vec<u8>>>);
-        impl Write for Capture {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> { self.0.lock().unwrap().extend_from_slice(bytes); Ok(bytes.len()) }
-            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
-        }
         let (mut tab, ctx, rect, pos) = terminal_frame_setup();
         tab.parser.process(b"\x1b[?1049h\x1b[?1000h\x1b[?1006h");
         let written = Arc::new(Mutex::new(Vec::new()));
-        tab.writer = Box::new(Capture(written.clone()));
+        tab.writer = InputWriter::new(Box::new(Capture(written.clone())));
         let events = vec![Event::PointerMoved(pos), Event::MouseWheel { unit: egui::MouseWheelUnit::Line,
             delta: Vec2::new(0.0, 1.0), modifiers: Modifiers::NONE }];
         assert!(frame(&mut tab, &ctx, rect, events, false, 0.0));
+        drained(&tab);
         assert_eq!(&*written.lock().unwrap(), b"\x1b[<64;3;2M");
     }
 
@@ -1510,22 +1710,19 @@ mod tests {
     #[test]
     fn search_isolates_shortcut_text_enter_escape_and_ime_from_pty() {
         use std::sync::{Arc, Mutex};
-        struct Capture(Arc<Mutex<Vec<u8>>>);
-        impl Write for Capture {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> { self.0.lock().unwrap().extend_from_slice(bytes); Ok(bytes.len()) }
-            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
-        }
         let ctx = egui::Context::default();
         let mut tab = TermTab::spawn("/bin/sh", Path::new("/tmp"), ctx.clone(), 100).unwrap();
         let written = Arc::new(Mutex::new(Vec::new()));
-        tab.writer = Box::new(Capture(written.clone()));
+        tab.writer = InputWriter::new(Box::new(Capture(written.clone())));
         let key = |key, modifiers| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
         tab.handle_events(&[key(Key::F, Modifiers::CTRL | Modifiers::SHIFT), Event::Text("needle".into()), Event::Ime(egui::ImeEvent::Commit("文".into())), key(Key::Enter, Modifiers::NONE)], false, false, &ctx);
         assert!(tab.searching());
         tab.handle_events(&[key(Key::Escape, Modifiers::NONE), Event::Text("same-frame".into())], false, false, &ctx);
         assert!(!tab.searching());
+        drained(&tab);
         assert!(written.lock().unwrap().is_empty());
         tab.handle_events(&[Event::Text("live".into())], false, false, &ctx);
+        drained(&tab);
         assert_eq!(&*written.lock().unwrap(), b"live");
     }
 
@@ -1607,14 +1804,9 @@ mod tests {
     #[test]
     fn ctrl_shift_arrows_walk_the_prompts_without_reaching_the_pty() {
         use std::sync::{Arc, Mutex};
-        struct Capture(Arc<Mutex<Vec<u8>>>);
-        impl Write for Capture {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> { self.0.lock().unwrap().extend_from_slice(bytes); Ok(bytes.len()) }
-            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
-        }
         let (mut tab, ctx, rect) = blocks_frame_setup();
         let written = Arc::new(Mutex::new(Vec::new()));
-        tab.writer = Box::new(Capture(written.clone()));
+        tab.writer = InputWriter::new(Box::new(Capture(written.clone())));
         for n in 0..3 {
             tab.blocks.feed(&mut tab.parser, format!("\x1b]133;A\x07$ cmd{n}\r\n\x1b]133;C\x07out{n}\r\n\x1b]133;D;{n}\x07").as_bytes());
         }
@@ -1630,8 +1822,10 @@ mod tests {
         assert!(top_row(&tab).starts_with("$ cmd0"), "the first prompt stays put");
         frame(&mut tab, &ctx, rect, vec![key(Key::ArrowDown, walk)], true, 0.0);
         assert!(top_row(&tab).starts_with("$ cmd1"));
+        drained(&tab);
         assert!(written.lock().unwrap().is_empty(), "prompt walking reached the shell");
         frame(&mut tab, &ctx, rect, vec![key(Key::ArrowUp, Modifiers::SHIFT)], true, 0.0);
+        drained(&tab);
         assert_eq!(&*written.lock().unwrap(), b"\x1b[1;2A");
         assert_eq!(tab.parser.screen().scrollback(), 0, "typing returns to the live grid");
     }
