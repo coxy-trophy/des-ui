@@ -8,9 +8,20 @@
 //! - GNOME's `gtk-theme` setting, `Adwaita-dark` or `Adwaita`, for GTK 3 apps;
 //! - `gtk-application-prefer-dark-theme` in `~/.config/gtk-3.0/settings.ini`, for
 //!   GTK 3 apps that do not read GNOME's settings.
+//!
+//! Qt apps get it through the session's `QT_QPA_PLATFORMTHEME=gtk3`: Qt 6 takes its
+//! colours from the GTK theme and follows a change at once. Qt 5's GTK plugin has no
+//! colours, so Qt 5 apps are given the Adwaita style in the matching mode when the
+//! desktop starts them ([`qt_style`]); they change the next time they open.
+//! Browsers and Electron apps read the portal only while their own appearance
+//! setting is left on "system" or "device".
 
 use crate::config::AppTheme;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU8, Ordering};
+
+/// The choice last applied: 0 none yet, 1 light, 2 dark.
+static CURRENT: AtomicU8 = AtomicU8::new(0);
 
 fn color_scheme(theme: AppTheme) -> &'static str {
     match theme {
@@ -78,8 +89,30 @@ fn gsettings(args: &[&str]) -> Option<String> {
     output.status.success().then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// The Qt style for a newly started app in this mode. Adwaita (from `adwaita-qt`)
+/// is a Qt 5 style; Qt 6 does not find it and keeps its default, which takes its
+/// colours from the GTK theme instead.
+fn qt_style_for(theme: AppTheme) -> &'static str {
+    match theme {
+        AppTheme::Light => "adwaita",
+        AppTheme::Dark => "adwaita-dark",
+    }
+}
+
+/// The style a Qt app started now should be given, if any: none before a choice was
+/// applied, and none when the person set `QT_STYLE_OVERRIDE` for themselves.
+pub fn qt_style() -> Option<&'static str> {
+    if std::env::var_os("QT_STYLE_OVERRIDE").is_some() { return None; }
+    match CURRENT.load(Ordering::Relaxed) {
+        1 => Some(qt_style_for(AppTheme::Light)),
+        2 => Some(qt_style_for(AppTheme::Dark)),
+        _ => None,
+    }
+}
+
 /// Tells applications, in the background, to draw themselves light or dark.
 pub fn apply(theme: AppTheme) {
+    CURRENT.store(if theme == AppTheme::Dark { 2 } else { 1 }, Ordering::Relaxed);
     if cfg!(test) { return; }
     std::thread::spawn(move || {
         const SCHEMA: &str = "org.gnome.desktop.interface";
@@ -105,6 +138,11 @@ pub fn apply(theme: AppTheme) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn qt_apps_get_the_adwaita_style_in_the_chosen_mode() {
+        assert_eq!(qt_style_for(AppTheme::Dark), "adwaita-dark");
+        assert_eq!(qt_style_for(AppTheme::Light), "adwaita");
+    }
     #[test]
     fn a_new_file_gets_the_section_and_the_key() {
         assert_eq!(settings_ini("", AppTheme::Dark), "[Settings]\ngtk-application-prefer-dark-theme=1\n");

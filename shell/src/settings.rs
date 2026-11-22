@@ -889,7 +889,7 @@ impl Settings {
                 }
             }
         });
-        note(ui, "Most applications switch at once. Some older ones change the next time they open.");
+        note(ui, "Most applications switch at once. Some older ones change the next time they open. Browsers and apps such as Brave, Chrome, VS Code, Claude and ChatGPT keep their own setting: set theirs to follow the system or device.");
     }
 
     fn effects_appearance(&mut self, ui: &mut Ui, theme: &Theme, config: &Config, changes: &mut Vec<Change>) {

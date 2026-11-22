@@ -9,6 +9,9 @@
 # Logs: ~/.local/state/des-ui/session.log (and session-fallback.log); what launched
 # applications print goes to apps.log next to them.
 export XDG_CURRENT_DESKTOP=des-ui
+# Qt apps take their look, and light or dark, from the GTK theme (qt6-gtk-platformtheme,
+# qt5-gtk-platformtheme), unless the person chose another platform theme.
+export QT_QPA_PLATFORMTHEME="${QT_QPA_PLATFORMTHEME:-gtk3}"
 export XCURSOR_THEME="${XCURSOR_THEME:-DEs-UI}"
 export XCURSOR_SIZE="${XCURSOR_SIZE:-24}"
 # libXcursor's compiled search path may omit /usr/local/share/icons.
@@ -71,7 +74,7 @@ leave() {
     # The portal backend is started by D-Bus when an application first asks; it too
     # ends with the session.
     pkill -u "$(id -u)" -x des-portal 2>/dev/null
-    systemctl --user unset-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XCURSOR_THEME XCURSOR_SIZE XCURSOR_PATH 2>/dev/null
+    systemctl --user unset-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XCURSOR_THEME XCURSOR_SIZE XCURSOR_PATH QT_QPA_PLATFORMTHEME 2>/dev/null
     exit "$1"
 }
 stop_portal
