@@ -8,6 +8,9 @@ ping, and [wireless phone casting](CAST.md). The separate GPL fork at `../des-co
 features the preview does not yet offer. The native crate and preview contain no
 implementation copied from the fork.
 
+A paired phone can also act as a key (walk-away lock, signed unlock decision,
+signed administrator approval), every part off by default: see [PHONEKEY.md](PHONEKEY.md).
+
 ```sh
 cargo build -p des-connect
 ./target/debug/des-connectd

@@ -7,4 +7,5 @@ pub mod screens;
 pub mod transfers;
 pub mod media;
 pub mod features;
+pub mod phonekey;
 mod cast;
