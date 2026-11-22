@@ -34,7 +34,14 @@ fn save_private<T:Serialize>(path:&Path,value:&T)->Result<()> {
 #[derive(Serialize,Deserialize)]
 struct LocalIdentity {id:String,key_pem:String,cert_pem:String}
 #[derive(Clone,Serialize,Deserialize)]
-pub struct PeerRecord {pub id:String,pub name:String,pub kind:String,pub certificate:String,#[serde(default)] pub files_enabled:bool,#[serde(default)] pub media_enabled:bool,#[serde(default)] pub volume_enabled:bool}
+pub struct PeerRecord {pub id:String,pub name:String,pub kind:String,pub certificate:String,#[serde(default)] pub files_enabled:bool,#[serde(default)] pub media_enabled:bool,#[serde(default)] pub volume_enabled:bool,
+ /// Phone-as-key walk-away lock: off unless the user turned it on for this device.
+ #[serde(default)] pub walkaway:bool,#[serde(default)] pub walkaway_seconds:u32,
+ /// The signing key this phone enrolled for unlock/approve, and which of those are on.
+ #[serde(default,skip_serializing_if="Option::is_none")] pub phonekey:Option<PhoneKeyRecord>}
+/// An enrolled phone signing key. Both capabilities are off until switched on.
+#[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
+pub struct PhoneKeyRecord {pub public_key:String,pub enrolled_at:i64,#[serde(default)] pub unlock:bool,#[serde(default)] pub approve:bool}
 pub struct Store {directory:PathBuf,id:String,pub key:PKey<Private>,pub certificate:X509,pub peers:BTreeMap<String,PeerRecord>}
 impl Store {
  pub fn open(directory:&Path)->Result<Self> {
@@ -67,7 +74,10 @@ impl Store {
   let pin=peer_digest(cert,id)?;
   if self.pin(id)?.is_some_and(|old|old!=pin){return Err("certificate changed; unpair explicitly first".into());}
   if self.peers.len()>=64&&!self.peers.contains_key(id){return Err("paired-device limit reached".into());}
-  let record=PeerRecord{id:id.into(),name:name.chars().take(256).collect(),kind:kind.into(),certificate:hex(&cert.to_der()?),files_enabled:self.peers.get(id).is_some_and(|peer|peer.files_enabled),media_enabled:self.peers.get(id).is_some_and(|peer|peer.media_enabled),volume_enabled:self.peers.get(id).is_some_and(|peer|peer.volume_enabled)};
+  // A known peer keeps its permissions; a new pairing starts with every one off.
+  let old=self.peers.get(id);
+  let record=PeerRecord{id:id.into(),name:name.chars().take(256).collect(),kind:kind.into(),certificate:hex(&cert.to_der()?),files_enabled:old.is_some_and(|peer|peer.files_enabled),media_enabled:old.is_some_and(|peer|peer.media_enabled),volume_enabled:old.is_some_and(|peer|peer.volume_enabled),
+   walkaway:old.is_some_and(|peer|peer.walkaway),walkaway_seconds:old.map(|peer|peer.walkaway_seconds).unwrap_or(0),phonekey:old.and_then(|peer|peer.phonekey.clone())};
   let mut peers=self.peers.clone();peers.insert(id.into(),record);save_private(&self.directory.join("peers.json"),&peers)?;self.peers=peers;Ok(())
  }
  pub fn set_files_enabled(&mut self,id:&str,enabled:bool)->Result<()> {
@@ -82,6 +92,13 @@ impl Store {
   let mut peers=self.peers.clone();peers.get_mut(id).ok_or("volume permission requires a trusted paired peer")?.volume_enabled=enabled;
   save_private(&self.directory.join("peers.json"),&peers)?;self.peers=peers;Ok(())
  }
+ /// Change one trusted peer's record and persist it, or change nothing at all.
+ pub fn update_peer(&mut self,id:&str,change:impl FnOnce(&mut PeerRecord)->Result<()>)->Result<()> {
+  let mut peers=self.peers.clone();change(peers.get_mut(id).ok_or("this needs a trusted paired peer")?)?;
+  save_private(&self.directory.join("peers.json"),&peers)?;self.peers=peers;Ok(())
+ }
+ /// SHA-256 of this desktop's certificate, as the peer pins it.
+ pub fn certificate_digest(&self)->Result<[u8;32]> {Ok(self.certificate.digest(MessageDigest::sha256())?.as_ref().try_into()?)}
  pub fn forget(&mut self,id:&str)->Result<()> {
   let mut peers=self.peers.clone();peers.remove(id);save_private(&self.directory.join("peers.json"),&peers)?;self.peers=peers;Ok(())
  }
