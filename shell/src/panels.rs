@@ -17,7 +17,7 @@ use eframe::egui::{
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+pub(crate) const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
 /// What the left column keeps for the process list and the companion, so that the
 /// optional instrument sections above them never crowd them out.
@@ -36,7 +36,7 @@ fn sections_that_fit(available: f32, reserve: f32, heights: &[f32]) -> usize {
         .count()
 }
 
-fn human_bytes(bytes: f64) -> String {
+pub(crate) fn human_bytes(bytes: f64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut value = bytes;
     let mut unit = 0;
@@ -1089,99 +1089,6 @@ impl Default for StatusClicks {
     }
 }
 
-/// What a further display shows while no application is on it.
-pub fn backdrop(ui: &mut Ui, theme: &Theme, mon: &SysMon, number: usize) {
-    let rect = ui.max_rect();
-    crate::material::paint(ui.ctx(), ui.painter(), rect, 0.0, crate::material::Role::Background);
-    ui::corners(ui.painter(), rect.shrink(24.0), 28.0, Stroke::new(2.0_f32, ui::LINE_STRONG));
-
-    let inner = rect.shrink2(vec2(72.0, 48.0));
-    let painter = ui.painter().clone();
-    let brand = ui::galley(ui, "DEs-UI", ui::display_bold(14.0), theme.main, 4.0);
-    let brand_width = brand.size().x;
-    painter.galley(inner.left_top(), brand, theme.main);
-    let label = ui::galley(ui, &format!("DISPLAY {number}"), ui::display(14.0), ui::SECONDARY, 4.0);
-    painter.galley(inner.left_top() + vec2(brand_width + 14.0, 0.0), label, ui::SECONDARY);
-    painter.text(
-        inner.right_top(),
-        Align2::RIGHT_TOP,
-        format!("{:.0} × {:.0}", rect.width(), rect.height()),
-        ui::mono(12.0),
-        ui::SECONDARY,
-    );
-
-    // The clock takes about a third of the height, and never more than the width allows.
-    let now = chrono::Local::now();
-    let size = (rect.height() * 0.2).min(rect.width() * 0.16);
-    let time = ui::galley(ui, &crate::region::hours_minutes(&now), ui::display(size), ui::TEXT, 4.0);
-    let seconds = ui::galley(ui, &now.format("%S").to_string(), ui::display(size * 0.3), theme.main, 0.0);
-    let total = time.size().x + size * 0.08 + seconds.size().x;
-    let top = rect.center().y - time.size().y * 0.62;
-    let left = rect.center().x - total / 2.0;
-    let seconds_pos = pos2(left + time.size().x + size * 0.08, top + time.size().y * 0.86 - seconds.size().y);
-    let time_bottom = top + time.size().y;
-    painter.galley(pos2(left, top), time, ui::TEXT);
-    painter.galley(seconds_pos, seconds, theme.main);
-    let date = now.format("%A %d %B %Y").to_string().to_uppercase();
-    let date = ui::galley(ui, &date, ui::display(size * 0.11), ui::SECONDARY, size * 0.035);
-    let date_height = date.size().y;
-    painter.galley(pos2(rect.center().x - date.size().x / 2.0, time_bottom), date, ui::SECONDARY);
-    let hint_y = time_bottom + date_height + 40.0;
-    painter.hline(
-        (rect.center().x - 260.0)..=(rect.center().x + 260.0),
-        hint_y - 20.0,
-        Stroke::new(1.0_f32, ui::LINE),
-    );
-    // One line where the display is wide enough for it, two where it is not.
-    let hints = ["SUPER O  sends the current application here", "SUPER SPACE  opens the launcher"];
-    if rect.width() >= 1100.0 {
-        painter.text(pos2(rect.center().x, hint_y), Align2::CENTER_TOP, hints.join("      "), ui::mono(13.0), ui::SECONDARY);
-    } else {
-        for (row, hint) in hints.iter().enumerate() {
-            let at = pos2(rect.center().x, hint_y + row as f32 * 22.0);
-            painter.text(at, Align2::CENTER_TOP, hint, ui::mono(13.0), ui::SECONDARY);
-        }
-    }
-
-    // Four readings along the bottom.
-    let load = mon.cpu_hist.back().copied().unwrap_or(0.0);
-    let memory = mon.mem_used as f32 / mon.mem_total.max(1) as f32;
-    let down = mon.rx_hist.back().copied().unwrap_or(0.0);
-    let peak = mon.rx_hist.iter().fold(1024.0_f32, |a, b| a.max(*b));
-    let tiles = [
-        ("PROCESSOR", format!("{load:.0}%"), load / 100.0, true),
-        ("MEMORY", format!("{:.1} GiB", mon.mem_used as f64 / GIB), memory, true),
-        ("NETWORK", format!("{}/s", human_bytes(down as f64)), down / peak, false),
-        (
-            "BATTERY",
-            mon.battery.map_or("AC".to_string(), |b| format!("{b}%")),
-            mon.battery.map_or(1.0, |b| b as f32 / 100.0),
-            false,
-        ),
-    ];
-    let gap = 16.0;
-    let width = (inner.width() - gap * 3.0) / 4.0;
-    for (i, (label, reading, frac, is_load)) in tiles.into_iter().enumerate() {
-        let tile = Rect::from_min_size(
-            pos2(inner.left() + i as f32 * (width + gap), inner.bottom() - 58.0),
-            vec2(width, 58.0),
-        );
-        crate::material::paint(ui.ctx(), &painter, tile, ui::CONTROL_RADIUS, crate::material::Role::Panel);
-        painter.rect_stroke(tile, ui::CONTROL_RADIUS, Stroke::new(1.0_f32, ui::LINE), StrokeKind::Inside);
-        let name = ui::galley(ui, label, ui::display_bold(12.0), ui::SECONDARY, 0.8);
-        painter.galley(tile.left_top() + vec2(16.0, 13.0), name, ui::SECONDARY);
-        if width >= 200.0 {
-            painter.text(tile.right_top() + vec2(-16.0, 13.0), Align2::RIGHT_TOP, reading, ui::mono(12.0), ui::TEXT);
-        }
-        let track = Rect::from_min_size(tile.left_top() + vec2(16.0, 38.0), vec2(width - 32.0, 6.0));
-        painter.rect_filled(track, 0.0, ui::TRACK);
-        let frac = frac.clamp(0.0, 1.0);
-        let mut filled = track;
-        filled.set_width(track.width() * frac);
-        let color = if is_load && frac > ui::CAUTION_ABOVE { ui::CAUTION } else { theme.main };
-        painter.rect_filled(filled, 0.0, color);
-    }
-}
 
 /// Quotes `s` so a POSIX shell reads it back as a single word.
 pub fn shell_quote(s: &str) -> String {

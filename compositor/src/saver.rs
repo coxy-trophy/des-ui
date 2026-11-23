@@ -143,14 +143,21 @@ pub enum ShellRole {
     Unassigned,
     Desktop,
     SecondarySaver(usize),
+    /// What an extended display shows while the screen is locked and no saver runs:
+    /// the time and where to unlock. Like a saver, it never draws the session.
+    SecondaryLock(usize),
 }
 
 pub fn shell_role(app_id: &str) -> ShellRole {
-    let Some(index) = app_id.strip_prefix("des-ui-saver-") else {
-        return if app_id.is_empty() { ShellRole::Unassigned } else { ShellRole::Desktop };
+    let (index, lock) = match (app_id.strip_prefix("des-ui-saver-"), app_id.strip_prefix("des-ui-lock-")) {
+        (Some(index), _) => (index, false),
+        (_, Some(index)) => (index, true),
+        _ => return if app_id.is_empty() { ShellRole::Unassigned } else { ShellRole::Desktop },
     };
     match index.parse::<usize>() {
-        Ok(screen) if screen != 0 && index == screen.to_string() => ShellRole::SecondarySaver(screen),
+        Ok(screen) if screen != 0 && index == screen.to_string() => {
+            if lock { ShellRole::SecondaryLock(screen) } else { ShellRole::SecondarySaver(screen) }
+        }
         _ => ShellRole::Unassigned,
     }
 }
@@ -166,6 +173,8 @@ pub struct SecondarySaver {
     pub window: smithay::desktop::Window,
     pub id: smithay::backend::renderer::element::Id,
     pub cycle: Option<u64>,
+    /// A lock display rather than a saver: its cycle counts locks, not savers.
+    pub lock: bool,
 }
 
 #[cfg(test)]
@@ -181,6 +190,11 @@ mod tests {
         assert_eq!(shell_role("des-ui-saver-10"), ShellRole::SecondarySaver(10));
         for id in ["des-ui-saver-", "des-ui-saver-0", "des-ui-saver-01", "des-ui-saver-+1", "des-ui-saver-1-extra"] {
             assert_eq!(shell_role(id), ShellRole::Unassigned);
+        }
+        assert_eq!(shell_role("des-ui-lock-1"), ShellRole::SecondaryLock(1));
+        assert_eq!(shell_role("des-ui-lock-12"), ShellRole::SecondaryLock(12));
+        for id in ["des-ui-lock-", "des-ui-lock-0", "des-ui-lock-01", "des-ui-lock-1x"] {
+            assert_eq!(shell_role(id), ShellRole::Unassigned, "{id}");
         }
     }
 

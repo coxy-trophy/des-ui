@@ -288,12 +288,24 @@ impl Dock {
                 self.selected_window.and_then(|n|item.windows.get(n)).map_or_else(||activation(display,item,&self.entries,state),|&index|Action::Command(Command::Activate(index)))
             });}
         }
-        ui.horizontal(|ui| {
-            ui::text(ui,"Open apps",ui::display_bold(15.0),ui::TEXT);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui| {
-                if ui::button(ui,theme,"Apps",None,false).on_hover_text("Applications launcher").clicked(){output.action=Some(Action::Launcher);}
+        let mut close_clicked=false;
+        if display>0 {
+            // On an extended display: say where what is chosen opens.
+            ui.horizontal(|ui| {
+                ui::tracked(ui,&format!("OPENS ON DISPLAY {}",display+1),ui::display_bold(12.0),theme.main,2.6);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui| {
+                    if ui::keycap(ui,"ESC").on_hover_text("Close").clicked(){close_clicked=true;}
+                });
             });
-        });
+        } else {
+            ui.horizontal(|ui| {
+                ui::text(ui,"Open apps",ui::display_bold(15.0),ui::TEXT);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui| {
+                    if ui::button(ui,theme,"Apps",None,false).on_hover_text("Applications launcher").clicked(){output.action=Some(Action::Launcher);}
+                });
+            });
+        }
+        if close_clicked {self.dismiss_keyboard(&ctx);}
         let search_before=self.search.clone();
         let search=ui::search_field(ui,theme,&mut self.search,id.with("search"),"Find app or window");
         if self.search!=search_before {
@@ -313,7 +325,10 @@ impl Dock {
             rows.push((n,None));
             if self.expanded.contains(&item_key(item)) {rows.extend((0..item.windows.len()).map(|window|(n,Some(window))));}
         }
-        let capacity=page_capacity(ui.available_height(),ui.spacing().item_spacing.y);
+        // Applications on the display before this one, which Super O would bring here.
+        let bring:Vec<usize>=if display>0 && query.is_empty() {crate::extended::bring_here(state,display).into_iter().take(4).collect()} else {Vec::new()};
+        let bring_height=if bring.is_empty(){0.0}else{30.0+bring.len() as f32*(ui::CONTROL_HEIGHT+ui.spacing().item_spacing.y)};
+        let capacity=page_capacity(ui.available_height()-bring_height,ui.spacing().item_spacing.y);
         let pages=rows.len().div_ceil(capacity.max(1)).max(1);
         if reveal {if let Some(position)=rows.iter().position(|&(n,window)|n==self.selection && window==self.selected_window){self.page=position/capacity.max(1);}}
         self.page=self.page.min(pages-1);
@@ -388,6 +403,17 @@ impl Dock {
                         });
                     }
                 }
+        }
+        if !bring.is_empty() {
+            ui.add_space(8.0);
+            let from=state.apps[bring[0]].screen;
+            ui::tracked(ui,&format!("ON DISPLAY {} · BRING HERE",from+1),ui::display_bold(11.0),ui::SECONDARY,2.2);
+            for &index in &bring {
+                let app=&state.apps[index];
+                let title=if app.title.trim().is_empty(){app.app_id.clone()}else{app.title.clone()};
+                let response=ui::list_button(ui,theme,&title,ui.available_width());
+                if response.on_hover_text(format!("Move to display {}",display+1)).clicked(){output.action=Some(Action::Command(Command::Move(index)));}
+            }
         }
         // Paging owns overflow: footer actions remain inside the side panel.
         let mut requested_page=None;

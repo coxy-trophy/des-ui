@@ -6,7 +6,7 @@ impl App {
         self.secondary_docks.retain(|screen,_|*screen<count);
         self.dock_keyboard.retain(|screen,_|*screen<count);
         self.secondary_areas.retain(|screen,_|*screen<count);
-        let mut actions=Vec::new();let mut areas=Vec::new();
+        let mut actions=Vec::new();let mut areas=Vec::new();let mut extended_acts=Vec::new();
         let overview=self.desktop.as_ref().and_then(|d|d.overview.clone());
         let saver = if locked { self.idle_saver.started() } else { None };
         let (style, reduced, on_battery) = (
@@ -30,8 +30,27 @@ impl App {
                     },
                 );
             }
+            if locked {
+                // Made only while locked, so it has never drawn the session either;
+                // the compositor shows it for this lock only, when no saver runs.
+                let theme = &self.theme;
+                ctx.show_viewport_immediate(
+                    egui::ViewportId::from_hash_of(("des-lock-display", screen)),
+                    ViewportBuilder::default()
+                        .with_title(format!("DEs-UI locked — display {}", screen + 1))
+                        .with_app_id(format!("des-ui-lock-{screen}")),
+                    |ctx, class| {
+                        if class != egui::ViewportClass::Embedded {
+                            CentralPanel::default().frame(Frame::new().fill(ui::GROUND)).show(ctx, |ui| crate::extended::locked(ui, theme, screen));
+                        }
+                    },
+                );
+            }
             let dock=self.secondary_docks.entry(screen).or_default();
             let mut output=None;
+            let mut extended_act=None;
+            let empty=DesktopState::default();
+            let desktop=state.unwrap_or(&empty);
             let suppress=locked || self.capture.marking();
             let (theme,mon,pins,animate)=(&self.theme,&self.mon,&self.config.dock_pins,self.config.animate && !self.config.appearance.reduce_motion);
             ctx.show_viewport_immediate(
@@ -40,12 +59,15 @@ impl App {
                 |ctx,class|{
                     if class==egui::ViewportClass::Embedded{return;}
                     CentralPanel::default().frame(Frame::new().fill(ui::GROUND)).show(ctx,|ui|{
-                        if locked {ui.centered_and_justified(|ui|{ui::text(ui,"LOCKED",ui::display(24.0),ui::SECONDARY);});}
-                        else{panels::backdrop(ui,theme,mon,screen+1);}
+                        // Locked, the compositor hides this surface and shows the lock
+                        // display instead; nothing of the session is drawn meanwhile.
+                        if locked {}
+                        else if crate::extended::shown_on(desktop,screen).is_empty() {extended_act=crate::extended::idle(ui,theme,mon,desktop,screen);}
+                        else {extended_act=crate::extended::strip(ui,theme,desktop,screen);}
                     });
                     output=Some(if suppress {dock.reset();dock::Output::default()} else if dock.captures_keyboard() {
                         let bounds=ctx.screen_rect();
-                        let rect=Rect::from_min_max(pos2((bounds.right()-320.0).max(bounds.left()),bounds.top()),bounds.right_bottom());
+                        let rect=Rect::from_min_max(pos2((bounds.right()-360.0).max(bounds.left()),bounds.top()),bounds.right_bottom());
                         let mut result=dock::Output::default();
                         let keys=dock.reserve_keyboard(ctx);
                         ctx.input_mut(|i|i.events.extend(keys));
@@ -61,6 +83,7 @@ impl App {
                     if !suppress {if let Some(layout)=overview.as_ref(){crate::overview::show_on(ctx,theme,layout,state,screen);}}
                 },
             );
+            if let Some(act)=extended_act.filter(|_|!suppress){extended_acts.push((screen,act));}
             if let Some(output)=output{
                 if let Some(action)=output.action{actions.push(action);}
                 let area=output.overlay.map(|r|(r.left().floor() as i32,r.top().floor() as i32,r.width().ceil() as i32+1,r.height().ceil() as i32+1));
@@ -80,5 +103,12 @@ impl App {
             }
         }
         for action in actions{self.apply_dock_action(action);}
+        for (screen,act) in extended_acts {
+            match act {
+                crate::extended::Act::Command(command)=>self.apply_dock_action(dock::Action::Command(command)),
+                crate::extended::Act::OpenApps=>self.focus_apps(screen),
+                crate::extended::Act::Displays=>{let config=self.config.clone();self.settings.open_at(&config,"displays");}
+            }
+        }
     }
 }

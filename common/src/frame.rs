@@ -6,6 +6,27 @@ pub const GAP: f32 = 8.0;
 pub const RADIUS: f32 = 8.0;
 const RIM: f32 = 4.0;
 
+/// An extended display (any but the main one) keeps a strip along its top, drawn by
+/// its backdrop, and a margin around the applications below it.
+pub const EXTENDED_MARGIN: f32 = 16.0;
+pub const EXTENDED_STRIP_TOP: f32 = 12.0;
+pub const EXTENDED_STRIP_HEIGHT: f32 = 52.0;
+
+/// The strip along the top of an extended display of this size.
+pub fn extended_strip(width: f32, height: f32) -> Rect {
+    let margin = EXTENDED_MARGIN.min(width / 8.0);
+    Rect { x: margin, y: EXTENDED_STRIP_TOP.min(height / 8.0), width: (width - 2.0 * margin).max(1.0), height: EXTENDED_STRIP_HEIGHT.min(height / 4.0) }
+}
+
+/// Where applications go on an extended display of this size: below its strip and
+/// clear of its edges.
+pub fn extended_workspace(width: f32, height: f32) -> Rect {
+    let strip = extended_strip(width, height);
+    let margin = EXTENDED_MARGIN.min(width / 8.0).min(height / 8.0);
+    let top = strip.y + strip.height + margin;
+    Rect { x: strip.x, y: top, width: strip.width, height: (height - top - margin).max(1.0) }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Layout {
     pub center: Rect,
@@ -58,6 +79,18 @@ impl Layout {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_extended_display_keeps_its_strip_clear_of_applications() {
+        let strip = super::extended_strip(2195.0, 1235.0);
+        let area = super::extended_workspace(2195.0, 1235.0);
+        assert_eq!((strip.x, strip.y, strip.height), (16.0, 12.0, 52.0));
+        assert_eq!((area.x, area.y), (16.0, 80.0));
+        assert_eq!(area.width, 2195.0 - 32.0);
+        assert_eq!(area.y + area.height, 1235.0 - 16.0);
+        let tiny = super::extended_workspace(40.0, 40.0);
+        assert!(tiny.width >= 1.0 && tiny.height >= 1.0 && tiny.y + tiny.height <= 40.0);
+    }
+
     use super::*;
     use crate::{Panels, PanelBehavior, Rect, STATUS_HEIGHT};
     fn right(rect: Rect) -> f32 { rect.x + rect.width }

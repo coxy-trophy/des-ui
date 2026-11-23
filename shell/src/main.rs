@@ -10,6 +10,7 @@ mod bird;
 mod calculator;
 mod app_icons;
 mod dock;
+mod extended;
 mod capture;
 mod companion;
 mod config;

@@ -467,8 +467,11 @@ impl DesComp {
         // The terminal lives inside the frame, so full screen needs an application in
         // the main slot: beside the terminal, an application stays in the workspace.
         let covered = self.in_place(screen, Place::Main).is_some();
-        let area = if screen != 0 || (self.mode(screen).fullscreen && covered) {
+        let area = if self.mode(screen).fullscreen && (screen != 0 || covered) {
             rect
+        } else if screen != 0 {
+            // Below the strip an extended display's backdrop draws along its top.
+            to_rectangle(des_common::frame::extended_workspace(rect.size.w as f32, rect.size.h as f32), rect.loc)
         } else {
             to_rectangle(
                 des_common::frame::Layout::with_keyboard(rect.size.w as f32, rect.size.h as f32, self.panels, self.side_panel_behavior, self.keyboard_height as f32).workspace,
@@ -633,6 +636,21 @@ impl DesComp {
                     window,
                     id: smithay::backend::renderer::element::Id::new(),
                     cycle: (self.locked && self.saver.active()).then_some(self.saver_cycle),
+                    lock: false,
+                });
+            }
+            ShellRole::SecondaryLock(screen) => {
+                let window = self.pending_shell_windows.remove(index);
+                if let Some(rect) = self.screens.get(screen).copied() {
+                    configure(&window, rect, true, false);
+                }
+                // One made before the compositor heard of the lock joins it there.
+                self.secondary_savers.push(crate::saver::SecondarySaver {
+                    screen,
+                    window,
+                    id: smithay::backend::renderer::element::Id::new(),
+                    cycle: self.locked.then_some(self.lock_cycle),
+                    lock: true,
                 });
             }
         }
@@ -640,13 +658,16 @@ impl DesComp {
 
     /// The newest surface for each secondary output, only for this approval.
     /// The returned rectangles also clip a client buffer to its intended output.
+    /// A saver while one runs, else the lock display made during this lock.
     pub fn visible_secondary_savers(&self) -> Vec<(Window, Rectangle<i32, Logical>, smithay::backend::renderer::element::Id)> {
-        if !self.locked || !self.saver.active() {
+        if !self.locked {
             return Vec::new();
         }
         self.screens.iter().copied().enumerate().skip(1).filter_map(|(screen, rect)| {
-            self.secondary_savers.iter().rev().find(|entry| entry.screen == screen
-                && crate::saver::secondary_visible(self.locked, Some(self.saver_cycle), entry.cycle))
+            let saver = self.saver.active().then(|| self.secondary_savers.iter().rev().find(|entry| !entry.lock && entry.screen == screen
+                && crate::saver::secondary_visible(self.locked, Some(self.saver_cycle), entry.cycle))).flatten();
+            saver.or_else(|| self.secondary_savers.iter().rev().find(|entry| entry.lock && entry.screen == screen
+                && crate::saver::secondary_visible(self.locked, Some(self.lock_cycle), entry.cycle)))
                 .map(|entry| (entry.window.clone(), rect, entry.id.clone()))
         }).collect()
     }
@@ -1552,6 +1573,15 @@ impl DesComp {
         if self.locked != locked {
             tracing::info!(locked, "screen lock");
             self.locked = locked;
+            if locked {
+                self.lock_cycle = self.lock_cycle.wrapping_add(1);
+                // Lock displays the shell made as it locked, before this, belong to
+                // this lock; one from an earlier lock keeps its old cycle and stays
+                // hidden.
+                for entry in self.secondary_savers.iter_mut().filter(|entry| entry.lock && entry.cycle.is_none()) {
+                    entry.cycle = Some(self.lock_cycle);
+                }
+            }
             if locked { self.cursors.set_speaking(false, std::time::Instant::now()); self.companion_bubble = None; self.companion_chat = false; }
             if locked {
                 // No pre-lock keyboard grab may intercept the lock screen.
