@@ -177,6 +177,50 @@ pub struct SecondarySaver {
     pub lock: bool,
 }
 
+/// What the lock-cycle rules need to know about a secondary surface. Kept apart
+/// from the window so the rules can be tested without a Wayland client.
+pub trait Stamped {
+    fn screen(&self) -> usize;
+    fn lock(&self) -> bool;
+    fn cycle(&self) -> Option<u64>;
+    fn set_cycle(&mut self, cycle: Option<u64>);
+}
+
+impl Stamped for SecondarySaver {
+    fn screen(&self) -> usize { self.screen }
+    fn lock(&self) -> bool { self.lock }
+    fn cycle(&self) -> Option<u64> { self.cycle }
+    fn set_cycle(&mut self, cycle: Option<u64>) { self.cycle = cycle; }
+}
+
+/// The cycle a newly registered lock display gets: this lock's, or none yet if
+/// the shell locked before the compositor did.
+pub fn lock_surface_cycle(locked: bool, lock_cycle: u64) -> Option<u64> {
+    locked.then_some(lock_cycle)
+}
+
+/// The compositor locks: a new lock cycle begins. Lock displays the shell made
+/// as it locked, before this, belong to this lock; one from an earlier lock keeps
+/// its old cycle and stays hidden.
+pub fn begin_lock<T: Stamped>(entries: &mut [T], lock_cycle: &mut u64) {
+    *lock_cycle = lock_cycle.wrapping_add(1);
+    for entry in entries.iter_mut().filter(|entry| entry.lock() && entry.cycle().is_none()) {
+        entry.set_cycle(Some(*lock_cycle));
+    }
+}
+
+/// The surface to draw on secondary `screen`: the newest saver of this saver
+/// cycle while a saver runs, else the newest lock display of this lock, else none.
+/// Nothing is shown while unlocked.
+pub fn pick_secondary<T: Stamped>(entries: &[T], screen: usize, locked: bool, saver: Option<u64>, lock_cycle: u64) -> Option<&T> {
+    if !locked {
+        return None;
+    }
+    let newest = |lock: bool, cycle: u64| entries.iter().rev()
+        .find(|entry| entry.lock() == lock && entry.screen() == screen && secondary_visible(locked, Some(cycle), entry.cycle()));
+    saver.and_then(|cycle| newest(false, cycle)).or_else(|| newest(true, lock_cycle))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,6 +249,91 @@ mod tests {
         assert!(!secondary_visible(true, None, Some(2)));
         assert!(!secondary_visible(true, Some(3), Some(2)));
         assert!(!secondary_visible(true, None, None));
+    }
+
+    /// A secondary surface without a window: (name, screen, lock, cycle).
+    #[derive(Debug, PartialEq)]
+    struct Fake(&'static str, usize, bool, Option<u64>);
+
+    impl Stamped for Fake {
+        fn screen(&self) -> usize { self.1 }
+        fn lock(&self) -> bool { self.2 }
+        fn cycle(&self) -> Option<u64> { self.3 }
+        fn set_cycle(&mut self, cycle: Option<u64>) { self.3 = cycle; }
+    }
+
+    fn shown(entries: &[Fake], screen: usize, locked: bool, saver: Option<u64>, lock_cycle: u64) -> Option<&'static str> {
+        pick_secondary(entries, screen, locked, saver, lock_cycle).map(|entry| entry.0)
+    }
+
+    #[test]
+    fn a_lock_display_from_one_lock_is_hidden_on_the_next() {
+        let mut lock_cycle = 0;
+        let mut entries = Vec::new();
+        begin_lock(&mut entries, &mut lock_cycle);
+        entries.push(Fake("first", 1, true, lock_surface_cycle(true, lock_cycle)));
+        assert_eq!(shown(&entries, 1, true, None, lock_cycle), Some("first"));
+        // Unlocked: nothing shows, whatever is still registered.
+        assert_eq!(shown(&entries, 1, false, None, lock_cycle), None);
+        // The next lock: the old surface stays registered but belongs to the last lock.
+        begin_lock(&mut entries, &mut lock_cycle);
+        assert_eq!(entries[0].3, Some(1));
+        assert_eq!(shown(&entries, 1, true, None, lock_cycle), None);
+        entries.push(Fake("second", 1, true, lock_surface_cycle(true, lock_cycle)));
+        assert_eq!(shown(&entries, 1, true, None, lock_cycle), Some("second"));
+    }
+
+    #[test]
+    fn a_lock_display_made_before_the_compositor_locked_joins_that_lock() {
+        let mut lock_cycle = 4;
+        // The shell locked first; the compositor is still unlocked.
+        let mut entries = vec![Fake("early", 2, true, lock_surface_cycle(false, lock_cycle))];
+        assert_eq!(entries[0].3, None);
+        assert_eq!(shown(&entries, 2, false, None, lock_cycle), None);
+        begin_lock(&mut entries, &mut lock_cycle);
+        assert_eq!(lock_cycle, 5);
+        assert_eq!(entries[0].3, Some(5));
+        assert_eq!(shown(&entries, 2, true, None, lock_cycle), Some("early"));
+        // It does not show on another display.
+        assert_eq!(shown(&entries, 1, true, None, lock_cycle), None);
+    }
+
+    #[test]
+    fn adoption_leaves_savers_and_older_lock_displays_alone() {
+        let mut lock_cycle = 1;
+        let mut entries = vec![
+            Fake("old lock", 1, true, Some(1)),
+            Fake("saver", 1, false, None),
+            Fake("pending lock", 1, true, None),
+        ];
+        begin_lock(&mut entries, &mut lock_cycle);
+        assert_eq!(entries.iter().map(|entry| entry.3).collect::<Vec<_>>(), [Some(1), None, Some(2)]);
+    }
+
+    #[test]
+    fn a_running_saver_of_this_cycle_takes_precedence_over_the_lock_display() {
+        let entries = vec![
+            Fake("lock", 1, true, Some(3)),
+            Fake("saver", 1, false, Some(7)),
+        ];
+        assert_eq!(shown(&entries, 1, true, Some(7), 3), Some("saver"));
+        // No saver running: the lock display.
+        assert_eq!(shown(&entries, 1, true, None, 3), Some("lock"));
+        // A saver from another saver cycle never shows; the lock display does.
+        assert_eq!(shown(&entries, 1, true, Some(8), 3), Some("lock"));
+        // A lock display never stands in for a saver, nor a saver for a lock display.
+        let swapped = vec![Fake("lock", 1, true, Some(7)), Fake("saver", 1, false, Some(3))];
+        assert_eq!(shown(&swapped, 1, true, Some(7), 3), None);
+    }
+
+    #[test]
+    fn the_newest_surface_of_the_right_cycle_wins() {
+        let entries = vec![
+            Fake("older", 1, true, Some(2)),
+            Fake("newer", 1, true, Some(2)),
+            Fake("stale", 1, true, Some(1)),
+        ];
+        assert_eq!(shown(&entries, 1, true, None, 2), Some("newer"));
     }
 
     #[test]

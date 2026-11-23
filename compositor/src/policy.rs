@@ -649,7 +649,7 @@ impl DesComp {
                     screen,
                     window,
                     id: smithay::backend::renderer::element::Id::new(),
-                    cycle: self.locked.then_some(self.lock_cycle),
+                    cycle: crate::saver::lock_surface_cycle(self.locked, self.lock_cycle),
                     lock: true,
                 });
             }
@@ -663,11 +663,9 @@ impl DesComp {
         if !self.locked {
             return Vec::new();
         }
+        let saver = self.saver.active().then_some(self.saver_cycle);
         self.screens.iter().copied().enumerate().skip(1).filter_map(|(screen, rect)| {
-            let saver = self.saver.active().then(|| self.secondary_savers.iter().rev().find(|entry| !entry.lock && entry.screen == screen
-                && crate::saver::secondary_visible(self.locked, Some(self.saver_cycle), entry.cycle))).flatten();
-            saver.or_else(|| self.secondary_savers.iter().rev().find(|entry| entry.lock && entry.screen == screen
-                && crate::saver::secondary_visible(self.locked, Some(self.lock_cycle), entry.cycle)))
+            crate::saver::pick_secondary(&self.secondary_savers, screen, self.locked, saver, self.lock_cycle)
                 .map(|entry| (entry.window.clone(), rect, entry.id.clone()))
         }).collect()
     }
@@ -1574,13 +1572,7 @@ impl DesComp {
             tracing::info!(locked, "screen lock");
             self.locked = locked;
             if locked {
-                self.lock_cycle = self.lock_cycle.wrapping_add(1);
-                // Lock displays the shell made as it locked, before this, belong to
-                // this lock; one from an earlier lock keeps its old cycle and stays
-                // hidden.
-                for entry in self.secondary_savers.iter_mut().filter(|entry| entry.lock && entry.cycle.is_none()) {
-                    entry.cycle = Some(self.lock_cycle);
-                }
+                crate::saver::begin_lock(&mut self.secondary_savers, &mut self.lock_cycle);
             }
             if locked { self.cursors.set_speaking(false, std::time::Instant::now()); self.companion_bubble = None; self.companion_chat = false; }
             if locked {
