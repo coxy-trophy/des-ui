@@ -165,6 +165,8 @@ pub struct DesComp {
     pub pending_shell_windows: Vec<Window>,
     pub secondary_savers: Vec<crate::saver::SecondarySaver>,
     pub saver_cycle: u64,
+    /// Counts locks, so a lock display shows only during the lock it was made in.
+    pub lock_cycle: u64,
     /// Application windows, in the order they were opened.
     pub apps: Vec<App>,
     /// The displays, in logical coordinates; the first is the one with the frame.
@@ -372,6 +374,7 @@ impl DesComp {
             pending_shell_windows: Vec::new(),
             secondary_savers: Vec::new(),
             saver_cycle: 0,
+            lock_cycle: 0,
             apps: Vec::new(),
             screens: Vec::new(),
             physical_screens: Vec::new(),
